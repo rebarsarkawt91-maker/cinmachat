@@ -1,0 +1,6 @@
+{
+  "name": "CinemaChat",
+  "description": "CinemaChat: A high-security Kurdish cinematic platform with Firebase Storage integration for poster uploads, social watch parties, and AI-powered theater experiences.",
+  "requestFramePermissions": ["fullscreen", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

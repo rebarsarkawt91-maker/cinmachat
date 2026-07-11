@@ -1,0 +1,167 @@
+{
+  "admins": [
+    {
+      "username": "admin",
+      "password": "cinamachat@9703424",
+      "isSuper": true,
+      "isOwner": true,
+      "role": "owner"
+    }
+  ],
+  "users": [],
+  "categories": [
+    "هەمووی",
+    "ئاکشن",
+    "کۆمیدی",
+    "دراما",
+    "ترسناک",
+    "ئەنیمێ",
+    "دۆکیومێنتاری"
+  ],
+  "heroConfig": {
+    "youtubeId": "YPY7J-flzE8",
+    "manualFeaturedId": null,
+    "heroVideoUrl": "https://www.youtube.com/watch?v=aiREm-2JrNM",
+    "heroPlaylist": [
+      "https://www.youtube.com/watch?v=aiREm-2JrNM"
+    ],
+    "video_trailers": [
+      "https://www.youtube.com/watch?v=aiREm-2JrNM"
+    ]
+  },
+  "syncGroups": {
+    "global_room_official": {
+      "id": "global_room_official",
+      "name": "پەخشی ڕاستەوخۆ",
+      "currentMovieId": "hero-promo",
+      "playback": {
+        "isPlaying": true,
+        "currentTime": 0,
+        "updatedAt": "2026-06-10T18:14:39.644Z"
+      },
+      "videoData": {
+        "id": "hero-promo",
+        "title": "Featured Movie",
+        "url": "https://www.youtube.com/embed/Rsztt5qDj_A",
+        "isYouTube": true,
+        "heroPlaylist": [
+          "https://www.youtube.com/watch?v=Rsztt5qDj_A",
+          "https://www.youtube.com/watch?v=U53Uv7SiVIk",
+          "https://www.youtube.com/watch?v=67ho3OxCmmM"
+        ]
+      }
+    }
+  },
+  "bannedIps": [],
+  "rooms": [
+    {
+      "id": "global_room_official",
+      "name": "ژووری سەرەکی",
+      "hostCode": "GLOBAL_HOST",
+      "currentMovieUrl": "https://youtube.com",
+      "isPlaying": true,
+      "currentTime": 10,
+      "activeUsers": [
+        {
+          "username": "بینەر-ABCD",
+          "uniqueCode": "ABCD",
+          "joinedAt": "2026-06-21T15:50:44.340Z",
+          "lastSeen": "2026-06-21T15:50:44.340Z"
+        },
+        {
+          "username": "خانەخوێ (Host)",
+          "uniqueCode": "GLOBAL_HOST",
+          "joinedAt": "2026-06-21T15:50:49.478Z",
+          "lastSeen": "2026-06-21T15:50:49.478Z"
+        }
+      ],
+      "chatMessages": [],
+      "updatedAt": "2026-06-21T15:50:49.478Z"
+    },
+    {
+      "id": "main_broadcast_room",
+      "name": "هۆڵی پەخشی سەرەکی (Broadcast)",
+      "hostCode": "ADMIN_BROADCAST",
+      "currentMovieUrl": "https://www.youtube.com/watch?v=ffW64N3gGv8",
+      "isPlaying": true,
+      "currentTime": 0,
+      "activeUsers": [
+        {
+          "username": "بینەر-CC-AD",
+          "uniqueCode": "CC-ADM-001",
+          "joinedAt": "2026-07-11T18:38:09.652Z",
+          "lastSeen": "2026-07-11T19:21:39.654Z"
+        }
+      ],
+      "chatMessages": [],
+      "updatedAt": "2026-07-11T19:21:39.654Z"
+    }
+  ],
+  "vipSettings": {
+    "qrCodeUrl": "https://i.ibb.co/3kWy3m9/fastpay-qr-mock.png",
+    "paymentDetails": "ژمارەی باڵانسی فاستپەی / زین کاش: 07501234567\nبانکی واڵێت: FIb - 12345678",
+    "instructions": "بۆ بەژداریکردن و بینینی پەخشی ڕاستەوخۆی VIP CinemaChat بە شێوەی هەمیشەیی، بڕی پارەی تیکێتەکە بنێرە و پاشان پەیوەندی بە ئەدمینەوە بکە لە تێلیگرام (@cinemasupport) بۆ وەرگرتنی کۆدەکەت."
+  },
+  "deletedIds": [],
+  "tagOverrides": {},
+  "youtubeChannelUrl": "https://www.youtube.com/",
+  "youtubeUrl": "https://www.youtube.com/",
+  "tiktokUrl": "https://www.tiktok.com/",
+  "instagramUrl": "https://www.instagram.com/",
+  "facebookUrl": "https://www.facebook.com/",
+  "failedLoginAttempts": [],
+  "bannedKeywords": [],
+  "emergencyLock": false,
+  "securityAuditLogs": [
+    {
+      "id": "log-n0xap5k",
+      "admin": "admin",
+      "action": "Login Secret Match Tried",
+      "details": "هەوڵی چوونەژوورەوەی ئەدمین بە کۆدی نهێنی.",
+      "timestamp": "2026-07-11T18:38:09.016Z"
+    },
+    {
+      "id": "log-8gy1e99",
+      "admin": "Admin User",
+      "action": "Login Secret Match Tried",
+      "details": "هەوڵی چوونەژوورەوەی ئەدمین بە کۆدی نهێنی.",
+      "timestamp": "2026-06-21T14:38:36.541Z"
+    },
+    {
+      "id": "log-cst3ukm",
+      "admin": "Admin User",
+      "action": "Login Secret Match Tried",
+      "details": "هەوڵی چوونەژوورەوەی ئەدمین بە کۆدی نهێنی.",
+      "timestamp": "2026-06-21T14:37:54.655Z"
+    }
+  ],
+  "systemErrorLogs": [
+    {
+      "id": "err-7yz3k6v",
+      "source": "POST /api/auth/login-by-id",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 400",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-07-11T18:36:43.551Z"
+    },
+    {
+      "id": "err-3xsvzcu",
+      "source": "POST /api/vip/verify",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 404",
+      "details": "ئایپی بەکارهێنەر: 176.222.60.215",
+      "timestamp": "2026-06-21T14:28:31.392Z"
+    },
+    {
+      "id": "err-5624mkx",
+      "source": "POST /api/rooms/CC-ADM-001/join",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 404",
+      "details": "ئایپی بەکارهێنەر: 176.222.60.215",
+      "timestamp": "2026-06-21T13:42:48.907Z"
+    }
+  ],
+  "intrusionAttempts": [],
+  "vipTickets": [],
+  "vipVideos": [],
+  "ownerNotifications": [],
+  "directMessages": [],
+  "invitations": []
+}

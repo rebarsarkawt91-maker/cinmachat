@@ -1,0 +1,161 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile with unique identity",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "uniqueCode": { "type": "string", "description": "Generated code like CC-8892" },
+        "avatarUrl": { "type": "string" },
+        "isOnline": { "type": "boolean" },
+        "currentRoomId": { "type": "string", "description": "ID of the room the user is currently in" },
+        "lastActive": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "name", "uniqueCode"]
+    },
+    "SyncGroup": {
+      "title": "SyncGroup",
+      "description": "A private room for watching movies in sync",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "creatorId": { "type": "string" },
+        "memberIds": { "type": "array", "items": { "type": "string" } },
+        "currentMovieId": { "type": "string" },
+        "playback": {
+          "type": "object",
+          "properties": {
+            "isPlaying": { "type": "boolean" },
+            "currentTime": { "type": "number" },
+            "updatedAt": { "type": "string", "format": "date-time" }
+          }
+        },
+        "videoData": {
+          "type": "object",
+          "properties": {
+            "id": { "type": "string" },
+            "title": { "type": "string" },
+            "image": { "type": "string" },
+            "url": { "type": "string" },
+            "videoUrl": { "type": "string" },
+            "isYouTube": { "type": "boolean" },
+            "videoId": { "type": "string" },
+            "trailerUrl": { "type": "string" },
+            "streamingUrl": { "type": "string" },
+            "external_link": { "type": "string" },
+            "category": { "type": "string" },
+            "description": { "type": "string" },
+            "quality": { "type": "string" },
+            "tags": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "activeSubtitles": { "type": "array", "items": { "type": "object" } },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Real-time chat message in a sync group",
+      "type": "object",
+      "properties": {
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "text": { "type": "string" },
+        "audio": { "type": "string", "description": "Base64 audio data" },
+        "type": { "type": "string", "enum": ["text", "voice"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Reaction": {
+      "title": "Reaction",
+      "description": "Floating emoji reaction",
+      "type": "object",
+      "properties": {
+        "senderId": { "type": "string" },
+        "type": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Movie": {
+      "title": "Movie",
+      "description": "Movie entry for the platform",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "image": { "type": "string" },
+        "embedUrl": { "type": "string" },
+        "trailerUrl": { "type": "string" },
+        "streamingUrl": { "type": "string" },
+        "external_link": { "type": "string" },
+        "isYouTube": { "type": "boolean" },
+        "quality": { "type": "string" },
+        "date": { "type": "string", "format": "date-time" },
+        "isNetflixOriginal": { "type": "boolean" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "category": { "type": "string" },
+        "type": { "type": "string", "enum": ["movie", "tv"] },
+        "rating": { "type": "string" },
+        "year": { "type": "string" },
+        "whatsappLink": { "type": "string" }
+      },
+      "required": ["id", "title", "image"]
+    },
+    "SystemCheck": {
+      "title": "SystemCheck",
+      "description": "Database connectivity check document",
+      "type": "object",
+      "properties": {
+        "status": { "type": "string" }
+      }
+    },
+    "GeneralConfig": {
+      "title": "GeneralConfig",
+      "description": "General configuration parameters",
+      "type": "object",
+      "properties": {
+        "roomVideoUrl": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Unique user profiles"
+    },
+    "/syncGroups/{groupId}": {
+      "schema": "SyncGroup",
+      "description": "Private synchronization rooms"
+    },
+    "/syncGroups/{groupId}/messages/{messageId}": {
+      "schema": "ChatMessage",
+      "description": "Messages within a sync group"
+    },
+    "/syncGroups/{groupId}/reactions/{reactionId}": {
+      "schema": "Reaction",
+      "description": "Real-time emoji reactions"
+    },
+    "/movies/{movieId}": {
+      "schema": "Movie",
+      "description": "Platform movie feed"
+    },
+    "/system_check/{docId}": {
+      "schema": "SystemCheck",
+      "description": "Connection handshake check collection"
+    },
+    "/config/hero": {
+      "schema": "GeneralConfig",
+      "description": "Hero configuration parameters"
+    },
+    "/config/friends_room": {
+      "schema": "GeneralConfig",
+      "description": "Friends Room configuration parameters"
+    }
+  }
+}

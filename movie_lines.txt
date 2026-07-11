@@ -1,0 +1,120 @@
+347:    type: "movie", 
+476:          type ("movie" or "tv"), title, year (string), rating (string, e.g. "8.5"), description, poster (URL).
+487:          const movieData = JSON.parse(jsonStr);
+491:            title: movieData.title || prev.title,
+492:            description: movieData.description || prev.description,
+493:            posterUrl: movieData.poster || prev.posterUrl,
+494:            rating: movieData.rating ? String(movieData.rating) : prev.rating,
+495:            year: movieData.year ? String(movieData.year) : prev.year,
+496:            type: movieData.type || prev.type,
+555:    let movieType = formData.type;
+560:      movieType = "tv";
+565:    const movieData = {
+570:        type: movieType,
+586:    console.log("Publishing movie main:", movieData);
+589:      await onPost(movieData);
+614:        type: "movie",
+806:                                placeholder="vidsrc.me/embed/movie?imdb=tt..."
+1146:const CategoryModule = ({ movies, onRefresh }: any) => {
+1253:                    {movies.filter((m: any) => m.tags.includes(cat)).length} فیلم و زنجیرە
+1675:  const [movies, setMovies] = useState<Movie[]>(MOCK_MOVIES);
+1689:  // Update activeServerUrl when movie changes
+1703:    return movies.find((m) => m.isYouTube) || movies[0];
+1704:  }, [movies]);
+1903:  const [socialTab, setSocialTab] = useState<"movies" | "party" | "profile">("movies");
+2188:      setSocialTab("movies");
+2206:    setSocialTab("movies");
+2247:       const existingMovie = movies.find(m => m.embedUrl === globalStreamURL || m.videoUrl === globalStreamURL);
+2267:  }, [globalStreamURL, activeSyncGroup?.id, movies]);
+2285:               const movieUpdate: Movie = {
+2301:               if (!selectedMovie || selectedMovie.id !== movieUpdate.id || selectedMovie.embedUrl !== movieUpdate.embedUrl) {
+2302:                  setSelectedMovie(movieUpdate);
+2307:              const targetMovie = movies.find(m => m.id === data.currentMovieId);
+2384:          // the direct click handlers we have on movie elements.
+2438:  const moviesPerPage = 12;
+2592:      // We only show the error if we don't have any movies at all (not even mock)
+2593:      if (movies.length === 0) {
+2610:  // Split movies for rows
+2612:    setTrendingMovies(movies.filter((m) => m.isTrending));
+2613:    setNetflixOriginals(movies.filter((m) => m.isNetflixOriginal));
+2614:  }, [movies]);
+2617:    return movies.filter((movie) => {
+2619:        movie.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+2620:        movie.tags.some((t) =>
+2624:      const matchesTab = activeTab === "all" || movie.tags.includes(activeTab);
+2628:  }, [movies, searchQuery, activeTab]);
+2631:    const startIndex = (currentPage - 1) * moviesPerPage;
+2632:    return filteredMovies.slice(startIndex, startIndex + moviesPerPage);
+2639:  if (isLoading && movies.length === 0) {
+2867:                {movies.slice(0, 5).map((m) => (
+2890:              onClick={() => setSocialTab("movies")}
+2927:        {socialTab === "movies" && (
+3029:              {trendingMovies.map((movie) => (
+3032:                  key={movie.id}
+3035:                    setSelectedMovie(movie);
+3040:                    src={movie.image || undefined}
+3063:              {netflixOriginals.map((movie) => (
+3066:                  key={movie.id}
+3069:                    setSelectedMovie(movie);
+3074:                    src={movie.image || undefined}
+3087:                      {movie.title}
+3213:              {paginatedMovies.flatMap((movie, idx) => {
+3214:                const movieCard = (
+3216:                    key={movie.id}
+3223:                      setSelectedMovie(movie);
+3229:                        src={movie.image || undefined}
+3238:                        alt={movie.title}
+3242:                      {movie.isNetflixOriginal && (
+3250:                        {movie.embedUrl && (
+3253:                        {movie.quality}
+3257:                        {movie.embedUrl ? (
+3276:                        {movie.title}
+3280:                          {movie.date.split("T")[0]}
+3282:                        {movie.isTrending && (
+3297:                    movieCard,
+3323:                return [movieCard];
+3338:          {filteredMovies.length > moviesPerPage && (
+3348:                {Array(Math.ceil(filteredMovies.length / moviesPerPage))
+3367:                  Math.ceil(filteredMovies.length / moviesPerPage)
+3435:                               href={`https://wa.me/${import.meta.env.VITE_WHATSAPP_NUMBER}?text=${encodeURIComponent("I need help with movie: " + selectedMovie.title)}`}
+3786:                        href={selectedMovie.whatsappLink || `https://wa.me/${import.meta.env.VITE_WHATSAPP_NUMBER}?text=${encodeURIComponent("I want to watch this movie: " + selectedMovie.title)}`}
+4026:                          const link = selectedMovie.whatsappLink || (import.meta.env.VITE_WHATSAPP_NUMBER ? `https://wa.me/${import.meta.env.VITE_WHATSAPP_NUMBER}?text=${encodeURIComponent("I want to watch this movie: " + selectedMovie.title + " " + window.location.href)}` : null);
+4045:                      {movies
+4351:                            value={movies.length}
+4377:                        movies={movies}
+4391:                        onPost={async (movie: any) => {
+4394:                            const trailerId = movie.trailerUrl ? extractYouTubeId(movie.trailerUrl) : null;
+4395:                            const ytId = extractYouTubeId(movie.streamingUrl || movie.videoUrl);
+4396:                            const imdbId = (movie?.imdbUrl && typeof movie.imdbUrl === 'string') ? (movie.imdbUrl.match(/tt\d{7,10}/)?.[0] || (movie.imdbUrl.startsWith('tt') ? movie.imdbUrl : null)) : null;
+4398:                              ...movie,
+4402:                              embedUrl: movie.streamingUrl || movie.external_link || (ytId ? `https://www.youtube.com/embed/${ytId}` : movie.videoUrl),
+4403:                              trailerUrl: trailerId ? `https://www.youtube.com/embed/${trailerId}` : movie.trailerUrl,
+4404:                              external_link: movie.streamingUrl || movie.external_link || movie.videoUrl
+4407:                            const res = await fetch("/api/admin/post-movie", {
+4415:                              const postedMovie = data.movie;
+4422:                              const gallery = document.getElementById('movie-gallery');
+4512:                            {movies.length} فیلم نیشان دراوە
+4516:                        <div id="movie-gallery" className="grid grid-cols-1 gap-2">
+4517:                          {movies.map((movie) => (
+4519:                              key={movie.id}
+4524:                                  src={movie.image || undefined}
+4531:                                    {movie.title}
+4534:                                    {movie.quality} • {movie.id.slice(0,8)}
+4542:                                    value={movie.tags.find(t => dynamicCategories.includes(t)) || "هەمووی"}
+4545:                                      const res = await fetchApi(`/api/admin/movies/${movie.id}/tags`, {
+4564:                                    if (confirm(`ئایا دڵنیایت لە پەخشکردنی ڕاستەوخۆی "${movie.title}" بۆ ${roomName}؟`)) {
+4565:                                      const vidId = movie.videoId || movie.videoUrl || movie.embedUrl;
+4566:                                      const isYoutube = !!movie.videoId || movie.isYouTube;
+4577:                                        updatePayload.currentMovieId = movie.id;
+4579:                                           id: movie.id,
+4581:                                           title: movie.title,
+4583:                                           url: movie.embedUrl || `https://www.youtube.com/embed/${vidId}`,
+4584:                                           image: movie.image,
+4585:                                           category: movie.tags[0] || 'Movie'
+4588:                                        updatePayload.currentMovieId = movie.id;
+4590:                                           id: movie.id,
+4592:                                           title: movie.title,
+4594:                                           image: movie.image,
+4595:                                           category: movie.tags[0] || 'Movie'
+4611:                                  if (confirm(`ئایا دڵنیایت لە سڕینەوەی "${movie.title}" ؟`)) {
+4612:                                    const res = await fetchApi(`/api/admin/movies/${movie.id}`, { method: "DELETE" });

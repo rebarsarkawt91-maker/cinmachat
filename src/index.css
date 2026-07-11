@@ -1,0 +1,130 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&family=Space+Grotesk:wght@400;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-brand-primary: #e50914;
+  --font-display: "Space Grotesk", sans-serif;
+  --font-sans: "Inter", sans-serif;
+}
+
+@layer base {
+  body {
+    @apply bg-black text-white antialiased font-sans select-none;
+  }
+}
+
+/* Point 73: RTL & Kurdish Text */
+.kurdish-text {
+  direction: rtl;
+  text-align: right;
+  line-height: 1.8;
+}
+
+/* Point 56: Disable Selection */
+.no-select {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+
+/* Point 66: Police Style / Official Branding */
+.official-badge {
+  @apply relative overflow-hidden border border-brand-primary/30 bg-brand-primary/10 rounded-3xl p-6 shadow-2xl;
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(229, 9, 20, 0.05),
+    rgba(229, 9, 20, 0.05) 15px,
+    transparent 15px,
+    transparent 30px
+  );
+}
+
+.official-footer {
+  @apply border-t-8 border-brand-primary bg-[#050505] pt-24 pb-48 px-8 relative overflow-hidden;
+}
+
+.police-seal {
+  @apply absolute -top-10 -right-10 w-64 h-64 border-8 border-white/5 rounded-full flex items-center justify-center opacity-10 rotate-12 pointer-events-none;
+}
+
+/* Point 74: New Arrivals Ticker & Moving Tracker (Point 12) */
+@keyframes ticker {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(calc(-100% / 4)); }
+}
+
+.animate-ticker {
+  animation: ticker 40s linear infinite;
+}
+
+@keyframes marquee {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+.animate-marquee {
+  animation: marquee 30s linear infinite;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-brand-primary) rgba(255, 255, 255, 0.05);
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 10px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--color-brand-primary);
+  border-radius: 10px;
+}
+
+.ticker-container {
+  @apply bg-brand-primary/10 border-y border-white/5 overflow-hidden whitespace-nowrap py-4 backdrop-blur-md;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  @apply bg-black;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-brand-primary/40 rounded-full hover:bg-brand-primary transition-colors;
+}
+
+/* Animations */
+.animate-spin-slow {
+  animation: spin 12s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Clean Video UI: Block pointer events to prevent clicking or navigating into YouTube */
+.plyr__video-embed iframe,
+.plyr__video-wrapper iframe,
+iframe#hero-player,
+iframe#room-player,
+iframe#room-sync-player,
+iframe#streaming-player {
+  pointer-events: none !important;
+}

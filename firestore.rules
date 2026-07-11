@@ -1,0 +1,204 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitives ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Validation Helpers ---
+    
+    function isValidUser(data) {
+      return data.get('uid', request.auth.uid) is string
+        && data.get('name', 'User') is string
+        && (data.get('uniqueCode', null) == null || data.get('uniqueCode', '') is string)
+        && (data.get('isOnline', null) == null || data.get('isOnline', false) is bool)
+        && (data.get('avatarUrl', null) == null || data.get('avatarUrl', '') is string)
+        && (data.get('phone', null) == null || data.get('phone', '') is string)
+        && (data.get('currentRoomId', null) == null || data.get('currentRoomId', '') is string)
+        && (data.get('isMuted', null) == null || data.get('isMuted', false) is bool)
+        && (data.get('isKicked', null) == null || data.get('isKicked', false) is bool)
+        && (data.get('lastActive', null) == null || data.get('lastActive', request.time) is timestamp)
+        && (data.get('createdAt', null) == null || data.get('createdAt', '') is string || data.get('createdAt', request.time) is timestamp);
+    }
+
+    function isValidSyncGroup(data) {
+      return (data.get('id', '') is string)
+        && data.get('name', '') is string
+        && (data.get('creatorId', '') is string)
+        && (data.get('memberIds', null) == null || data.get('memberIds', []) is list)
+        && (data.get('playback', null) == null || data.get('playback', {}) is map)
+        && (data.get('videoData', null) == null || data.get('videoData', {}) is map)
+        && (data.get('activeSubtitles', null) == null || data.get('activeSubtitles', []) is list)
+        && (data.get('currentMovieId', null) == null || data.get('currentMovieId', '') is string)
+        && (data.get('playlist', null) == null || data.get('playlist', []) is list)
+        && (data.get('currentPlaylistIndex', null) == null || data.get('currentPlaylistIndex', 0) is int)
+        && (data.get('autoLoop', null) == null || data.get('autoLoop', false) is bool)
+        && (data.get('createdAt', null) == null || data.get('createdAt', '') is string || data.get('createdAt', request.time) is timestamp);
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        (request.auth.token.email == 'rebarsarkawt91@gmail.com' && request.auth.token.email == 'rebarsarkawt91@gmail.com') ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', 'user') in ['owner', 'admin', 'super_admin', 'Admin', 'super-admin'])
+      );
+    }
+
+    function isStaff() {
+      return isAdmin();
+    }
+
+    function isValidMessage(data) {
+      return data.senderId == request.auth.uid
+        && data.senderName is string
+        && (data.text == null || (data.text is string && data.text.size() <= 2000))
+        && (data.audio == null || (data.audio is string && data.audio.size() <= 2000000)) // 2MB base64 limit
+        && data.type in ['text', 'voice']
+        && (data.createdAt == null || data.createdAt is timestamp);
+    }
+
+    function isValidReaction(data) {
+      return data.senderId == request.auth.uid
+        && data.type is string && data.type.size() <= 10
+        && (data.createdAt == null || data.createdAt is timestamp);
+    }
+
+    function isValidMovie(data) {
+      return data.id is string
+        && data.title is string && data.title.size() <= 500
+        && data.image is string && data.image.size() <= 500000 // Increased size limit
+        && (data.get('embedUrl', null) == null || (data.embedUrl is string && data.embedUrl.size() <= 2000))
+        && (data.get('trailerUrl', null) == null || (data.trailerUrl is string && data.trailerUrl.size() <= 2000))
+        && (data.get('streamingUrl', null) == null || (data.streamingUrl is string && data.streamingUrl.size() <= 2000))
+        && (data.get('external_link', null) == null || (data.external_link is string && data.external_link.size() <= 2000))
+        && (data.get('externalMovieLink', null) == null || (data.externalMovieLink is string && data.externalMovieLink.size() <= 2000))
+        && (data.get('isYouTube', null) == null || data.isYouTube is bool)
+        && (data.get('quality', null) == null || data.quality is string)
+        && (data.get('date', null) == null || data.date is string || data.date is timestamp)
+        && (data.get('isNetflixOriginal', null) == null || data.isNetflixOriginal is bool)
+        && (data.get('tags', null) == null || data.tags is list)
+        && (data.get('category', null) == null || data.category is string)
+        && (data.get('type', null) == null || data.type in ['movie', 'tv'])
+        && (data.get('rating', null) == null || data.rating is string)
+        && (data.get('year', null) == null || data.year is string)
+        && (data.get('whatsappLink', null) == null || data.whatsappLink is string);
+    }
+
+    // --- Config Collection ---
+    match /config/{configId} {
+      allow read, write: if true;
+    }
+
+    // --- Movies Collection ---
+    match /movies/{movieId} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isAdmin() && !isStaff();
+    }
+
+    // --- System Check Collection ---
+    match /system_check/{docId} {
+      allow read, write: if true;
+    }
+
+    // --- Users Collection ---
+    match /users/{userId} {
+      allow read, write: if true;
+    }
+
+    // --- Sync Groups Collection ---
+    match /syncGroups/{groupId} {
+      function getGroupData() {
+        return get(/databases/$(database)/documents/syncGroups/$(groupId)).data;
+      }
+
+      function isMemberOf(data) {
+        return isSignedIn() && data != null && data.get('memberIds', []).hasAny([request.auth.uid]);
+      }
+
+      function isGlobalRoom() {
+        return groupId == 'global_room_official';
+      }
+
+      allow get: if true;
+      allow list: if (isSignedIn() && (isMemberOf(resource.data) || resource.id == 'global_room_official' || isAdmin()) || resource.id == 'global_room_official') && request.query.limit <= 25;
+      
+      allow create: if isSignedIn() && isValidSyncGroup(incoming()) && (
+        (incoming().get('creatorId', '') == request.auth.uid && groupId == request.auth.uid) || // Personal rooms
+        (incoming().get('creatorId', '') == request.auth.uid) || // Custom rooms
+        (isGlobalRoom() && incoming().get('creatorId', '') == 'system')
+      );
+
+      allow update: if isSignedIn() && (
+        // Action: Admin/Creator Full Update
+        ((existing().get('creatorId', '') == request.auth.uid || isAdmin()) && isValidSyncGroup(incoming()) && 
+         incoming().diff(existing()).affectedKeys().hasOnly(['id', 'name', 'currentMovieId', 'playback', 'memberIds', 'videoData', 'activeSubtitles', 'updatedAt', 'playlist', 'currentPlaylistIndex', 'autoLoop', 'isOnline'])) ||
+        
+        // Action: Join (Add oneself to an existing room)
+        (!isMemberOf(existing()) && 
+         incoming().get('memberIds', []).hasAll(existing().get('memberIds', [])) && 
+         request.auth.uid in incoming().get('memberIds', []) && 
+         incoming().get('memberIds', []).size() == existing().get('memberIds', []).size() + 1 &&
+         incoming().diff(existing()).affectedKeys().hasOnly(['memberIds'])) ||
+        
+        // Action: Sync Playback (Any member can sync)
+        (isMemberOf(existing()) && isValidSyncGroup(incoming()) &&
+         incoming().diff(existing()).affectedKeys().hasOnly(['playback'])) ||
+        
+        // Global Room sync (Admins or System actions)
+        (isGlobalRoom() && isSignedIn() && (isAdmin() ||
+         incoming().diff(existing()).affectedKeys().hasOnly(['playback', 'currentMovieId', 'memberIds', 'videoData', 'activeSubtitles', 'updatedAt', 'playlist', 'currentPlaylistIndex', 'autoLoop', 'isOnline'])))
+      );
+      
+      allow delete: if isSignedIn() && resource.data.get('creatorId', '') == request.auth.uid;
+
+      // --- Nested Messages ---
+      match /messages/{messageId} {
+        allow get: if isGlobalRoom() || (isSignedIn() && isMemberOf(getGroupData()));
+        allow list: if (isGlobalRoom() || (isSignedIn() && isMemberOf(getGroupData()))) && request.query.limit <= 100;
+        allow create: if isSignedIn() && (isGlobalRoom() || isMemberOf(getGroupData()))
+          && isValidMessage(incoming());
+      }
+
+      // --- Nested Reactions ---
+      match /reactions/{reactionId} {
+        allow get: if isGlobalRoom() || (isSignedIn() && isMemberOf(getGroupData()));
+        allow list: if (isGlobalRoom() || (isSignedIn() && isMemberOf(getGroupData()))) && request.query.limit <= 50;
+        allow create: if isSignedIn() && (isGlobalRoom() || isMemberOf(getGroupData()))
+          && isValidReaction(incoming());
+      }
+    }
+
+    // --- Invitations Collection ---
+    match /invitations/{inviteId} {
+      allow read, write: if true;
+    }
+
+    // --- Collection Group Rules ---
+    match /{path=**}/messages/{messageId} {
+      allow read: if isAdmin();
+    }
+  }
+}
