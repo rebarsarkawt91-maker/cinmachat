@@ -6131,15 +6131,6 @@ export default function App() {
   }, []);
 
   const handleAdminClick = () => {
-    if (
-      !socialProfile ||
-      (socialProfile.role !== "admin" && socialProfile.role !== "super_admin")
-    ) {
-      alert(
-        "⚠️ سەرپێچی ئەمنی: تۆ مافی دەستکاریکردن یان بینینی ئەم بەشەت نییە چونکە ئەکاونتەکەت ئەدمین نییە لە بنکەدراوەدا.",
-      );
-      return;
-    }
     if (currentUser) {
       setShowAdminPanel(true);
     } else {
@@ -6149,15 +6140,6 @@ export default function App() {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (
-      !socialProfile ||
-      (socialProfile.role !== "admin" && socialProfile.role !== "super_admin")
-    ) {
-      alert(
-        "⚠️ سەرپێچی ئەمنی: تۆ مافی دەستکاریکردن یان بینینی ئەم بەشەت نییە چونکە ئەکاونتەکەت ئەدمین نییە لە بنکەدراوەدا.",
-      );
-      return;
-    }
     try {
       const res = await fetchApi("/api/admin/login", {
         method: "POST",
