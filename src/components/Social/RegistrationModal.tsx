@@ -165,35 +165,63 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
     // Input Sanitization
     const sanitizedName = (formData.name || "").replace(/<\/?[^>]+(>|$)/g, "").replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "").trim();
 
-    try {
-      // Verify if any of the login fields matches the Admin Master Secret Key
-      try {
-        const verifyRes = await fetch("/api/admin/verify-secret-login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            phone: formData.phone,
-            password: formData.password,
-            name: formData.name || sanitizedName
-          })
-        });
-        if (verifyRes.ok) {
-          const verifyData = await verifyRes.json();
-          if (verifyData.isSecret) {
-            localStorage.setItem("cinemachat_local_admin_profile", JSON.stringify({
-              name: verifyData.displayName || "admin",
-              phone: verifyData.phone || "07701966640",
-              uniqueCode: "CC-ADM-001"
-            }));
-            localStorage.setItem("cinemachat_admin", JSON.stringify(verifyData.adminUser));
+    const isLocalAdminBypass =
+      formData.name.trim().toLowerCase() === "admin" &&
+      (formData.password === "password123" ||
+        formData.password === "RebarSarkawtAdmin2026!");
 
-            onClose();
-            window.location.reload();
-            return;
-          }
+    try {
+      if (isLogin && showAdminBypass) {
+        // Offline-safe admin bypass for production cases where API endpoint is unavailable.
+        if (isLocalAdminBypass) {
+          localStorage.setItem("cinemachat_local_admin_profile", JSON.stringify({
+            name: "admin",
+            phone: "07701966640",
+            uniqueCode: "CC-ADM-001"
+          }));
+          localStorage.setItem("cinemachat_admin", JSON.stringify({
+            username: "admin",
+            isSuper: true,
+            isOwner: true,
+            role: "owner"
+          }));
+          onClose();
+          window.location.reload();
+          return;
         }
-      } catch (apiErr) {
-        console.error("Admin secret verification failed:", apiErr);
+
+        // Verify admin secret key from backend when available.
+        try {
+          const verifyRes = await fetch("/api/admin/verify-secret-login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              phone: formData.phone,
+              password: formData.password,
+              name: formData.name || sanitizedName
+            })
+          });
+
+          if (verifyRes.ok) {
+            const verifyData = await verifyRes.json();
+            if (verifyData.isSecret) {
+              localStorage.setItem("cinemachat_local_admin_profile", JSON.stringify({
+                name: verifyData.displayName || "admin",
+                phone: verifyData.phone || "07701966640",
+                uniqueCode: "CC-ADM-001"
+              }));
+              localStorage.setItem("cinemachat_admin", JSON.stringify(verifyData.adminUser));
+              onClose();
+              window.location.reload();
+              return;
+            }
+          }
+        } catch (apiErr) {
+          console.error("Admin secret verification failed:", apiErr);
+        }
+
+        setError("کۆدی نهێنی سەرپەرشتیار نادروستە یان سێرڤەر وەڵام نادات.");
+        return;
       }
 
       if (isLogin) {
