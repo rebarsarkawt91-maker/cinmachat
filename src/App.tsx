@@ -177,14 +177,34 @@ async function fetchApi(
   options?: RequestInit,
   retries = 3,
 ): Promise<Response> {
+  const method = (options?.method || "GET").toUpperCase();
+  const customHeaders = new Headers(options?.headers || {});
+  const isLocalHost =
+    typeof window !== "undefined" &&
+    (window.location.hostname === "localhost" ||
+      window.location.hostname === "127.0.0.1" ||
+      window.location.hostname === "::1");
+
+  const targetPath =
+    !isLocalHost && path.startsWith("/api")
+      ? `https://cinemachat-server.onrender.com${path}`
+      : path;
+
+  // Avoid forcing preflight on GET/HEAD by not sending JSON content-type by default.
+  const shouldAddJsonContentType =
+    method !== "GET" && method !== "HEAD" && !customHeaders.has("Content-Type");
+
+  if (!customHeaders.has("Accept")) {
+    customHeaders.set("Accept", "application/json");
+  }
+  if (shouldAddJsonContentType) {
+    customHeaders.set("Content-Type", "application/json");
+  }
+
   try {
-    const res = await fetch(path, {
+    const res = await fetch(targetPath, {
       ...options,
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        ...(options?.headers || {}),
-      },
+      headers: customHeaders,
     });
 
     if (!res.ok) {
@@ -580,6 +600,20 @@ const safeStorage = {
       console.warn(`[SafeStorage] Blocked removing key: ${key}`);
     }
   },
+};
+
+const HERO_VIDEO_LOCAL_KEY = "cinemachat_hero_video_url";
+
+const getCachedHeroVideoUrl = () => {
+  const cached = safeStorage.get(HERO_VIDEO_LOCAL_KEY);
+  if (!cached) return "";
+  return cached.trim();
+};
+
+const setCachedHeroVideoUrl = (url: string) => {
+  const clean = (url || "").trim();
+  if (!clean) return;
+  safeStorage.set(HERO_VIDEO_LOCAL_KEY, clean);
 };
 
 const popOutPlayer = (url: string | undefined) => {
@@ -1888,18 +1922,25 @@ const HeroModule = ({ onSync }: any) => {
       .then((res) => res.json())
       .then((data) => {
         if (data && data.heroVideoUrl) {
-          setHeroVideoUrl(data.heroVideoUrl);
+          const clean = String(data.heroVideoUrl).trim();
+          setHeroVideoUrl(clean);
+          setCachedHeroVideoUrl(clean);
         } else if (
           data &&
           Array.isArray(data.heroPlaylist) &&
           data.heroPlaylist[0]
         ) {
-          setHeroVideoUrl(data.heroPlaylist[0]);
+          const clean = String(data.heroPlaylist[0]).trim();
+          setHeroVideoUrl(clean);
+          setCachedHeroVideoUrl(clean);
+        } else {
+          setHeroVideoUrl(getCachedHeroVideoUrl());
         }
       })
-      .catch((err) =>
-        console.error("Failed to load initial hero config:", err),
-      );
+      .catch((err) => {
+        console.error("Failed to load initial hero config:", err);
+        setHeroVideoUrl(getCachedHeroVideoUrl());
+      });
   }, []);
   return (
     <motion.div
@@ -6123,8 +6164,18 @@ export default function App() {
           instagramUrl: data.instagramUrl || prev.instagramUrl,
           facebookUrl: data.facebookUrl || prev.facebookUrl,
         }));
+        if (data?.heroVideoUrl) {
+          setCachedHeroVideoUrl(String(data.heroVideoUrl));
+        }
       } catch (e) {
         console.error("Config fetch failed:", e);
+        const cachedHero = getCachedHeroVideoUrl();
+        if (cachedHero) {
+          setConfig((prev) => ({
+            ...prev,
+            heroVideoUrl: cachedHero,
+          }));
+        }
       }
     };
     fetchConfig();
@@ -8545,59 +8596,98 @@ export default function App() {
                       {adminTab === "hero" && (
                         <HeroModule
                           onSync={async (url: string) => {
+                            const cleanUrl = (url || "").trim();
+                            if (!cleanUrl) {
+                              alert("تکایە لینکى ڤیدیۆ بنووسە پێش جێگیرکردن.");
+                              return;
+                            }
+
+                            const applyHeroLocally = (finalUrl: string) => {
+                              const firstUrl =
+                                finalUrl ||
+                                "https://www.youtube.com/watch?v=YPY7J-flzE8";
+                              const isYoutube =
+                                firstUrl.includes("youtube.com") ||
+                                firstUrl.includes("youtu.be");
+                              const vidId = isYoutube
+                                ? extractYouTubeId(firstUrl) || firstUrl
+                                : firstUrl;
+                              const heroVideoEmbedUrl = isYoutube
+                                ? `https://www.youtube.com/embed/${vidId}`
+                                : firstUrl;
+
+                              setCachedHeroVideoUrl(firstUrl);
+
+                              // Instant frontend update without refresh
+                              setFeaturedMovieFromDB({
+                                id: "hero-promo",
+                                title: "فیلمی سەرەکی",
+                                embedUrl: heroVideoEmbedUrl,
+                                isYouTube: isYoutube,
+                                videoId: vidId,
+                                image: "",
+                                tags: ["هەمووی"],
+                                quality: "4K",
+                                description: "نوێترین فیلمی سەرەکی",
+                                heroPlaylist: [firstUrl],
+                              } as any);
+
+                              setConfig((prev) => ({
+                                ...prev,
+                                heroVideoUrl: firstUrl,
+                              }));
+                              setCurrentVideoIndex(0);
+                            };
+
+                            applyHeroLocally(cleanUrl);
+
+                            const payload = {
+                              heroVideoUrl: cleanUrl,
+                              heroPlaylist: [cleanUrl],
+                            };
+
                             try {
-                              const res = await fetchApi("/api/movies/hero", {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({
-                                  heroVideoUrl: url,
-                                  heroPlaylist: [url],
-                                }),
-                              });
+                              const heroSaveAttempts = [
+                                {
+                                  path: "/api/movies/hero",
+                                  body: payload,
+                                },
+                                {
+                                  path: "/api/admin/hero",
+                                  body: payload,
+                                },
+                                {
+                                  path: "/api/admin/config",
+                                  body: { heroVideoUrl: cleanUrl },
+                                },
+                              ];
 
-                              if (res.ok) {
-                                const firstUrl =
-                                  url ||
-                                  "https://www.youtube.com/watch?v=YPY7J-flzE8";
-                                const isYoutube =
-                                  firstUrl.includes("youtube.com") ||
-                                  firstUrl.includes("youtu.be");
-                                const vidId = isYoutube
-                                  ? extractYouTubeId(firstUrl) || firstUrl
-                                  : firstUrl;
-                                const heroVideoEmbedUrl = isYoutube
-                                  ? `https://www.youtube.com/embed/${vidId}`
-                                  : firstUrl;
+                              let saved = false;
+                              for (const attempt of heroSaveAttempts) {
+                                const res = await fetchApi(attempt.path, {
+                                  method: "POST",
+                                  headers: {
+                                    "Content-Type": "application/json",
+                                  },
+                                  body: JSON.stringify(attempt.body),
+                                });
+                                if (res.ok) {
+                                  saved = true;
+                                  break;
+                                }
+                              }
 
-                                // Instant frontend update without refresh
-                                setFeaturedMovieFromDB({
-                                  id: "hero-promo",
-                                  title: "فیلمی سەرەکی",
-                                  embedUrl: heroVideoEmbedUrl,
-                                  isYouTube: isYoutube,
-                                  videoId: vidId,
-                                  image: "",
-                                  tags: ["هەمووی"],
-                                  quality: "4K",
-                                  description: "نوێترین فیلمی سەرەکی",
-                                  heroPlaylist: [url],
-                                } as any);
-
-                                setConfig((prev) => ({
-                                  ...prev,
-                                  heroVideoUrl: url,
-                                }));
-                                setCurrentVideoIndex(0); // Restart playlist sequence
+                              if (saved) {
                                 alert("فیلمی سەرەکی بە سەرکەوتوویی جێگیرکرا!");
                               } else {
                                 alert(
-                                  "هەڵەیەک ڕوویدا لە کاتی پەیوندی لەگەڵ سێرڤەر!",
+                                  "فیلمی سەرەکی جێگیرکرا، بەڵام پەیوەندی بە سێرڤەر نەکرا. تکایە دواتر دووبارە هەوڵ بدە.",
                                 );
                               }
                             } catch (err) {
                               console.error("Hero sync error:", err);
                               alert(
-                                "هەڵەیەک ڕوویدا لە کاتی جێگیرکردنی فیلمەکە!",
+                                "فیلمی سەرەکی جێگیرکرا، بەڵام پەیوەندی بە سێرڤەر نەکرا. تکایە دواتر دووبارە هەوڵ بدە.",
                               );
                             }
                           }}

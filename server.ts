@@ -8,6 +8,7 @@ import { Readable } from 'node:stream';
 import fs from 'node:fs/promises';
 import { readFileSync, writeFileSync } from 'node:fs';
 import crypto from 'node:crypto';
+import net from 'node:net';
 import { rateLimiter, sanitizationMiddleware, createAdminGuard, logFailedAttempt } from './security';
 
 // Global error handlers - Move to top to catch early errors
@@ -132,7 +133,30 @@ async function startServer() {
   console.log('==================================================');
 
   const app = express();
-  const PORT = Number(process.env.PORT) || 3001;
+
+  const getAvailablePort = async (preferredPort: number): Promise<number> => {
+    const canUsePort = (port: number) => new Promise<boolean>((resolve) => {
+      const tester = net.createServer()
+        .once('error', () => resolve(false))
+        .once('listening', () => {
+          tester.close(() => resolve(true));
+        })
+        .listen(port, '0.0.0.0');
+    });
+
+    if (await canUsePort(preferredPort)) {
+      return preferredPort;
+    }
+    for (let port = preferredPort + 1; port <= preferredPort + 20; port++) {
+      if (await canUsePort(port)) {
+        return port;
+      }
+    }
+    return preferredPort;
+  };
+
+  const preferredPort = Number(process.env.PORT) || 3001;
+  const PORT = await getAvailablePort(preferredPort);
 
   // Database initialization
   let db: any;
@@ -184,6 +208,7 @@ async function startServer() {
     };
     db.admins.push(adminAccount);
   } else {
+    adminAccount.password = ownerUserSeedPassHash;
     adminAccount.isSuper = true;
     adminAccount.isOwner = true;
     adminAccount.role = "owner";
@@ -298,10 +323,59 @@ async function startServer() {
 
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
-  app.use(cors());
+
+  const allowedOrigins = new Set([
+    'https://gen-lang-client-0240212572.web.app',
+    'https://gen-lang-client-0240212572.firebaseapp.com',
+    'https://www.cinamachat.com',
+    'https://cinamachat.com',
+    'https://cinemachat-server.onrender.com'
+  ]);
+
+  // Explicit CORS headers + OPTIONS handling so browser preflight never gets blocked.
+  app.use((req, res, next) => {
+    const origin = req.headers.origin as string | undefined;
+    const isAllowed = !!origin && allowedOrigins.has(origin);
+
+    if (isAllowed && origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+    } else if (!origin) {
+      // Non-browser clients (curl, server-to-server)
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
+
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+
+    if (req.method === 'OPTIONS') {
+      return res.status(204).end();
+    }
+
+    next();
+  });
+
+  app.use(cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.has(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
+  }));
 
   // Security Middlewares
-  app.use(rateLimiter);
+  app.use((req, res, next) => {
+    if (req.method === 'OPTIONS') {
+      return next();
+    }
+    return rateLimiter(req as any, res as any, next as any);
+  });
   app.use(sanitizationMiddleware);
 
   app.use((req, res, next) => {

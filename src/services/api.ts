@@ -3,9 +3,21 @@
  */
 
 export const api = {
+  resolveApiUrl(url: string): string {
+    if (!url.startsWith('/api')) return url;
+    if (typeof window === 'undefined') return url;
+
+    const host = window.location.hostname;
+    const isLocal = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+    if (isLocal) return url;
+
+    return `https://cinemachat-server.onrender.com${url}`;
+  },
+
   async baseFetch(url: string, options: any = {}, retries = 5): Promise<any> {
+    const targetUrl = api.resolveApiUrl(url);
     try {
-      const response = await fetch(url, {
+      const response = await fetch(targetUrl, {
         ...options,
         headers: {
           'Accept': 'application/json',
