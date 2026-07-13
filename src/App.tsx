@@ -6217,17 +6217,21 @@ export default function App() {
 
   // Strict role verification to prevent pre-computation or DOM tampering
   useEffect(() => {
-    if (
-      showAdminPanel &&
-      (!socialProfile ||
-        (socialProfile.role !== "admin" &&
-          socialProfile.role !== "super_admin"))
-    ) {
+    if (!showAdminPanel) return;
+
+    // Allow explicit admin session from login flow even if social profile is absent/non-admin.
+    const hasAdminSession =
+      !!currentUser &&
+      (currentUser.username?.toLowerCase() === "admin" ||
+        !!currentUser.isSuper ||
+        !!(currentUser as any).isOwner);
+
+    if (!hasAdminSession) {
       setShowAdminPanel(false);
       setCurrentUser(null);
       safeStorage.remove("cinemachat_admin");
     }
-  }, [showAdminPanel, socialProfile]);
+  }, [showAdminPanel, currentUser]);
 
   const updateTracker = async (text: string) => {
     try {

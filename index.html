@@ -10,17 +10,35 @@
   <body>
     <div id="root"></div>
     <script>
-      // If this source index is served on production domain, redirect to the live Firebase site.
+      // If this source index is served on the custom domain, render the live app in an iframe
+      // so the browser keeps showing www.cinamachat.com.
       (function () {
         var host = window.location.hostname;
         var isLocal = host === 'localhost' || host === '127.0.0.1' || host === '::1';
         var isCinemaDomain = host === 'www.cinamachat.com' || host === 'cinamachat.com';
         if (!isLocal && isCinemaDomain) {
-          window.location.replace('https://gen-lang-client-0240212572.web.app' + window.location.pathname + window.location.search + window.location.hash);
+          var root = document.getElementById('root');
+          if (root) {
+            root.innerHTML = '';
+            var iframe = document.createElement('iframe');
+            iframe.src = 'https://gen-lang-client-0240212572.web.app' + window.location.pathname + window.location.search + window.location.hash;
+            iframe.title = 'CinamaChat';
+            iframe.style.width = '100%';
+            iframe.style.height = '100vh';
+            iframe.style.border = '0';
+            iframe.style.display = 'block';
+            document.body.style.margin = '0';
+            root.appendChild(iframe);
+          }
+          return;
         }
+
+        var appScript = document.createElement('script');
+        appScript.type = 'module';
+        appScript.src = '/src/main.tsx';
+        document.body.appendChild(appScript);
       })();
     </script>
-    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
 
