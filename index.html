@@ -17,6 +17,7 @@
         var isLocal = host === 'localhost' || host === '127.0.0.1' || host === '::1';
         var isCinemaDomain = host === 'www.cinamachat.com' || host === 'cinamachat.com';
         if (!isLocal && isCinemaDomain) {
+          window.__CINEMACHAT_EMBED_MODE__ = true;
           var root = document.getElementById('root');
           if (root) {
             root.innerHTML = '';
@@ -30,15 +31,10 @@
             document.body.style.margin = '0';
             root.appendChild(iframe);
           }
-          return;
         }
-
-        var appScript = document.createElement('script');
-        appScript.type = 'module';
-        appScript.src = '/src/main.tsx';
-        document.body.appendChild(appScript);
       })();
     </script>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
 
