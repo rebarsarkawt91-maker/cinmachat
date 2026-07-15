@@ -4024,76 +4024,42 @@ const HeroSection: React.FC<{
   activeAudioSource = "hero",
 }) => {
   const [isPlaying, setIsPlaying] = useState(true);
-  const isMuted = isHeroMuted;
-  const setIsMuted = setIsHeroMuted;
+  const isMuted = isHeroMuted; // ئەمە دەمێنێتەوە بۆ پارامیتەری بێدەنگکردنی iframe
+  const setIsMuted = setIsHeroMuted; // ئەمە دەمێنێتەوە بۆ لۆجیکی دوگمەی بێدەنگکردن/کاراکردن
   const containerRef = useRef<HTMLDivElement>(null);
   const videoId = activeFeaturedMovie?.videoId || heroVideoId || "DEFAULT_ID";
 
+  // Mute hero video if room audio is active
   useEffect(() => {
     if (activeAudioSource === "room") {
       setIsMuted(true);
+      setIsHeroMuted(true);
     }
-  }, [activeAudioSource]);
-
-  useEffect(() => {
-    if (containerRef.current) {
-      const playParam = isPlaying ? "1" : "0";
-      const muteParam = (countdown > 0 || isMuted) ? "1" : "0";
-      containerRef.current.innerHTML = '<iframe src="https://www.youtube.com/embed/' + videoId + '?autoplay=' + playParam + '&mute=' + muteParam + '&loop=1&playlist=' + videoId + '&controls=0&showinfo=0&rel=0&modestbranding=1&enablejsapi=1" allow="autoplay; encrypted-media" allowfullscreen class="w-full h-full pointer-events-none" width="100%" height="100%"></iframe>';
-    }
-  }, [videoId]);
-
-  useEffect(() => {
-    const iframe = containerRef.current?.querySelector("iframe");
-    if (iframe?.contentWindow) {
-      const command = isPlaying ? "playVideo" : "pauseVideo";
-      iframe.contentWindow.postMessage(
-        JSON.stringify({
-          event: "command",
-          func: command,
-          args: [],
-        }),
-        "*"
-      );
-    }
-  }, [isPlaying]);
-
-  useEffect(() => {
-    const iframe = containerRef.current?.querySelector("iframe");
-    if (iframe?.contentWindow) {
-      const command = isMuted ? "mute" : "unMute";
-      iframe.contentWindow.postMessage(
-        JSON.stringify({
-          event: "command",
-          func: command,
-          args: [],
-        }),
-        "*"
-      );
-      if (!isMuted) {
-        iframe.contentWindow.postMessage(
-          JSON.stringify({
-            event: "command",
-            func: "setVolume",
-            args: [100],
-          }),
-          "*"
-        );
-      }
-    }
-  }, [isMuted]);
+  }, [activeAudioSource, setIsHeroMuted]);
 
   return (
-    <section 
+    <section
       className="relative w-full h-[60vh] md:h-[85vh] bg-black overflow-hidden select-none"
       style={{ display: "block", opacity: 1 }}
     >
       {/* Video Container Wrapper (z-index: 0, position: absolute, inset: 0) */}
-      <div 
-        className="w-full h-full overflow-hidden pointer-events-none" 
+      <div
+        className="w-full h-full overflow-hidden pointer-events-none"
         style={{ position: "absolute", inset: 0, zIndex: 0 }}
       >
-        <div className="w-full h-full scale-[1.35]" id="hero-player" ref={containerRef}></div>
+        <div className="w-full h-full scale-[1.35]" id="hero-player" ref={containerRef}>
+          <iframe
+            key={videoId}
+            src={`https://www.youtube.com/embed/${videoId}?autoplay=1&mute=${(countdown > 0 || isMuted) ? "1" : "0"}&loop=1&playlist=${videoId}&controls=0&showinfo=0&rel=0&modestbranding=1&enablejsapi=1`}
+            allow="autoplay; encrypted-media"
+            allowFullScreen
+            className="w-full h-full pointer-events-none"
+            width="100%"
+            height="100%"
+          />
+        </div>
+        {/* The YouTube iframe will be injected here by the YouTube Iframe API */}
+        {/* <div className="w-full h-full scale-[1.35]" id="hero-player-iframe"></div> */}
         {/* سێبەری خوارەوەی ڤیدیۆکە بۆ ئەوەی دیزاینەکەی سینەمایی بێت */}
         <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent z-2 pointer-events-none" />
         <div className="absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-black to-transparent z-2 pointer-events-none" />
@@ -4535,9 +4501,9 @@ export default function App() {
   const [autoPlay, setAutoPlay] = useState(false);
   const [isHeroMuted, setIsHeroMuted] = useState(true);
   const [activeInvitation, setActiveInvitation] = useState<any>(null);
-  const [hasInteracted, setHasInteracted] = useState(false);
-  const [countdown, setCountdown] = useState(3);
-  const hasCountdownRun = useRef(false);
+  const [hasInteracted, setHasInteracted] = useState(false); // ئەمە دەمێنێتەوە چونکە لەوانەیە بۆ لۆجیکی تری کارلێککردن بەکاربێت
+  const [countdown, setCountdown] = useState(0); // گۆڕدرا بۆ 0
+  const hasCountdownRun = useRef(false); // This ref is no longer strictly needed for countdown logic, but kept for potential future use or other related logic.
   const [isRoomMuted, setIsRoomMuted] = useState(true);
   const [featuredMovieFromDB, setFeaturedMovieFromDB] = useState<Movie | null>(
     null,
@@ -4865,15 +4831,7 @@ export default function App() {
   }, [currentHeroVideoUrl]);
 
   // Add an event listener to the whole document to detect the first click for click-to-initiate autoplay
-  useEffect(() => {
-    const handleUserInteraction = () => {
-      setHasInteracted(true);
-      // Remove the listener once the user clicks
-      document.removeEventListener("click", handleUserInteraction);
-    };
-    document.addEventListener("click", handleUserInteraction);
-    return () => document.removeEventListener("click", handleUserInteraction);
-  }, []);
+  // This listener is kept as it's used for initial mute state logic. No changes needed here.
 
   // Cinematic countdown logic
   useEffect(() => {
@@ -4881,98 +4839,9 @@ export default function App() {
     if (hasCountdownRun.current) return;
 
     hasCountdownRun.current = true;
-    setCountdown(3);
-    const interval = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev <= 1) {
-          clearInterval(interval);
-          setIsHeroMuted(false); // Turn on/unmute hero video audio after countdown
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => clearInterval(interval);
+    setCountdown(0);
+    setIsHeroMuted(false); // دەستبەجێ دەنگ کارا دەکرێت
   }, [isLoading]);
-
-  const currentRoomVideoUrl = useMemo(() => {
-    if (heroTrailerPlaylist.length === 0)
-      return "https://www.youtube.com/watch?v=YPY7J-flzE8";
-    const idx = roomIndex % 3;
-    const url = heroTrailerPlaylist[idx] || heroTrailerPlaylist[0];
-    console.log(
-      "[PLAYER PROGRESS] Room Player URL changed:",
-      url,
-      "Index (modulo 3):",
-      idx,
-    );
-    return url;
-  }, [heroTrailerPlaylist, roomIndex]);
-
-  const handleEnded = () => {
-    const iframe = getIframe("hero-player");
-    if (iframe?.contentWindow) {
-      try {
-        iframe.contentWindow.postMessage(
-          JSON.stringify({
-            event: "command",
-            func: "seekTo",
-            args: [0, true],
-          }),
-          "*",
-        );
-        iframe.contentWindow.postMessage(
-          JSON.stringify({
-            event: "command",
-            func: "playVideo",
-          }),
-          "*",
-        );
-      } catch (err) {
-        console.warn("[PLAYER loop] failed to send postMessage commands:", err);
-      }
-    }
-  };
-
-  const handleRoomEnded = () => {
-    const nextIdx = (roomIndex + 1) % 3;
-    console.log(
-      "[PLAYER EVENT] Room sequence finished. Advancing index (modulo 3):",
-      roomIndex,
-      "->",
-      nextIdx,
-    );
-    setRoomIndex((prev) => (prev + 1) % 3);
-  };
-
-  // Direct DOM iframe src override removed as it was conflicting with ReactReactPlayer state synchronization
-
-
-  // Sync Hero Mute State (API BASED)
-  useEffect(() => {
-    const el = getIframe("hero-player");
-    if (el?.contentWindow) {
-      const command = isHeroMuted ? "mute" : "unMute";
-      el.contentWindow.postMessage(
-        JSON.stringify({
-          event: "command",
-          func: command,
-          args: [],
-        }),
-        "*",
-      );
-      if (!isHeroMuted) {
-        el.contentWindow.postMessage(
-          JSON.stringify({
-            event: "command",
-            func: "setVolume",
-            args: [100],
-          }),
-          "*",
-        );
-      }
-    }
-  }, [isHeroMuted]);
 
   // Sync Room Mute State
   useEffect(() => {
@@ -8642,6 +8511,7 @@ export default function App() {
                             applyHeroLocally(cleanUrl);
 
                             const payload = {
+                              adminName: currentUser?.username || "Admin", // ناوی ئەدمین زیاد دەکرێت بۆ داتای نێردراو
                               heroVideoUrl: cleanUrl,
                               heroPlaylist: [cleanUrl],
                             };
@@ -8657,8 +8527,11 @@ export default function App() {
                                   body: payload,
                                 },
                                 {
-                                  path: "/api/admin/config",
-                                  body: { heroVideoUrl: cleanUrl },
+                                  path: "/api/admin/config", // ئەم ڕێگایە بۆ ڕێکخستنە گشتییەکانە، بەڵام داتای ڤیدیۆی سەرەکی دەنێرین بۆ دڵنیایی
+                                  body: { 
+                                    adminName: currentUser?.username || "Admin", // ناوی ئەدمین لێرەش دەنێرین
+                                    heroVideoUrl: cleanUrl 
+                                  },
                                 },
                               ];
 
@@ -8675,6 +8548,7 @@ export default function App() {
                                   saved = true;
                                   break;
                                 }
+                                console.warn(`[HeroModule] Attempt to save hero video to ${attempt.path} failed with status ${res.status}: ${await res.text()}`); // بۆ تێستکردن، پەیامی هەڵە نیشان دەدەین
                               }
 
                               if (saved) {

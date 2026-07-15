@@ -114,6 +114,11 @@ export const rateLimiter = (req: any, res: any, next: any) => {
   const cleanIp = String(ip).trim();
   const now = Date.now();
 
+  // Avoid blocking local development traffic (browser refresh + HMR can spike requests).
+  if (cleanIp === "::1" || cleanIp === "127.0.0.1" || cleanIp.endsWith("127.0.0.1")) {
+    return next();
+  }
+
   // General Rate Limiting
   if (!ipRequestStore[cleanIp]) {
     ipRequestStore[cleanIp] = { count: 1, firstRequestTime: now };

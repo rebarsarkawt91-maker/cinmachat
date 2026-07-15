@@ -6,6 +6,18 @@
       "**/.*",
       "**/node_modules/**"
     ],
+    "redirects": [
+      {
+        "source": "/api",
+        "destination": "https://cinemachat-server.onrender.com/api",
+        "type": 307
+      },
+      {
+        "source": "/api/:path*",
+        "destination": "https://cinemachat-server.onrender.com/api/:path*",
+        "type": 307
+      }
+    ],
     "rewrites": [
       {
         "source": "**",

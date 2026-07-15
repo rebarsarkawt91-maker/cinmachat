@@ -1,0 +1,145 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "build-and-deploy-hosting",
+			"type": "shell",
+			"command": "\"C:\\Program Files\\nodejs\\npm.cmd\"",
+			"args": [
+				"run",
+				"build",
+				"&&",
+				"\"C:\\Program Files\\nodejs\\npm.cmd\"",
+				"exec",
+				"--yes",
+				"--package",
+				"firebase-tools",
+				"--",
+				"firebase",
+				"deploy",
+				"--only",
+				"hosting",
+				"--project",
+				"gen-lang-client-0240212572",
+				"--non-interactive"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "build-and-deploy-hosting-cmd",
+			"type": "shell",
+			"command": "cmd",
+			"args": [
+				"/d",
+				"/c",
+				"\"\"C:\\Program Files\\nodejs\\npm.cmd\" run build && \"C:\\Program Files\\nodejs\\npm.cmd\" exec --yes --package firebase-tools -- firebase deploy --only hosting --project gen-lang-client-0240212572 --non-interactive\""
+			],
+			"isBackground": false
+		},
+		{
+			"label": "deploy-hosting-only-cmd",
+			"type": "shell",
+			"command": "cmd",
+			"args": [
+				"/d",
+				"/c",
+				"\"\"C:\\Program Files\\nodejs\\npm.cmd\" exec --yes --package firebase-tools -- firebase deploy --only hosting --project gen-lang-client-0240212572 --non-interactive\""
+			],
+			"isBackground": false
+		},
+		{
+			"label": "build-cmd",
+			"type": "shell",
+			"command": "cmd",
+			"args": [
+				"/d",
+				"/c",
+				"\"\"C:\\Program Files\\nodejs\\npm.cmd\" run build\""
+			],
+			"isBackground": false
+		},
+		{
+			"label": "deploy-cmd",
+			"type": "shell",
+			"command": "cmd",
+			"args": [
+				"/d",
+				"/c",
+				"\"\"C:\\Program Files\\nodejs\\npm.cmd\" exec --yes --package firebase-tools -- firebase deploy --only hosting --project gen-lang-client-0240212572 --non-interactive\""
+			],
+			"isBackground": false
+		},
+		{
+			"label": "build-cmd-2",
+			"type": "shell",
+			"command": "cmd",
+			"args": [
+				"/d",
+				"/c",
+				"\"\"C:\\Program Files\\nodejs\\npm.cmd\" run build\""
+			],
+			"isBackground": false
+		},
+		{
+			"label": "deploy-cmd-2",
+			"type": "shell",
+			"command": "cmd",
+			"args": [
+				"/d",
+				"/c",
+				"\"\"C:\\Program Files\\nodejs\\npm.cmd\" exec --yes --package firebase-tools -- firebase deploy --only hosting --project gen-lang-client-0240212572 --non-interactive\""
+			],
+			"isBackground": false
+		},
+		{
+			"label": "git-status-short",
+			"type": "shell",
+			"command": "cmd",
+			"args": [
+				"/d",
+				"/c",
+				"\"git status --short\""
+			],
+			"isBackground": false
+		},
+		{
+			"label": "git-commit-api-cors-fix",
+			"type": "shell",
+			"command": "cmd",
+			"args": [
+				"/d",
+				"/c",
+				"\"git add src/App.tsx src/services/api.ts server.ts && git commit -m \\\"Fix admin API connectivity via direct backend calls and robust CORS\\\"\""
+			],
+			"isBackground": false
+		},
+		{
+			"label": "git-commit-api-cors-fix-2",
+			"type": "shell",
+			"command": "cmd",
+			"args": [
+				"/d",
+				"/c",
+				"\"git add src/App.tsx src/services/api.ts server.ts && git commit -m fix-admin-api-cors-connectivity\""
+			],
+			"isBackground": false
+		},
+		{
+			"label": "git-push-main",
+			"type": "shell",
+			"command": "cmd",
+			"args": [
+				"/d",
+				"/c",
+				"\"git pull --rebase --autostash origin main && git push origin main\""
+			],
+			"isBackground": false
+		},
+		{
+			"label": "build-and-deploy-hosting-fix-hero",
+			"type": "shell",
+			"command": "cmd /d /c \"\"C:\\Program Files\\nodejs\\npm.cmd\" run build && \"C:\\Program Files\\nodejs\\npm.cmd\" exec --yes --package firebase-tools -- firebase deploy --only hosting --project gen-lang-client-0240212572 --non-interactive\"",
+			"isBackground": false
+		}
+	]
+}

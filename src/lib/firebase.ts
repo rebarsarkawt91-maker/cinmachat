@@ -39,19 +39,19 @@ import {
 } from "firebase/storage";
 
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyBW10i0jYNsrVPOGkCruWbtIkPshJ-RYlk",
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "studio-9115705870-8d920.firebaseapp.com",
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "studio-9115705870-8d920",
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "studio-9115705870-8d920.firebasestorage.app",
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "1059402213124",
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:1059402213124:web:323ab9cab26ddeb2ad5251",
-  databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL || undefined
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyDQBu-FwP9w7O6KqaWQOsqyTP6NudH9eBI",
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "gen-lang-client-0240212572.firebaseapp.com",
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "gen-lang-client-0240212572",
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "gen-lang-client-0240212572.firebasestorage.app",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "996348355298",
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:996348355298:web:fb59d6d18224c89f9634bb",
+  databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL || "https://gen-lang-client-0240212572-default-rtdb.asia-southeast1.firebasedatabase.app"
 };
 
 const app = initializeApp(firebaseConfig);
 
-const dbId = import.meta.env.VITE_FIREBASE_DATABASE_ID || "ai-studio-55969a39-e1e4-4db8-b903-7cd1590abfb9";
-export const db = getFirestore(app, dbId);
+const dbId = import.meta.env.VITE_FIREBASE_DATABASE_ID;
+export const db = dbId ? getFirestore(app, dbId) : getFirestore(app);
 export const auth = getAuth(app);
 export const storage = getStorage(app);
 

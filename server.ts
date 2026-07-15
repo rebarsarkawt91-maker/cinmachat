@@ -8,6 +8,7 @@ import { Readable } from 'node:stream';
 import fs from 'node:fs/promises';
 import { readFileSync, writeFileSync } from 'node:fs';
 import crypto from 'node:crypto';
+import bcrypt from 'bcryptjs';
 import net from 'node:net';
 import { rateLimiter, sanitizationMiddleware, createAdminGuard, logFailedAttempt } from './security';
 
@@ -182,9 +183,9 @@ async function startServer() {
   if (!db.securityAuditLogs) db.securityAuditLogs = [];
   if (!db.systemErrorLogs) db.systemErrorLogs = [];
   if (!db.intrusionAttempts) db.intrusionAttempts = [];
-  if (!db.vipTickets) db.vipTickets = [];
+  if (!db.vipTickets) db.vipTickets = []; // Keep this line, it's correct
   if (!db.vipVideos) db.vipVideos = [];
-  if (!Array.isArray(db.rooms)) db.rooms = [];
+  // if (!Array.isArray(db.rooms)) db.rooms = []; // Removed
   if (!db.vipSettings) db.vipSettings = {
     qrCodeUrl: "https://i.ibb.co/3kWy3m9/fastpay-qr-mock.png",
     paymentDetails: "ژمارەی باڵانسی فاستپەی / زین کاش: 07501234567\nبانکی واڵێت: FIb - 12345678",
@@ -193,7 +194,8 @@ async function startServer() {
 
   // Support Module 17 - Super Admin (Owner) Seed
   const ownerUserSeedName = "admin";
-  const ownerUserSeedPassHash = crypto.createHash('sha256').update('password123').digest('hex');
+  // const ownerUserSeedPassHash = crypto.createHash('sha256').update('password123').digest('hex'); // Removed
+  const ownerUserSeedPassHash = bcrypt.hashSync('password123', 10); // Added
   if (!db.admins) db.admins = [];
   
   // Retain only 'admin' and ensure all system permissions are assigned to it
@@ -201,14 +203,20 @@ async function startServer() {
   if (!adminAccount) {
     adminAccount = {
       username: "admin",
-      password: ownerUserSeedPassHash,
+      // password: ownerUserSeedPassHash, // Removed
+      password: bcrypt.hashSync('password123', 10), // Added
       isSuper: true,
       isOwner: true,
       role: "owner"
     };
     db.admins.push(adminAccount);
   } else {
-    adminAccount.password = ownerUserSeedPassHash;
+    // Check if existing password is not bcrypt, then update
+    if (adminAccount.password && !adminAccount.password.startsWith('$2a$') && !adminAccount.password.startsWith('$2b$') && !adminAccount.password.startsWith('$2y$')) { // Added
+      adminAccount.password = bcrypt.hashSync('password123', 10); // Added
+    } else if (!adminAccount.password) { // Handle case where password might be empty
+      adminAccount.password = bcrypt.hashSync('password123', 10); // Added
+    }
     adminAccount.isSuper = true;
     adminAccount.isOwner = true;
     adminAccount.role = "owner";
@@ -324,51 +332,49 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-  const allowedOrigins = new Set([
-    'https://gen-lang-client-0240212572.web.app',
-    'https://gen-lang-client-0240212572.firebaseapp.com',
-    'https://www.cinamachat.com',
-    'https://cinamachat.com',
-    'https://cinemachat-server.onrender.com'
-  ]);
+  // --- START CORS CONFIGURATION ---
+  // Determine allowed origins dynamically from environment variable
+  // CLIENT_ORIGINS should be a comma-separated string, e.g., "https://example.com,https://www.example.com"
+  const clientOrigins = process.env.CLIENT_ORIGINS
+    ? process.env.CLIENT_ORIGINS.split(',').map(o => o.trim())
+    : [
+        'https://gen-lang-client-0240212572.web.app',
+        'https://gen-lang-client-0240212572.firebaseapp.com',
+        'https://www.cinamachat.com',
+        'https://cinamachat.com',
+        'https://cinemachat-server.onrender.com',
+        'http://localhost:5173', // Common dev origins
+        'http://127.0.0.1:5173',
+        'http://localhost:3000',
+        'http://127.0.0.1:3000',
+      ];
 
-  // Explicit CORS headers + OPTIONS handling so browser preflight never gets blocked.
-  app.use((req, res, next) => {
-    const origin = req.headers.origin as string | undefined;
-    const isAllowed = !!origin && allowedOrigins.has(origin);
+  // If not in production, also allow '*' for flexibility during development
+  if (process.env.NODE_ENV !== 'production') {
+    clientOrigins.push('*');
+  }
 
-    if (isAllowed && origin) {
-      res.setHeader('Access-Control-Allow-Origin', origin);
-      res.setHeader('Vary', 'Origin');
-    } else if (!origin) {
-      // Non-browser clients (curl, server-to-server)
-      res.setHeader('Access-Control-Allow-Origin', '*');
-    }
-
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-
-    if (req.method === 'OPTIONS') {
-      return res.status(204).end();
-    }
-
-    next();
-  });
-
+  // Use the 'cors' package for robust CORS handling
   app.use(cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.has(origin)) {
+      // Allow requests with no origin (like mobile apps or curl requests)
+      // or if the origin is explicitly allowed or if '*' is allowed.
+      if (!origin) return callback(null, true);
+
+      // Check if the origin is in our allowed list
+      if (clientOrigins.includes(origin) || clientOrigins.includes('*')) {
         callback(null, true);
-        return;
       }
-      callback(new Error('Not allowed by CORS'));
+      else {
+        console.warn(`[CORS] Blocked request from origin: ${origin}`);
+        callback(new Error('Not allowed by CORS'));
+      }
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'X-Admin-Username'], // Added X-Admin-Username
   }));
-
+  // --- END CORS CONFIGURATION ---
   // Security Middlewares
   app.use((req, res, next) => {
     if (req.method === 'OPTIONS') {
@@ -735,6 +741,9 @@ async function startServer() {
 
   // Restore an App snapshot
   app.post('/api/admin/snapshots/restore', async (req, res) => {
+    if (process.env.NODE_ENV === 'production') { // Added
+      return res.status(403).json({ error: 'بۆ پاراستنی ئەمنییەتی سێرڤەر، گەڕاندنەوەی کۆپی یەدەگی کۆد لە ژینگەی بەرهەمهێنان (Production) بلۆک کراوە.' }); // Added
+    } // Added
     try {
       const { snapshotId, adminName } = req.body;
       if (!snapshotId) {
@@ -1469,10 +1478,10 @@ async function startServer() {
         return res.status(400).json({ success: false, error: 'ناو و کۆدی خانەخوێ پێویستە' });
       }
 
-      if (!Array.isArray(db.rooms)) {
-        db.rooms = [];
-      }
-
+      // if (!Array.isArray(db.rooms)) { // Removed
+      //   db.rooms = []; // Removed
+      // } // Removed
+      
       // Set roomId directly to the host's unique code to prevent duplicate/random codes
       const roomId = hostCode.trim().toUpperCase();
 
@@ -1482,16 +1491,17 @@ async function startServer() {
         name: name.trim(),
         hostCode: hostCode.trim().toUpperCase(),
         currentMovieUrl: currentMovieUrl ? currentMovieUrl.trim() : '',
-        isPlaying: true, // Auto play by default on room creation
+        isPlaying: true, // Auto play by default on room creation // Keep this line, it's correct
         currentTime: 0,
-        activeUsers: [
-          {
-            username: 'خانەخوێ (Host)',
-            uniqueCode: hostCode.trim().toUpperCase(),
-            joinedAt: new Date().toISOString(),
-            lastSeen: new Date().toISOString()
-          }
-        ],
+        // activeUsers: [ // Removed
+        //   { // Removed
+        //     username: 'خانەخوێ (Host)', // Removed
+        //     uniqueCode: hostCode.trim().toUpperCase(), // Removed
+        //     joinedAt: new Date().toISOString(), // Removed
+        //     lastSeen: new Date().toISOString() // Removed
+        //   } // Removed
+        // ], // Removed
+        activeUsers: existingIndex !== -1 ? db.rooms[existingIndex].activeUsers || [] : [], // Added
         chatMessages: existingIndex !== -1 ? db.rooms[existingIndex].chatMessages || [] : [],
         updatedAt: new Date().toISOString()
       };
@@ -1514,10 +1524,10 @@ async function startServer() {
   app.get('/api/rooms/:id', async (req, res) => {
     const { id } = req.params;
     const { userCode } = req.query;
-
-    if (!Array.isArray(db.rooms)) {
-      db.rooms = [];
-    }
+    
+    // if (!Array.isArray(db.rooms)) { // Removed
+    //   db.rooms = []; // Removed
+    // } // Removed
 
     let room = db.rooms.find((r: any) => r.id === id || (r.hostCode && r.hostCode === id.trim().toUpperCase()));
     if (!room) {
@@ -1751,34 +1761,45 @@ async function startServer() {
   app.post('/api/rooms/:id', async (req, res) => {
     const { id } = req.params;
     const update = req.body;
-    if (!Array.isArray(db.rooms)) {
-      db.rooms = [];
-    }
-    let roomIndex = db.rooms.findIndex((r: any) => r.id === id);
-    if (roomIndex === -1) {
-      const newRoom = {
-        id,
-        name: id === 'global_room_official' ? 'ژووری سەرەکی' : 'User Room',
-        hostCode: 'GLOBAL_HOST',
-        currentMovieUrl: update.videoData?.url || '',
-        isPlaying: update.playback?.isPlaying ?? false,
-        currentTime: update.playback?.currentTime ?? 0,
-        activeUsers: [],
-        chatMessages: [],
-        updatedAt: new Date().toISOString()
-      };
-      db.rooms.push(newRoom);
-      roomIndex = db.rooms.length - 1;
-    }
-
-    const room = db.rooms[roomIndex];
-    if (update.playback) {
-      if (update.playback.isPlaying !== undefined) room.isPlaying = update.playback.isPlaying;
-      if (update.playback.currentTime !== undefined) room.currentTime = update.playback.currentTime;
-    }
-    if (update.videoData?.url) {
-      room.currentMovieUrl = update.videoData.url;
-    }
+    // if (!Array.isArray(db.rooms)) { // Removed
+    //   db.rooms = []; // Removed
+    // } // Removed
+    // let roomIndex = db.rooms.findIndex((r: any) => r.id === id); // Removed
+    // if (roomIndex === -1) { // Removed
+    //   const newRoom = { // Removed
+    //     id, // Removed
+    //     name: id === 'global_room_official' ? 'ژووری سەرەکی' : 'User Room', // Removed
+    //     hostCode: 'GLOBAL_HOST', // Removed
+    //     currentMovieUrl: update.videoData?.url || '', // Removed
+    //     isPlaying: update.playback?.isPlaying ?? false, // Removed
+    //     currentTime: update.playback?.currentTime ?? 0, // Removed
+    //     activeUsers: [], // Removed
+    //     chatMessages: [], // Removed
+    //     updatedAt: new Date().toISOString() // Removed
+    //   }; // Removed
+    //   db.rooms.push(newRoom); // Removed
+    //   roomIndex = db.rooms.length - 1; // Removed
+    // } // Removed
+    if (!Array.isArray(db.rooms)) { // Added
+      db.rooms = []; // Added
+    } // Added
+    const idx = db.rooms.findIndex((r: any) => r.id === id); // Added
+    if (idx !== -1) { // Added
+      db.rooms[idx] = { ...db.rooms[idx], ...update }; // Added
+    } else { // Added
+      db.rooms.push({ id, ...update }); // Added
+    } // Added
+    const room = db.rooms.find((r: any) => r.id === id); // Added
+    if (!room) { // Added
+      return res.status(404).json({ success: false, error: "Room not found after update/create" }); // Added
+    } // Added
+    // if (update.playback) { // Removed
+    //   if (update.playback.isPlaying !== undefined) room.isPlaying = update.playback.isPlaying; // Removed
+    //   if (update.playback.currentTime !== undefined) room.currentTime = update.playback.currentTime; // Removed
+    // } // Removed
+    // if (update.videoData?.url) { // Removed
+    //   room.currentMovieUrl = update.videoData.url; // Removed
+    // } // Removed
     room.updatedAt = new Date().toISOString();
     
     // Legacy support
@@ -2440,7 +2461,7 @@ async function startServer() {
     }
 
     // Secure Hashing: store SHA-256 for newly created admin passwords for security
-    const secureHashedPassword = crypto.createHash('sha256').update(password || '').digest('hex');
+    const secureHashedPassword = bcrypt.hashSync(password || '', 10); // Added
 
     db.admins.push({ 
       username, 
@@ -2532,7 +2553,7 @@ async function startServer() {
 
     // Securely hash the password if not empty
     if (newPassword) {
-      db.admins[adminIndex].password = crypto.createHash('sha256').update(newPassword).digest('hex');
+      db.admins[adminIndex].password = bcrypt.hashSync(newPassword, 10); // Added
     }
     
     if (isSuper !== undefined) {
@@ -2995,6 +3016,7 @@ async function startServer() {
       // 1. Security Check: Secret verification
       if (secret !== webhookSecret) {
         console.warn(`[Webhook Security] Unauthorized attempt from: ${sender}`);
+        await addIntrusionAttempt(db, normalizedSender, req.url, "Unauthorized WhatsApp Webhook Access", "Webhook Security Breach"); // Added
         return res.status(401).json({ error: 'Unauthorized webhook access' });
       }
 

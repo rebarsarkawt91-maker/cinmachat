@@ -2,7 +2,7 @@
   "admins": [
     {
       "username": "admin",
-      "password": "cinamachat@9703424",
+      "password": "ef92b778bafe771e89245b89ecbc08a44a4e166c06659911881f383d4473e94f",
       "isSuper": true,
       "isOwner": true,
       "role": "owner"
@@ -77,24 +77,6 @@
       ],
       "chatMessages": [],
       "updatedAt": "2026-06-21T15:50:49.478Z"
-    },
-    {
-      "id": "main_broadcast_room",
-      "name": "هۆڵی پەخشی سەرەکی (Broadcast)",
-      "hostCode": "ADMIN_BROADCAST",
-      "currentMovieUrl": "https://www.youtube.com/watch?v=ffW64N3gGv8",
-      "isPlaying": true,
-      "currentTime": 0,
-      "activeUsers": [
-        {
-          "username": "بینەر-CC-AD",
-          "uniqueCode": "CC-ADM-001",
-          "joinedAt": "2026-07-11T18:38:09.652Z",
-          "lastSeen": "2026-07-11T19:21:39.654Z"
-        }
-      ],
-      "chatMessages": [],
-      "updatedAt": "2026-07-11T19:21:39.654Z"
     }
   ],
   "vipSettings": {
@@ -109,10 +91,31 @@
   "tiktokUrl": "https://www.tiktok.com/",
   "instagramUrl": "https://www.instagram.com/",
   "facebookUrl": "https://www.facebook.com/",
-  "failedLoginAttempts": [],
+  "failedLoginAttempts": [
+    {
+      "ip": "127.0.0.1",
+      "username": "admin",
+      "location": "ناوەخۆ (Erbil, KR)",
+      "timestamp": "2026-07-12T13:13:35.467Z"
+    }
+  ],
   "bannedKeywords": [],
   "emergencyLock": false,
   "securityAuditLogs": [
+    {
+      "id": "log-bo89m6l",
+      "admin": "admin",
+      "action": "Login Successful",
+      "details": "دەستپێکردنی دانیشتن لە ڕێگەی ئایپی 127.0.0.1",
+      "timestamp": "2026-07-12T13:14:54.581Z"
+    },
+    {
+      "id": "log-0ewy3og",
+      "admin": "admin",
+      "action": "Login Successful",
+      "details": "دەستپێکردنی دانیشتن لە ڕێگەی ئایپی 127.0.0.1",
+      "timestamp": "2026-07-12T13:14:07.288Z"
+    },
     {
       "id": "log-n0xap5k",
       "admin": "admin",
@@ -136,6 +139,34 @@
     }
   ],
   "systemErrorLogs": [
+    {
+      "id": "err-3w4eksp",
+      "source": "POST /api/auth/login-by-id",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 400",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-07-12T13:17:09.963Z"
+    },
+    {
+      "id": "err-4kcz8k8",
+      "source": "POST /api/auth/login-by-id",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 400",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-07-12T13:16:14.796Z"
+    },
+    {
+      "id": "err-9xd02tk",
+      "source": "POST /api/auth/login-by-id",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 400",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-07-12T13:16:12.390Z"
+    },
+    {
+      "id": "err-ffnl6l7",
+      "source": "POST /api/admin/login",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-07-12T13:13:35.476Z"
+    },
     {
       "id": "err-7yz3k6v",
       "source": "POST /api/auth/login-by-id",
