@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, Fragment, useRef } from "react";
+import React, { useState, useEffect, useMemo, Fragment, useRef, useCallback } from "react";
 import ReactPlayer from "react-player";
 const ReactPlayerComponent = ReactPlayer as any;
 import {
@@ -4011,10 +4011,44 @@ const HeroSection: React.FC<{
   activeAudioSource = "hero",
 }) => {
   const [isPlaying, setIsPlaying] = useState(true);
-  const isMuted = isHeroMuted; // ئەمە دەمێنێتەوە بۆ پارامیتەری بێدەنگکردنی iframe
-  const setIsMuted = setIsHeroMuted; // ئەمە دەمێنێتەوە بۆ لۆجیکی دوگمەی بێدەنگکردن/کاراکردن
+  const isMuted = isHeroMuted;
+  const setIsMuted = setIsHeroMuted;
   const containerRef = useRef<HTMLDivElement>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
   const videoId = activeFeaturedMovie?.videoId || heroVideoId || "DEFAULT_ID";
+
+  // Send YouTube IFrame API commands via postMessage
+  const sendYTCommand = useCallback((command: string, args: any[] = []) => {
+    const iframe = iframeRef.current;
+    if (iframe && iframe.contentWindow) {
+      iframe.contentWindow.postMessage(JSON.stringify({
+        event: "command",
+        func: command,
+        args,
+      }), "*");
+    }
+  }, []);
+
+  // Mute/Unmute via YouTube API without iframe reload
+  useEffect(() => {
+    sendYTCommand(isMuted ? "mute" : "unMute");
+  }, [isMuted, sendYTCommand]);
+
+  // Play/Pause via YouTube API without iframe reload
+  useEffect(() => {
+    sendYTCommand(isPlaying ? "playVideo" : "pauseVideo");
+  }, [isPlaying, sendYTCommand]);
+
+  // When iframe loads, unmute after a short delay (for autoplay compliance)
+  const handleHeroIframeLoad = useCallback(() => {
+    // YouTube requires initial mute for autoplay; unmute shortly after
+    setTimeout(() => {
+      if (!isMuted) {
+        sendYTCommand("unMute");
+        sendYTCommand("playVideo");
+      }
+    }, 500);
+  }, [isMuted, sendYTCommand]);
 
   // Mute hero video if room audio is active
   useEffect(() => {
@@ -4036,13 +4070,15 @@ const HeroSection: React.FC<{
       >
         <div className="w-full h-full scale-[1.35]" id="hero-player" ref={containerRef}>
           <iframe
+            ref={iframeRef}
             key={videoId}
-            src={`https://www.youtube.com/embed/${videoId}?autoplay=1&mute=${(countdown > 0 || isMuted) ? "1" : "0"}&loop=1&playlist=${videoId}&controls=0&showinfo=0&rel=0&modestbranding=1&enablejsapi=1`}
+            src={`https://www.youtube.com/embed/${videoId}?autoplay=1&mute=1&loop=1&playlist=${videoId}&controls=0&showinfo=0&rel=0&modestbranding=1&enablejsapi=1`}
             allow="autoplay; encrypted-media"
             allowFullScreen
             className="w-full h-full pointer-events-none"
             width="100%"
             height="100%"
+            onLoad={handleHeroIframeLoad}
           />
         </div>
         {/* The YouTube iframe will be injected here by the YouTube Iframe API */}
