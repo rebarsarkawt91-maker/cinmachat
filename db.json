@@ -85,16 +85,10 @@
       "currentMovieUrl": "https://www.youtube.com/watch?v=ffW64N3gGv8",
       "isPlaying": true,
       "currentTime": 0,
-      "activeUsers": [
-        {
-          "username": "بینەر-CC-AD",
-          "uniqueCode": "CC-ADM-001",
-          "joinedAt": "2026-07-26T05:29:13.350Z",
-          "lastSeen": "2026-07-26T05:32:13.712Z"
-        }
-      ],
+      "activeUsers": [],
       "chatMessages": [],
-      "updatedAt": "2026-07-26T05:32:13.712Z"
+      "updatedAt": "2026-07-26T06:02:50.708Z",
+      "emptySince": "2026-07-26T06:03:17.919Z"
     }
   ],
   "vipSettings": {
