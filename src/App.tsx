@@ -4787,7 +4787,26 @@ export default function App() {
   };
 
   const activeFeaturedMovie = useMemo(() => {
+    // Priority: 1) Firestore real-time data, 2) Server config.heroVideoUrl, 3) Movies list
     let base = featuredMovieFromDB || featuredMovie;
+    if (!base && config.heroVideoUrl) {
+      const url = config.heroVideoUrl;
+      const isYoutube = url.includes("youtube.com") || url.includes("youtu.be");
+      const vidId = isYoutube ? extractYouTubeId(url) : null;
+      base = {
+        id: "hero-promo",
+        title: "فیلمی سەرەکی",
+        embedUrl: isYoutube && vidId ? `https://www.youtube.com/embed/${vidId}` : url,
+        videoUrl: url,
+        isYouTube: isYoutube,
+        videoId: vidId || "",
+        image: "",
+        tags: ["هەمووی"],
+        quality: "4K",
+        description: "نوێترین فیلمی سەرەکی",
+        heroPlaylist: [url],
+      } as any;
+    }
     if (!base) return null;
 
     // Normalize if needed
@@ -4812,7 +4831,7 @@ export default function App() {
           embedUrl || videoUrl || "https://www.youtube.com/watch?v=YPY7J-flzE8",
         ],
     };
-  }, [featuredMovieFromDB, featuredMovie, globalStreamURL]);
+  }, [featuredMovieFromDB, featuredMovie, globalStreamURL, config.heroVideoUrl]);
 
   useEffect(() => {
     console.log("[DEBUG] activeFeaturedMovie updated:", activeFeaturedMovie);
@@ -8537,6 +8556,30 @@ export default function App() {
                             };
 
                             applyHeroLocally(cleanUrl); // Apply changes locally immediately
+
+                            // Also write to Firestore so ALL visitors get the update in real-time via onSnapshot
+                            try {
+                              const isYoutube = cleanUrl.includes("youtube.com") || cleanUrl.includes("youtu.be");
+                              const vidId = isYoutube ? extractYouTubeId(cleanUrl) : null;
+                              await setDoc(doc(db, "config", "featured"), {
+                                id: "hero-promo",
+                                title: "فیلمی سەرەکی",
+                                embedUrl: isYoutube && vidId ? `https://www.youtube.com/embed/${vidId}` : cleanUrl,
+                                url: cleanUrl,
+                                videoUrl: cleanUrl,
+                                isYouTube: isYoutube,
+                                videoId: vidId || "",
+                                image: vidId ? `https://img.youtube.com/vi/${vidId}/maxresdefault.jpg` : "",
+                                tags: ["هەمووی"],
+                                quality: "4K",
+                                description: "نوێترین فیلمی سەرەکی",
+                                heroPlaylist: [cleanUrl],
+                                updatedAt: new Date().toISOString(),
+                              }, { merge: true });
+                              console.log("[Hero] Updated Firestore config/featured with new hero URL:", cleanUrl);
+                            } catch (firestoreErr) {
+                              console.warn("[Hero] Failed to update Firestore config/featured:", firestoreErr);
+                            }
 
                             const payload = {
                               adminName: currentUser?.username || "Admin", // ناوی ئەدمین زیاد دەکرێت بۆ داتای نێردراو
