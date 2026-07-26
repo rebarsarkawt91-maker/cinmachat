@@ -9,6 +9,12 @@
 }
 
 @layer base {
+  html, body {
+    height: 100%;
+    overflow: hidden;
+    -webkit-overflow-scrolling: touch;
+  }
+
   body {
     @apply bg-black text-white antialiased font-sans select-none;
   }

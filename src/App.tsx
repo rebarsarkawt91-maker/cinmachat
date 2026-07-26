@@ -6383,7 +6383,7 @@ export default function App() {
       <div style={{ position: "relative", zIndex: 0 }} /> {/* Placeholder for background video/image */}
 
       {/* UI Overlay Layer (Admin/Room/Headers) */}
-      <div style={{ position: "fixed", inset: 0, zIndex: 999 }} className="overflow-y-auto h-full pointer-events-none">
+      <div style={{ position: "fixed", inset: 0, zIndex: 999, WebkitOverflowScrolling: "touch" as const }} className="overflow-y-auto pointer-events-none" >
         <div className="flex flex-col min-h-screen bg-transparent text-white select-none pointer-events-auto" dir="rtl">
       {/* Point 57: Error Message Overlay */}
       <AnimatePresence>
