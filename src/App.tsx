@@ -4787,26 +4787,8 @@ export default function App() {
   };
 
   const activeFeaturedMovie = useMemo(() => {
-    // Priority: 1) Firestore real-time data, 2) Server config.heroVideoUrl, 3) Movies list
+    // Priority: 1) Firestore real-time data, 2) Movies list
     let base = featuredMovieFromDB || featuredMovie;
-    if (!base && config.heroVideoUrl) {
-      const url = config.heroVideoUrl;
-      const isYoutube = url.includes("youtube.com") || url.includes("youtu.be");
-      const vidId = isYoutube ? extractYouTubeId(url) : null;
-      base = {
-        id: "hero-promo",
-        title: "فیلمی سەرەکی",
-        embedUrl: isYoutube && vidId ? `https://www.youtube.com/embed/${vidId}` : url,
-        videoUrl: url,
-        isYouTube: isYoutube,
-        videoId: vidId || "",
-        image: "",
-        tags: ["هەمووی"],
-        quality: "4K",
-        description: "نوێترین فیلمی سەرەکی",
-        heroPlaylist: [url],
-      } as any;
-    }
     if (!base) return null;
 
     // Normalize if needed
@@ -4831,7 +4813,7 @@ export default function App() {
           embedUrl || videoUrl || "https://www.youtube.com/watch?v=YPY7J-flzE8",
         ],
     };
-  }, [featuredMovieFromDB, featuredMovie, globalStreamURL, config.heroVideoUrl]);
+  }, [featuredMovieFromDB, featuredMovie, globalStreamURL]);
 
   useEffect(() => {
     console.log("[DEBUG] activeFeaturedMovie updated:", activeFeaturedMovie);
