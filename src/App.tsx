@@ -226,6 +226,7 @@ async function fetchApi(
             statusText: "OK",
             json: async () => ({
               ads: {},
+              heroVideoUrl: getCachedHeroVideoUrl() || "https://www.youtube.com/watch?v=YPY7J-flzE8",
               socialLinks: { whatsapp: "", group: "", instagram: "", facebook: "" },
               youtubeChannelUrl: "https://www.youtube.com/",
               youtubeUrl: "https://www.youtube.com/",
@@ -607,11 +608,12 @@ const HERO_VIDEO_LOCAL_KEY = "cinemachat_hero_video_url";
 const getCachedHeroVideoUrl = () => {
   const cached = safeStorage.get(HERO_VIDEO_LOCAL_KEY);
   if (!cached) return "";
-  return cached.trim();
+  // Sanitize HTML entities that may have been stored
+  return cached.trim().replace(/&#x2F;/gi, '/').replace(/&amp;/g, '&');
 };
 
 const setCachedHeroVideoUrl = (url: string) => {
-  const clean = (url || "").trim();
+  const clean = (url || "").trim().replace(/&#x2F;/gi, '/').replace(/&amp;/g, '&');
   if (!clean) return;
   safeStorage.set(HERO_VIDEO_LOCAL_KEY, clean);
 };

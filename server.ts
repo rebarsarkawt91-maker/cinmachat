@@ -12,6 +12,20 @@ import bcrypt from 'bcryptjs';
 import net from 'node:net';
 import { rateLimiter, sanitizationMiddleware, createAdminGuard, logFailedAttempt } from './security';
 
+// Sanitize URLs to decode HTML entities (e.g. &#x2F; → /)
+function sanitizeUrl(url: string): string {
+  if (!url || typeof url !== 'string') return '';
+  return url
+    .replace(/&#x2F;/gi, '/')
+    .replace(/&#x2f;/gi, '/')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .trim();
+}
+
 // Global error handlers - Move to top to catch early errors
 process.on('uncaughtException', (err: any) => {
   console.error('UNCAUGHT EXCEPTION:', err.message || err);
@@ -2877,16 +2891,20 @@ async function startServer() {
   });
 
   app.get('/api/admin/hero', (req, res) => {
-    res.json(db.heroConfig);
+    const config = { ...db.heroConfig };
+    config.heroVideoUrl = sanitizeUrl(config.heroVideoUrl || '');
+    if (config.heroPlaylist) config.heroPlaylist = config.heroPlaylist.map(sanitizeUrl);
+    if (config.video_trailers) config.video_trailers = config.video_trailers.map(sanitizeUrl);
+    res.json(config);
   });
 
   app.post('/api/admin/hero', async (req, res) => {
-    const playlist = req.body.heroPlaylist || req.body.video_trailers;
+    const playlist = (req.body.heroPlaylist || req.body.video_trailers || []).map(sanitizeUrl);
     const { adminName } = req.body;
     if (playlist && Array.isArray(playlist)) {
-      db.heroConfig.heroPlaylist = playlist.filter(Boolean); // Filter out null/empty strings
+      db.heroConfig.heroPlaylist = playlist.filter(Boolean);
       db.heroConfig.video_trailers = playlist;
-      db.heroConfig.heroVideoUrl = playlist[0] || '';
+      db.heroConfig.heroVideoUrl = sanitizeUrl(playlist[0] || '');
       await addAuditLog(db, adminName, "Update Hero Playlist", `پلیلیستی ڤیدیۆ نوێکرایەوە`);
       await saveDB(db);
     }
@@ -2895,12 +2913,11 @@ async function startServer() {
 
   // Alias for hero update requested by user
   app.post('/api/movies/hero', async (req, res) => {
-    const playlist = req.body.heroPlaylist || req.body.video_trailers;
+    const playlist = (req.body.heroPlaylist || req.body.video_trailers || []).map(sanitizeUrl);
     if (playlist && Array.isArray(playlist)) {
-      db.heroConfig.heroPlaylist = playlist.filter(Boolean); // Filter out null/empty strings
+      db.heroConfig.heroPlaylist = playlist.filter(Boolean);
       db.heroConfig.video_trailers = playlist;
-      db.heroConfig.heroVideoUrl = playlist[0] || '';
-      // Also update some metadata if needed, but primary is heroPlaylist
+      db.heroConfig.heroVideoUrl = sanitizeUrl(playlist[0] || '');
       await saveDB(db);
       return res.json({ success: true, config: db.heroConfig });
     }
@@ -3087,7 +3104,7 @@ async function startServer() {
       ads,
       trackerText, // Expose tracker text
       socialLinks,
-      heroVideoUrl: db.heroConfig?.heroVideoUrl || '',
+      heroVideoUrl: sanitizeUrl(db.heroConfig?.heroVideoUrl || ''),
       youtubeChannelUrl: db.youtubeUrl || db.youtubeChannelUrl || 'https://www.youtube.com/',
       youtubeUrl: db.youtubeUrl || 'https://www.youtube.com/',
       tiktokUrl: db.tiktokUrl || 'https://www.tiktok.com/',
@@ -3102,9 +3119,9 @@ async function startServer() {
     if (newSocialLinks) socialLinks = newSocialLinks;
     if (heroVideoUrl !== undefined) {
       if (!db.heroConfig) db.heroConfig = {};
-      db.heroConfig.heroVideoUrl = heroVideoUrl;
+      db.heroConfig.heroVideoUrl = sanitizeUrl(heroVideoUrl);
       // Also update heroPlaylist if only heroVideoUrl is provided
-      db.heroConfig.heroPlaylist = [heroVideoUrl];
+      db.heroConfig.heroPlaylist = [sanitizeUrl(heroVideoUrl)];
     }
     if (youtubeChannelUrl !== undefined) {
       db.youtubeChannelUrl = youtubeChannelUrl;
@@ -3132,7 +3149,7 @@ async function startServer() {
       success: true,
       ads,
       socialLinks,
-      heroVideoUrl: db.heroConfig?.heroVideoUrl || '',
+      heroVideoUrl: sanitizeUrl(db.heroConfig?.heroVideoUrl || ''),
       roomVideoUrl: db.config?.roomVideoUrl || '',
       youtubeChannelUrl: db.youtubeUrl || db.youtubeChannelUrl,
       youtubeUrl: db.youtubeUrl,
@@ -3190,7 +3207,7 @@ async function startServer() {
       let results: any[] = [...moviesCache];
       
       const ytRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
-      const heroUrl = db.heroConfig.heroVideoUrl || 'https://www.youtube.com/watch?v=YPY7J-flzE8';
+      const heroUrl = sanitizeUrl(db.heroConfig.heroVideoUrl || 'https://www.youtube.com/watch?v=YPY7J-flzE8');
       const ytMatch = heroUrl.match(ytRegex);
       const isYouTube = !!ytMatch;
       const embedUrl = isYouTube ? `https://www.youtube.com/embed/${ytMatch![1]}` : heroUrl;

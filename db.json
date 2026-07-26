@@ -77,18 +77,6 @@
       ],
       "chatMessages": [],
       "updatedAt": "2026-06-21T15:50:49.478Z"
-    },
-    {
-      "id": "main_broadcast_room",
-      "name": "هۆڵی پەخشی سەرەکی (Broadcast)",
-      "hostCode": "ADMIN_BROADCAST",
-      "currentMovieUrl": "https://www.youtube.com/watch?v=ffW64N3gGv8",
-      "isPlaying": true,
-      "currentTime": 0,
-      "activeUsers": [],
-      "chatMessages": [],
-      "updatedAt": "2026-07-26T06:02:50.708Z",
-      "emptySince": "2026-07-26T06:03:17.919Z"
     }
   ],
   "vipSettings": {
