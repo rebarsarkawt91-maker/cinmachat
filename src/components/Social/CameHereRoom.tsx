@@ -19,6 +19,7 @@ import {
   Video
 } from "lucide-react";
 import { SocialUser } from '../../types'; // Assuming SocialUser is defined in types.ts
+import { getYTId } from '../../utils/youtube'; // Import the helper function
 
 interface UserObj { // Explicitly define UserObj
   username: string;
@@ -166,31 +167,6 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
   const isHost = activeRoom && activeRoom.hostCode.trim().toUpperCase() === userCodeInput.trim().toUpperCase();
 
   // Handle member sync safely - MOVED DECLARATION HERE TO RESOLVE HOISTING ISSUE
-  const handleMemberPlaybackSync = (updatedRoom: Room): void => {
-    if (!playerRef.current || typeof playerRef.current.getPlayerState !== "function") return;
-
-    try {
-      const livePlaying = updatedRoom.isPlaying;
-      const liveTime = updatedRoom.currentTime;
-      const myTime = playerRef.current.getCurrentTime();
-      const myState = playerRef.current.getPlayerState();
-
-      // Check play/pause sync
-      if (livePlaying && myState !== 1) {
-        playerRef.current.playVideo();
-      } else if (!livePlaying && myState === 1) {
-        playerRef.current.pauseVideo();
-      }
-
-      // Max 3 seconds drift tolerated, otherwise force seek to Admin state
-      if (Math.abs(myTime - liveTime) > 3) {
-        playerRef.current.seekTo(liveTime, true);
-      }
-    } catch (e) {
-      console.error("Playback sync error:", e);
-    }
-  };
-
   // Periodically fetch invitations for current user
   useEffect(() => {
     if (!userCodeInput) return;
@@ -290,6 +266,32 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
     }
   }, []);
 
+  // Handle member sync safely
+  const handleMemberPlaybackSync = React.useCallback((updatedRoom: Room): void => {
+    if (!playerRef.current || typeof playerRef.current.getPlayerState !== "function") return;
+
+    try {
+      const livePlaying = updatedRoom.isPlaying;
+      const liveTime = updatedRoom.currentTime;
+      const myTime = playerRef.current.getCurrentTime();
+      const myState = playerRef.current.getPlayerState();
+
+      // Check play/pause sync
+      if (livePlaying && myState !== 1) {
+        playerRef.current.playVideo();
+      } else if (!livePlaying && myState === 1) {
+        playerRef.current.pauseVideo();
+      }
+
+      // Max 3 seconds drift tolerated, otherwise force seek to Admin state
+      if (Math.abs(myTime - liveTime) > 3) {
+        playerRef.current.seekTo(liveTime, true);
+      }
+    } catch (e) {
+      console.error("Playback sync error:", e);
+    }
+  }, []);
+
   // Poll state logic (Sync engine runs every 2.5 seconds)
   useEffect((): (() => void) | undefined => { // Explicitly type useEffect callback
     if (!activeRoom) {
@@ -366,15 +368,8 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
   }, [activeRoom?.id, isHost, activeRoom?.isPlaying, activeRoom?.currentMovieUrl, userCodeInput, handleMemberPlaybackSync]);
 
   // YouTube Iframe API setup for Host Control & Client Muting (Player initialization)
-  useEffect(() => {
+  useEffect((): (() => void) | undefined => {
     if (!activeRoom || !activeRoom.currentMovieUrl) return;
-
-    // Extract YouTube Id
-    const getYTId = (url: string): string | null => { // Explicitly type getYTId
-      const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
-      const match = url.match(regExp);
-      return match && match[2].length === 11 ? match[2] : null;
-    };
 
     const videoId = getYTId(activeRoom.currentMovieUrl);
     if (!videoId) return;
@@ -638,6 +633,58 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
       });
     } catch (err) {
       console.error("Failed to sync play/pause action:", err);
+    }
+  };
+
+  // Handle invite friend form submission
+  const handleInviteFriend = async (e: React.FormEvent): Promise<void> => {
+    e.preventDefault();
+    if (!activeRoom || !inviteTarget.trim()) return;
+    setIsInviting(true);
+    setInviteError("");
+    setInviteSuccess("");
+    try {
+      const res = await fetch("/api/notifications/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fromUserCode: userCodeInput,
+          fromUserName: usernameInput || "هاوڕێیەک",
+          targetCodeOrName: inviteTarget.trim(),
+          roomId: activeRoom.id,
+          roomName: activeRoom.name,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setInviteSuccess("بانگهێشتکردن سەرکەوتوو بوو ✓");
+        setInviteTarget("");
+      } else {
+        setInviteError(data.error || "نەتوانرا بانگهێشتکردن");
+      }
+    } catch (err) {
+      setInviteError("کێشەیەک ڕوویدا لە پەیوەندیکردن");
+    } finally {
+      setIsInviting(false);
+    }
+  };
+
+  // Handle respond to invitation (accept or decline)
+  const handleRespondToInvite = async (inviteId: string, status: "accepted" | "declined", roomId: string): Promise<void> => {
+    try {
+      const res = await fetch(`/api/notifications/${inviteId}/respond`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      if (res.ok) {
+        setActiveInvitations((prev) => prev.filter((inv) => inv.id !== inviteId));
+        if (status === "accepted") {
+          await joinSpecificRoom(roomId);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to respond to invitation:", err);
     }
   };
 

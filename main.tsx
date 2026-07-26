@@ -1,8 +1,8 @@
 import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
-import App from './App.tsx';
-import './index.css';
-import { SocialAuthProvider } from './context/SocialAuthContext.tsx';
+import App from './src/App.tsx';
+import './src/index.css';
+import { SocialAuthProvider } from './src/context/SocialAuthContext.tsx';
 
 // Clean handling of third-party video and web media playback interruption exceptions
 window.addEventListener('unhandledrejection', (event) => {

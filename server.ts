@@ -30,7 +30,7 @@ const INITIAL_DB = {
   admins: [
     { username: 'admin', password: 'password123', isSuper: true, isOwner: true, role: 'owner' }
   ],
-  users: [] as any[], // Added user storage
+  users: [] as any[],
   categories: ["هەمووی", "ئاکشن", "کۆمیدی", "دراما", "ترسناک", "ئەنیمێ", "دۆکیومێنتاری"],
   heroConfig: {
     youtubeId: 'YPY7J-flzE8', // Default extraction 2 trailer
@@ -77,7 +77,17 @@ const INITIAL_DB = {
       },
       videoData: null
     }
-  } as Record<string, any>
+
+const INITIAL_BROADCAST_ROOM = {
+  id: 'main_broadcast_room',
+  name: 'هۆڵی پەخشی سەرەکی (Broadcast)',
+  hostCode: 'ADMIN_BROADCAST',
+  currentMovieUrl: 'https://www.youtube.com/watch?v=ffW64N3gGv8',
+  isPlaying: true,
+  currentTime: 0,
+  activeUsers: [],
+  chatMessages: [],
+  updatedAt: new Date().toISOString()
 };
 
 async function loadDB() {
@@ -160,7 +170,7 @@ async function startServer() {
   const PORT = await getAvailablePort(preferredPort);
 
   // Database initialization
-  let db: any;
+  let db: any = {};
   try {
     db = await loadDB();
     console.log('[DB] Database loaded successfully');
@@ -169,7 +179,10 @@ async function startServer() {
     db = { ...INITIAL_DB }; // Fallback to memory
   }
   
+  // Ensure all top-level properties exist
   if (!db.deletedIds) db.deletedIds = [];
+  if (!db.manualMovies) db.manualMovies = [];
+  if (!db.users) db.users = [];
   if (!db.tagOverrides) db.tagOverrides = {};
   if (!db.bannedIps) db.bannedIps = [];
   if (!db.youtubeChannelUrl) db.youtubeChannelUrl = "https://www.youtube.com/";
@@ -183,7 +196,17 @@ async function startServer() {
   if (!db.securityAuditLogs) db.securityAuditLogs = [];
   if (!db.systemErrorLogs) db.systemErrorLogs = [];
   if (!db.intrusionAttempts) db.intrusionAttempts = [];
-  if (!db.vipTickets) db.vipTickets = []; // Keep this line, it's correct
+  if (!db.vipTickets) db.vipTickets = [];
+  if (!db.vipRequests) db.vipRequests = [];
+  if (!db.invitations) db.invitations = [];
+  if (!db.directMessages) db.directMessages = [];
+  if (!db.appSnapshots) db.appSnapshots = [];
+  // Ensure categories is an array and has default values
+  if (!db.categories) db.categories = ["هەمووی", "ئاکشن", "کۆمیدی", "دراما", "ترسناک", "ئەنیمێ", "دۆکیومێنتاری"];
+
+  // Initialize syncGroups if not present, ensuring global room exists
+  if (!db.syncGroups) db.syncGroups = {};
+  if (!db.syncGroups["global_room_official"]) db.syncGroups["global_room_official"] = INITIAL_GLOBAL_ROOM;
   if (!db.vipVideos) db.vipVideos = [];
   // if (!Array.isArray(db.rooms)) db.rooms = []; // Removed
   if (!db.vipSettings) db.vipSettings = {
@@ -194,25 +217,24 @@ async function startServer() {
 
   // Support Module 17 - Super Admin (Owner) Seed
   const ownerUserSeedName = "admin";
-  // const ownerUserSeedPassHash = crypto.createHash('sha256').update('password123').digest('hex'); // Removed
-  const ownerUserSeedPassHash = bcrypt.hashSync('password123', 10); // Added
+  const ownerUserSeedPassHash = bcrypt.hashSync('password123', 10);
   if (!db.admins) db.admins = [];
   
+  // Ensure 'admin' user exists and has correct roles/hashed password
   // Retain only 'admin' and ensure all system permissions are assigned to it
   let adminAccount = db.admins.find((a: any) => a.username?.toLowerCase() === "admin");
   if (!adminAccount) {
     adminAccount = {
       username: "admin",
-      // password: ownerUserSeedPassHash, // Removed
+      // password: ownerUserSeedPassHash,
       password: bcrypt.hashSync('password123', 10), // Added
-      isSuper: true,
-      isOwner: true,
-      role: "owner"
+      isSuper: true, isOwner: true, role: "owner"
     };
     db.admins.push(adminAccount);
   } else {
+    // Update existing admin password if it's not bcrypt hashed
     // Check if existing password is not bcrypt, then update
-    if (adminAccount.password && !adminAccount.password.startsWith('$2a$') && !adminAccount.password.startsWith('$2b$') && !adminAccount.password.startsWith('$2y$')) { // Added
+    if (adminAccount.password && !adminAccount.password.startsWith('$2a$') && !adminAccount.password.startsWith('$2b$') && !adminAccount.password.startsWith('$2y$')) {
       adminAccount.password = bcrypt.hashSync('password123', 10); // Added
     } else if (!adminAccount.password) { // Handle case where password might be empty
       adminAccount.password = bcrypt.hashSync('password123', 10); // Added
@@ -220,10 +242,10 @@ async function startServer() {
     adminAccount.isSuper = true;
     adminAccount.isOwner = true;
     adminAccount.role = "owner";
+    // Ensure password is set if it's missing (e.g., from old db.json) or not hashed
+    if (!adminAccount.password) adminAccount.password = bcrypt.hashSync('password123', 10);
   }
 
-  // Remove Others: Securely delete all other sub-admin, assistant, and deputy manager accounts
-  // Safety Check: Before executing, ensure that if there is an active session representation we don't block them,
   // but since we are migrating to single-admin structure we normalize the list to contain only 'admin'.
   db.admins = db.admins.filter((a: any) => a.username?.toLowerCase() === "admin");
 
@@ -255,6 +277,7 @@ async function startServer() {
       timestamp: new Date().toISOString()
     });
     if (dbAny.securityAuditLogs.length > 500) {
+      // Keep only the latest 500 logs
       dbAny.securityAuditLogs = dbAny.securityAuditLogs.slice(0, 500);
     }
   }
@@ -269,6 +292,7 @@ async function startServer() {
       timestamp: new Date().toISOString()
     });
     if (dbAny.systemErrorLogs.length > 200) {
+      // Keep only the latest 200 logs
       dbAny.systemErrorLogs = dbAny.systemErrorLogs.slice(0, 200);
     }
   }
@@ -283,6 +307,7 @@ async function startServer() {
       ip: ip || "Unknown",
       timestamp: new Date().toISOString()
     });
+    // Keep only the latest 2000 logs
     if (dbAny.userActivities.length > 2000) {
       dbAny.userActivities = dbAny.userActivities.slice(0, 2000);
     }
@@ -301,6 +326,7 @@ async function startServer() {
       timestamp: new Date().toISOString()
     });
     if (dbAny.intrusionAttempts.length > 200) {
+      // Keep only the latest 200 logs
       dbAny.intrusionAttempts = dbAny.intrusionAttempts.slice(0, 200);
     }
   }
@@ -494,7 +520,7 @@ async function startServer() {
       const isApiCall = req.url.startsWith('/api/');
       const isAdminCall = req.url.startsWith('/api/admin/') || req.url === '/api/admin/login' || req.url === '/api/check-ban';
       const isStaticAsset = req.url.includes('.') && !isApiCall;
-      
+
       if (isApiCall && !isAdminCall && !isStaticAsset) {
         return res.status(503).json({ emergencyLock: true, error: '⚠️ ماڵپەڕ لە ئێستادا بە شێوەیەکی کاتی داخراوە بەهۆی باری نائاسایی.' });
       }
@@ -635,6 +661,8 @@ async function startServer() {
       if (backupData.bannedKeywords) db.bannedKeywords = backupData.bannedKeywords;
       if (backupData.heroConfig) db.heroConfig = backupData.heroConfig;
       if (backupData.securityAuditLogs) db.securityAuditLogs = backupData.securityAuditLogs;
+      if (backupData.syncGroups) db.syncGroups = backupData.syncGroups; // Restore syncGroups
+      delete db.rooms; // Ensure old db.rooms is removed after restore
       if (backupData.systemErrorLogs) db.systemErrorLogs = backupData.systemErrorLogs;
       if (backupData.intrusionAttempts) db.intrusionAttempts = backupData.intrusionAttempts;
       
@@ -789,6 +817,9 @@ async function startServer() {
 
   // Delete an App snapshot
   app.post('/api/admin/snapshots/delete', async (req, res) => {
+    if (process.env.NODE_ENV === 'production') { // Added
+      return res.status(403).json({ error: 'بۆ پاراستنی ئەمنییەتی سێرڤەر، گەڕاندنەوەی کۆپی یەدەگی کۆد لە ژینگەی بەرهەمهێنان (Production) بلۆک کراوە.' }); // Added
+    } // Added
     try {
       const { snapshotId, adminName } = req.body;
       if (!snapshotId) {
@@ -1467,10 +1498,10 @@ async function startServer() {
     }
   });
 
+  // Consolidated room data is now in db.syncGroups (Removed db.rooms)
   app.get('/api/rooms', (req, res) => {
-    res.json(Array.isArray(db.rooms) ? db.rooms : []);
-  });
-
+    res.json(Object.values(db.syncGroups || {}));
+  }); // End /api/rooms
   app.post('/api/rooms/create', async (req, res) => {
     try {
       const { name, hostCode, currentMovieUrl } = req.body;
@@ -1478,42 +1509,31 @@ async function startServer() {
         return res.status(400).json({ success: false, error: 'ناو و کۆدی خانەخوێ پێویستە' });
       }
 
-      // if (!Array.isArray(db.rooms)) { // Removed
-      //   db.rooms = []; // Removed
-      // } // Removed
-      
+      if (!db.syncGroups) db.syncGroups = {};
       // Set roomId directly to the host's unique code to prevent duplicate/random codes
-      const roomId = hostCode.trim().toUpperCase();
-
-      const existingIndex = db.rooms.findIndex((r: any) => r.id === roomId);
-      const newRoom = {
+      const roomId = hostCode.trim().toUpperCase(); // Room ID is host code
+      const newRoom = { // New room object
         id: roomId,
         name: name.trim(),
         hostCode: hostCode.trim().toUpperCase(),
         currentMovieUrl: currentMovieUrl ? currentMovieUrl.trim() : '',
         isPlaying: true, // Auto play by default on room creation // Keep this line, it's correct
         currentTime: 0,
-        // activeUsers: [ // Removed
-        //   { // Removed
-        //     username: 'خانەخوێ (Host)', // Removed
-        //     uniqueCode: hostCode.trim().toUpperCase(), // Removed
-        //     joinedAt: new Date().toISOString(), // Removed
-        //     lastSeen: new Date().toISOString() // Removed
-        //   } // Removed
-        // ], // Removed
-        activeUsers: existingIndex !== -1 ? db.rooms[existingIndex].activeUsers || [] : [], // Added
-        chatMessages: existingIndex !== -1 ? db.rooms[existingIndex].chatMessages || [] : [],
+        // If room exists, preserve activeUsers and chatMessages, otherwise initialize empty
+        activeUsers: db.syncGroups[roomId]?.activeUsers || [],
+        chatMessages: db.syncGroups[roomId]?.chatMessages || [],
+        createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
       };
-
-      if (existingIndex !== -1) {
-        db.rooms[existingIndex] = newRoom;
+      // Use db.syncGroups for all room data
+      if (db.syncGroups[roomId]) {
+        db.syncGroups[roomId] = { ...db.syncGroups[roomId], ...newRoom };
       } else {
-        db.rooms.push(newRoom);
+        db.syncGroups[roomId] = newRoom;
       }
       await saveDB(db);
 
-      console.log(`[Came Here Room] Created/Updated room ${roomId} using host code`);
+      console.log(`[Came Here Room] Created/Updated room ${roomId} using host code`); // Log room creation
       res.json({ success: true, room: newRoom });
     } catch (err: any) {
       console.error(err);
@@ -1524,60 +1544,20 @@ async function startServer() {
   app.get('/api/rooms/:id', async (req, res) => {
     const { id } = req.params;
     const { userCode } = req.query;
-    
-    // if (!Array.isArray(db.rooms)) { // Removed
-    //   db.rooms = []; // Removed
-    // } // Removed
 
-    let room = db.rooms.find((r: any) => r.id === id || (r.hostCode && r.hostCode === id.trim().toUpperCase()));
+    if (!db.syncGroups) db.syncGroups = {};
+    let room = db.syncGroups[id] || db.syncGroups[id.trim().toUpperCase()];
     if (!room) {
       if (id === 'global_room_official') {
-        room = {
-          id: 'global_room_official',
-          name: 'ژووری سەرەکی',
-          hostCode: 'GLOBAL_HOST',
-          currentMovieUrl: 'https://www.youtube.com/watch?v=Rsztt5qDj_A',
-          isPlaying: true,
-          currentTime: 0,
-          activeUsers: [],
-          chatMessages: [],
-          updatedAt: new Date().toISOString()
-        };
-        db.rooms.push(room);
-        await saveDB(db);
+        room = INITIAL_GLOBAL_ROOM;
       } else if (id === 'main_broadcast_room') {
-        room = {
-          id: 'main_broadcast_room',
-          name: 'هۆڵی پەخشی سەرەکی (Broadcast)',
-          hostCode: 'ADMIN_BROADCAST',
-          currentMovieUrl: 'https://www.youtube.com/watch?v=ffW64N3gGv8',
-          isPlaying: true,
-          currentTime: 0,
-          activeUsers: [],
-          chatMessages: [],
-          updatedAt: new Date().toISOString()
-        };
-        db.rooms.push(room);
-        await saveDB(db);
-      } else {
-        return res.status(404).json({ error: 'ژوور بەردەست نییە' });
+        room = INITIAL_BROADCAST_ROOM;
+      } else { // Room not found
+        return res.status(404).json({ error: 'ژوور بەردەست نییە' }); // Return 404
       }
     }
 
-    // Auto-delete logic: Purge messages in main_broadcast_room older than 1 hour
-    if (room && room.id === 'main_broadcast_room' && Array.isArray(room.chatMessages)) {
-      const oneHourAgo = Date.now() - 3600000;
-      const initialLength = room.chatMessages.length;
-      room.chatMessages = room.chatMessages.filter((msg: any) => {
-        const t = msg.timestamp ? new Date(msg.timestamp).getTime() : 0;
-        return t > oneHourAgo;
-      });
-      if (room.chatMessages.length !== initialLength) {
-        room.updatedAt = new Date().toISOString();
-        await saveDB(db);
-      }
-    }
-
+    // Update active user last seen if userCode is supplied
     // Update active user last seen if code is supplied
     if (userCode) {
       const cleanCode = String(userCode).trim().toUpperCase();
@@ -1593,6 +1573,7 @@ async function startServer() {
           lastSeen: new Date().toISOString()
         });
       }
+      db.syncGroups[room.id] = room; // Persist changes to the room object (important for activeUsers)
       room.updatedAt = new Date().toISOString();
       await saveDB(db);
     }
@@ -1603,23 +1584,15 @@ async function startServer() {
   app.post('/api/rooms/:id/update', async (req, res) => {
     try {
       const { id } = req.params;
-      const { currentTime, isPlaying, currentMovieUrl, chatMessage, userCode } = req.body;
+      const { currentTime, isPlaying, currentMovieUrl, chatMessage, userCode, videoData } = req.body; // Added videoData
+      if (!db.syncGroups) db.syncGroups = {};
 
-      if (!Array.isArray(db.rooms)) {
-        db.rooms = [];
-      }
+      const roomId = id.trim().toUpperCase();
+      if (!db.syncGroups[roomId]) {
+        return res.status(404).json({ error: 'ژوور بەردەست نییە' }); // Room not found
+      } // End if room not found
 
-      const roomIndex = db.rooms.findIndex((r: any) => r.id === id || r.hostCode === id.trim().toUpperCase());
-      if (roomIndex === -1) {
-        return res.status(404).json({ error: 'ژوور بەردەست نییە' });
-      }
-
-      const room = db.rooms[roomIndex];
-      if (currentTime !== undefined) room.currentTime = Number(currentTime);
-      if (isPlaying !== undefined) room.isPlaying = Boolean(isPlaying);
-      if (currentMovieUrl !== undefined) room.currentMovieUrl = currentMovieUrl;
-
-      // Handle heartbeat inside body parameter
+      // Handle user heartbeat (lastSeen update)
       if (userCode) {
         const cleanCode = String(userCode).trim().toUpperCase();
         if (!room.activeUsers) room.activeUsers = [];
@@ -1635,7 +1608,15 @@ async function startServer() {
           });
         }
       }
+      // Update room data
+      const room = db.syncGroups[roomId];
+      if (currentTime !== undefined) room.playback.currentTime = Number(currentTime);
+      if (isPlaying !== undefined) room.playback.isPlaying = Boolean(isPlaying);
+      if (currentMovieUrl !== undefined) room.currentMovieUrl = currentMovieUrl;
+      if (videoData !== undefined) room.videoData = videoData; // Update videoData
+      }
 
+      // Handle new chat message
       if (chatMessage) {
         if (!room.chatMessages) room.chatMessages = [];
         room.chatMessages.push({
@@ -1650,19 +1631,20 @@ async function startServer() {
         }
       }
 
-      // Auto-delete logic: Purge messages in main_broadcast_room older than 1 hour on update as well
+      // Auto-delete logic: Purge messages in main_broadcast_room older than 1 hour on update as well (important for broadcast room)
+      // Ensure chatMessages is an array before filtering
       if (room.id === 'main_broadcast_room' && Array.isArray(room.chatMessages)) {
         const oneHourAgo = Date.now() - 3600000;
         room.chatMessages = room.chatMessages.filter((msg: any) => {
-          const t = msg.timestamp ? new Date(msg.timestamp).getTime() : 0;
+          const t = msg.timestamp ? new Date(msg.timestamp).getTime() : 0; // Ensure timestamp is valid
           return t > oneHourAgo;
         });
       }
 
       room.updatedAt = new Date().toISOString();
-      await saveDB(db);
+      await saveDB(db); // Save changes to DB
 
-      res.json({ success: true, room });
+      res.json({ success: true, room: db.syncGroups[roomId] });
     } catch (err: any) {
       console.error(err);
       res.status(500).json({ error: err.message });
@@ -1675,43 +1657,13 @@ async function startServer() {
       const { uniqueCode, username } = req.body;
       const isBroadcastRoom = id === 'main_broadcast_room';
 
-      let cleanCode = uniqueCode ? uniqueCode.trim().toUpperCase() : '';
+      let cleanCode = uniqueCode ? uniqueCode.trim().toUpperCase() : ''; // Clean unique code
       if (isBroadcastRoom && !cleanCode) {
         // Generate automatic unique identifier for guest
         cleanCode = 'GUEST_' + Math.random().toString(36).substring(2, 8).toUpperCase();
       }
 
-      if (!cleanCode) {
-        return res.status(400).json({ error: 'پێویستە کۆدی خۆت بنەخشێنیت' });
-      }
-
-      if (!Array.isArray(db.rooms)) {
-        db.rooms = [];
-      }
-
-      // Ensure main_broadcast_room is initialized if joining
-      let roomIndex = db.rooms.findIndex((r: any) => r.id === id);
-      if (roomIndex === -1 && isBroadcastRoom) {
-        db.rooms.push({
-          id: 'main_broadcast_room',
-          name: 'هۆڵی پەخشی سەرەکی (Broadcast)',
-          hostCode: 'ADMIN_BROADCAST',
-          currentMovieUrl: 'https://www.youtube.com/watch?v=ffW64N3gGv8',
-          isPlaying: true,
-          currentTime: 0,
-          activeUsers: [],
-          chatMessages: [],
-          updatedAt: new Date().toISOString()
-        });
-        await saveDB(db);
-        roomIndex = db.rooms.findIndex((r: any) => r.id === id);
-      }
-
-      if (roomIndex === -1) {
-        return res.status(404).json({ error: 'ژوور بەردەست نییە' });
-      }
-
-      const room = db.rooms[roomIndex];
+      const room = db.syncGroups[roomId];
 
       // Access Control check: validate uniqueCode in database (bypass for Broadcast Room)
       const userExists = db.users && db.users.some((u: any) => {
@@ -1722,6 +1674,23 @@ async function startServer() {
       const isGlobalHost = cleanCode === 'GLOBAL_HOST';
       const isRoomHost = room.hostCode && (cleanCode === room.hostCode.toUpperCase());
       const isVipTicketCode = db.vipTickets && db.vipTickets.some((t: any) => (t.code || '').trim().toUpperCase() === cleanCode);
+
+      if (!cleanCode && !isBroadcastRoom) { // Only require code if not broadcast room
+        return res.status(400).json({ error: 'پێویستە کۆدی خۆت بنەخشێنیت' });
+      }
+
+      if (!db.syncGroups) db.syncGroups = {}; // Ensure syncGroups exists
+      const roomId = id.trim().toUpperCase(); // Room ID is uppercase
+
+      // Initialize broadcast room if it doesn't exist
+      if (!db.syncGroups[roomId] && isBroadcastRoom) {
+        db.syncGroups[roomId] = INITIAL_BROADCAST_ROOM;
+        await saveDB(db); // Persist the new room
+      }
+
+      if (!db.syncGroups[roomId]) { // If room still not found
+        return res.status(404).json({ error: 'ژوور بەردەست نییە' }); // Return 404
+      }
 
       if (!isBroadcastRoom && !userExists && !isGlobalHost && !isRoomHost && !isVipTicketCode && cleanCode !== 'ADMIN') {
         return res.status(403).json({ error: 'ژمارەی چوونەژوورە نادروستە یان تۆمار نەکراوە!' });
@@ -1748,7 +1717,8 @@ async function startServer() {
 
       room.updatedAt = new Date().toISOString();
       const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || "Unknown";
-      logUserActivity(db, cleanCode, "Join Room", `چووە ناو ژووری تەلەفزیۆنی "${room.name || id}"`, clientIp);
+      logUserActivity(db, cleanCode, "Join Room", `چووە ناو ژووری تەلەفزیۆنی "${room.name || id}"`, clientIp); // Log user activity
+      db.syncGroups[roomId] = room; // Persist changes to the room object
       await saveDB(db);
 
       res.json({ success: true, room });
@@ -1760,51 +1730,10 @@ async function startServer() {
 
   app.post('/api/rooms/:id', async (req, res) => {
     const { id } = req.params;
-    const update = req.body;
-    // if (!Array.isArray(db.rooms)) { // Removed
-    //   db.rooms = []; // Removed
-    // } // Removed
-    // let roomIndex = db.rooms.findIndex((r: any) => r.id === id); // Removed
-    // if (roomIndex === -1) { // Removed
-    //   const newRoom = { // Removed
-    //     id, // Removed
-    //     name: id === 'global_room_official' ? 'ژووری سەرەکی' : 'User Room', // Removed
-    //     hostCode: 'GLOBAL_HOST', // Removed
-    //     currentMovieUrl: update.videoData?.url || '', // Removed
-    //     isPlaying: update.playback?.isPlaying ?? false, // Removed
-    //     currentTime: update.playback?.currentTime ?? 0, // Removed
-    //     activeUsers: [], // Removed
-    //     chatMessages: [], // Removed
-    //     updatedAt: new Date().toISOString() // Removed
-    //   }; // Removed
-    //   db.rooms.push(newRoom); // Removed
-    //   roomIndex = db.rooms.length - 1; // Removed
-    // } // Removed
-    if (!Array.isArray(db.rooms)) { // Added
-      db.rooms = []; // Added
-    } // Added
-    const idx = db.rooms.findIndex((r: any) => r.id === id); // Added
-    if (idx !== -1) { // Added
-      db.rooms[idx] = { ...db.rooms[idx], ...update }; // Added
-    } else { // Added
-      db.rooms.push({ id, ...update }); // Added
-    } // Added
-    const room = db.rooms.find((r: any) => r.id === id); // Added
-    if (!room) { // Added
-      return res.status(404).json({ success: false, error: "Room not found after update/create" }); // Added
-    } // Added
-    // if (update.playback) { // Removed
-    //   if (update.playback.isPlaying !== undefined) room.isPlaying = update.playback.isPlaying; // Removed
-    //   if (update.playback.currentTime !== undefined) room.currentTime = update.playback.currentTime; // Removed
-    // } // Removed
-    // if (update.videoData?.url) { // Removed
-    //   room.currentMovieUrl = update.videoData.url; // Removed
-    // } // Removed
-    room.updatedAt = new Date().toISOString();
-    
-    // Legacy support
-    if (!db.syncGroups) db.syncGroups = {};
-    db.syncGroups[id] = { ...db.syncGroups[id], ...update };
+    const updateData = req.body;
+    if (!db.syncGroups) db.syncGroups = {}; // Ensure syncGroups exists
+    if (!db.syncGroups[id]) db.syncGroups[id] = { id, name: id, activeUsers: [], chatMessages: [], playback: { isPlaying: false, currentTime: 0, updatedAt: new Date().toISOString() } }; // Initialize if not exists
+    db.syncGroups[id] = { ...db.syncGroups[id], ...updateData, updatedAt: new Date().toISOString() };
 
     await saveDB(db);
     res.json({ success: true, room });
@@ -1893,8 +1822,10 @@ async function startServer() {
   // -------------------------------------------------------------
   // TEMPORARY FIREBASE MOCK FOR SERVER SIDE (MOCK DB & MOCK AUTH)
   // -------------------------------------------------------------
+  // NOTE: This mock is for server-side endpoints that mimic Firebase interactions. If you intend to use real Firebase
+  // for these server-side endpoints, you must replace these mocks with actual Firebase Admin SDK calls.
   class MockFirestoreDoc {
-    private colName: string;
+    private colName: string; // Added missing property declarations
     private docId: string;
     private serverDb: any;
 
@@ -1905,16 +1836,24 @@ async function startServer() {
     }
 
     async get() {
-      let data: any = null;
+      let data: any = null; // Initialize data
       if (this.colName === 'users') {
         const u = this.serverDb.users?.find((u: any) => u.uid === this.docId || u.uniqueCode === this.docId);
         if (u) data = u;
       } else if (this.colName === 'config') {
         if (this.docId === 'friends_room') {
-          data = { roomVideoUrl: this.serverDb.friendsRoomVideoUrl || '', videoUrl: this.serverDb.friendsRoomVideoUrl || '' };
+          data = { roomVideoUrl: this.serverDb.config?.friendsRoomVideoUrl || '', videoUrl: this.serverDb.config?.friendsRoomVideoUrl || '' };
+        } else if (this.docId === 'featured') {
+          data = this.serverDb.heroConfig;
+        } else if (this.docId === 'general') {
+          data = this.serverDb.config?.general;
         }
+      } else if (this.colName === 'syncGroups') {
+        data = this.serverDb.syncGroups[this.docId];
       }
+
       return {
+        // Mock Firestore DocumentSnapshot
         id: this.docId,
         exists: !!data,
         data: () => data || null
@@ -1922,22 +1861,31 @@ async function startServer() {
     }
 
     async set(data: any, options?: { merge?: boolean }) {
-      if (this.colName === 'users') {
+      if (this.colName === 'users') { // Handle user collection
         if (!this.serverDb.users) this.serverDb.users = [];
         const idx = this.serverDb.users.findIndex((u: any) => u.uid === this.docId);
         const isNew = idx === -1;
         const existing = isNew ? {} : this.serverDb.users[idx];
         const merged = (options?.merge ?? true) ? { ...existing, ...data } : { ...data };
-        merged.uid = this.docId;
+        merged.uid = this.docId; // Ensure UID is set
         if (isNew) {
           this.serverDb.users.push(merged);
         } else {
-          this.serverDb.users[idx] = merged;
+          this.serverDb.users[idx] = merged; // Update existing user
         }
       } else if (this.colName === 'config') {
         if (this.docId === 'friends_room') {
           this.serverDb.friendsRoomVideoUrl = data.videoUrl || data.roomVideoUrl || '';
+        } else if (this.docId === 'general') {
+          if (!this.serverDb.config) this.serverDb.config = {};
+          this.serverDb.config.general = { ...this.serverDb.config.general, ...data };
+        } else if (this.docId === 'featured') {
+          if (!this.serverDb.heroConfig) this.serverDb.heroConfig = {};
+          this.serverDb.heroConfig = { ...this.serverDb.heroConfig, ...data };
         }
+      } else if (this.colName === 'syncGroups') { // Handle syncGroups collection
+        if (!this.serverDb.syncGroups) this.serverDb.syncGroups = {};
+        this.serverDb.syncGroups[this.docId] = (options?.merge ?? true) ? { ...this.serverDb.syncGroups[this.docId], ...data } : { ...data };
       }
       if (typeof saveDB === 'function') {
         await saveDB(this.serverDb);
@@ -1949,15 +1897,20 @@ async function startServer() {
     }
 
     async delete() {
-      if (this.colName === 'users') {
+      if (this.colName === 'users') { // Handle user deletion
         this.serverDb.users = this.serverDb.users?.filter((u: any) => u.uid !== this.docId) || [];
+      } else if (this.colName === 'syncGroups') {
+        if (this.serverDb.syncGroups) {
+          delete this.serverDb.syncGroups[this.docId];
+        }
       }
       if (typeof saveDB === 'function') {
         await saveDB(this.serverDb);
       }
-    }
-  }
+    } // End delete
+  } // End MockFirestoreDoc
 
+  // Mock Firestore Collection
   class MockFirestoreCollection {
     private colName: string;
     private serverDb: any;
@@ -1971,15 +1924,23 @@ async function startServer() {
       return new MockFirestoreDoc(this.colName, id, this.serverDb);
     }
 
-    where(field: string, op: string, value: any) {
+    where(field: string, op: string, value: any): any { // Added return type
       return {
         get: async () => {
           let matched: any[] = [];
           if (this.colName === 'users') {
             matched = this.serverDb.users?.filter((u: any) => {
-              const val = u[field];
+              let val = u[field];
+              // Handle case-insensitive uniqueCode lookup
+              if (field === 'uniqueCode' && typeof val === 'string' && typeof value === 'string') { // Case-insensitive and prefix handling
+                val = val.toUpperCase();
+                value = value.toUpperCase();
+                // Also handle potential prefixes like 'CC-CC-' vs 'CC-'
+                if (value.startsWith('CC-CC-')) value = value.replace('CC-CC-', 'CC-');
+                if (val.startsWith('CC-CC-')) val = val.replace('CC-CC-', 'CC-');
+              }
               if (op === '==') return val === value;
-              return false;
+              return false; // Filter matched users
             }) || [];
           }
           return {
@@ -1997,13 +1958,15 @@ async function startServer() {
             }
           };
         }
-      };
+      }; // End get
     }
 
     async get() {
       let list: any[] = [];
       if (this.colName === 'users') {
         list = this.serverDb.users || [];
+      } else if (this.colName === 'invitations') {
+        list = this.serverDb.invitations || [];
       }
       return {
         docs: list.map(m => ({
@@ -2017,6 +1980,7 @@ async function startServer() {
             data: () => m,
             ref: new MockFirestoreDoc(this.colName, m.uid || m.uniqueCode || 'unknown', this.serverDb)
           }));
+        // Mock Firestore QuerySnapshot
         }
       };
     }
@@ -2048,6 +2012,7 @@ async function startServer() {
     if (!adminDbInstance) {
       adminDbInstance = new MockFirestore(db);
       console.log("[Firestore Sync] Mock Firestore is activated. Bypassing real Firebase server.");
+      // This is a simplified mock for Firebase Admin SDK.
     }
     return adminDbInstance;
   }
@@ -2058,6 +2023,7 @@ async function startServer() {
     if (!adminAuthInstance) {
       adminAuthInstance = new MockAdminAuth();
       console.log("[Firebase Auth] Mock Auth Service is activated. Bypassing real Firebase server.");
+      // This is a simplified mock for Firebase Admin SDK.
     }
     return adminAuthInstance;
   }
@@ -2072,7 +2038,7 @@ async function startServer() {
       }
 
       // Check if user already exists in Firestore by phone/uniqueCode
-      const usersRef = adminDb.collection('users');
+      const usersRef = adminDb.collection('users'); // Uses MockFirestoreCollection
       const querySnapshot = await usersRef.where('uniqueCode', '==', uniqueCode).get();
       if (!querySnapshot.empty) {
         return res.status(400).json({ success: false, error: 'ئەم بەکارهێنەرە پێشتر هەیە!' });
@@ -2080,13 +2046,13 @@ async function startServer() {
 
       // Create Firebase Auth user
       const userRecord = await adminAuth.createUser({
-        email: email || `${uniqueCode}@cinemachat.local`,
+        email: email || `${uniqueCode.toLowerCase()}@cinemachat.local`,
         password: password,
         displayName: name
       });
 
       // Save to Firestore
-      await usersRef.doc(userRecord.uid).set({
+      await adminDb.doc('users', userRecord.uid).set({ // Uses MockFirestoreDoc
         uid: userRecord.uid,
         name,
         phone,
@@ -2174,7 +2140,7 @@ async function startServer() {
       console.log(`[ID Auth] Looking up uniqueCode. Raw: "${uniqueCode}", Clean: "${cleanInput}"`);
 
       // 2. Database Lookup
-      const usersRef = adminDb.collection('users');
+      const usersRef = adminDb.collection('users'); // Uses MockFirestoreCollection
       let querySnapshot = await usersRef.where('uniqueCode', '==', cleanInput).get();
 
       // If not found, try lookup with original trimmed upper
@@ -2203,7 +2169,7 @@ async function startServer() {
       const userData = userDoc.data();
       const uid = userDoc.id;
 
-      // Ensure they have the correct custom token
+      // Create custom token using mock auth
       const customToken = await adminAuth.createCustomToken(uid);
 
       console.log(`[ID Auth] Successfully authenticated user: ${userData.name || uid} via uniqueCode: ${userData.uniqueCode}`);
@@ -2280,7 +2246,7 @@ async function startServer() {
       }
 
       if (uid) {
-        const userRef = dbInstance.collection('users').doc(uid);
+        const userRef = dbInstance.doc('users', uid); // Uses MockFirestoreDoc
         const docSnap = await userRef.get();
         const existingData = docSnap.exists ? docSnap.data() : {};
 
@@ -2916,7 +2882,7 @@ async function startServer() {
     const playlist = req.body.heroPlaylist || req.body.video_trailers;
     const { adminName } = req.body;
     if (playlist && Array.isArray(playlist)) {
-      db.heroConfig.heroPlaylist = playlist;
+      db.heroConfig.heroPlaylist = playlist.filter(Boolean); // Filter out null/empty strings
       db.heroConfig.video_trailers = playlist;
       db.heroConfig.heroVideoUrl = playlist[0] || '';
       await addAuditLog(db, adminName, "Update Hero Playlist", `پلیلیستی ڤیدیۆ نوێکرایەوە`);
@@ -2929,7 +2895,7 @@ async function startServer() {
   app.post('/api/movies/hero', async (req, res) => {
     const playlist = req.body.heroPlaylist || req.body.video_trailers;
     if (playlist && Array.isArray(playlist)) {
-      db.heroConfig.heroPlaylist = playlist;
+      db.heroConfig.heroPlaylist = playlist.filter(Boolean); // Filter out null/empty strings
       db.heroConfig.video_trailers = playlist;
       db.heroConfig.heroVideoUrl = playlist[0] || '';
       // Also update some metadata if needed, but primary is heroPlaylist
@@ -2983,7 +2949,7 @@ async function startServer() {
       date: new Date().toISOString(),
       isNetflixOriginal: title?.toLowerCase().includes('netflix'),
       tags: Array.isArray(tags) ? tags : [category || "هەمووی"],
-      category: category || "هەمووی",
+      category: category || "هەمووی", // Ensure category is set
       rating: rating || "",
       year: year || "",
       type: type || "movie",
@@ -3091,7 +3057,7 @@ async function startServer() {
         isNetflixOriginal: title.toLowerCase().includes('netflix'),
         tags: ['New Releases', 'WhatsApp Import', 'New'],
         whatsappLink: 'https://chat.whatsapp.com/Cinmachat'
-      };
+      }; // Use db.socialLinks.group
 
       try {
         // WhatsApp save: local only
@@ -3117,6 +3083,7 @@ async function startServer() {
   app.get('/api/config', (req, res) => {
     res.json({
       ads,
+      trackerText, // Expose tracker text
       socialLinks,
       heroVideoUrl: db.heroConfig?.heroVideoUrl || '',
       youtubeChannelUrl: db.youtubeUrl || db.youtubeChannelUrl || 'https://www.youtube.com/',
@@ -3128,12 +3095,14 @@ async function startServer() {
   });
 
   app.post('/api/config', async (req, res) => {
-    const { ads: newAds, socialLinks: newSocialLinks, heroVideoUrl, youtubeChannelUrl, youtubeUrl, tiktokUrl, instagramUrl, facebookUrl } = req.body;
+    const { ads: newAds, socialLinks: newSocialLinks, heroVideoUrl, youtubeChannelUrl, youtubeUrl, tiktokUrl, instagramUrl, facebookUrl, roomVideoUrl, trackerText: newTrackerText } = req.body;
     if (newAds) ads = newAds;
     if (newSocialLinks) socialLinks = newSocialLinks;
     if (heroVideoUrl !== undefined) {
       if (!db.heroConfig) db.heroConfig = {};
       db.heroConfig.heroVideoUrl = heroVideoUrl;
+      // Also update heroPlaylist if only heroVideoUrl is provided
+      db.heroConfig.heroPlaylist = [heroVideoUrl];
     }
     if (youtubeChannelUrl !== undefined) {
       db.youtubeChannelUrl = youtubeChannelUrl;
@@ -3151,12 +3120,18 @@ async function startServer() {
     if (facebookUrl !== undefined) {
       db.facebookUrl = facebookUrl;
     }
+    if (roomVideoUrl !== undefined) {
+      if (!db.config) db.config = {};
+      db.config.roomVideoUrl = roomVideoUrl;
+    }
+    if (newTrackerText !== undefined) trackerText = newTrackerText;
     await saveDB(db);
     res.json({
       success: true,
       ads,
       socialLinks,
       heroVideoUrl: db.heroConfig?.heroVideoUrl || '',
+      roomVideoUrl: db.config?.roomVideoUrl || '',
       youtubeChannelUrl: db.youtubeUrl || db.youtubeChannelUrl,
       youtubeUrl: db.youtubeUrl,
       tiktokUrl: db.tiktokUrl,
@@ -3219,7 +3194,7 @@ async function startServer() {
       const embedUrl = isYouTube ? `https://www.youtube.com/embed/${ytMatch![1]}` : heroUrl;
 
       const heroPlaylist = db.heroConfig.heroPlaylist || [heroUrl, heroUrl, heroUrl];
-      const heroMovie = {
+      const heroMovie: any = {
         id: 'hero-promo',
         title: 'پرۆمۆی تایبەت',
         description: 'نوێترین بەرهەمی CinamaChat ببینە لێرە دەتوانیت زانیاری زیاتر وەربگریت.',
@@ -3230,7 +3205,7 @@ async function startServer() {
         quality: '4K',
         date: new Date().toISOString(),
         tags: ['Trailer', 'Trailers'],
-        whatsappLink: 'https://chat.whatsapp.com/Cinmachat',
+        whatsappLink: db.socialLinks.group || 'https://chat.whatsapp.com/Cinmachat',
         heroPlaylist: heroPlaylist
       };
 
@@ -3261,8 +3236,22 @@ async function startServer() {
   app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
   if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
+    const vite = await createViteServer({ server: { middlewareMode: true, hmr: { port: 0 } }, appType: 'spa' }); // Ensure HMR is configured
     app.use(vite.middlewares);
+    // Fallback for development if Vite doesn't handle the request (e.g., Vite dev server is not running)
+    app.get('*', (req, res, next) => { // Added next to allow other routes to handle
+      if (!res.headersSent) {
+        res.status(200).send(`
+          <!DOCTYPE html>
+          <html lang="en">
+          <head><meta charset="UTF-8"><title>CinemaChat Backend</title></head>
+          <body><h1>CinemaChat Backend is Running!</h1><p>If you see this, the backend server is active. Please ensure your frontend development server (Vite) is also running, usually on port 5173 or 5174.</p></body>
+          </html>
+        `);
+      } else {
+        next(); // Pass to next middleware if headers already sent
+      }
+    });
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
@@ -3286,38 +3275,119 @@ async function startServer() {
       const fiveHoursAgo = new Date(Date.now() - 5 * 60 * 60 * 1000);
 
       // Clean stale users in db.users
-      if (db.users && Array.isArray(db.users)) {
-        const initialCount = db.users.length;
+      if (db.users) {
+        const initialUserCount = db.users.length;
         db.users = db.users.filter((user: any) => {
-          if (!user.lastActive) return true;
-          return new Date(user.lastActive) > fiveHoursAgo;
+          // Keep users that don't have lastActive (e.g., newly registered) or are recently active
+          return !user.lastActive || new Date(user.lastActive) > fiveHoursAgo;
         });
-        if (db.users.length !== initialCount) {
-          console.log(`[Maintenance] Cleaned ${initialCount - db.users.length} idle/stale user sessions from db.users.`);
+        if (db.users.length !== initialUserCount) {
+          console.log(`[Maintenance] Cleaned ${initialUserCount - db.users.length} idle/stale user sessions from db.users.`);
           dbModified = true;
         }
       }
 
-      // Clean stale rooms in db.rooms
-      if (db.rooms) {
-        if (Array.isArray(db.rooms)) {
-          const initialRoomsCount = db.rooms.length;
-          db.rooms = db.rooms.filter((room: any) => {
-            if (room.id === 'global_room_official') return true;
-            const updatedAtStr = room.updatedAt || room.playback?.updatedAt;
-            if (updatedAtStr) {
-              return new Date(updatedAtStr) >= fiveHoursAgo;
-            }
-            return false;
-          });
-          if (db.rooms.length !== initialRoomsCount) {
-            console.log(`[Maintenance] Cleaned ${initialRoomsCount - db.rooms.length} stale rooms from db.rooms.`);
+      // Clean stale syncGroups (rooms)
+      if (db.syncGroups) {
+        for (const groupId of Object.keys(db.syncGroups)) {
+          if (groupId === 'global_room_official' || groupId === 'main_broadcast_room') continue; // Always keep global and broadcast rooms
+          const group = db.syncGroups[groupId];
+          // Use playback.updatedAt if available, otherwise updatedAt, otherwise createdAt
+          const updatedAtStr = group?.playback?.updatedAt || group?.updatedAt || group?.createdAt;
+          
+          // If no timestamp, or if it's older than 5 hours, delete the group
+          if (!updatedAtStr || new Date(updatedAtStr) < fiveHoursAgo) {
+            delete db.syncGroups[groupId];
+            console.log(`[Maintenance] Purged stale temporary syncGroup: ${groupId}`);
             dbModified = true;
           }
+        }
+      }
+
+      if (dbModified) {
+        await saveDB(db);
+        console.log('[Maintenance] db.json persisted after active cleanup round.');
+      }
+    } catch (err) {
+      console.error('[Maintenance] Error during periodic session automatic cleanup:', err);
+    }
+  };
+
+  // Run immediately on boot, and then every 15 minutes
+  runDatabaseMaintenance();
+  setInterval(runDatabaseMaintenance, 15 * 60 * 1000);
+
+  // Room empty cleanup interval - runs every 10 seconds
+  setInterval(async () => {
+    try {
+      if (!db || !db.syncGroups) return;
+      const now = new Date();
+      let changed = false;
+      
+      for (const roomId of Object.keys(db.syncGroups)) {
+        if (roomId === 'global_room_official' || roomId === 'main_broadcast_room') continue; // Always keep global and broadcast rooms
+        
+        const room = db.syncGroups[roomId];
+        if (!room) continue; // Should not happen, but for safety
+
+        // 1. Filter out inactive users (no heartbeat in last 20 seconds)
+        if (Array.isArray(room.activeUsers)) {
+          const initialUserCount = room.activeUsers.length;
+          room.activeUsers = room.activeUsers.filter((u: any) => {
+            const timeLimit = 20000; // 20 seconds threshold for active user
+            const userTime = u.lastSeen || u.joinedAt;
+            if (!userTime) return false; // If no timestamp, assume stale
+            return (now.getTime() - new Date(userTime).getTime()) < timeLimit;
+          });
+          if (room.activeUsers.length !== initialUserCount) {
+            changed = true;
+          }
         } else {
-          for (const roomId of Object.keys(db.rooms)) {
-            if (roomId === 'global_room_official') continue;
-            const room = db.rooms[roomId];
+          room.activeUsers = []; // Ensure it's an array
+          changed = true;
+        }
+
+        // 2. Track & handle empty rooms
+        if (room.activeUsers.length === 0) {
+          if (!room.emptySince) {
+            room.emptySince = now.toISOString();
+            changed = true;
+          } else {
+            const emptyMs = now.getTime() - new Date(room.emptySince).getTime();
+            if (emptyMs >= 60000) { // 60 seconds (1 minute) threshold
+              console.log(`[Dynamic Clean] Room ${room.id} (${room.name}) was empty for >1 min. Auto-deleted.`);
+              delete db.syncGroups[roomId]; // DELETE room
+              changed = true;
+            }
+          }
+        } else {
+          // Room has active users, clear emptySince timer if present
+          if (room.emptySince) {
+            delete room.emptySince;
+            changed = true;
+          }
+        }
+      }
+
+      if (changed) {
+        await saveDB(db);
+      }
+    } catch (e) {
+      console.error("Error in empty room cleanup setInterval:", e);
+    }
+  }, 10000);
+  
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log('==================================================');
+    console.log(`CinemaChat Server started on http://0.0.0.0:${PORT}`);
+    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log('==================================================');
+  });
+}
+
+startServer().catch(err => {
+  console.error('FATAL SERVER ERROR:', err);
+});
             const updatedAtStr = room?.playback?.updatedAt || room?.updatedAt;
             if (updatedAtStr) {
               if (new Date(updatedAtStr) < fiveHoursAgo) {

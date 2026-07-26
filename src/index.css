@@ -1,6 +1,7 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&family=Space+Grotesk:wght@400;700&display=swap');
 @import "tailwindcss";
 
+/* Tailwind CSS Directives */
 @theme {
   --color-brand-primary: #e50914;
   --font-display: "Space Grotesk", sans-serif;
@@ -11,6 +12,10 @@
   body {
     @apply bg-black text-white antialiased font-sans select-none;
   }
+
+  /* Ensure Plyr CSS is correctly applied */
+  /* This is already imported in App.tsx, but if there are issues, ensure it's processed by Tailwind */
+  /* @import "plyr-react/plyr.css"; */
 }
 
 /* Point 73: RTL & Kurdish Text */

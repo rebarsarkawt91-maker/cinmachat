@@ -38,6 +38,7 @@ export interface Movie {
 export interface SocialUser {
   uid: string;
   name: string;
+  username?: string;
   phone: string;
   uniqueCode: string;
   avatarUrl?: string;

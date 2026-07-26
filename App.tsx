@@ -226,7 +226,7 @@ async function fetchApi(
             statusText: "OK",
             json: async () => ({
               ads: {},
-              socialLinks: { whatsapp: "", group: "", instagram: "", facebook: "" },
+              socialLinks: {},
               youtubeChannelUrl: "https://www.youtube.com/",
               youtubeUrl: "https://www.youtube.com/",
               tiktokUrl: "https://www.tiktok.com/",
@@ -690,7 +690,6 @@ const ContentModule = ({
   lastAddedMovie,
   currentUser,
   systemVerified,
-  config,
 }: any) => {
   // Security check: Only allow authorized admins to see this module
   if (!systemVerified) {
@@ -745,7 +744,7 @@ const ContentModule = ({
     if (!file) return;
 
     // Security check: Limit file size to 2MB (strict limit requested)
-    if (file.size > 2 * 1024 * 1024) {
+    if (file.size > 2 * 1024 * 1024) { // Max 2MB
       alert(
         "قەبارەی وێنە نابێت لە ٢ مێگابایت گەورەتر بێت بۆ پاراستنی هێڵ و سێرڤەر! (Max 2MB)",
       );
@@ -5140,7 +5139,7 @@ export default function App() {
   }, [socialProfile]);
 
   // Auto-select first movie for room creation by default
-  useEffect(() => {
+  useEffect(() => { // Ensure movies is available before setting default
     if (movies.length > 0 && (!dashboardCreateMovieUrl || dashboardCreateMovieUrl === "https://www.youtube.com/watch?v=Rsztt5qDj_A")) {
       const firstMovie = movies[0];
       const url = firstMovie.embedUrl || firstMovie.videoUrl || "";
@@ -5927,7 +5926,6 @@ export default function App() {
     },
     socialLinks: {
       whatsapp: "https://chat.whatsapp.com/DIwWkE5ZGuTYJrmODE0mI0",
-      group: "",
       instagram: "",
       facebook: "",
     },
@@ -6709,14 +6707,14 @@ export default function App() {
               </SafeRender>
 
               {/* Unified Stream Automation: Bottom Room (Live Global Sync & VIP side-by-side) */}
-              {activeFeaturedMovie && (
+              {activeFeaturedMovie && ( // Only render if there's a featured movie
                 <RoomSection
                   key={activeSyncGroup?.id || "empty-room"}
                   activeFeaturedMovie={activeFeaturedMovie}
                   activeSyncGroup={activeSyncGroup}
                   isRoomMuted={isRoomMuted}
                   setIsRoomMuted={setIsRoomMuted}
-                  currentRoomVideoUrl={config.roomVideoUrl || ""}
+                  currentRoomVideoUrl={currentRoomVideoUrl}
                   extractYouTubeId={extractYouTubeId}
                   config={config}
                   setShowJoinCodeModal={setShowJoinCodeModal}
@@ -7607,7 +7605,7 @@ export default function App() {
                               <span className="text-sm kurdish-text whitespace-nowrap">
                                 تریلەر
                               </span>
-                            </button>
+                            </button> {/* Trailer Button */}
                           )}
                         </div>
                       )}
@@ -8130,7 +8128,6 @@ export default function App() {
                             currentUser={currentUser}
                             systemVerified={systemVerified}
                             lastAddedMovie={lastAddedMovie}
-                            config={config}
                             onSyncNow={() => {
                               fetchMovies();
                               alert("سەرجەم ئامێرەکان دەستبەجێ ئەپدێت کرانەوە");

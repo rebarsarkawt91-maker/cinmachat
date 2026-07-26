@@ -2,7 +2,7 @@
   "admins": [
     {
       "username": "admin",
-      "password": "ef92b778bafe771e89245b89ecbc08a44a4e166c06659911881f383d4473e94f",
+      "password": "$2b$10$MfuFlJQibtfSfR6n5IWS2uf0qzCWn41YT7j9lmxiFpmkUOts9dpQi",
       "isSuper": true,
       "isOwner": true,
       "role": "owner"
@@ -21,12 +21,12 @@
   "heroConfig": {
     "youtubeId": "YPY7J-flzE8",
     "manualFeaturedId": null,
-    "heroVideoUrl": "https://www.youtube.com/watch?v=aiREm-2JrNM",
+    "heroVideoUrl": "https:&#x2F;&#x2F;www.youtube.com&#x2F;watch?v=irVNGjRFZGk",
     "heroPlaylist": [
-      "https://www.youtube.com/watch?v=aiREm-2JrNM"
+      "https:&#x2F;&#x2F;www.youtube.com&#x2F;watch?v=irVNGjRFZGk"
     ],
     "video_trailers": [
-      "https://www.youtube.com/watch?v=aiREm-2JrNM"
+      "https:&#x2F;&#x2F;www.youtube.com&#x2F;watch?v=irVNGjRFZGk"
     ]
   },
   "syncGroups": {
@@ -60,7 +60,7 @@
       "hostCode": "GLOBAL_HOST",
       "currentMovieUrl": "https://youtube.com",
       "isPlaying": true,
-      "currentTime": 10,
+      "currentTime": 0,
       "activeUsers": [
         {
           "username": "بینەر-ABCD",
@@ -77,6 +77,24 @@
       ],
       "chatMessages": [],
       "updatedAt": "2026-06-21T15:50:49.478Z"
+    },
+    {
+      "id": "main_broadcast_room",
+      "name": "هۆڵی پەخشی سەرەکی (Broadcast)",
+      "hostCode": "ADMIN_BROADCAST",
+      "currentMovieUrl": "https://www.youtube.com/watch?v=ffW64N3gGv8",
+      "isPlaying": true,
+      "currentTime": 0,
+      "activeUsers": [
+        {
+          "username": "بینەر-CC-AD",
+          "uniqueCode": "CC-ADM-001",
+          "joinedAt": "2026-07-26T05:29:13.350Z",
+          "lastSeen": "2026-07-26T05:29:43.353Z"
+        }
+      ],
+      "chatMessages": [],
+      "updatedAt": "2026-07-26T05:29:43.353Z"
     }
   ],
   "vipSettings": {
@@ -139,6 +157,34 @@
     }
   ],
   "systemErrorLogs": [
+    {
+      "id": "err-9oxw6r7",
+      "source": "GET /api/admin/hero",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-07-25T15:38:46.066Z"
+    },
+    {
+      "id": "err-l311hzt",
+      "source": "GET /api/admin/hero",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-07-25T15:38:46.063Z"
+    },
+    {
+      "id": "err-gs4aq7s",
+      "source": "GET /api/admin/categories",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-07-25T15:38:40.871Z"
+    },
+    {
+      "id": "err-wc64x4c",
+      "source": "GET /api/admin/categories",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-07-25T15:38:40.867Z"
+    },
     {
       "id": "err-3w4eksp",
       "source": "POST /api/auth/login-by-id",
