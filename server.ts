@@ -77,6 +77,8 @@ const INITIAL_DB = {
       },
       videoData: null
     }
+  } as Record<string, any>
+};
 
 const INITIAL_BROADCAST_ROOM = {
   id: 'main_broadcast_room',
@@ -1592,6 +1594,13 @@ async function startServer() {
         return res.status(404).json({ error: 'ژوور بەردەست نییە' }); // Room not found
       } // End if room not found
 
+      // Update room data
+      const room = db.syncGroups[roomId];
+      if (currentTime !== undefined) room.playback.currentTime = Number(currentTime);
+      if (isPlaying !== undefined) room.playback.isPlaying = Boolean(isPlaying);
+      if (currentMovieUrl !== undefined) room.currentMovieUrl = currentMovieUrl;
+      if (videoData !== undefined) room.videoData = videoData; // Update videoData
+
       // Handle user heartbeat (lastSeen update)
       if (userCode) {
         const cleanCode = String(userCode).trim().toUpperCase();
@@ -1607,13 +1616,6 @@ async function startServer() {
             lastSeen: new Date().toISOString()
           });
         }
-      }
-      // Update room data
-      const room = db.syncGroups[roomId];
-      if (currentTime !== undefined) room.playback.currentTime = Number(currentTime);
-      if (isPlaying !== undefined) room.playback.isPlaying = Boolean(isPlaying);
-      if (currentMovieUrl !== undefined) room.currentMovieUrl = currentMovieUrl;
-      if (videoData !== undefined) room.videoData = videoData; // Update videoData
       }
 
       // Handle new chat message
@@ -3368,126 +3370,6 @@ async function startServer() {
           }
         }
       }
-
-      if (changed) {
-        await saveDB(db);
-      }
-    } catch (e) {
-      console.error("Error in empty room cleanup setInterval:", e);
-    }
-  }, 10000);
-  
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log('==================================================');
-    console.log(`CinemaChat Server started on http://0.0.0.0:${PORT}`);
-    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log('==================================================');
-  });
-}
-
-startServer().catch(err => {
-  console.error('FATAL SERVER ERROR:', err);
-});
-            const updatedAtStr = room?.playback?.updatedAt || room?.updatedAt;
-            if (updatedAtStr) {
-              if (new Date(updatedAtStr) < fiveHoursAgo) {
-                delete db.rooms[roomId];
-                console.log(`[Maintenance] Purged stale temporary room: ${roomId}`);
-                dbModified = true;
-              }
-            } else {
-              delete db.rooms[roomId];
-              dbModified = true;
-            }
-          }
-        }
-      }
-
-      // Clean stale syncGroups in db.syncGroups
-      if (db.syncGroups) {
-        for (const groupId of Object.keys(db.syncGroups)) {
-          if (groupId === 'global_room_official') continue;
-          const group = db.syncGroups[groupId];
-          const updatedAtStr = group?.playback?.updatedAt || group?.updatedAt || group?.createdAt;
-          if (updatedAtStr) {
-            if (new Date(updatedAtStr) < fiveHoursAgo) {
-              delete db.syncGroups[groupId];
-              console.log(`[Maintenance] Purged stale temporary syncGroup: ${groupId}`);
-              dbModified = true;
-            }
-          } else {
-            delete db.syncGroups[groupId];
-            dbModified = true;
-          }
-        }
-      }
-
-      if (dbModified) {
-        await saveDB(db);
-        console.log('[Maintenance] db.json persisted after active cleanup round.');
-      }
-    } catch (err) {
-      console.error('[Maintenance] Error during periodic session automatic cleanup:', err);
-    }
-  };
-
-  // Run immediately on boot, and then every 15 minutes
-  runDatabaseMaintenance();
-  setInterval(runDatabaseMaintenance, 15 * 60 * 1000);
-
-  // Room empty cleanup interval - runs every 10 seconds
-  setInterval(async () => {
-    try {
-      if (!db || !Array.isArray(db.rooms)) return;
-      const now = new Date();
-      let changed = false;
-      
-      db.rooms = db.rooms.filter((room: any) => {
-        if (room.id === 'global_room_official') return true;
-        
-        // 1. Filter out inactive users (no heartbeat in last 20 seconds)
-        if (Array.isArray(room.activeUsers)) {
-          const initialUserCount = room.activeUsers.length;
-          room.activeUsers = room.activeUsers.filter((u: any) => {
-            const timeLimit = 20000; // 20 seconds threshold for active user
-            const userTime = u.lastSeen || u.joinedAt;
-            if (!userTime) return false;
-            return (now.getTime() - new Date(userTime).getTime()) < timeLimit;
-          });
-          if (room.activeUsers.length !== initialUserCount) {
-            changed = true;
-          }
-        } else {
-          room.activeUsers = [];
-          changed = true;
-        }
-
-        // 2. Track & handle empty rooms
-        if (room.activeUsers.length === 0) {
-          if (!room.emptySince) {
-            room.emptySince = now.toISOString();
-            changed = true;
-            return true; // Keep for now
-          } else {
-            const emptyMs = now.getTime() - new Date(room.emptySince).getTime();
-            if (emptyMs >= 60000) { // 60 seconds (1 minute) threshold
-              console.log(`[Dynamic Clean] Room ${room.id} (${room.name}) was empty for >1 min. Auto-deleted.`);
-              if (db.syncGroups && db.syncGroups[room.id]) {
-                delete db.syncGroups[room.id];
-              }
-              changed = true;
-              return false; // DELETE room
-            }
-          }
-        } else {
-          // Room has active users, clear emptySince timer if present
-          if (room.emptySince) {
-            delete room.emptySince;
-            changed = true;
-          }
-        }
-        return true; // KEEP room
-      });
 
       if (changed) {
         await saveDB(db);
