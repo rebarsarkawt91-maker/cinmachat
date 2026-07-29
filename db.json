@@ -21,12 +21,12 @@
   "heroConfig": {
     "youtubeId": "YPY7J-flzE8",
     "manualFeaturedId": null,
-    "heroVideoUrl": "https:&#x2F;&#x2F;www.youtube.com&#x2F;watch?v=irVNGjRFZGk",
+    "heroVideoUrl": "https://www.youtube.com/watch?v=irVNGjRFZGk",
     "heroPlaylist": [
-      "https:&#x2F;&#x2F;www.youtube.com&#x2F;watch?v=irVNGjRFZGk"
+      "https://www.youtube.com/watch?v=irVNGjRFZGk"
     ],
     "video_trailers": [
-      "https:&#x2F;&#x2F;www.youtube.com&#x2F;watch?v=irVNGjRFZGk"
+      "https://www.youtube.com/watch?v=irVNGjRFZGk"
     ]
   },
   "syncGroups": {

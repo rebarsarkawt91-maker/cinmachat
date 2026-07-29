@@ -94,6 +94,23 @@ const INITIAL_DB = {
   } as Record<string, any>
 };
 
+const INITIAL_GLOBAL_ROOM = {
+  id: "global_room_official",
+  name: "پەخشی ڕاستەوخۆ",
+  currentMovieId: "hero-promo",
+  playback: {
+    isPlaying: true,
+    currentTime: 0,
+    updatedAt: new Date().toISOString()
+  },
+  videoData: {
+    id: "hero-promo",
+    title: "پەخشی ڕاستەوخۆ",
+    isYouTube: true,
+    url: "https://www.youtube.com/embed/YPY7J-flzE8"
+  }
+};
+
 const INITIAL_BROADCAST_ROOM = {
   id: 'main_broadcast_room',
   name: 'هۆڵی پەخشی سەرەکی (Broadcast)',
@@ -1672,14 +1689,27 @@ async function startServer() {
       const { id } = req.params;
       const { uniqueCode, username } = req.body;
       const isBroadcastRoom = id === 'main_broadcast_room';
+      const roomId = id.trim().toUpperCase(); // Room ID is uppercase
+
+      if (!db.syncGroups) db.syncGroups = {}; // Ensure syncGroups exists
+
+      // Initialize broadcast room if it doesn't exist
+      if (!db.syncGroups[roomId] && isBroadcastRoom) {
+        db.syncGroups[roomId] = INITIAL_BROADCAST_ROOM;
+        await saveDB(db); // Persist the new room
+      }
+
+      if (!db.syncGroups[roomId]) { // If room still not found
+        return res.status(404).json({ error: 'ژوور بەردەست نییە' }); // Return 404
+      }
+
+      const room = db.syncGroups[roomId];
 
       let cleanCode = uniqueCode ? uniqueCode.trim().toUpperCase() : ''; // Clean unique code
       if (isBroadcastRoom && !cleanCode) {
         // Generate automatic unique identifier for guest
         cleanCode = 'GUEST_' + Math.random().toString(36).substring(2, 8).toUpperCase();
       }
-
-      const room = db.syncGroups[roomId];
 
       // Access Control check: validate uniqueCode in database (bypass for Broadcast Room)
       const userExists = db.users && db.users.some((u: any) => {
@@ -1693,19 +1723,6 @@ async function startServer() {
 
       if (!cleanCode && !isBroadcastRoom) { // Only require code if not broadcast room
         return res.status(400).json({ error: 'پێویستە کۆدی خۆت بنەخشێنیت' });
-      }
-
-      if (!db.syncGroups) db.syncGroups = {}; // Ensure syncGroups exists
-      const roomId = id.trim().toUpperCase(); // Room ID is uppercase
-
-      // Initialize broadcast room if it doesn't exist
-      if (!db.syncGroups[roomId] && isBroadcastRoom) {
-        db.syncGroups[roomId] = INITIAL_BROADCAST_ROOM;
-        await saveDB(db); // Persist the new room
-      }
-
-      if (!db.syncGroups[roomId]) { // If room still not found
-        return res.status(404).json({ error: 'ژوور بەردەست نییە' }); // Return 404
       }
 
       if (!isBroadcastRoom && !userExists && !isGlobalHost && !isRoomHost && !isVipTicketCode && cleanCode !== 'ADMIN') {
@@ -1749,7 +1766,7 @@ async function startServer() {
     const updateData = req.body;
     if (!db.syncGroups) db.syncGroups = {}; // Ensure syncGroups exists
     if (!db.syncGroups[id]) db.syncGroups[id] = { id, name: id, activeUsers: [], chatMessages: [], playback: { isPlaying: false, currentTime: 0, updatedAt: new Date().toISOString() } }; // Initialize if not exists
-    db.syncGroups[id] = { ...db.syncGroups[id], ...updateData, updatedAt: new Date().toISOString() };
+    const room = db.syncGroups[id] = { ...db.syncGroups[id], ...updateData, updatedAt: new Date().toISOString() };
 
     await saveDB(db);
     res.json({ success: true, room });
@@ -2998,15 +3015,15 @@ async function startServer() {
       const webhookSecret = process.env.WHATSAPP_WEBHOOK_SECRET || 'Cinemachat_Secure_2024';
       const adminNumber = process.env.WHATSAPP_ADMIN_NUMBER || '9647701966649';
 
+      // 2. Security Check: Admin number enforcement (handling with/without +)
+      const normalizedSender = String(sender).replace(/\D/g, '');
+
       // 1. Security Check: Secret verification
       if (secret !== webhookSecret) {
         console.warn(`[Webhook Security] Unauthorized attempt from: ${sender}`);
         await addIntrusionAttempt(db, normalizedSender, req.url, "Unauthorized WhatsApp Webhook Access", "Webhook Security Breach"); // Added
         return res.status(401).json({ error: 'Unauthorized webhook access' });
       }
-
-      // 2. Security Check: Admin number enforcement (handling with/without +)
-      const normalizedSender = String(sender).replace(/\D/g, '');
       const normalizedAdmin = adminNumber.replace(/\D/g, '');
 
       if (normalizedSender !== normalizedAdmin) {
