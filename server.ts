@@ -1,4 +1,10 @@
 import 'dotenv/config';
+
+// Ensure NODE_ENV defaults to 'production' so downstream checks work correctly
+// on platforms (like Render) that don't automatically set it.
+if (!process.env.NODE_ENV) {
+  process.env.NODE_ENV = 'production';
+}
 import express from 'express';
 import cors from 'cors';
 import { createServer as createViteServer } from 'vite';
@@ -3271,11 +3277,47 @@ async function startServer() {
 
   app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({ server: { middlewareMode: true, hmr: { port: 0 } }, appType: 'spa' }); // Ensure HMR is configured
+  // Determine mode: production if dist/index.html exists or NODE_ENV is 'production'
+  const distPath = path.join(process.cwd(), 'dist');
+  let isProduction = process.env.NODE_ENV === 'production';
+  if (!isProduction) {
+    try {
+      readFileSync(path.join(distPath, 'index.html'));
+      isProduction = true;
+    } catch {
+      // dist/index.html not found — dev mode
+    }
+  }
+
+  if (isProduction) {
+    console.log('[Server] Production mode — serving frontend from dist/');
+    app.use(express.static(distPath, {
+      maxAge: '1y',
+      setHeaders: (res: any, filePath: string) => {
+        if (filePath.endsWith('.js')) {
+          res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+        } else if (filePath.endsWith('.css')) {
+          res.setHeader('Content-Type', 'text/css; charset=utf-8');
+        } else if (filePath.endsWith('.html')) {
+          res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        }
+      }
+    }));
+    // SPA fallback: serve index.html for all non-API, non-file routes
+    app.get('*', (req, res) => {
+      if (req.path.startsWith('/api/')) return;
+      res.sendFile(path.join(distPath, 'index.html'), (err: any) => {
+        if (err) {
+          console.error('[Server] Failed to send index.html:', err);
+          res.status(500).send('Server error');
+        }
+      });
+    });
+  } else {
+    console.log('[Server] Development mode — using Vite middleware');
+    const vite = await createViteServer({ server: { middlewareMode: true, hmr: { port: 0 } }, appType: 'spa' });
     app.use(vite.middlewares);
-    // Fallback for development if Vite doesn't handle the request (e.g., Vite dev server is not running)
-    app.get('*', (req, res, next) => { // Added next to allow other routes to handle
+    app.get('*', (req, res, next) => {
       if (!res.headersSent) {
         res.status(200).send(`
           <!DOCTYPE html>
@@ -3285,13 +3327,9 @@ async function startServer() {
           </html>
         `);
       } else {
-        next(); // Pass to next middleware if headers already sent
+        next();
       }
     });
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => res.sendFile(path.join(distPath, 'index.html')));
   }
 
   app.use((err: any, req: any, res: any, next: any) => {
