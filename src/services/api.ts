@@ -4,14 +4,9 @@
 
 export const api = {
   resolveApiUrl(url: string): string {
-    if (!url.startsWith('/api')) return url;
-    if (typeof window === 'undefined') return url;
-
-    const host = window.location.hostname;
-    const isLocal = host === 'localhost' || host === '127.0.0.1' || host === '::1';
-    if (isLocal) return url;
-
-    return `https://cinemachat-server.onrender.com${url}`;
+    // Use same-origin relative paths so Firebase Hosting redirects /api/* to the
+    // Render backend via firebase.json redirects. No hardcoded Render URLs needed.
+    return url;
   },
 
   async baseFetch(url: string, options: any = {}, retries = 5): Promise<any> {

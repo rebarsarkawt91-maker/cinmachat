@@ -2948,69 +2948,67 @@ async function startServer() {
   });
 
   app.post('/api/admin/post-movie', async (req, res) => {
-    const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, quality, tags, category, rating, year, type } = req.body;
-    
-    // VALIDATION: Detailed error reporting as requested
-    if (!title) return res.status(400).json({ success: false, error: "ناونیشان پێویستە (Title is required)" });
-    if (!category) return res.status(400).json({ success: false, error: "پۆلێن پێویستە (Category is required)" });
-    
-    // Primary video source - accept ANY valid URL
-    const activeVideoSource = streamingUrl || videoUrl || req.body.external_link;
-    if (!activeVideoSource) return res.status(400).json({ success: false, error: "لینکی ڤیدیۆ پێویستە (Video source is required)" });
-
-    const finalPoster = posterUrl || image || 'https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800';
-
-    console.log(`[Admin] Posting movie: ${title} | Source: ${activeVideoSource}`);
-    
-    const ytRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
-    
-    // Check if the main source is YouTube
-    const ytMatch = activeVideoSource?.match(ytRegex);
-    const ytEmbedUrl = ytMatch ? `https://www.youtube.com/embed/${ytMatch[1]}` : null;
-
-    // Process trailer
-    const trailerYtMatch = trailerUrl?.match(ytRegex);
-    const trailerEmbedUrl = trailerYtMatch ? `https://www.youtube.com/embed/${trailerYtMatch[1]}` : trailerUrl;
-
-    const newMovie = {
-      id: `manual-${Date.now()}`,
-      title: title,
-      description: description || "",
-      image: finalPoster,
-      posterUrl: finalPoster,
-      embedUrl: ytEmbedUrl || activeVideoSource, // Direct link/iframe strategy
-      videoUrl: activeVideoSource,
-      trailerUrl: trailerEmbedUrl,
-      streamingUrl: activeVideoSource,
-      vidmolyUrl: vidmolyUrl || "",
-      streamwishUrl: streamwishUrl || "",
-      fileLrunUrl: fileLrunUrl || "",
-      external_link: activeVideoSource,
-      isYouTube: !!ytEmbedUrl,
-      quality: quality || 'HD',
-      date: new Date().toISOString(),
-      isNetflixOriginal: title?.toLowerCase().includes('netflix'),
-      tags: Array.isArray(tags) ? tags : [category || "هەمووی"],
-      category: category || "هەمووی", // Ensure category is set
-      rating: rating || "",
-      year: year || "",
-      type: type || "movie",
-      whatsappLink: 'https://chat.whatsapp.com/Cinmachat'
-    };
-
     try {
-      // Admin save: local only
-    } catch (e: any) {
-      console.error('CRITICAL: Local save failed:', e.message || e);
-    }
+      const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, quality, tags, category, rating, year, type } = req.body;
 
-    const adminName = req.body.adminName || "Admin";
-    db.manualMovies.push(newMovie);
-    await addAuditLog(db, adminName, "Post Movie", `فیلمی نوێ زیادکرا: "${newMovie.title}"`);
-    await saveDB(db);
-    // Add to cache while preventing duplicates
-    setMoviesCache(prev => [newMovie, ...prev.filter(m => m.id !== newMovie.id)]);
-    res.json({ success: true, movie: newMovie });
+      // VALIDATION: Detailed error reporting as requested
+      if (!title) return res.status(400).json({ success: false, error: "ناونیشان پێویستە (Title is required)" });
+      if (!category) return res.status(400).json({ success: false, error: "پۆلێن پێویستە (Category is required)" });
+
+      // Primary video source - accept ANY valid URL
+      const activeVideoSource = streamingUrl || videoUrl || req.body.external_link;
+      if (!activeVideoSource) return res.status(400).json({ success: false, error: "لینکی ڤیدیۆ پێویستە (Video source is required)" });
+
+      const finalPoster = posterUrl || image || 'https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800';
+
+      console.log(`[Admin] Posting movie: ${title} | Source: ${activeVideoSource}`);
+
+      const ytRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
+
+      // Check if the main source is YouTube
+      const ytMatch = activeVideoSource?.match(ytRegex);
+      const ytEmbedUrl = ytMatch ? `https://www.youtube.com/embed/${ytMatch[1]}` : null;
+
+      // Process trailer
+      const trailerYtMatch = trailerUrl?.match(ytRegex);
+      const trailerEmbedUrl = trailerYtMatch ? `https://www.youtube.com/embed/${trailerYtMatch[1]}` : trailerUrl;
+
+      const newMovie = {
+        id: `manual-${Date.now()}`,
+        title: title,
+        description: description || "",
+        image: finalPoster,
+        posterUrl: finalPoster,
+        embedUrl: ytEmbedUrl || activeVideoSource,
+        videoUrl: activeVideoSource,
+        trailerUrl: trailerEmbedUrl,
+        streamingUrl: activeVideoSource,
+        vidmolyUrl: vidmolyUrl || "",
+        streamwishUrl: streamwishUrl || "",
+        fileLrunUrl: fileLrunUrl || "",
+        external_link: activeVideoSource,
+        isYouTube: !!ytEmbedUrl,
+        quality: quality || 'HD',
+        date: new Date().toISOString(),
+        isNetflixOriginal: title?.toLowerCase().includes('netflix'),
+        tags: Array.isArray(tags) ? tags : [category || "هەمووی"],
+        category: category || "هەمووی",
+        rating: rating || "",
+        year: year || "",
+        type: type || "movie",
+        whatsappLink: 'https://chat.whatsapp.com/Cinmachat'
+      };
+
+      const adminName = req.body.adminName || "Admin";
+      db.manualMovies.push(newMovie);
+      await addAuditLog(db, adminName, "Post Movie", `فیلمی نوێ زیادکرا: "${newMovie.title}"`);
+      await saveDB(db);
+      setMoviesCache(prev => [newMovie, ...prev.filter(m => m.id !== newMovie.id)]);
+      res.json({ success: true, movie: newMovie });
+    } catch (err: any) {
+      console.error('[Admin] Error posting movie:', err?.message || err);
+      res.status(500).json({ success: false, error: 'هەڵەیەک ڕوویدا لە کەیەی پۆستکردنی فیلم' });
+    }
   });
 
   // CRITICAL: WhatsApp Automation Webhook

@@ -179,16 +179,11 @@ async function fetchApi(
 ): Promise<Response> {
   const method = (options?.method || "GET").toUpperCase();
   const customHeaders = new Headers(options?.headers || {});
-  const isLocalHost =
-    typeof window !== "undefined" &&
-    (window.location.hostname === "localhost" ||
-      window.location.hostname === "127.0.0.1" ||
-      window.location.hostname === "::1");
 
-  const targetPath =
-    !isLocalHost && path.startsWith("/api")
-      ? `https://cinemachat-server.onrender.com${path}`
-      : path;
+  // Use relative path (same-origin) so Firebase Hosting redirects /api/* to Render
+  // instead of hardcoding the Render URL directly. This avoids CORS issues and
+  // ensures the request goes through the proper proxy chain.
+  const targetPath = path;
 
   // Avoid forcing preflight on GET/HEAD by not sending JSON content-type by default.
   const shouldAddJsonContentType =
@@ -362,10 +357,21 @@ async function fetchApi(
       await new Promise((r) => setTimeout(r, 2000));
       return fetchApi(path, options, retries - 1);
     }
-    // Final fallback
+    // Final fallback — differentiate between network/connectivity failures
+    // and a server that is reachable but returning errors.
+    const isNetworkError =
+      err instanceof TypeError &&
+      (err.message.includes("fetch") ||
+        err.message.includes("NetworkError") ||
+        err.message.includes("Failed to fetch") ||
+        err.message.includes("net::ERR_"));
+    const errorMessage = isNetworkError
+      ? "Network error — check your internet connection or firewall"
+      : "Server unavailable — backend may be starting or down";
+    const errorStatus = isNetworkError ? 0 : 503;
     return {
       ok: false,
-      status: 503,
+      status: errorStatus,
       json: async () => {
         if (
           path.includes("/api/admin/hero") ||
@@ -383,9 +389,9 @@ async function fetchApi(
         if (path.includes("/api/admin/users")) {
           return [];
         }
-        return { error: "Service unavailable" };
+        return { error: errorMessage };
       },
-      text: async () => "Service unavailable",
+      text: async () => errorMessage,
       headers: new Headers(),
     } as Response;
   }
