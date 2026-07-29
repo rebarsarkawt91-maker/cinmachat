@@ -208,7 +208,8 @@ export function createAdminGuard(db: any) {
       );
       return res.status(401).json({
         success: false,
-        message: '⚠️ ڕێگەپێدراو نییە! ناوی ئەدمینی پێویست نەنێردراوە.'
+        message: '⚠️ ڕێگەپێدراو نییە! ناوی ئەدمینی پێویست نەنێردراوە.',
+        error: 'Admin name (adminName) is required'
       });
     }
 
@@ -233,7 +234,8 @@ export function createAdminGuard(db: any) {
       );
       return res.status(403).json({
         success: false,
-        message: '⚠️ تۆ دەسەڵاتی پێویستت نییە بۆ بینینی ئەم بەشە!'
+        message: '⚠️ تۆ دەسەڵاتی پێویستت نییە بۆ بینینی ئەم بەشە!',
+        error: 'Insufficient privileges'
       });
     }
 

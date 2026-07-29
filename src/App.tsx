@@ -8231,6 +8231,7 @@ export default function App() {
                                       movie.videoUrl,
                                   ),
                                   date: new Date().toISOString(),
+                                  adminName: currentUser?.username || "Admin",
                                 };
 
                                 const res = await fetchApi(
