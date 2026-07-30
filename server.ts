@@ -2916,6 +2916,7 @@ async function startServer() {
 
   // Alias for hero update requested by user
   app.post('/api/movies/hero', async (req, res) => {
+    if (!req.body) return res.status(400).json({ success: false, error: "Body is empty" });
     const playlist = req.body.heroPlaylist || req.body.video_trailers;
     if (playlist && Array.isArray(playlist)) {
       db.heroConfig.heroPlaylist = playlist.filter(Boolean); // Filter out null/empty strings
@@ -2929,6 +2930,9 @@ async function startServer() {
   });
 
   app.post('/api/admin/post-movie', async (req, res) => {
+    if (!req.body) {
+      return res.status(400).json({ success: false, error: "Body is empty — check Content-Type header (use application/json or text/plain)" });
+    }
     const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, quality, tags, category, rating, year, type } = req.body;
     
     // VALIDATION: Detailed error reporting as requested
@@ -3228,7 +3232,7 @@ async function startServer() {
         quality: '4K',
         date: new Date().toISOString(),
         tags: ['Trailer', 'Trailers'],
-        whatsappLink: db.socialLinks.group || 'https://chat.whatsapp.com/Cinmachat',
+        whatsappLink: socialLinks.group || 'https://chat.whatsapp.com/Cinmachat',
         heroPlaylist: heroPlaylist
       };
 
