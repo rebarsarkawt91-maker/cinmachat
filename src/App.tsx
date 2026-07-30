@@ -172,18 +172,19 @@ const realGetDoc = getDoc;
 const realSetDoc = setDoc;
 
 // Global API Fetch Helper
+const RENDER_API_BASE = 'https://cinemachat-server.onrender.com';
+
 async function fetchApi(
   path: string,
   options?: RequestInit,
   retries = 3,
+  useDirectFallback = true,
 ): Promise<Response> {
   const method = (options?.method || "GET").toUpperCase();
   const customHeaders = new Headers(options?.headers || {});
 
-  // Use relative path (same-origin) so Firebase Hosting redirects /api/* to Render
-  // instead of hardcoding the Render URL directly. This avoids CORS issues and
-  // ensures the request goes through the proper proxy chain.
-  const targetPath = path;
+  // Use Render URL directly to avoid Firebase 307 redirects that break POST requests
+  const targetPath = useDirectFallback ? `${RENDER_API_BASE}${path}` : path;
 
   // Avoid forcing preflight on GET/HEAD by not sending JSON content-type by default.
   const shouldAddJsonContentType =
@@ -204,6 +205,26 @@ async function fetchApi(
 
     if (!res.ok) {
       const text = await res.clone().text();
+
+      // Retry on 502/503/504 (server cold start or temporary outage)
+      if (
+        retries > 0 && (
+          res.status === 502 ||
+          res.status === 503 ||
+          res.status === 504 ||
+          text.includes("Starting Server") ||
+          text.includes("is starting") ||
+          text.includes("<!DOCTYPE html>")
+        )
+      ) {
+        const delay = res.status === 502 || res.status === 503 || res.status === 504 ? 4000 : 2000;
+        console.log(
+          `[fetchApi] Server cold start or temporary error (${res.status}) for ${path}, retrying in ${delay}ms... (${retries} left)`,
+        );
+        await new Promise((r) => setTimeout(r, delay));
+        return fetchApi(path, options, retries - 1, useDirectFallback);
+      }
+
       if (
         res.status === 429 ||
         text === "Rate exceeded." ||
@@ -283,7 +304,7 @@ async function fetchApi(
           `[fetchApi] Received HTML for ${path}, retrying in 2s... (${retries} left)`,
         );
         await new Promise((r) => setTimeout(r, 2000));
-        return fetchApi(path, options, retries - 1);
+        return fetchApi(path, options, retries - 1, useDirectFallback);
       }
     }
 
@@ -355,7 +376,42 @@ async function fetchApi(
     if (retries > 0) {
       console.warn(`[fetchApi] Failed ${path}, retrying in 2s...`, err);
       await new Promise((r) => setTimeout(r, 2000));
-      return fetchApi(path, options, retries - 1);
+      return fetchApi(path, options, retries - 1, useDirectFallback);
+    }
+    // Bidirectional fallback: if direct Render URL fails, try same-origin
+    // (Firebase 307 redirect to Render); vice versa.
+    // Return any server response (not just 2xx) so the caller gets the real API error.
+    if (useDirectFallback) {
+      console.warn(`[fetchApi] Direct URL failed for ${path}, trying same-origin via Firebase redirect...`);
+      // Use text/plain Content-Type for POST/PUT/PATCH/DELETE so the 307
+      // redirect from Firebase to Render avoids a CORS preflight (text/plain
+      // is a "simple" content-type that does not trigger OPTIONS).
+      const fallbackHeaders = new Headers(customHeaders);
+      const method = (options?.method || "GET").toUpperCase();
+      const isJsonMethod = method !== "GET" && method !== "HEAD";
+      if (isJsonMethod && fallbackHeaders.get("Content-Type") === "application/json") {
+        fallbackHeaders.set("Content-Type", "text/plain");
+      }
+      try {
+        const sameOriginRes = await fetch(path, {
+          ...options,
+          headers: fallbackHeaders,
+        });
+        return sameOriginRes;
+      } catch (sameOriginErr) {
+        console.warn(`[fetchApi] Same-origin also failed for ${path}:`, sameOriginErr);
+      }
+    } else {
+      console.warn(`[fetchApi] Same-origin failed for ${path}, trying direct Render URL...`);
+      try {
+        const directRes = await fetch(`${RENDER_API_BASE}${path}`, {
+          ...options,
+          headers: customHeaders,
+        });
+        return directRes;
+      } catch (directErr) {
+        console.warn(`[fetchApi] Direct Render URL also failed for ${path}:`, directErr);
+      }
     }
     // Final fallback — differentiate between network/connectivity failures
     // and a server that is reachable but returning errors.
@@ -661,6 +717,29 @@ const popOutPlayer = (url: string | undefined) => {
   }
 };
 
+// Returns the first available playable URL from a movie.
+// Priority: embedUrl (explicitly embed-formatted) > videoUrl > source-specific fields > streamingUrl (raw) > external_link > externalMovieLink.
+// embedUrl is intentionally first because the server explicitly computes it as the embed-ready version,
+// while streamingUrl retains the raw user input (e.g. "watch?v=" instead of "embed/").
+function getMovieSourceUrl(movie: any): string | null {
+  if (!movie) return null;
+  return (
+    movie.embedUrl ||
+    movie.videoUrl ||
+    movie.hdtodayUrl ||
+    movie.vidsrcUrl ||
+    movie.vidmolyUrl ||
+    movie.streamwishUrl ||
+    movie.fileLrunUrl ||
+    movie.youtubeMovieUrl ||
+    movie.otherVideoUrl ||
+    movie.streamingUrl ||
+    movie.external_link ||
+    movie.externalMovieLink ||
+    null
+  );
+}
+
 import { getYTId as extractYouTubeId } from './utils/youtube'; // Use the shared utility
 
 const buildOptimizedYouTubeEmbedUrl = (url: string) => {
@@ -818,7 +897,7 @@ const ContentModule = ({
       // Upload to server endpoint
       const uploadRes = await fetchApi("/api/admin/upload-image", {
         method: "POST",
-        body: JSON.stringify({ imageData: compressedBase64 || (event.target as FileReader)?.result, fileName: file.name, adminName: currentUser?.username || "Admin" }),
+        body: JSON.stringify({ imageData: compressedBase64 || (event.target as FileReader)?.result, fileName: file.name, adminName: currentUser?.username || "Admin" }), // Ensure event.target is cast correctly
       });
       const uploadData = await uploadRes.json();
       if (uploadData.success) {
@@ -4672,15 +4751,10 @@ export default function App() {
     }
   };
 
-  // Update activeServerUrl when movie changes
+  // Update activeServerUrl when movie changes, using the same fallback chain as getMovieSourceUrl
   useEffect(() => {
     if (selectedMovie) {
-      setActiveServerUrl(
-        selectedMovie.streamingUrl ||
-          selectedMovie.vidsrcUrl ||
-          selectedMovie.embedUrl ||
-          null,
-      );
+      setActiveServerUrl(getMovieSourceUrl(selectedMovie));
     } else {
       setActiveServerUrl(null);
     }
@@ -4927,6 +5001,7 @@ export default function App() {
   useEffect(() => {
     if (!activeSyncGroup && selectedMovie?.id.startsWith("vip_movie_id_")) {
       setSelectedMovie(null);
+      setActiveServerUrl(null);
       setShowPlayer(false);
     }
   }, [activeSyncGroup, selectedMovie]);
@@ -4944,6 +5019,7 @@ export default function App() {
       const movie = movies.find((m) => m.id === movieId); // Ensure movies is up-to-date
       if (movie) {
         setSelectedMovie(movie);
+        setActiveServerUrl(getMovieSourceUrl(movie));
         setShowPlayer(true);
       }
     }
@@ -5185,10 +5261,10 @@ export default function App() {
   }, [socialProfile]);
 
   // Auto-select first movie for room creation by default
-  useEffect(() => {
+  useEffect(() => { // Ensure movies is available before setting default
     if (movies.length > 0 && (!dashboardCreateMovieUrl || dashboardCreateMovieUrl === "https://www.youtube.com/watch?v=Rsztt5qDj_A")) {
       const firstMovie = movies[0];
-      const url = firstMovie.embedUrl || firstMovie.videoUrl || "";
+      const url = getMovieSourceUrl(firstMovie) || "";
       setDashboardCreateMovieUrl(url);
       setDashboardCreateRoomName(`ژووری هاوڕێیانی ${firstMovie.title}`);
     }
@@ -5608,6 +5684,7 @@ export default function App() {
 
       if (activeFeaturedMovie) {
         setSelectedMovie(activeFeaturedMovie);
+        setActiveServerUrl(getMovieSourceUrl(activeFeaturedMovie));
         setShowPlayer(true);
       }
     } catch (err) {
@@ -5624,6 +5701,7 @@ export default function App() {
     setSocialTab("movies");
     if (activeFeaturedMovie) {
       setSelectedMovie(activeFeaturedMovie);
+      setActiveServerUrl(getMovieSourceUrl(activeFeaturedMovie));
       setShowPlayer(true);
     }
   };
@@ -5678,8 +5756,9 @@ export default function App() {
       );
       if (existingMovie) { // If movie exists in catalog, use it
         setSelectedMovie(existingMovie);
+        setActiveServerUrl(getMovieSourceUrl(existingMovie));
       } else {
-        setSelectedMovie({
+        const newGlobalMovie = {
           id: "global-stream-" + Date.now(),
           title: "پەخشی ڕاستەوخۆ",
           description: "ئەم ڤیدیۆیە لەلایەن ئەدمینەوە پەخش دەکرێت.",
@@ -5693,7 +5772,9 @@ export default function App() {
           date: new Date().toISOString(),
           tags: ["Live"],
           whatsappLink: config.socialLinks.whatsapp || config.socialLinks.group || "https://chat.whatsapp.com/DIwWkE5ZGuTYJrmODE0mI0",
-        });
+        };
+        setSelectedMovie(newGlobalMovie);
+        setActiveServerUrl(getMovieSourceUrl(newGlobalMovie));
       }
       setShowPlayer(true);
     }
@@ -5745,6 +5826,7 @@ export default function App() {
                   selectedMovie.embedUrl !== movieUpdate.embedUrl
                 ) {
                   setSelectedMovie(movieUpdate);
+                  setActiveServerUrl(getMovieSourceUrl(movieUpdate));
                   setShowPlayer(true);
                   setTranslatedContent(null);
                 }
@@ -5757,6 +5839,7 @@ export default function App() {
                 );
                 if (targetMovie) {
                   setSelectedMovie(targetMovie);
+                  setActiveServerUrl(getMovieSourceUrl(targetMovie));
                   setShowPlayer(true);
                   setTranslatedContent(null);
                 }
@@ -6655,15 +6738,9 @@ export default function App() {
                     key={`${idx}-${m.id}`}
                     className="flex items-center gap-3 text-gray-400 hover:text-white cursor-pointer transition-colors"
                     onClick={() => {
-                      if (m.external_link) {
-                        window.open(
-                          m.external_link,
-                          "_blank",
-                          "noopener,noreferrer",
-                        );
-                      } else {
-                        setSelectedMovie(m);
-                      }
+                      setSelectedMovie(m);
+                      setActiveServerUrl(getMovieSourceUrl(m));
+                      setShowPlayer(true);
                     }}
                   >
                     <span className="text-[10px] font-black uppercase text-brand-primary">
@@ -6732,6 +6809,7 @@ export default function App() {
                         className="flex-shrink-0 w-[160px] md:w-[220px] aspect-[2/3] rounded-xl overflow-hidden cursor-pointer relative group border border-white/5"
                         onClick={() => {
                           setSelectedMovie(movie);
+                          setActiveServerUrl(getMovieSourceUrl(movie));
                           setShowPlayer(true);
                         }}
                       >
@@ -6755,7 +6833,7 @@ export default function App() {
               </SafeRender>
 
               {/* Unified Stream Automation: Bottom Room (Live Global Sync & VIP side-by-side) */}
-              {activeFeaturedMovie && (
+              {activeFeaturedMovie && ( // Only render if there's a featured movie
                 <RoomSection
                   key={activeSyncGroup?.id || "empty-room"}
                   activeFeaturedMovie={activeFeaturedMovie}
@@ -6831,28 +6909,11 @@ export default function App() {
                         exit={{ opacity: 0, scale: 0.9 }}
                         className="group relative cursor-pointer"
                         onClick={(e) => {
-                          if (movie.external_link || movie.externalMovieLink) {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            let finalUrl = (
-                              movie.external_link ||
-                              movie.externalMovieLink ||
-                              ""
-                            ).trim();
-                            if (finalUrl && !finalUrl.startsWith("http")) { // Ensure finalUrl is not empty before prepending
-                              finalUrl = "https://" + finalUrl;
-                            }
-                            window.open(
-                              finalUrl,
-                              "_blank",
-                              "noopener,noreferrer",
-                            );
-                          } else {
-                            window.open(
-                              `${window.location.origin}/?movieId=${movie.id}`,
-                              "_blank",
-                            );
-                          }
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setSelectedMovie(movie);
+                          setActiveServerUrl(getMovieSourceUrl(movie));
+                          setShowPlayer(true);
                         }}
                       >
                         <div className="aspect-[2/3] rounded-2xl overflow-hidden border border-white/10 group-hover:border-brand-primary transition-all relative shadow-2xl group-hover:-translate-y-2 duration-300">
@@ -6878,14 +6939,14 @@ export default function App() {
 
                           {/* Point 55: Quality Badge */}
                           <div className="absolute top-2 right-2 px-2 py-0.5 bg-black/60 backdrop-blur-md rounded text-[10px] font-black text-white border border-white/10 z-10 flex items-center gap-1">
-                            {movie.embedUrl && (
+                            {getMovieSourceUrl(movie) && (
                               <Play className="w-2 h-2 fill-current text-brand-primary" />
                             )}
                             {movie.quality}
                           </div> {/* Quality Badge */}
 
                           <div className="absolute inset-0 bg-black/60 flex flex-col justify-center items-center p-4 opacity-0 group-hover:opacity-100 transition-opacity">
-                            {movie.embedUrl ? (
+                            {getMovieSourceUrl(movie) ? (
                               <div className="flex flex-col items-center gap-4">
                                 <div className="w-16 h-16 bg-brand-primary text-white rounded-full flex items-center justify-center shadow-2xl hover:scale-110 transition-transform">
                                   <Play className="w-8 h-8 fill-current" />
@@ -7020,9 +7081,9 @@ export default function App() {
           >
             <div
               className="absolute inset-0 bg-black/90 backdrop-blur-xl"
-              onClick={() => setSelectedMovie(null)}
+              onClick={() => { setSelectedMovie(null); setActiveServerUrl(null); }}
             />
-
+ 
             <motion.div
               initial={{ scale: 0.9, y: 20 }}
               animate={{ scale: 1, y: 0 }}
@@ -7032,6 +7093,7 @@ export default function App() {
               <button
                 onClick={() => {
                   setSelectedMovie(null);
+                  setActiveServerUrl(null);
                   setShowPlayer(false);
                   if (activeSyncGroup?.isVIP) {
                     setActiveSyncGroup(null);
@@ -7086,6 +7148,7 @@ export default function App() {
                             className="w-full h-[120%] -translate-y-[8.3%] border-none shadow-[0_0_200px_rgba(229,9,20,0.4)] pointer-events-none"
                             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                             allowFullScreen
+                            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
                           />
                           {/* Absolute CSS overlays to completely mask YouTube overlays (branding, controls) */}
                           <div className="absolute top-0 left-0 right-0 h-16 bg-gradient-to-b from-black via-black/40 to-transparent pointer-events-none z-20" />
@@ -7112,6 +7175,7 @@ export default function App() {
                           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                           allowFullScreen
                           id="streaming-player"
+                          sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
                         /> // Generic Embed Player
                       ) : (
                         <div className="relative w-full h-full flex items-center justify-center bg-black">
@@ -7341,15 +7405,11 @@ export default function App() {
                         className="w-full h-full object-cover"
                         alt={selectedMovie.title} // Movie Poster
                       />
-                      {selectedMovie.embedUrl && (
+                      {getMovieSourceUrl(selectedMovie) && (
                         <button
                           onClick={() => {
                             if (config.playerMode === "popup") {
-                              popOutPlayer(
-                                selectedMovie.vidsrcUrl ||
-                                  selectedMovie.embedUrl ||
-                                  selectedMovie.videoUrl,
-                              );
+                              popOutPlayer(getMovieSourceUrl(selectedMovie));
                             } else {
                               setShowPlayer(true);
                             }
@@ -7598,18 +7658,11 @@ export default function App() {
                           )}
                       </div>
 
-                      {selectedMovie.embedUrl && (
+                      {getMovieSourceUrl(selectedMovie) && (
                         <div className="flex gap-3">
                           <button
                             onClick={() => {
-                              if (selectedMovie.externalMovieLink) {
-                                window.open(
-                                  selectedMovie.externalMovieLink,
-                                  "_blank",
-                                );
-                              } else {
-                                setShowPlayer(!showPlayer);
-                              }
+                              setShowPlayer(!showPlayer);
                             }}
                             className="flex-1 py-3 bg-brand-primary text-white rounded-xl font-black flex items-center justify-center gap-3 hover:bg-red-700 transition-all active:scale-95 shadow-lg shadow-red-600/10"
                           >
@@ -7628,7 +7681,7 @@ export default function App() {
                               if (activeServerUrl) {
                                 popOutPlayer(activeServerUrl);
                               } else {
-                                popOutPlayer(selectedMovie.embedUrl);
+                                popOutPlayer(getMovieSourceUrl(selectedMovie));
                               }
                             }}
                             className="px-6 py-3 bg-white/5 border border-white/10 text-white rounded-xl font-black flex items-center justify-center gap-2 hover:bg-white/10 transition-all"
@@ -7658,17 +7711,19 @@ export default function App() {
                         </div>
                       )}
 
-                      {activeSyncGroup && selectedMovie.embedUrl && (
+                      {activeSyncGroup && getMovieSourceUrl(selectedMovie) && (
                         <button
                           onClick={async () => {
                             const targetRoomId = activeSyncGroup.id;
+                            const movieUrl = getMovieSourceUrl(selectedMovie) || "";
                             const vidId =
                               selectedMovie.videoId ||
-                              selectedMovie.videoUrl ||
-                              selectedMovie.embedUrl;
+                              movieUrl;
                             const isYoutube =
                               !!selectedMovie.videoId ||
-                              selectedMovie.isYouTube;
+                              selectedMovie.isYouTube ||
+                              movieUrl.includes("youtube.com") ||
+                              movieUrl.includes("youtu.be");
 
                             const updatePayload: any = {
                               currentMovieId: selectedMovie.id,
@@ -7678,16 +7733,13 @@ export default function App() {
                                 image: selectedMovie.image,
                                 category: selectedMovie.tags[0] || "Movie",
                                 url: isYoutube
-                                  ? selectedMovie.embedUrl ||
-                                    `https://www.youtube.com/embed/${vidId}`
+                                  ? movieUrl
                                   : undefined,
                                 videoUrl: !isYoutube ? vidId : undefined,
                                 isYouTube: isYoutube,
                                 videoId: isYoutube
                                   ? selectedMovie.videoId ||
-                                    extractYouTubeId(
-                                      selectedMovie.embedUrl || "",
-                                    )
+                                    extractYouTubeId(movieUrl)
                                   : undefined,
                               },
                               playback: {
@@ -7756,6 +7808,7 @@ export default function App() {
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setSelectedMovie(m);
+                                setActiveServerUrl(getMovieSourceUrl(m));
                               }}
                               className="flex-shrink-0 w-24 md:w-32 group/item cursor-pointer"
                             >
@@ -7867,6 +7920,7 @@ export default function App() {
               embedUrl: vipRoomData.videoUrl,
             };
             setSelectedMovie(virtualMovie);
+            setActiveServerUrl(getMovieSourceUrl(virtualMovie));
             setShowPlayer(true);
           }
         }}
@@ -8412,15 +8466,12 @@ export default function App() {
                                     </select>
                                     <button // Post to Room Button
                                       onClick={async () => {
+                                        const movieUrl = getMovieSourceUrl(movie) || "";
                                         const isYoutube =
-                                          movie.embedUrl?.includes(
-                                            "youtube.com",
-                                          ) ||
-                                          movie.embedUrl?.includes("youtu.be");
+                                          movieUrl.includes("youtube.com") ||
+                                          movieUrl.includes("youtu.be");
                                         const vidId = isYoutube
-                                          ? extractYouTubeId(
-                                              movie.embedUrl || "",
-                                            ) || movie.id
+                                          ? extractYouTubeId(movieUrl) || movie.id
                                           : movie.id;
                                         const targetRoomId =
                                           activeSyncGroup?.id ||
@@ -8445,9 +8496,7 @@ export default function App() {
                                             videoId: vidId,
                                             title: movie.title,
                                             isYouTube: true,
-                                            url:
-                                              movie.embedUrl ||
-                                              `https://www.youtube.com/embed/${vidId}`,
+                                            url: movieUrl,
                                             image: movie.image,
                                             category: movie.tags[0] || "Movie",
                                           };

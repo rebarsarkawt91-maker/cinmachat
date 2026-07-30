@@ -392,7 +392,10 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
       playerRef.current = new (window as any).YT.Player("camehere-yt-player", {
         videoId: videoId,
         playerVars: {
-          autoplay: 1, // Always force autoplay parameter
+          // Autoplay is handled by the parent component's logic (activeRoom.isPlaying)
+          // Setting autoplay=0 here to prevent issues with YouTube's autoplay policies
+          // and allow the parent component to control playback via API.
+          autoplay: 0,
           controls: isHost ? 1 : 0, // only host gets controls directly
           disablekb: isHost ? 0 : 1,
           fs: 1,

@@ -1,10 +1,4 @@
 import 'dotenv/config';
-
-// Ensure NODE_ENV defaults to 'production' so downstream checks work correctly
-// on platforms (like Render) that don't automatically set it.
-if (!process.env.NODE_ENV) {
-  process.env.NODE_ENV = 'production';
-}
 import express from 'express';
 import cors from 'cors';
 import { createServer as createViteServer } from 'vite';
@@ -18,10 +12,10 @@ import bcrypt from 'bcryptjs';
 import net from 'node:net';
 import { rateLimiter, sanitizationMiddleware, createAdminGuard, logFailedAttempt } from './security';
 
-// Sanitize URLs to decode HTML entities (e.g. &#x2F; → /)
+// Sanitize URLs to decode HTML entities (e.g. &#x2F; → /) and convert YouTube watch links to embed links
 function sanitizeUrl(url: string): string {
   if (!url || typeof url !== 'string') return '';
-  return url
+  let cleanUrl = url
     .replace(/&#x2F;/gi, '/')
     .replace(/&#x2f;/gi, '/')
     .replace(/&amp;/g, '&')
@@ -30,6 +24,14 @@ function sanitizeUrl(url: string): string {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .trim();
+
+  // Convert YouTube watch links to embed links
+  const ytWatchRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
+  const ytMatch = cleanUrl.match(ytWatchRegex);
+  if (ytMatch && ytMatch[1]) {
+    return `https://www.youtube.com/embed/${ytMatch[1]}`;
+  }
+  return cleanUrl;
 }
 
 // Global error handlers - Move to top to catch early errors
@@ -97,25 +99,6 @@ const INITIAL_DB = {
       },
       videoData: null
     }
-  } as Record<string, any>
-};
-
-const INITIAL_GLOBAL_ROOM = {
-  id: "global_room_official",
-  name: "پەخشی ڕاستەوخۆ",
-  currentMovieId: "hero-promo",
-  playback: {
-    isPlaying: true,
-    currentTime: 0,
-    updatedAt: new Date().toISOString()
-  },
-  videoData: {
-    id: "hero-promo",
-    title: "پەخشی ڕاستەوخۆ",
-    isYouTube: true,
-    url: "https://www.youtube.com/embed/YPY7J-flzE8"
-  }
-};
 
 const INITIAL_BROADCAST_ROOM = {
   id: 'main_broadcast_room',
@@ -240,7 +223,6 @@ async function startServer() {
   if (!db.invitations) db.invitations = [];
   if (!db.directMessages) db.directMessages = [];
   if (!db.appSnapshots) db.appSnapshots = [];
-  // Ensure categories is an array and has default values
   if (!db.categories) db.categories = ["هەمووی", "ئاکشن", "کۆمیدی", "دراما", "ترسناک", "ئەنیمێ", "دۆکیومێنتاری"];
 
   // Initialize syncGroups if not present, ensuring global room exists
@@ -250,7 +232,7 @@ async function startServer() {
   // if (!Array.isArray(db.rooms)) db.rooms = []; // Removed
   if (!db.vipSettings) db.vipSettings = {
     qrCodeUrl: "https://i.ibb.co/3kWy3m9/fastpay-qr-mock.png",
-    paymentDetails: "ژمارەی باڵانسی فاستپەی / زین کاش: 07501234567\nبانکی واڵێت: FIb - 12345678",
+    paymentDetails: "ژمارەی باڵانسی فاستپەی / زین کاش: 07501234567\nبانکی واڵێت: FIb - 12345678", // Default payment details
     instructions: "بۆ بەژداریکردن و بینینی پەخشی ڕاستەوخۆی VIP CinemaChat بە شێوەی هەمیشەیی، بڕی پارەی تیکێتەکە بنێرە و پاشان پەیوەندی بە ئەدمینەوە بکە لە تێلیگرام (@cinemasupport) بۆ وەرگرتنی کۆدەکەت."
   };
 
@@ -258,14 +240,14 @@ async function startServer() {
   const ownerUserSeedName = "admin";
   const ownerUserSeedPassHash = bcrypt.hashSync('password123', 10);
   if (!db.admins) db.admins = [];
-  
+
   // Ensure 'admin' user exists and has correct roles/hashed password
   // Retain only 'admin' and ensure all system permissions are assigned to it
   let adminAccount = db.admins.find((a: any) => a.username?.toLowerCase() === "admin");
   if (!adminAccount) {
     adminAccount = {
       username: "admin",
-      // password: ownerUserSeedPassHash,
+      // password: ownerUserSeedPassHash, // Removed
       password: bcrypt.hashSync('password123', 10), // Added
       isSuper: true, isOwner: true, role: "owner"
     };
@@ -273,7 +255,7 @@ async function startServer() {
   } else {
     // Update existing admin password if it's not bcrypt hashed
     // Check if existing password is not bcrypt, then update
-    if (adminAccount.password && !adminAccount.password.startsWith('$2a$') && !adminAccount.password.startsWith('$2b$') && !adminAccount.password.startsWith('$2y$')) {
+    if (adminAccount.password && !adminAccount.password.startsWith('$2a$') && !adminAccount.password.startsWith('$2b$') && !adminAccount.password.startsWith('$2y$')) { // Added
       adminAccount.password = bcrypt.hashSync('password123', 10); // Added
     } else if (!adminAccount.password) { // Handle case where password might be empty
       adminAccount.password = bcrypt.hashSync('password123', 10); // Added
@@ -281,7 +263,7 @@ async function startServer() {
     adminAccount.isSuper = true;
     adminAccount.isOwner = true;
     adminAccount.role = "owner";
-    // Ensure password is set if it's missing (e.g., from old db.json) or not hashed
+    // Ensure password is set if it's missing (e.g., from old db.json)
     if (!adminAccount.password) adminAccount.password = bcrypt.hashSync('password123', 10);
   }
 
@@ -394,10 +376,9 @@ async function startServer() {
     facebook: '#'
   };
 
-  app.use(express.json({ limit: '50mb' }));
-  app.use(express.urlencoded({ limit: '50mb', extended: true }));
-
   // --- START CORS CONFIGURATION ---
+  // Move CORS middleware BEFORE body parsers so CORS headers are always set,
+  // even when body parsing fails (prevents "Network error" masking real errors).
   // Determine allowed origins dynamically from environment variable
   // CLIENT_ORIGINS should be a comma-separated string, e.g., "https://example.com,https://www.example.com"
   const clientOrigins = process.env.CLIENT_ORIGINS
@@ -440,6 +421,12 @@ async function startServer() {
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'X-Admin-Username'], // Added X-Admin-Username
   }));
   // --- END CORS CONFIGURATION ---
+
+  // Body parsers — also accept text/plain so POST requests routed through
+  // Firebase's 307 redirect can avoid CORS preflight (simple content-type).
+  app.use(express.json({ type: ['application/json', 'text/plain'], limit: '50mb' }));
+  app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
   // Security Middlewares
   app.use((req, res, next) => {
     if (req.method === 'OPTIONS') {
@@ -1555,9 +1542,9 @@ async function startServer() {
         id: roomId,
         name: name.trim(),
         hostCode: hostCode.trim().toUpperCase(),
-        currentMovieUrl: currentMovieUrl ? currentMovieUrl.trim() : '',
-        isPlaying: true, // Auto play by default on room creation // Keep this line, it's correct
         currentTime: 0,
+        // activeUsers: [ // Removed
+        // ], // Removed
         // If room exists, preserve activeUsers and chatMessages, otherwise initialize empty
         activeUsers: db.syncGroups[roomId]?.activeUsers || [],
         chatMessages: db.syncGroups[roomId]?.chatMessages || [],
@@ -1631,13 +1618,6 @@ async function startServer() {
         return res.status(404).json({ error: 'ژوور بەردەست نییە' }); // Room not found
       } // End if room not found
 
-      // Update room data
-      const room = db.syncGroups[roomId];
-      if (currentTime !== undefined) room.playback.currentTime = Number(currentTime);
-      if (isPlaying !== undefined) room.playback.isPlaying = Boolean(isPlaying);
-      if (currentMovieUrl !== undefined) room.currentMovieUrl = currentMovieUrl;
-      if (videoData !== undefined) room.videoData = videoData; // Update videoData
-
       // Handle user heartbeat (lastSeen update)
       if (userCode) {
         const cleanCode = String(userCode).trim().toUpperCase();
@@ -1654,6 +1634,13 @@ async function startServer() {
           });
         }
       }
+      // Update room data
+      const room = db.syncGroups[roomId];
+      if (currentTime !== undefined) room.playback.currentTime = Number(currentTime);
+      if (isPlaying !== undefined) room.playback.isPlaying = Boolean(isPlaying);
+      if (currentMovieUrl !== undefined) room.currentMovieUrl = currentMovieUrl;
+      if (videoData !== undefined) room.videoData = videoData; // Update videoData
+
 
       // Handle new chat message
       if (chatMessage) {
@@ -1695,27 +1682,14 @@ async function startServer() {
       const { id } = req.params;
       const { uniqueCode, username } = req.body;
       const isBroadcastRoom = id === 'main_broadcast_room';
-      const roomId = id.trim().toUpperCase(); // Room ID is uppercase
-
-      if (!db.syncGroups) db.syncGroups = {}; // Ensure syncGroups exists
-
-      // Initialize broadcast room if it doesn't exist
-      if (!db.syncGroups[roomId] && isBroadcastRoom) {
-        db.syncGroups[roomId] = INITIAL_BROADCAST_ROOM;
-        await saveDB(db); // Persist the new room
-      }
-
-      if (!db.syncGroups[roomId]) { // If room still not found
-        return res.status(404).json({ error: 'ژوور بەردەست نییە' }); // Return 404
-      }
-
-      const room = db.syncGroups[roomId];
 
       let cleanCode = uniqueCode ? uniqueCode.trim().toUpperCase() : ''; // Clean unique code
       if (isBroadcastRoom && !cleanCode) {
         // Generate automatic unique identifier for guest
         cleanCode = 'GUEST_' + Math.random().toString(36).substring(2, 8).toUpperCase();
       }
+
+      const room = db.syncGroups[roomId];
 
       // Access Control check: validate uniqueCode in database (bypass for Broadcast Room)
       const userExists = db.users && db.users.some((u: any) => {
@@ -1729,6 +1703,19 @@ async function startServer() {
 
       if (!cleanCode && !isBroadcastRoom) { // Only require code if not broadcast room
         return res.status(400).json({ error: 'پێویستە کۆدی خۆت بنەخشێنیت' });
+      }
+
+      if (!db.syncGroups) db.syncGroups = {}; // Ensure syncGroups exists
+      const roomId = id.trim().toUpperCase(); // Room ID is uppercase
+
+      // Initialize broadcast room if it doesn't exist
+      if (!db.syncGroups[roomId] && isBroadcastRoom) {
+        db.syncGroups[roomId] = INITIAL_BROADCAST_ROOM;
+        await saveDB(db); // Persist the new room
+      }
+
+      if (!db.syncGroups[roomId]) { // If room still not found
+        return res.status(404).json({ error: 'ژوور بەردەست نییە' }); // Return 404
       }
 
       if (!isBroadcastRoom && !userExists && !isGlobalHost && !isRoomHost && !isVipTicketCode && cleanCode !== 'ADMIN') {
@@ -1772,7 +1759,7 @@ async function startServer() {
     const updateData = req.body;
     if (!db.syncGroups) db.syncGroups = {}; // Ensure syncGroups exists
     if (!db.syncGroups[id]) db.syncGroups[id] = { id, name: id, activeUsers: [], chatMessages: [], playback: { isPlaying: false, currentTime: 0, updatedAt: new Date().toISOString() } }; // Initialize if not exists
-    const room = db.syncGroups[id] = { ...db.syncGroups[id], ...updateData, updatedAt: new Date().toISOString() };
+    db.syncGroups[id] = { ...db.syncGroups[id], ...updateData, updatedAt: new Date().toISOString() };
 
     await saveDB(db);
     res.json({ success: true, room });
@@ -1861,12 +1848,10 @@ async function startServer() {
   // -------------------------------------------------------------
   // TEMPORARY FIREBASE MOCK FOR SERVER SIDE (MOCK DB & MOCK AUTH)
   // -------------------------------------------------------------
-  // NOTE: This mock is for server-side endpoints that mimic Firebase interactions. If you intend to use real Firebase
+  // NOTE: This mock is for server-side endpoints that mimic Firebase interactions.
+  // The frontend (App.tsx) directly uses Firebase SDK. If you intend to use real Firebase
   // for these server-side endpoints, you must replace these mocks with actual Firebase Admin SDK calls.
   class MockFirestoreDoc {
-    private colName: string; // Added missing property declarations
-    private docId: string;
-    private serverDb: any;
 
     constructor(colName: string, docId: string, serverDb: any) {
       this.colName = colName;
@@ -1875,7 +1860,7 @@ async function startServer() {
     }
 
     async get() {
-      let data: any = null; // Initialize data
+      let data: any = null;
       if (this.colName === 'users') {
         const u = this.serverDb.users?.find((u: any) => u.uid === this.docId || u.uniqueCode === this.docId);
         if (u) data = u;
@@ -1900,17 +1885,17 @@ async function startServer() {
     }
 
     async set(data: any, options?: { merge?: boolean }) {
-      if (this.colName === 'users') { // Handle user collection
+      if (this.colName === 'users') {
         if (!this.serverDb.users) this.serverDb.users = [];
         const idx = this.serverDb.users.findIndex((u: any) => u.uid === this.docId);
         const isNew = idx === -1;
         const existing = isNew ? {} : this.serverDb.users[idx];
         const merged = (options?.merge ?? true) ? { ...existing, ...data } : { ...data };
-        merged.uid = this.docId; // Ensure UID is set
+        merged.uid = this.docId;
         if (isNew) {
           this.serverDb.users.push(merged);
         } else {
-          this.serverDb.users[idx] = merged; // Update existing user
+          this.serverDb.users[idx] = merged;
         }
       } else if (this.colName === 'config') {
         if (this.docId === 'friends_room') {
@@ -1922,7 +1907,7 @@ async function startServer() {
           if (!this.serverDb.heroConfig) this.serverDb.heroConfig = {};
           this.serverDb.heroConfig = { ...this.serverDb.heroConfig, ...data };
         }
-      } else if (this.colName === 'syncGroups') { // Handle syncGroups collection
+      } else if (this.colName === 'syncGroups') {
         if (!this.serverDb.syncGroups) this.serverDb.syncGroups = {};
         this.serverDb.syncGroups[this.docId] = (options?.merge ?? true) ? { ...this.serverDb.syncGroups[this.docId], ...data } : { ...data };
       }
@@ -1936,7 +1921,7 @@ async function startServer() {
     }
 
     async delete() {
-      if (this.colName === 'users') { // Handle user deletion
+      if (this.colName === 'users') {
         this.serverDb.users = this.serverDb.users?.filter((u: any) => u.uid !== this.docId) || [];
       } else if (this.colName === 'syncGroups') {
         if (this.serverDb.syncGroups) {
@@ -1946,10 +1931,10 @@ async function startServer() {
       if (typeof saveDB === 'function') {
         await saveDB(this.serverDb);
       }
-    } // End delete
-  } // End MockFirestoreDoc
+    }
 
-  // Mock Firestore Collection
+  }
+
   class MockFirestoreCollection {
     private colName: string;
     private serverDb: any;
@@ -1963,7 +1948,7 @@ async function startServer() {
       return new MockFirestoreDoc(this.colName, id, this.serverDb);
     }
 
-    where(field: string, op: string, value: any): any { // Added return type
+    where(field: string, op: string, value: any): any {
       return {
         get: async () => {
           let matched: any[] = [];
@@ -1971,7 +1956,7 @@ async function startServer() {
             matched = this.serverDb.users?.filter((u: any) => {
               let val = u[field];
               // Handle case-insensitive uniqueCode lookup
-              if (field === 'uniqueCode' && typeof val === 'string' && typeof value === 'string') { // Case-insensitive and prefix handling
+              if (field === 'uniqueCode' && typeof val === 'string' && typeof value === 'string') {
                 val = val.toUpperCase();
                 value = value.toUpperCase();
                 // Also handle potential prefixes like 'CC-CC-' vs 'CC-'
@@ -1979,7 +1964,7 @@ async function startServer() {
                 if (val.startsWith('CC-CC-')) val = val.replace('CC-CC-', 'CC-');
               }
               if (op === '==') return val === value;
-              return false; // Filter matched users
+              return false;
             }) || [];
           }
           return {
@@ -1997,7 +1982,7 @@ async function startServer() {
             }
           };
         }
-      }; // End get
+      };
     }
 
     async get() {
@@ -2019,7 +2004,6 @@ async function startServer() {
             data: () => m,
             ref: new MockFirestoreDoc(this.colName, m.uid || m.uniqueCode || 'unknown', this.serverDb)
           }));
-        // Mock Firestore QuerySnapshot
         }
       };
     }
@@ -2051,7 +2035,6 @@ async function startServer() {
     if (!adminDbInstance) {
       adminDbInstance = new MockFirestore(db);
       console.log("[Firestore Sync] Mock Firestore is activated. Bypassing real Firebase server.");
-      // This is a simplified mock for Firebase Admin SDK.
     }
     return adminDbInstance;
   }
@@ -2062,7 +2045,6 @@ async function startServer() {
     if (!adminAuthInstance) {
       adminAuthInstance = new MockAdminAuth();
       console.log("[Firebase Auth] Mock Auth Service is activated. Bypassing real Firebase server.");
-      // This is a simplified mock for Firebase Admin SDK.
     }
     return adminAuthInstance;
   }
@@ -2914,20 +2896,16 @@ async function startServer() {
   });
 
   app.get('/api/admin/hero', (req, res) => {
-    const config = { ...db.heroConfig };
-    config.heroVideoUrl = sanitizeUrl(config.heroVideoUrl || '');
-    if (config.heroPlaylist) config.heroPlaylist = config.heroPlaylist.map(sanitizeUrl);
-    if (config.video_trailers) config.video_trailers = config.video_trailers.map(sanitizeUrl);
-    res.json(config);
+    res.json(db.heroConfig);
   });
 
   app.post('/api/admin/hero', async (req, res) => {
-    const playlist = (req.body.heroPlaylist || req.body.video_trailers || []).map(sanitizeUrl);
+    const playlist = req.body.heroPlaylist || req.body.video_trailers;
     const { adminName } = req.body;
     if (playlist && Array.isArray(playlist)) {
-      db.heroConfig.heroPlaylist = playlist.filter(Boolean);
+      db.heroConfig.heroPlaylist = playlist.filter(Boolean); // Filter out null/empty strings
       db.heroConfig.video_trailers = playlist;
-      db.heroConfig.heroVideoUrl = sanitizeUrl(playlist[0] || '');
+      db.heroConfig.heroVideoUrl = playlist[0] || '';
       await addAuditLog(db, adminName, "Update Hero Playlist", `پلیلیستی ڤیدیۆ نوێکرایەوە`);
       await saveDB(db);
     }
@@ -2936,11 +2914,12 @@ async function startServer() {
 
   // Alias for hero update requested by user
   app.post('/api/movies/hero', async (req, res) => {
-    const playlist = (req.body.heroPlaylist || req.body.video_trailers || []).map(sanitizeUrl);
+    const playlist = req.body.heroPlaylist || req.body.video_trailers;
     if (playlist && Array.isArray(playlist)) {
-      db.heroConfig.heroPlaylist = playlist.filter(Boolean);
+      db.heroConfig.heroPlaylist = playlist.filter(Boolean); // Filter out null/empty strings
       db.heroConfig.video_trailers = playlist;
-      db.heroConfig.heroVideoUrl = sanitizeUrl(playlist[0] || '');
+      db.heroConfig.heroVideoUrl = playlist[0] || '';
+      // Also update some metadata if needed, but primary is heroPlaylist
       await saveDB(db);
       return res.json({ success: true, config: db.heroConfig });
     }
@@ -2948,73 +2927,69 @@ async function startServer() {
   });
 
   app.post('/api/admin/post-movie', async (req, res) => {
+    const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, quality, tags, category, rating, year, type } = req.body;
+    
+    // VALIDATION: Detailed error reporting as requested
+    if (!title) return res.status(400).json({ success: false, error: "ناونیشان پێویستە (Title is required)" });
+    if (!category) return res.status(400).json({ success: false, error: "پۆلێن پێویستە (Category is required)" });
+    
+    // Primary video source - accept ANY valid URL
+    const activeVideoSource = streamingUrl || videoUrl || req.body.external_link;
+    if (!activeVideoSource) return res.status(400).json({ success: false, error: "لینکی ڤیدیۆ پێویستە (Video source is required)" });
+
+    const finalPoster = posterUrl || image || 'https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800';
+
+    console.log(`[Admin] Posting movie: ${title} | Source: ${activeVideoSource}`);
+    
+    const ytRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
+    
+    // Check if the main source is YouTube
+    const ytMatch = activeVideoSource?.match(ytRegex);
+    const ytEmbedUrl = ytMatch ? `https://www.youtube.com/embed/${ytMatch[1]}` : null;
+
+    // Process trailer
+    const trailerYtMatch = trailerUrl?.match(ytRegex);
+    const trailerEmbedUrl = trailerYtMatch ? `https://www.youtube.com/embed/${trailerYtMatch[1]}` : trailerUrl;
+
+    const newMovie = {
+      id: `manual-${Date.now()}`,
+      title: title,
+      description: description || "",
+      image: finalPoster,
+      posterUrl: finalPoster,
+      embedUrl: ytEmbedUrl || activeVideoSource, // Direct link/iframe strategy
+      videoUrl: activeVideoSource,
+      trailerUrl: trailerEmbedUrl,
+      streamingUrl: activeVideoSource,
+      vidmolyUrl: vidmolyUrl || "",
+      streamwishUrl: streamwishUrl || "",
+      fileLrunUrl: fileLrunUrl || "",
+      external_link: activeVideoSource,
+      isYouTube: !!ytEmbedUrl,
+      quality: quality || 'HD',
+      date: new Date().toISOString(),
+      isNetflixOriginal: title?.toLowerCase().includes('netflix'),
+      tags: Array.isArray(tags) ? tags : [category || "هەمووی"],
+      category: category || "هەمووی", // Ensure category is set
+      rating: rating || "",
+      year: year || "",
+      type: type || "movie",
+      whatsappLink: 'https://chat.whatsapp.com/Cinmachat'
+    };
+
     try {
-      const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, hdtodayUrl, youtubeMovieUrl, otherVideoUrl, vidsrcUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, quality, tags, category, rating, year, type, whatsappLink, externalMovieLink, subtitleUrl } = req.body;
-
-      // VALIDATION: Detailed error reporting as requested
-      if (!title) return res.status(400).json({ success: false, error: "ناونیشان پێویستە (Title is required)" });
-      if (!category) return res.status(400).json({ success: false, error: "پۆلێن پێویستە (Category is required)" });
-
-      // Primary video source - accept ANY valid URL
-      const activeVideoSource = streamingUrl || videoUrl || req.body.external_link;
-      if (!activeVideoSource) return res.status(400).json({ success: false, error: "لینکی ڤیدیۆ پێویستە (Video source is required)" });
-
-      const finalPoster = posterUrl || image || 'https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800';
-
-      console.log(`[Admin] Posting movie: ${title} | Source: ${activeVideoSource}`);
-
-      const ytRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
-
-      // Check if the main source is YouTube
-      const ytMatch = activeVideoSource?.match(ytRegex);
-      const ytEmbedUrl = ytMatch ? `https://www.youtube.com/embed/${ytMatch[1]}` : null;
-
-      // Process trailer
-      const trailerYtMatch = trailerUrl?.match(ytRegex);
-      const trailerEmbedUrl = trailerYtMatch ? `https://www.youtube.com/embed/${trailerYtMatch[1]}` : trailerUrl;
-
-      const newMovie = {
-        id: `manual-${Date.now()}`,
-        title: title,
-        description: description || "",
-        image: finalPoster,
-        posterUrl: finalPoster,
-        embedUrl: ytEmbedUrl || activeVideoSource,
-        videoUrl: activeVideoSource,
-        trailerUrl: trailerEmbedUrl,
-        streamingUrl: activeVideoSource,
-        hdtodayUrl: hdtodayUrl || "",
-        youtubeMovieUrl: youtubeMovieUrl || "",
-        otherVideoUrl: otherVideoUrl || "",
-        vidsrcUrl: vidsrcUrl || "",
-        vidmolyUrl: vidmolyUrl || "",
-        streamwishUrl: streamwishUrl || "",
-        fileLrunUrl: fileLrunUrl || "",
-        external_link: activeVideoSource,
-        externalMovieLink: externalMovieLink || "",
-        subtitleUrl: subtitleUrl || "",
-        isYouTube: !!ytEmbedUrl,
-        quality: quality || 'HD',
-        date: new Date().toISOString(),
-        isNetflixOriginal: title?.toLowerCase().includes('netflix'),
-        tags: Array.isArray(tags) ? tags : [category || "هەمووی"],
-        category: category || "هەمووی",
-        rating: rating || "",
-        year: year || "",
-        type: type || "movie",
-        whatsappLink: whatsappLink || 'https://chat.whatsapp.com/Cinmachat'
-      };
-
-      const adminName = req.body.adminName || "Admin";
-      db.manualMovies.push(newMovie);
-      await addAuditLog(db, adminName, "Post Movie", `فیلمی نوێ زیادکرا: "${newMovie.title}"`);
-      await saveDB(db);
-      setMoviesCache(prev => [newMovie, ...prev.filter(m => m.id !== newMovie.id)]);
-      res.json({ success: true, movie: newMovie });
-    } catch (err: any) {
-      console.error('[Admin] Error posting movie:', err?.message || err);
-      res.status(500).json({ success: false, error: 'هەڵەیەک ڕوویدا لە کەیەی پۆستکردنی فیلم' });
+      // Admin save: local only
+    } catch (e: any) {
+      console.error('CRITICAL: Local save failed:', e.message || e);
     }
+
+    const adminName = req.body.adminName || "Admin";
+    db.manualMovies.push(newMovie);
+    await addAuditLog(db, adminName, "Post Movie", `فیلمی نوێ زیادکرا: "${newMovie.title}"`);
+    await saveDB(db);
+    // Add to cache while preventing duplicates
+    setMoviesCache(prev => [newMovie, ...prev.filter(m => m.id !== newMovie.id)]);
+    res.json({ success: true, movie: newMovie });
   });
 
   // CRITICAL: WhatsApp Automation Webhook
@@ -3025,15 +3000,15 @@ async function startServer() {
       const webhookSecret = process.env.WHATSAPP_WEBHOOK_SECRET || 'Cinemachat_Secure_2024';
       const adminNumber = process.env.WHATSAPP_ADMIN_NUMBER || '9647701966649';
 
-      // 2. Security Check: Admin number enforcement (handling with/without +)
-      const normalizedSender = String(sender).replace(/\D/g, '');
-
       // 1. Security Check: Secret verification
       if (secret !== webhookSecret) {
         console.warn(`[Webhook Security] Unauthorized attempt from: ${sender}`);
         await addIntrusionAttempt(db, normalizedSender, req.url, "Unauthorized WhatsApp Webhook Access", "Webhook Security Breach"); // Added
         return res.status(401).json({ error: 'Unauthorized webhook access' });
       }
+
+      // 2. Security Check: Admin number enforcement (handling with/without +)
+      const normalizedSender = String(sender).replace(/\D/g, '');
       const normalizedAdmin = adminNumber.replace(/\D/g, '');
 
       if (normalizedSender !== normalizedAdmin) {
@@ -3131,7 +3106,7 @@ async function startServer() {
       ads,
       trackerText, // Expose tracker text
       socialLinks,
-      heroVideoUrl: sanitizeUrl(db.heroConfig?.heroVideoUrl || ''),
+      heroVideoUrl: db.heroConfig?.heroVideoUrl || '',
       youtubeChannelUrl: db.youtubeUrl || db.youtubeChannelUrl || 'https://www.youtube.com/',
       youtubeUrl: db.youtubeUrl || 'https://www.youtube.com/',
       tiktokUrl: db.tiktokUrl || 'https://www.tiktok.com/',
@@ -3146,9 +3121,9 @@ async function startServer() {
     if (newSocialLinks) socialLinks = newSocialLinks;
     if (heroVideoUrl !== undefined) {
       if (!db.heroConfig) db.heroConfig = {};
-      db.heroConfig.heroVideoUrl = sanitizeUrl(heroVideoUrl);
+      db.heroConfig.heroVideoUrl = heroVideoUrl;
       // Also update heroPlaylist if only heroVideoUrl is provided
-      db.heroConfig.heroPlaylist = [sanitizeUrl(heroVideoUrl)];
+      db.heroConfig.heroPlaylist = [heroVideoUrl];
     }
     if (youtubeChannelUrl !== undefined) {
       db.youtubeChannelUrl = youtubeChannelUrl;
@@ -3176,7 +3151,7 @@ async function startServer() {
       success: true,
       ads,
       socialLinks,
-      heroVideoUrl: sanitizeUrl(db.heroConfig?.heroVideoUrl || ''),
+      heroVideoUrl: db.heroConfig?.heroVideoUrl || '',
       roomVideoUrl: db.config?.roomVideoUrl || '',
       youtubeChannelUrl: db.youtubeUrl || db.youtubeChannelUrl,
       youtubeUrl: db.youtubeUrl,
@@ -3234,7 +3209,7 @@ async function startServer() {
       let results: any[] = [...moviesCache];
       
       const ytRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
-      const heroUrl = sanitizeUrl(db.heroConfig.heroVideoUrl || 'https://www.youtube.com/watch?v=YPY7J-flzE8');
+      const heroUrl = db.heroConfig.heroVideoUrl || 'https://www.youtube.com/watch?v=YPY7J-flzE8';
       const ytMatch = heroUrl.match(ytRegex);
       const isYouTube = !!ytMatch;
       const embedUrl = isYouTube ? `https://www.youtube.com/embed/${ytMatch![1]}` : heroUrl;
@@ -3281,59 +3256,27 @@ async function startServer() {
 
   app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
-  // Determine mode: production if dist/index.html exists or NODE_ENV is 'production'
-  const distPath = path.join(process.cwd(), 'dist');
-  let isProduction = process.env.NODE_ENV === 'production';
-  if (!isProduction) {
-    try {
-      readFileSync(path.join(distPath, 'index.html'));
-      isProduction = true;
-    } catch {
-      // dist/index.html not found — dev mode
-    }
-  }
-
-  if (isProduction) {
-    console.log('[Server] Production mode — serving frontend from dist/');
-    app.use(express.static(distPath, {
-      maxAge: '1y',
-      setHeaders: (res: any, filePath: string) => {
-        if (filePath.endsWith('.js')) {
-          res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-        } else if (filePath.endsWith('.css')) {
-          res.setHeader('Content-Type', 'text/css; charset=utf-8');
-        } else if (filePath.endsWith('.html')) {
-          res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        }
-      }
-    }));
-    // SPA fallback: serve index.html for all non-API, non-file routes
-    app.get('*', (req, res) => {
-      if (req.path.startsWith('/api/')) return;
-      res.sendFile(path.join(distPath, 'index.html'), (err: any) => {
-        if (err) {
-          console.error('[Server] Failed to send index.html:', err);
-          res.status(500).send('Server error');
-        }
-      });
-    });
-  } else {
-    console.log('[Server] Development mode — using Vite middleware');
-    const vite = await createViteServer({ server: { middlewareMode: true, hmr: { port: 0 } }, appType: 'spa' });
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({ server: { middlewareMode: true, hmr: { port: 0 } }, appType: 'spa' }); // Ensure HMR is configured
     app.use(vite.middlewares);
-    app.get('*', (req, res, next) => {
+    // Fallback for development if Vite doesn't handle the request (e.g., Vite dev server is not running)
+    app.get('*', (req, res, next) => { // Added next to allow other routes to handle
       if (!res.headersSent) {
         res.status(200).send(`
           <!DOCTYPE html>
           <html lang="en">
           <head><meta charset="UTF-8"><title>CinemaChat Backend</title></head>
-          <body><h1>CinemaChat Backend is Running!</h1><p>If you see this, the backend server is active. Please ensure your frontend development server (Vite) is also running, usually on port 5173 or 5174.</p></body>
+          <body><h1>CinemaChat Backend is Running!</h1><p>If you see this, the backend server is active. Please ensure your frontend development server (Vite) is also running, usually on port 5173.</p></body>
           </html>
         `);
       } else {
-        next();
+        next(); // Pass to next middleware if headers already sent
       }
     });
+  } else {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => res.sendFile(path.join(distPath, 'index.html')));
   }
 
   app.use((err: any, req: any, res: any, next: any) => {
@@ -3446,6 +3389,126 @@ async function startServer() {
           }
         }
       }
+
+      if (changed) {
+        await saveDB(db);
+      }
+    } catch (e) {
+      console.error("Error in empty room cleanup setInterval:", e);
+    }
+  }, 10000);
+  
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log('==================================================');
+    console.log(`CinemaChat Server started on http://0.0.0.0:${PORT}`);
+    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log('==================================================');
+  });
+}
+
+startServer().catch(err => {
+  console.error('FATAL SERVER ERROR:', err);
+});
+            const updatedAtStr = room?.playback?.updatedAt || room?.updatedAt;
+            if (updatedAtStr) {
+              if (new Date(updatedAtStr) < fiveHoursAgo) {
+                delete db.rooms[roomId];
+                console.log(`[Maintenance] Purged stale temporary room: ${roomId}`);
+                dbModified = true;
+              }
+            } else {
+              delete db.rooms[roomId];
+              dbModified = true;
+            }
+          }
+        }
+      }
+
+      // Clean stale syncGroups in db.syncGroups
+      if (db.syncGroups) {
+        for (const groupId of Object.keys(db.syncGroups)) {
+          if (groupId === 'global_room_official') continue;
+          const group = db.syncGroups[groupId];
+          const updatedAtStr = group?.playback?.updatedAt || group?.updatedAt || group?.createdAt;
+          if (updatedAtStr) {
+            if (new Date(updatedAtStr) < fiveHoursAgo) {
+              delete db.syncGroups[groupId];
+              console.log(`[Maintenance] Purged stale temporary syncGroup: ${groupId}`);
+              dbModified = true;
+            }
+          } else {
+            delete db.syncGroups[groupId];
+            dbModified = true;
+          }
+        }
+      }
+
+      if (dbModified) {
+        await saveDB(db);
+        console.log('[Maintenance] db.json persisted after active cleanup round.');
+      }
+    } catch (err) {
+      console.error('[Maintenance] Error during periodic session automatic cleanup:', err);
+    }
+  };
+
+  // Run immediately on boot, and then every 15 minutes
+  runDatabaseMaintenance();
+  setInterval(runDatabaseMaintenance, 15 * 60 * 1000);
+
+  // Room empty cleanup interval - runs every 10 seconds
+  setInterval(async () => {
+    try {
+      if (!db || !Array.isArray(db.rooms)) return;
+      const now = new Date();
+      let changed = false;
+      
+      db.rooms = db.rooms.filter((room: any) => {
+        if (room.id === 'global_room_official') return true;
+        
+        // 1. Filter out inactive users (no heartbeat in last 20 seconds)
+        if (Array.isArray(room.activeUsers)) {
+          const initialUserCount = room.activeUsers.length;
+          room.activeUsers = room.activeUsers.filter((u: any) => {
+            const timeLimit = 20000; // 20 seconds threshold for active user
+            const userTime = u.lastSeen || u.joinedAt;
+            if (!userTime) return false;
+            return (now.getTime() - new Date(userTime).getTime()) < timeLimit;
+          });
+          if (room.activeUsers.length !== initialUserCount) {
+            changed = true;
+          }
+        } else {
+          room.activeUsers = [];
+          changed = true;
+        }
+
+        // 2. Track & handle empty rooms
+        if (room.activeUsers.length === 0) {
+          if (!room.emptySince) {
+            room.emptySince = now.toISOString();
+            changed = true;
+            return true; // Keep for now
+          } else {
+            const emptyMs = now.getTime() - new Date(room.emptySince).getTime();
+            if (emptyMs >= 60000) { // 60 seconds (1 minute) threshold
+              console.log(`[Dynamic Clean] Room ${room.id} (${room.name}) was empty for >1 min. Auto-deleted.`);
+              if (db.syncGroups && db.syncGroups[room.id]) {
+                delete db.syncGroups[room.id];
+              }
+              changed = true;
+              return false; // DELETE room
+            }
+          }
+        } else {
+          // Room has active users, clear emptySince timer if present
+          if (room.emptySince) {
+            delete room.emptySince;
+            changed = true;
+          }
+        }
+        return true; // KEEP room
+      });
 
       if (changed) {
         await saveDB(db);
