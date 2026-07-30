@@ -8187,8 +8187,11 @@ export default function App() {
                                   let clean = url.trim();
                                   if (clean.includes("youtube.com/watch?v="))
                                     clean = clean.replace("watch?v=", "embed/");
-                                  else if (clean.includes("youtu.be/"))
-                                    clean = `https://www.youtube.com/embed/${clean.split("youtu.be/")[1]}`;
+                                  else if (clean.includes("youtu.be/")) {
+                                    const afterDomain = clean.split("youtu.be/")[1] || "";
+                                    const videoId = afterDomain.split("?")[0].split("&")[0];
+                                    clean = `https://www.youtube.com/embed/${videoId}`;
+                                  }
                                   return clean;
                                 };
 
@@ -8249,7 +8252,18 @@ export default function App() {
                                   const data = await res.json();
                                   const postedMovie = data.movie;
                                   alert("فیلمەکە بە سەرکەوتوویی پۆست کرا!");
-                                  fetchMovies();
+                                  // Insert into local state immediately (avoids
+                                  // cross-instance staleness on Render's ephemeral fs).
+                                  setMovies(prev => {
+                                    const updated = [postedMovie, ...prev];
+                                    return updated.sort((a: any, b: any) => {
+                                      const idA = parseInt(String(a.id).replace("manual-", ""));
+                                      const idB = parseInt(String(b.id).replace("manual-", ""));
+                                      if (!isNaN(idA) && !isNaN(idB)) return idB - idA;
+                                      return new Date(b.date).getTime() - new Date(a.date).getTime();
+                                    });
+                                  });
+                                  fetchMovies(); // background sync
                                   setLastAddedMovie(postedMovie);
                                 } else {
                                   const errData = await res.json();
