@@ -4131,12 +4131,10 @@ const HeroSection: React.FC<{
   const handleHeroIframeLoad = useCallback(() => {
     // YouTube requires initial mute for autoplay; unmute shortly after
     setTimeout(() => {
-      if (!isMuted) {
-        sendYTCommand("unMute");
-        sendYTCommand("playVideo");
-      }
-    }, 500);
-  }, [isMuted, sendYTCommand]);
+      sendYTCommand("unMute");
+      sendYTCommand("playVideo");
+    }, 1000);
+  }, [sendYTCommand]);
 
   // Mute hero video if room audio is active
   useEffect(() => {
