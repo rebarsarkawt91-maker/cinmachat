@@ -9,13 +9,15 @@
 }
 
 @layer base {
-  html, body {
+  html {
     height: 100%;
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
     -webkit-overflow-scrolling: touch;
   }
 
   body {
+    min-height: 100dvh;
     @apply bg-black text-white antialiased font-sans select-none;
   }
 

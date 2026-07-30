@@ -6382,15 +6382,16 @@ export default function App() {
 
   return (
     <div
-      className="relative min-h-screen bg-black text-white select-none overflow-x-hidden"
+      className="relative min-h-dvh bg-black text-white select-none overflow-x-hidden"
       dir="rtl"
     >
-      {/* Background Layer (Video) */}
-      <div style={{ position: "relative", zIndex: 0 }} /> {/* Placeholder for background video/image */}
+      {/* Background Layer (Video) — fixed behind all content */}
+      <div className="fixed inset-0 z-0 pointer-events-none" />
 
-      {/* UI Overlay Layer (Admin/Room/Headers) */}
-      <div style={{ position: "fixed", inset: 0, zIndex: 999, WebkitOverflowScrolling: "touch" as const }} className="overflow-y-auto pointer-events-none" >
-        <div className="flex flex-col min-h-screen bg-transparent text-white select-none pointer-events-auto" dir="rtl">
+      {/* UI Overlay Layer — uses natural document flow scrolling for
+          reliable iOS Safari touch-scroll (avoid position: fixed). */}
+      <div className="relative z-10 pointer-events-none min-h-dvh" >
+        <div className="flex flex-col min-h-dvh bg-transparent text-white select-none pointer-events-auto" dir="rtl">
       {/* Point 57: Error Message Overlay */}
       <AnimatePresence>
         {isQuotaExceeded && (
@@ -8254,6 +8255,7 @@ export default function App() {
                                   alert("فیلمەکە بە سەرکەوتوویی پۆست کرا!");
                                   // Insert into local state immediately (avoids
                                   // cross-instance staleness on Render's ephemeral fs).
+                                  // The 60s interval already handles eventual sync.
                                   setMovies(prev => {
                                     const updated = [postedMovie, ...prev];
                                     return updated.sort((a: any, b: any) => {
@@ -8263,7 +8265,6 @@ export default function App() {
                                       return new Date(b.date).getTime() - new Date(a.date).getTime();
                                     });
                                   });
-                                  fetchMovies(); // background sync
                                   setLastAddedMovie(postedMovie);
                                 } else {
                                   const errData = await res.json();
