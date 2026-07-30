@@ -178,23 +178,24 @@ async function fetchApi(
   path: string,
   options?: RequestInit,
   retries = 3,
-  useDirectFallback = true,
+  useDirectFallback = false,
 ): Promise<Response> {
   const method = (options?.method || "GET").toUpperCase();
   const customHeaders = new Headers(options?.headers || {});
 
-  // Use Render URL directly to avoid Firebase 307 redirects that break POST requests
+  // Use same-origin path (Firebase 307 → Render) as the primary route.
+  // For non-GET requests, use text/plain Content-Type to avoid CORS preflight
+  // after the 307 redirect (text/plain is a "simple" content-type).
   const targetPath = useDirectFallback ? `${RENDER_API_BASE}${path}` : path;
-
-  // Avoid forcing preflight on GET/HEAD by not sending JSON content-type by default.
-  const shouldAddJsonContentType =
-    method !== "GET" && method !== "HEAD" && !customHeaders.has("Content-Type");
 
   if (!customHeaders.has("Accept")) {
     customHeaders.set("Accept", "application/json");
   }
-  if (shouldAddJsonContentType) {
-    customHeaders.set("Content-Type", "application/json");
+  // On non-GET requests, if the caller set application/json, switch to text/plain
+  // so the 307 redirect from Firebase→Render does not trigger a CORS preflight.
+  const isNonGet = method !== "GET" && method !== "HEAD";
+  if (isNonGet && customHeaders.get("Content-Type") === "application/json") {
+    customHeaders.set("Content-Type", "text/plain");
   }
 
   try {
@@ -4614,7 +4615,7 @@ export default function App() {
   const [hasInteracted, setHasInteracted] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const hasCountdownRun = useRef(false); // This ref is no longer strictly needed for countdown logic, but kept for potential future use or other related logic.
-  const [isRoomMuted, setIsRoomMuted] = useState(true);
+  const [isRoomMuted, setIsRoomMuted] = useState(false);
   const [featuredMovieFromDB, setFeaturedMovieFromDB] = useState<Movie | null>(
     null,
   );
@@ -6327,7 +6328,7 @@ export default function App() {
     try {
       const results = await api.getMovies();
       // Only replace if we got actual data
-      if (results && Array.isArray(results)) {
+      if (results && Array.isArray(results) && results.length > 0) {
         // Safety deduplication by ID (ensure unique movies)
         const unique = Array.from(
           new Map(results.map((m: any) => [m.id, m])).values(),
@@ -6342,17 +6343,51 @@ export default function App() {
           }),
         );
         setErrorMsg(null); // Clear any previous error
+      } else {
+        // Server returned empty — try Firestore as permanent backup
+        console.log("[Movies] Server returned no movies, trying Firestore...");
+        try {
+          const moviesRef = collection(realDb, "movies");
+          const snapshot = await getDocs(
+            query(moviesRef, orderBy("createdAt", "desc"), limit(200))
+          );
+          const firestoreMovies: any[] = [];
+          snapshot.forEach((doc) => firestoreMovies.push({ ...doc.data(), id: doc.id }));
+          if (firestoreMovies.length > 0) {
+            setMovies(firestoreMovies);
+            setErrorMsg(null);
+          }
+        } catch (fsErr) {
+          console.warn("[Movies] Firestore fallback also failed:", fsErr);
+          if (movies.length === 0) {
+            setErrorMsg("کێشەیەک لە پەیوەندی بە سێرڤەر و فایەربەیس ڕوویدا");
+          }
+        }
       }
     } catch (err) {
-      console.error("fetchMovies failed, using current/mock data:", err);
-      // We only show the error if we don't have any movies at all (not even mock)
-      if (movies.length === 0) {
-        setErrorMsg(
-          err instanceof Error
-            ? `هەڵەی پەیوەندی: ${err.message}`
-            : "کێشەیەک لە پەیوەندی سێرڤەر ڕوویدا",
+      console.error("fetchMovies failed, trying Firestore:", err);
+      // Fallback to Firestore if server is unreachable
+      try {
+        const moviesRef = collection(realDb, "movies");
+        const snapshot = await getDocs(
+          query(moviesRef, orderBy("createdAt", "desc"), limit(200))
         );
-      } // Only show error if no movies are loaded
+        const firestoreMovies: any[] = [];
+        snapshot.forEach((doc) => firestoreMovies.push({ ...doc.data(), id: doc.id }));
+        if (firestoreMovies.length > 0) {
+          setMovies(firestoreMovies);
+          setErrorMsg(null);
+        }
+      } catch (fsErr) {
+        console.warn("[Movies] Firestore fallback also failed:", fsErr);
+        if (movies.length === 0) {
+          setErrorMsg(
+            err instanceof Error
+              ? `هەڵەی پەیوەندی: ${err.message}`
+              : "کێشەیەک لە پەیوەندی سێرڤەر ڕوویدا",
+          );
+        }
+      }
     } finally {
       setIsLoading(false);
     }
@@ -8320,6 +8355,18 @@ export default function App() {
                                     });
                                   });
                                   setLastAddedMovie(postedMovie);
+                                  // Persist to Firestore so movies survive Render's ephemeral fs
+                                  try {
+                                    const moviesRef = collection(realDb, "movies");
+                                    await setDoc(doc(moviesRef, postedMovie.id), {
+                                      ...postedMovie,
+                                      createdAt: serverTimestamp(),
+                                      updatedAt: serverTimestamp(),
+                                    });
+                                    console.log("[Firestore] Movie saved to Firestore:", postedMovie.id);
+                                  } catch (fsErr) {
+                                    console.warn("[Firestore] Failed to save movie to Firestore (non-fatal):", fsErr);
+                                  }
                                 } else {
                                   const errData = await res.json();
                                   throw new Error(
