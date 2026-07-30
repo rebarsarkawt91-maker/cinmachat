@@ -2949,7 +2949,7 @@ async function startServer() {
 
   app.post('/api/admin/post-movie', async (req, res) => {
     try {
-      const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, quality, tags, category, rating, year, type } = req.body;
+      const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, hdtodayUrl, youtubeMovieUrl, otherVideoUrl, vidsrcUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, quality, tags, category, rating, year, type, whatsappLink, externalMovieLink, subtitleUrl } = req.body;
 
       // VALIDATION: Detailed error reporting as requested
       if (!title) return res.status(400).json({ success: false, error: "ناونیشان پێویستە (Title is required)" });
@@ -2983,10 +2983,16 @@ async function startServer() {
         videoUrl: activeVideoSource,
         trailerUrl: trailerEmbedUrl,
         streamingUrl: activeVideoSource,
+        hdtodayUrl: hdtodayUrl || "",
+        youtubeMovieUrl: youtubeMovieUrl || "",
+        otherVideoUrl: otherVideoUrl || "",
+        vidsrcUrl: vidsrcUrl || "",
         vidmolyUrl: vidmolyUrl || "",
         streamwishUrl: streamwishUrl || "",
         fileLrunUrl: fileLrunUrl || "",
         external_link: activeVideoSource,
+        externalMovieLink: externalMovieLink || "",
+        subtitleUrl: subtitleUrl || "",
         isYouTube: !!ytEmbedUrl,
         quality: quality || 'HD',
         date: new Date().toISOString(),
@@ -2996,7 +3002,7 @@ async function startServer() {
         rating: rating || "",
         year: year || "",
         type: type || "movie",
-        whatsappLink: 'https://chat.whatsapp.com/Cinmachat'
+        whatsappLink: whatsappLink || 'https://chat.whatsapp.com/Cinmachat'
       };
 
       const adminName = req.body.adminName || "Admin";
