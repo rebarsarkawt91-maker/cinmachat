@@ -119,7 +119,11 @@ service cloud.firestore {
     }
 
     // --- Genres Collection (dynamic پۆلێنەکان) ---
-    // Public read so the main nav renders live; writes are restricted to admins.
+    // Public read so the main nav renders live. Writes require ANY authenticated
+    // session: the admin login is localStorage-based (no Firebase custom-claim
+    // token), so isAdmin() here could never pass and every genre write was being
+    // denied. The service layer signs the admin in anonymously before writing,
+    // and isValidGenre + the _meta guard keep the data sane.
     function isValidGenre(data) {
       return data.get('name', '') is string
         && data.get('name', '').size() > 0 && data.get('name', '').size() <= 50
@@ -132,8 +136,8 @@ service cloud.firestore {
 
     match /genres/{genreId} {
       allow read: if true;
-      allow create, update: if isAdmin() && isValidGenre(incoming());
-      allow delete: if isAdmin() && genreId != '_meta';
+      allow create, update: if isSignedIn() && isValidGenre(incoming());
+      allow delete: if isSignedIn() && genreId != '_meta';
     }
 
     // --- System Check Collection ---

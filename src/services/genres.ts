@@ -8,7 +8,7 @@
  * Meta doc:  genres/_meta { seeded: true } — distinguishes "never seeded" from
  * "admin deliberately deleted every genre".
  */
-import { db } from "../lib/firebase";
+import { db, auth, signInAnonymously } from "../lib/firebase";
 import {
   collection,
   doc,
@@ -53,6 +53,20 @@ export const DEFAULT_GENRES: { name: string; tag: string }[] = [
 ];
 
 const genresCol = () => collection(db, GENRES_COLLECTION);
+
+/** Ensure the client has a Firebase Auth session so the "request.auth != null"
+ *  genre write rule passes. The admin login is localStorage-based (no Firebase
+ *  custom-claim token), so for admin sessions with no real Firebase user we fall
+ *  back to an anonymous sign-in. Never replaces an existing signed-in user. */
+export async function ensureGenreWriteAuth(): Promise<void> {
+  try {
+    if (!auth.currentUser) {
+      await signInAnonymously(auth);
+    }
+  } catch (err) {
+    console.warn("[Genres] Anonymous auth fallback failed:", err);
+  }
+}
 
 /** Real-time subscription to the genres collection (ordered for the nav). */
 export function subscribeGenres(cb: (genres: Genre[]) => void): () => void {
@@ -106,6 +120,8 @@ export async function isSeeded(): Promise<boolean> {
  *  silently if the rules deny writes (only an admin can persist the seed). */
 export async function seedDefaultGenres(): Promise<void> {
   try {
+    // Admin-only path: make sure we can actually write (anonymous sign-in).
+    await ensureGenreWriteAuth();
     await runTransaction(db, async (tx) => {
       const metaRef = doc(db, GENRES_COLLECTION, META_DOC);
       const meta = await tx.get(metaRef);
@@ -148,6 +164,9 @@ export async function addGenre(
     throw new Error("ناوی پۆلێن تەنها پیت و ژمارە و بۆشایی پەسەندە");
   }
 
+  // Ensure we are authenticated so the Firestore write is not denied.
+  await ensureGenreWriteAuth();
+
   const existing = await getDocs(query(genresCol(), where("tag", "==", name)));
   if (!existing.empty) {
     throw new Error("ئەم پۆلێنە پێشتر هەبووە");
@@ -174,5 +193,6 @@ export async function addGenre(
 
 /** Delete a genre by its Firestore document id. */
 export async function deleteGenre(id: string): Promise<void> {
+  await ensureGenreWriteAuth();
   await deleteDoc(doc(genresCol(), id));
 }

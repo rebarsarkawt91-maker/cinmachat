@@ -86,7 +86,6 @@ import {
   subscribeGenres,
   addGenre,
   deleteGenre,
-  fetchGenreNames,
   seedDefaultGenres,
   DEFAULT_GENRES,
 } from "./services/genres";
@@ -798,7 +797,22 @@ const ContentModule = ({
   const [isPosting, setIsPosting] = useState(false);
   const [isImdbFetching, setIsImdbFetching] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const [categories, setCategories] = useState<string[]>([]);
+  // Live genres from Firestore — stays in sync with the admin genre panel.
+  const [genres, setGenres] = useState<Genre[]>([]);
+
+  // Real-time genre options for the movie form. Falls back to DEFAULT_GENRES
+  // while the snapshot loads / if the collection is empty, so the dropdown is
+  // never blank. Option values are the genre TAG (matched against movie.tags by
+  // the main nav), labels are the Kurdish names.
+  const genreList = useMemo<Genre[]>(() => {
+    if (genres.length > 0) return genres;
+    return DEFAULT_GENRES.map((g, i) => ({
+      id: `_default_${i}`,
+      name: g.name,
+      tag: g.tag,
+      sortOrder: i + 1,
+    }));
+  }, [genres]);
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -917,10 +931,13 @@ const ContentModule = ({
   };
 
   useEffect(() => {
-    // Load genres from Firestore (dynamic — reflects admin changes instantly)
-    fetchGenreNames()
-      .then((names) => setCategories(names))
-      .catch(() => {});
+    // Real-time genres: any genre added/removed in the admin panel (or on
+    // another device) reflects in this dropdown instantly — no manual refresh.
+    const unsub = subscribeGenres((list) => {
+      setGenres(list);
+      if (list.length === 0) seedDefaultGenres();
+    });
+    return unsub;
   }, []);
 
   // Automatic Metadata Fetching on IMDb ID or YouTube URL change
@@ -1722,19 +1739,11 @@ const ContentModule = ({
                 }
                 className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-white kurdish-text outline-none focus:border-brand-primary appearance-none cursor-pointer"
               >
-                {categories.length > 0 ? (
-                  categories.map((c) => (
-                    <option key={c} value={c}>
-                      {c}
-                    </option>
-                  ))
-                ) : (
-                  <>
-                    <option value="ئاکشن">Action</option>
-                    <option value="ترسناک">Horror</option>
-                    <option value="دراما">Drama</option>
-                  </>
-                )}
+                {genreList.map((g) => (
+                  <option key={g.id} value={g.tag}>
+                    {g.name}
+                  </option>
+                ))}
               </select>
             </div>
 
@@ -2088,6 +2097,19 @@ const CategoryModule = ({ movies }: any) => {
     return unsub;
   }, []);
 
+  // Guard a Firestore operation so the submit/delete spinner can never spin
+  // forever on a hung network request.
+  const withTimeout = <T,>(promise: Promise<T>, ms = 20000) =>
+    Promise.race([
+      promise,
+      new Promise<T>((_, reject) =>
+        setTimeout(
+          () => reject(new Error("کات تەواو بوو — تکایە دووبارە هەوڵبدەرەوە")),
+          ms,
+        ),
+      ),
+    ]);
+
   const handleAdd = async () => {
     const name = newCat.trim();
     if (!name) {
@@ -2097,12 +2119,13 @@ const CategoryModule = ({ movies }: any) => {
     setError("");
     setAdding(true);
     try {
-      await addGenre(name, getAdminUsername());
+      await withTimeout(addGenre(name, getAdminUsername()));
       setNewCat(""); // the live subscription adds it to the list instantly
     } catch (e: any) {
       setError(e?.message || "هەڵەیەک ڕوویدا لە زیادکردنی پۆلێن");
+    } finally {
+      setAdding(false);
     }
-    setAdding(false);
   };
 
   const handleDelete = async (genre: Genre) => {
@@ -2110,11 +2133,12 @@ const CategoryModule = ({ movies }: any) => {
     setError("");
     setDeletingId(genre.id);
     try {
-      await deleteGenre(genre.id); // the live subscription removes it instantly
+      await withTimeout(deleteGenre(genre.id)); // live subscription removes it instantly
     } catch (e) {
       setError("کێشەیەک ڕوویدا لە سڕینەوە — تکایە دووبارە هەوڵبدەرەوە");
+    } finally {
+      setDeletingId(null);
     }
-    setDeletingId(null);
   };
 
   const genreIcon = (g: Genre) => {
@@ -4999,12 +5023,12 @@ export default function App() {
   const [genresReady, setGenresReady] = useState(false);
 
   useEffect(() => {
+    // Real-time genre subscription for the main nav. Seeding happens only in the
+    // admin panel (CategoryModule) so visitors are never silently authenticated
+    // — everyone sees DEFAULT_GENRES as a fallback until the snapshot arrives.
     const unsub = subscribeGenres((list) => {
       setDynamicGenres(list);
       setGenresReady(true);
-      // Seed the default catalog once when the collection is empty (best-effort;
-      // only admins can actually persist it — everyone else sees defaults below)
-      if (list.length === 0) seedDefaultGenres();
     });
     return unsub;
   }, []);
