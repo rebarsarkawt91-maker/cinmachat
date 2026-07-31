@@ -4074,23 +4074,35 @@ const HeroSection: React.FC<{
     );
   }, []);
 
+  // Safely invoke a YT.Player method: swallows sync errors AND rejected promises
+  const safePlayerCall = (player: any, method: string, ...args: any[]) => {
+    try {
+      const result = player?.[method]?.(...args);
+      if (result && typeof result.catch === "function") {
+        result.catch(() => {});
+      }
+      return result;
+    } catch (_) {
+      return undefined;
+    }
+  };
+
   // Clean tap-to-unmute trigger (mobile-safe: runs inside a user gesture)
   const handleHeroTap = () => {
     setIsHeroMuted(false);
     setIsTouchPromptVisible(false);
     if (playerRef.current) {
-      try { playerRef.current.unMute(); } catch (_) {}
-      try { playerRef.current.playVideo(); } catch (_) {}
+      safePlayerCall(playerRef.current, "unMute");
+      safePlayerCall(playerRef.current, "playVideo");
     }
   };
 
-  // Unmute strategy: desktop retries aggressively; mobile attempts once and
+  // Unmute fallback: desktop retries aggressively; mobile attempts once and
   // falls back to the tap-to-unmute prompt so autoplay is never broken.
   const ensureUnmuted = (target: any) => {
-    if (!target || typeof target.unMute !== "function") return;
-    try { target.unMute(); } catch (_) {}
-    const stillMuted =
-      typeof target.isMuted === "function" ? target.isMuted() : false;
+    if (!target) return;
+    safePlayerCall(target, "unMute");
+    const stillMuted = safePlayerCall(target, "isMuted") ?? false;
     if (stillMuted) {
       if (isMobile) {
         setIsTouchPromptVisible(true);
@@ -4127,9 +4139,10 @@ const HeroSection: React.FC<{
       // Reuse existing player seamlessly instead of destroy+recreate
       if (playerRef.current) {
         try {
-          playerRef.current.loadVideoById(videoId);
-          playerRef.current.playVideo();
-          playerRef.current.setPlaybackQuality('hd1080');
+          safePlayerCall(playerRef.current, "loadVideoById", videoId);
+          safePlayerCall(playerRef.current, "playVideo");
+          safePlayerCall(playerRef.current, "unMute");
+          safePlayerCall(playerRef.current, "setPlaybackQuality", "hd1080");
           setIsPlaying(true);
           ensureUnmuted(playerRef.current);
           return;
@@ -4161,9 +4174,14 @@ const HeroSection: React.FC<{
         },
         events: {
           onReady: (event: any) => {
-            event.target.playVideo();
-            event.target.setPlaybackQuality('hd1080');
+            // 1) Force instant playback (muted via playerVars for autoplay policy)
+            safePlayerCall(event.target, "playVideo");
+            // 2) Immediately restore audio right after playback starts
+            safePlayerCall(event.target, "unMute");
+            // 3) Request highest available quality
+            safePlayerCall(event.target, "setPlaybackQuality", "hd1080");
             setIsPlaying(true);
+            // 4) Graceful fallback if a browser still blocks the unmute
             ensureUnmuted(event.target);
           },
           onStateChange: (event: any) => {
@@ -4183,7 +4201,9 @@ const HeroSection: React.FC<{
   // Sync mute state via YT.Player API
   useEffect(() => {
     if (playerRef.current) {
-      isMuted ? playerRef.current.mute() : playerRef.current.unMute();
+      isMuted
+        ? safePlayerCall(playerRef.current, "mute")
+        : safePlayerCall(playerRef.current, "unMute");
     }
     if (!isMuted) setIsTouchPromptVisible(false);
   }, [isMuted]);
@@ -4191,7 +4211,9 @@ const HeroSection: React.FC<{
   // Sync play state via YT.Player API
   useEffect(() => {
     if (playerRef.current) {
-      isPlaying ? playerRef.current.playVideo() : playerRef.current.pauseVideo();
+      isPlaying
+        ? safePlayerCall(playerRef.current, "playVideo")
+        : safePlayerCall(playerRef.current, "pauseVideo");
     }
   }, [isPlaying]);
 
