@@ -4133,6 +4133,43 @@ const HeroSection: React.FC<{
     forcePlay(player, 4);
   };
 
+  // Forced unmuted autoplay: playVideo + unMute + setVolume(100) wrapped in a
+  // safe retry loop so the hero starts with SOUND right after the 3s black
+  // screen, no click needed. If the browser's autoplay policy still blocks
+  // audio, React state is reconciled to the real muted state so the pulsing
+  // unmute button / TAP-TO-WATCH overlay stay available as a fallback.
+  const forceUnmuteAutoplay = (target: any, attempts = 20) => {
+    if (!target) return;
+    safePlayerCall(target, "playVideo");
+    safePlayerCall(target, "unMute");
+    safePlayerCall(target, "setVolume", 100);
+    const stillMuted = safePlayerCall(target, "isMuted") ?? false;
+    const playerState = safePlayerCall(target, "getPlayerState");
+    const PLAYING = (window as any).YT?.PlayerState?.PLAYING ?? 1;
+
+    if (!stillMuted && playerState === PLAYING) {
+      // Audio confirmed: video is playing with sound → reflect unmuted
+      setIsHeroMuted(false);
+      return;
+    }
+
+    if (attempts <= 0) {
+      // Retries exhausted: browser still blocks audio → keep truthful muted state
+      setIsHeroMuted(!!stillMuted);
+      return;
+    }
+
+    if (stillMuted && isMobile) {
+      // Mobile never allows unmute without a gesture → keep the tap-to-watch UI
+      setIsHeroMuted(true);
+      return;
+    }
+
+    // Reflect a blocked / not-yet-playing state while we keep retrying
+    setIsHeroMuted(!!stillMuted);
+    setTimeout(() => forceUnmuteAutoplay(target, attempts - 1), 200);
+  };
+
   // Enable English closed captions via the YT IFrame API captions module
   const enableCaptions = (target: any) => {
     if (!target) return;
@@ -4192,7 +4229,7 @@ const HeroSection: React.FC<{
       if (playerRef.current) {
         try {
           safePlayerCall(playerRef.current, "loadVideoById", videoId);
-          safePlayerCall(playerRef.current, "playVideo");
+          forceUnmuteAutoplay(playerRef.current);
           safePlayerCall(playerRef.current, "setPlaybackQuality", "hd1080");
           enableCaptions(playerRef.current);
           setIsPlaying(true);
@@ -4209,10 +4246,11 @@ const HeroSection: React.FC<{
         width: "100%",
         playerVars: {
           autoplay: 1,
-          // ALWAYS start muted (mute:1) on every browser: Edge/Chrome/mobile
-          // autoplay policies block unmuted video without a prior user gesture.
-          // Audio is enabled only through explicit click handlers (userUnmute).
-          mute: 1,
+          // Start UNMUTED (mute:0): the video should play with sound right
+          // after the 3s black screen. onReady forces unMute + setVolume(100)
+          // via a safe retry loop; browsers that still block audio fall back
+          // to the pulsing unmute button / TAP-TO-WATCH overlay.
+          mute: 0,
           loop: 1,
           playlist: videoId,
           controls: 0,
@@ -4231,12 +4269,10 @@ const HeroSection: React.FC<{
         },
         events: {
           onReady: (event: any) => {
-            // playerVars forces mute:1 on ALL browsers → keep React state muted.
-            // No programmatic unmute here: Edge silently blocks it outside a
-            // user gesture, so audio stays off until the user clicks/taps.
-            setIsHeroMuted(true);
-            // Play muted only — never touch audio outside a gesture.
-            forcePlay(event.target);
+            // Start playing with sound immediately after the 3s black screen:
+            // playVideo + unMute + setVolume(100) via a safe retry loop, with
+            // React state reconciled to the player's real audio state.
+            forceUnmuteAutoplay(event.target);
             safePlayerCall(event.target, "setPlaybackQuality", "hd1080");
             enableCaptions(event.target);
             setIsPlaying(true);
