@@ -4062,31 +4062,27 @@ const HeroSection: React.FC<{
   const [isPlaying, setIsPlaying] = useState(true);
   const isMuted = isHeroMuted;
   const setIsMuted = setIsHeroMuted;
+  const videoId = activeFeaturedMovie?.videoId || heroVideoId;
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<any>(null);
   // Live mirror of isPlaying so onStateChange never fights intentional pauses
   const isPlayingRef = useRef(true);
   isPlayingRef.current = isPlaying;
-  const videoId = activeFeaturedMovie?.videoId || heroVideoId;
   const [isTouchPromptVisible, setIsTouchPromptVisible] = useState(false);
-  // Tracks whether the current video has actually begun playing, so the
-  // lingering background poster can be cleared (prevents old-frame artifacts).
+  // Clears the lingering poster once real frames render (prevents old-frame artifacts)
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
   // English closed captions are forced on by default (ccEnabled = true)
   const [ccEnabled, setCcEnabled] = useState(true);
-  // Strict delayed mounting: the YouTube iframe is NOT rendered on initial
-  // mount. A clean black screen with a loading indicator shows for exactly 3
-  // seconds; only then the player mounts, which browsers accept for unmuted
-  // autoplay without old cached frames, black voids, or manual clicks.
+  // Strict 3s delayed mounting: zero iframe in the DOM until showPlayer=true
   const [showPlayer, setShowPlayer] = useState(false);
 
-  // Mount the player exactly 3 seconds after the component first renders
+  // 1) Strict 3-second black screen gate — mount the player after exactly 3s
   useEffect(() => {
     const timer = setTimeout(() => setShowPlayer(true), 3000);
     return () => clearTimeout(timer);
   }, []);
 
-  // Detect mobile/touch devices: mobile autoplay policies block unmuted autoplay
+  // Detect mobile/touch devices: their autoplay policies block unmuted autoplay
   const isMobile = useMemo(() => {
     if (typeof navigator === "undefined") return false;
     return (
@@ -4095,63 +4091,74 @@ const HeroSection: React.FC<{
     );
   }, []);
 
-  // Safely invoke a YT.Player method: swallows sync errors AND rejected promises
+  // Safe invocation of any YT.Player method: try/catch + rejected-promise swallow
   const safePlayerCall = (player: any, method: string, ...args: any[]) => {
     try {
       const result = player?.[method]?.(...args);
-      if (result && typeof result.catch === "function") {
-        result.catch(() => {});
-      }
+      if (result && typeof result.catch === "function") result.catch(() => {});
       return result;
     } catch (_) {
       return undefined;
     }
   };
 
-  // Clean tap-to-unmute trigger (mobile-safe: runs inside a user gesture)
+  // Bulletproof play + unmute with a bounded retry loop (Edge/Chrome/mobile).
+  // Re-checks both muted state AND player state so it actively pushes playback
+  // forward until audio + video are confirmed running.
+  const forcePlayWithAudio = (target: any, attempts = 20) => {
+    if (!target) return;
+    safePlayerCall(target, "playVideo");
+    safePlayerCall(target, "unMute");
+    const stillMuted = safePlayerCall(target, "isMuted") ?? false;
+    const playerState = safePlayerCall(target, "getPlayerState");
+    const PLAYING = (window as any).YT?.PlayerState?.PLAYING ?? 1;
+    if (stillMuted || playerState !== PLAYING) {
+      // Mobile never allows unmute without a gesture → show the tap hint
+      if (stillMuted && isMobile) {
+        setIsTouchPromptVisible(true);
+        return;
+      }
+      if (attempts > 0) {
+        setTimeout(() => forcePlayWithAudio(target, attempts - 1), 200);
+      }
+    }
+  };
+
+  // Enable English closed captions via the YT IFrame API captions module
+  const enableCaptions = (target: any) => {
+    if (!target) return;
+    safePlayerCall(target, "loadModule", "captions");
+    safePlayerCall(target, "setOption", "cc", "lang", "en");
+    safePlayerCall(target, "setOption", "captions", "reload", true);
+  };
+
+  const disableCaptions = (target: any) => {
+    if (!target) return;
+    safePlayerCall(target, "unloadModule", "captions");
+  };
+
+  // Tap anywhere on the hero → guaranteed user-gesture unmute + play
   const handleHeroTap = () => {
     setIsHeroMuted(false);
     setIsTouchPromptVisible(false);
-    if (playerRef.current) {
-      safePlayerCall(playerRef.current, "unMute");
-      safePlayerCall(playerRef.current, "playVideo");
-    }
+    forcePlayWithAudio(playerRef.current, 2);
   };
 
-  // Toggle English subtitles via the YouTube IFrame API (captions module)
+  // CC toggle wired directly to the captions module
   const toggleCaptions = () => {
     const next = !ccEnabled;
     setCcEnabled(next);
-    if (playerRef.current) {
-      if (next) {
-        safePlayerCall(playerRef.current, "loadModule", "captions");
-        safePlayerCall(playerRef.current, "setOption", "cc", "lang", "en");
-        safePlayerCall(playerRef.current, "setOption", "cc", "reload", true);
-      } else {
-        safePlayerCall(playerRef.current, "unloadModule", "captions");
-      }
+    if (next) {
+      enableCaptions(playerRef.current);
+    } else {
+      disableCaptions(playerRef.current);
     }
   };
 
-  // Unmute fallback: desktop retries aggressively; mobile attempts once and
-  // falls back to the tap-to-unmute prompt so autoplay is never broken.
-  const ensureUnmuted = (target: any) => {
-    if (!target) return;
-    safePlayerCall(target, "unMute");
-    const stillMuted = safePlayerCall(target, "isMuted") ?? false;
-    if (stillMuted) {
-      if (isMobile) {
-        setIsTouchPromptVisible(true);
-      } else {
-        setTimeout(() => ensureUnmuted(target), 200);
-      }
-    }
-  };
-
-  // Load YouTube IFrame API eagerly so it's ready ASAP
+  // Load the YT IFrame API eagerly so it is ready at the 3s mark
   const apiReady = useRef(loadYouTubeAPI());
 
-  // Separate cleanup only on component unmount (not on videoId change)
+  // Cleanup: destroy the player only on component unmount (not on videoId change)
   useEffect(() => {
     return () => {
       if (playerRef.current) {
@@ -4161,32 +4168,27 @@ const HeroSection: React.FC<{
     };
   }, []);
 
-  // Create or hot-swap YT.Player when videoId changes (no destroy/recreate)
+  // 2) Mount / hot-swap the player ONLY after the 3s gate (zero iframe before)
   useEffect(() => {
     const id = "hero-yt-player";
     const container = document.getElementById(id);
-    if (!container || !videoId) return;
+    if (!container || !videoId || !showPlayer) return;
     let cancelled = false;
-
-    // New source: show the new video's poster until it truly starts playing,
-    // so no old/previous frame or lingering cache is ever visible.
+    // New source: show the new video's poster until it truly starts playing
     setHasStartedPlaying(false);
 
     const initPlayer = () => {
       if (cancelled) return;
       if (!(window as any).YT?.Player) return;
 
-      // Reuse existing player seamlessly instead of destroy+recreate
+      // Reuse the existing player (hot-swap) — no destroy/recreate flash
       if (playerRef.current) {
         try {
           safePlayerCall(playerRef.current, "loadVideoById", videoId);
-          safePlayerCall(playerRef.current, "playVideo");
-          safePlayerCall(playerRef.current, "unMute");
+          forcePlayWithAudio(playerRef.current);
           safePlayerCall(playerRef.current, "setPlaybackQuality", "hd1080");
-          safePlayerCall(playerRef.current, "setOption", "cc", "lang", "en");
-          safePlayerCall(playerRef.current, "setOption", "cc", "reload", true);
+          enableCaptions(playerRef.current);
           setIsPlaying(true);
-          ensureUnmuted(playerRef.current);
           return;
         } catch (_) {
           try { playerRef.current.destroy(); } catch (_) {}
@@ -4219,28 +4221,24 @@ const HeroSection: React.FC<{
         },
         events: {
           onReady: (event: any) => {
-            // 1) Force instant playback (muted via playerVars for autoplay policy)
-            safePlayerCall(event.target, "playVideo");
-            // 2) Immediately restore audio right after playback starts
-            safePlayerCall(event.target, "unMute");
-            // 3) Request highest available quality
+            // Explicit play + unmute inside a reliable retry / safe try-catch
+            forcePlayWithAudio(event.target);
             safePlayerCall(event.target, "setPlaybackQuality", "hd1080");
-            // 4) Auto-enable English closed captions/subtitles
-            safePlayerCall(event.target, "setOption", "cc", "lang", "en");
-            safePlayerCall(event.target, "setOption", "cc", "reload", true);
+            enableCaptions(event.target);
             setIsPlaying(true);
-            // 5) Graceful fallback if a browser still blocks the unmute
-            ensureUnmuted(event.target);
           },
           onStateChange: (event: any) => {
             const ytState = (window as any).YT.PlayerState;
             const playing = event.data === ytState.PLAYING;
             setIsPlaying(playing);
-            // Video is now rendering real frames: fully clear the poster/cache layer
-            if (playing) setHasStartedPlaying(true);
-            // Keep playback seamless so YouTube's center play/pause overlay
-            // never lingers on the video surface (unless deliberately paused).
-            if (event.data === ytState.PAUSED && isPlayingRef.current) {
+            if (playing) {
+              // Real frames are rendering: clear the poster/cache layer
+              setHasStartedPlaying(true);
+              // Re-assert play + audio on every PLAYING event (Edge/Chrome)
+              forcePlayWithAudio(playerRef.current, 2);
+            } else if (event.data === ytState.PAUSED && isPlayingRef.current) {
+              // Keep playback seamless so the center play/pause overlay
+              // never lingers on the video surface (unless deliberately paused)
               setTimeout(
                 () => safePlayerCall(playerRef.current, "playVideo"),
                 50,
@@ -4258,7 +4256,7 @@ const HeroSection: React.FC<{
     };
   }, [videoId, showPlayer]);
 
-  // Sync mute state via YT.Player API
+  // 3) Keep React mute state in sync with the player
   useEffect(() => {
     if (playerRef.current) {
       isMuted
@@ -4268,7 +4266,7 @@ const HeroSection: React.FC<{
     if (!isMuted) setIsTouchPromptVisible(false);
   }, [isMuted]);
 
-  // Sync play state via YT.Player API
+  // 4) Keep React play state in sync with the player
   useEffect(() => {
     if (playerRef.current) {
       isPlaying
