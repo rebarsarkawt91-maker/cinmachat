@@ -48,6 +48,8 @@ import {
   Youtube,
   Volume2,
   VolumeX,
+  Captions,
+  CaptionsOff,
   Maximize,
   Minimize,
   Square,
@@ -4070,6 +4072,8 @@ const HeroSection: React.FC<{
   // Tracks whether the current video has actually begun playing, so the
   // lingering background poster can be cleared (prevents old-frame artifacts).
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
+  // English closed captions are forced on by default (ccEnabled = true)
+  const [ccEnabled, setCcEnabled] = useState(true);
   // Strict delayed mounting: the YouTube iframe is NOT rendered on initial
   // mount. A clean black screen with a loading indicator shows for exactly 3
   // seconds; only then the player mounts, which browsers accept for unmuted
@@ -4111,6 +4115,21 @@ const HeroSection: React.FC<{
     if (playerRef.current) {
       safePlayerCall(playerRef.current, "unMute");
       safePlayerCall(playerRef.current, "playVideo");
+    }
+  };
+
+  // Toggle English subtitles via the YouTube IFrame API (captions module)
+  const toggleCaptions = () => {
+    const next = !ccEnabled;
+    setCcEnabled(next);
+    if (playerRef.current) {
+      if (next) {
+        safePlayerCall(playerRef.current, "loadModule", "captions");
+        safePlayerCall(playerRef.current, "setOption", "cc", "lang", "en");
+        safePlayerCall(playerRef.current, "setOption", "cc", "reload", true);
+      } else {
+        safePlayerCall(playerRef.current, "unloadModule", "captions");
+      }
     }
   };
 
@@ -4363,6 +4382,27 @@ const HeroSection: React.FC<{
               <Volume2 className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/audio:scale-110" />
             ) : (
               <VolumeX className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 opacity-80 transition-transform group-hover/audio:scale-110" />
+            )}
+          </button>
+
+          {/* Subtitle (CC) Toggle Button */}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleCaptions();
+            }}
+            className={`pointer-events-auto p-2 md:p-3 bg-black/50 border rounded-xl md:rounded-2xl backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/cc ${
+              ccEnabled
+                ? "text-brand-primary border-brand-primary/20 hover:border-brand-primary/35 hover:bg-brand-primary/15"
+                : "text-white border-white/10 hover:border-white/25 hover:bg-white/10"
+            }`}
+            title={ccEnabled ? "داخستنی ژێرنووس" : "کاراکردنی ژێرنووس"}
+            id="hero-cc-btn"
+          >
+            {ccEnabled ? (
+              <Captions className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/cc:scale-110" />
+            ) : (
+              <CaptionsOff className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 opacity-80 transition-transform group-hover/cc:scale-110" />
             )}
           </button>
 
