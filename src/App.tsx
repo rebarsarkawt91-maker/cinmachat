@@ -4067,13 +4067,15 @@ const HeroSection: React.FC<{
   // Tracks whether the current video has actually begun playing, so the
   // lingering background poster can be cleared (prevents old-frame artifacts).
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
-  // 3-second clean black buffer on initial load: hides any old frame / poster
-  // mismatch until the muted-autoplay player is fully initialized underneath.
-  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  // Strict delayed mounting: the YouTube iframe is NOT rendered on initial
+  // mount. A clean black screen with a loading indicator shows for exactly 3
+  // seconds; only then the player mounts, which browsers accept for unmuted
+  // autoplay without old cached frames, black voids, or manual clicks.
+  const [showPlayer, setShowPlayer] = useState(false);
 
-  // Auto-reveal the player after the brief 3s buffer on mount only
+  // Mount the player exactly 3 seconds after the component first renders
   useEffect(() => {
-    const timer = setTimeout(() => setIsInitialLoading(false), 3000);
+    const timer = setTimeout(() => setShowPlayer(true), 3000);
     return () => clearTimeout(timer);
   }, []);
 
@@ -4174,7 +4176,7 @@ const HeroSection: React.FC<{
         width: "100%",
         playerVars: {
           autoplay: 1,
-          mute: 1,
+          mute: 0,
           loop: 1,
           playlist: videoId,
           controls: 0,
@@ -4215,7 +4217,7 @@ const HeroSection: React.FC<{
     return () => {
       cancelled = true;
     };
-  }, [videoId]);
+  }, [videoId, showPlayer]);
 
   // Sync mute state via YT.Player API
   useEffect(() => {
@@ -4254,14 +4256,17 @@ const HeroSection: React.FC<{
         className="w-full h-full overflow-hidden pointer-events-none"
         style={{ position: "absolute", inset: 0, zIndex: 0 }}
       >
-        <div
-          className="w-full h-full scale-[1.35] bg-cover bg-center"
-          id="hero-player"
-          ref={containerRef}
-          style={!hasStartedPlaying && videoId ? { backgroundImage: `url(https://img.youtube.com/vi/${videoId}/maxresdefault.jpg)` } : undefined}
-        >
-          <div id="hero-yt-player" className="w-full h-full" />
-        </div>
+        {/* Player mounts only after the 3s delayed-mount gate (showPlayer) */}
+        {showPlayer && (
+          <div
+            className="w-full h-full scale-[1.35] bg-cover bg-center"
+            id="hero-player"
+            ref={containerRef}
+            style={!hasStartedPlaying && videoId ? { backgroundImage: `url(https://img.youtube.com/vi/${videoId}/maxresdefault.jpg)` } : undefined}
+          >
+            <div id="hero-yt-player" className="w-full h-full" />
+          </div>
+        )}
         {/* The YouTube iframe will be injected here by the YouTube Iframe API */}
         {/* <div className="w-full h-full scale-[1.35]" id="hero-player-iframe"></div> */}
         {/* سێبەری خوارەوەی ڤیدیۆکە بۆ ئەوەی دیزاینەکەی سینەمایی بێت */}
@@ -4439,14 +4444,14 @@ const HeroSection: React.FC<{
         </div>
       </div>
 
-      {/* 3-Second Black Loading/Buffer Wrapper (hides old frames & poster mismatches) */}
+      {/* Strict delayed-mount loading screen: solid black until showPlayer=true */}
       <AnimatePresence>
-        {isInitialLoading && (
+        {!showPlayer && (
           <motion.div
             key="hero-initial-buffer"
             initial={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.6, ease: "easeOut" }}
+            transition={{ duration: 0.4, ease: "easeOut" }}
             className="absolute inset-0 bg-black flex items-center justify-center"
             style={{ zIndex: 300 }}
           >
