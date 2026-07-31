@@ -1918,6 +1918,44 @@ const ContentModule = ({
 const BroadcastModule = ({ onBroadcast }: any) => {
   const [url, setUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [status, setStatus] = useState<{
+    type: "success" | "error" | null;
+    message: string;
+  }>({ type: null, message: "" });
+
+  // The broadcast button must NEVER get stuck in "خەریکی پەخش کردنە...".
+  // try/catch/finally guarantees the spinner always resets, and the input is
+  // cleared only after a confirmed successful Firestore save.
+  const handleBroadcast = async () => {
+    const trimmed = url.trim();
+    if (!trimmed) {
+      setStatus({
+        type: "error",
+        message: "تکایە لینکی ڤیدیۆ یان یوتیوب بنووسە",
+      });
+      return;
+    }
+    setStatus({ type: null, message: "" });
+    setIsLoading(true);
+    try {
+      await onBroadcast(trimmed);
+      setUrl("");
+      setStatus({
+        type: "success",
+        message: "پەخشەکە بە سەرکەوتوویی بۆ ژووری گشتی نێردرا!",
+      });
+    } catch (e: any) {
+      setStatus({
+        type: "error",
+        message:
+          e?.message ||
+          "پەخش کردن سەرکەوتوو نەبوو — تکایە دووبارە هەوڵبدەرەوە",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -1942,18 +1980,29 @@ const BroadcastModule = ({ onBroadcast }: any) => {
             type="text"
             placeholder="Direct Video Link or YouTube URL..."
             value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-white text-center font-bold outline-none focus:border-brand-primary tracking-tight text-xs"
-          />
-          <button
-            onClick={async () => {
-              setIsLoading(true);
-              await onBroadcast(url);
-              setIsLoading(false);
-              setUrl("");
+            onChange={(e) => {
+              setUrl(e.target.value);
+              if (status.message) setStatus({ type: null, message: "" });
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !isLoading) handleBroadcast();
             }}
             disabled={isLoading}
-            className="w-full py-5 bg-brand-primary text-white rounded-2xl font-black kurdish-text text-lg hover:bg-brand-primary/80 transition-all active:scale-95 shadow-2xl flex items-center justify-center gap-2"
+            className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-white text-center font-bold outline-none focus:border-brand-primary tracking-tight text-xs disabled:opacity-50"
+          />
+          {status.message && (
+            <p
+              className={`text-xs font-black kurdish-text text-center ${
+                status.type === "success" ? "text-green-400" : "text-red-400"
+              }`}
+            >
+              {status.message}
+            </p>
+          )}
+          <button
+            onClick={handleBroadcast}
+            disabled={isLoading || !url.trim()}
+            className="w-full py-5 bg-brand-primary text-white rounded-2xl font-black kurdish-text text-lg hover:bg-brand-primary/80 transition-all active:scale-95 shadow-2xl flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isLoading ? (
               "خەریکی پەخش کردنە..."
@@ -5715,6 +5764,9 @@ export default function App() {
   }, []);
 
   // Point 41: Global Sync Source of Truth (Real-time sync onSnapshot instead of 5 minute polling)
+  // HERO ONLY: config/featured feeds the hero carousel (featuredMovieFromDB).
+  // It no longer drives the global room stream — that is isolated in
+  // config/global_room (Point 41b) so hero edits never broadcast to viewers.
   useEffect(() => {
     const unsub = firestoreSnapshot(
       doc(db, "config", "featured"),
@@ -5724,16 +5776,6 @@ export default function App() {
             const data = snap.data();
             console.log("New Firebase Data:", data); // FORCE UPDATE LOG
             setFeaturedMovieFromDB(data as Movie);
-            const vidId =
-              data.videoId ||
-              (data.url ? extractYouTubeId(data.url) : null) ||
-              (data.embedUrl ? extractYouTubeId(data.embedUrl) : null);
-            const url = data.url || data.embedUrl || data.videoUrl;
-            if (vidId) {
-              setGlobalStreamURL(`https://www.youtube.com/embed/${vidId}`);
-            } else if (url) {
-              setGlobalStreamURL(url);
-            }
           }
         } catch (err) {
           console.warn("Featured config mapping failed:", err);
@@ -5741,6 +5783,42 @@ export default function App() {
       },
       (err) => {
         console.warn("Featured config subscription failed (likely rule or quote block):", err);
+      }
+    );
+    return () => unsub();
+  }, []);
+
+  // Point 41b: Global Room Broadcast Stream (config/global_room)
+  // Dedicated, isolated Firestore path written by the admin BroadcastModule.
+  // When a broadcast exists it overrides the player's source, otherwise the
+  // global stream is cleared so the hero/normal movie playback is untouched.
+  useEffect(() => {
+    const unsub = firestoreSnapshot(
+      doc(db, "config", "global_room"),
+      (snap) => {
+        try {
+          if (snap.exists()) {
+            const data = snap.data() as any;
+            const url =
+              data.videoUrl ||
+              data.videoData?.url ||
+              data.videoData?.videoUrl ||
+              data.embedUrl ||
+              "";
+            const vidId =
+              data.videoId || (url ? extractYouTubeId(url) : null);
+            setGlobalStreamURL(
+              vidId ? `https://www.youtube.com/embed/${vidId}` : url || null,
+            );
+          } else {
+            setGlobalStreamURL(null);
+          }
+        } catch (err) {
+          console.warn("Global room config mapping failed:", err);
+        }
+      },
+      (err) => {
+        console.warn("Global room config subscription failed (likely rule or quote block):", err);
       }
     );
     return () => unsub();
@@ -8887,10 +8965,46 @@ export default function App() {
                               };
                             }
 
-                            await fetchApi("/api/rooms/global_room_official", { // Update global room
+                            // Dedicated, isolated Firestore path for the Global
+                            // Room stream — config/global_room. config is
+                            // public read/write in firestore.rules, so this
+                            // save always succeeds (no server / auth dependency)
+                            // and every visitor's config/global_room onSnapshot
+                            // picks it up instantly. Mirror the key fields at
+                            // the top level for a clean single-doc source.
+                            const globalRoomPayload = {
+                              ...updatePayload,
+                              videoUrl:
+                                updatePayload.videoData.url ||
+                                updatePayload.videoData.videoUrl,
+                              videoId:
+                                updatePayload.videoData.videoId || null,
+                              isYouTube: updatePayload.videoData.isYouTube,
+                              title: "پەخشی ڕاستەوخۆ",
+                              image: updatePayload.videoData.image || "",
+                              updatedAt: new Date().toISOString(),
+                              broadcaster:
+                                currentUser?.username || "Admin",
+                            };
+                            await setDoc(
+                              doc(db, "config", "global_room"),
+                              globalRoomPayload,
+                              { merge: true },
+                            );
+
+                            // BEST-EFFORT, non-blocking: also keep the legacy
+                            // server-side global room state fresh for the
+                            // dashboard room list. Failures never block or
+                            // fail the broadcast button.
+                            fetchApi("/api/rooms/global_room_official", {
                               method: "POST",
                               body: JSON.stringify(updatePayload),
-                            });
+                            }).catch((err) =>
+                              console.warn(
+                                "[Broadcast] Server global room sync skipped:",
+                                err,
+                              ),
+                            );
                           }}
                         />
                       )}
