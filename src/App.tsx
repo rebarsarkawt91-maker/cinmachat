@@ -4289,10 +4289,12 @@ const HeroSection: React.FC<{
           safePlayerCall(playerRef.current, "loadVideoById", videoId);
           if (isMobile) {
             if (!userAudioControlRef.current) {
-              // Mobile: keep muted and re-assert autoplay — the only reliable
-              // way to auto-start a new video on Android/iOS (muted autoplay).
-              safePlayerCall(playerRef.current, "playVideo");
+              // Mobile: keep muted and re-assert autoplay in a retry loop — the
+              // only reliable way to auto-start a new video on Android/iOS
+              // (muted autoplay). Retrying playVideo() guards against the player
+              // reporting BUFFERING on the first call.
               setIsHeroMuted(true);
+              forcePlay(playerRef.current, 20);
             } else {
               // User already took control of audio: keep their choice and just
               // re-assert playback (works because of the prior real gesture)
@@ -4345,12 +4347,16 @@ const HeroSection: React.FC<{
           onReady: (event: any) => {
             if (isMobile) {
               // Mobile/Android: muted autoplay (mute:1) is already permitted —
-              // re-assert playVideo() right after the 3s black screen so the
-              // video rolls smoothly and automatically with NO programmatic
-              // unMute() attempt (mobile browsers block it anyway). Sound is
-              // enabled via a real user gesture: tap the video or mute button.
-              safePlayerCall(event.target, "playVideo");
+              // re-assert playVideo() in a retry loop right after the 3s black
+              // screen so the video ALWAYS rolls automatically. A single
+              // playVideo() can be dropped because many devices report BUFFERING
+              // (state 3) instead of PLAYING (state 1) on the first call, so we
+              // keep re-issuing playVideo() every 200ms (play-only, NEVER touches
+              // audio) until real playback begins. NO programmatic unMute()
+              // attempt — mobile browsers block it anyway. Sound is enabled via
+              // a real user gesture: tap the video or the mute button.
               setIsHeroMuted(true);
+              forcePlay(event.target, 30);
             } else {
               // Desktop: universal unmuted autoplay — playVideo + unMute +
               // setVolume(100) inside a safe retry loop. If the policy blocks
