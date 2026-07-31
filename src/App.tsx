@@ -4177,32 +4177,6 @@ const HeroSection: React.FC<{
     setTimeout(() => forceUnmuteAutoplay(target, attempts - 1), 200);
   };
 
-  // Edge-specific: run AFTER a 500ms muted-autoplay head start. Executes the
-  // exact sequence unMute() → setVolume(100) → playVideo() to switch audio on.
-  // If Edge still blocks it, React state stays muted so the pulsing unmute
-  // button remains fully clickable as a seamless fallback.
-  const edgeUnmuteSequence = (target: any, attempts = 10) => {
-    if (!target) return;
-    safePlayerCall(target, "unMute");
-    safePlayerCall(target, "setVolume", 100);
-    safePlayerCall(target, "playVideo");
-    const stillMuted = safePlayerCall(target, "isMuted") ?? false;
-    const playerState = safePlayerCall(target, "getPlayerState");
-    const PLAYING = (window as any).YT?.PlayerState?.PLAYING ?? 1;
-    if (!stillMuted && playerState === PLAYING) {
-      // Audio confirmed: playing with sound
-      setIsHeroMuted(false);
-      return;
-    }
-    if (attempts <= 0) {
-      // Edge blocked the audio → keep truthful muted state (pulsing fallback)
-      setIsHeroMuted(!!stillMuted);
-      return;
-    }
-    setIsHeroMuted(!!stillMuted);
-    setTimeout(() => edgeUnmuteSequence(target, attempts - 1), 200);
-  };
-
   // Enable English closed captions via the YT IFrame API captions module
   const enableCaptions = (target: any) => {
     if (!target) return;
@@ -4263,8 +4237,8 @@ const HeroSection: React.FC<{
         try {
           safePlayerCall(playerRef.current, "loadVideoById", videoId);
           if (isEdge) {
-            // Edge: preserve the muted-autoplay head start, then force audio on
-            setTimeout(() => edgeUnmuteSequence(playerRef.current), 500);
+            // Edge: keep muted — audio is enabled only by a user click
+            setIsHeroMuted(true);
           } else {
             forceUnmuteAutoplay(playerRef.current);
           }
@@ -4284,8 +4258,9 @@ const HeroSection: React.FC<{
         width: "100%",
         playerVars: {
           autoplay: 1,
-          // Edge: start muted (mute:1) for a 500ms head start to bypass its
-          // strict media policy, then audio is forced on via edgeUnmuteSequence.
+          // Edge: always start muted (mute:1) so the video plays instantly and
+          // smoothly — Edge blocks programmatic unMute(), so audio is enabled
+          // only by the user's click on the centered pulsing overlay.
           // Chrome & other browsers: direct unmuted start (mute:0) + onReady
           // forceUnmuteAutoplay, so sound is on right after the 3s black screen.
           mute: isEdge ? 1 : 0,
@@ -4308,10 +4283,11 @@ const HeroSection: React.FC<{
         events: {
           onReady: (event: any) => {
             if (isEdge) {
-              // Edge: player initialized with mute:1 → keep state muted while
-              // it autoplays muted for 500ms, then force audio on in sequence.
+              // Edge: always start muted (mute:1) so the video plays instantly
+              // without freezing. Edge blocks programmatic unMute() outside a
+              // direct user click — so NO unmute is attempted here; audio is
+              // enabled only by the user's click on the centered overlay.
               setIsHeroMuted(true);
-              setTimeout(() => edgeUnmuteSequence(event.target), 500);
             } else {
               // Chrome & other browsers: direct unmuted autoplay — playVideo +
               // unMute + setVolume(100) inside a safe retry loop.
@@ -4486,7 +4462,7 @@ const HeroSection: React.FC<{
               muted (video starts muted=1). Unmutes inside a real user gesture and
               hides after the first click — the permanent toggle stays below. */}
           <AnimatePresence>
-            {showUnmuteHint && isMuted && (
+            {!isEdge && showUnmuteHint && isMuted && (
               <motion.button
                 key="hero-unmute-hint"
                 exit={{
@@ -4639,6 +4615,44 @@ const HeroSection: React.FC<{
               <div className="w-20 h-20 md:w-24 md:h-24 rounded-full bg-white text-black flex items-center justify-center shadow-2xl shadow-black/50 active:scale-90 transition-transform duration-150">
                 <Play className="w-10 h-10 md:w-12 md:h-12 translate-x-0.5" />
               </div>
+              <span className="kurdish-text text-white text-lg md:text-xl font-bold drop-shadow-lg">
+                کلیک بکە بۆ دەستپێکردن
+              </span>
+            </motion.button>
+          )}
+        </AnimatePresence>
+
+        {/* Edge-specific centered unmute overlay: Edge ALWAYS starts the video
+            muted (mute:1) because it blocks programmatic unMute() without a
+            direct click. This highly visible pulsing action makes a single user
+            click 100% reliable for enabling audio (real user gesture). */}
+        <AnimatePresence>
+          {isEdge && !isMobile && isMuted && (
+            <motion.button
+              key="edge-unmute-overlay"
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              transition={{ duration: 0.3 }}
+              onClick={(e) => {
+                e.stopPropagation();
+                userUnmute();
+              }}
+              type="button"
+              className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-5 pointer-events-auto cursor-pointer bg-black/30"
+              title="کلیک بکە بۆ کاراکردنی دەنگ"
+            >
+              <motion.div
+                animate={{ scale: [1, 1.1, 1] }}
+                transition={{
+                  repeat: Infinity,
+                  duration: 1.5,
+                  ease: "easeInOut",
+                }}
+                className="w-24 h-24 md:w-28 md:h-28 rounded-full bg-white text-black flex items-center justify-center shadow-2xl shadow-black/50 active:scale-90 transition-transform duration-150"
+              >
+                <Play className="w-12 h-12 md:w-14 md:h-14 translate-x-0.5" />
+              </motion.div>
               <span className="kurdish-text text-white text-lg md:text-xl font-bold drop-shadow-lg">
                 کلیک بکە بۆ دەستپێکردن
               </span>
