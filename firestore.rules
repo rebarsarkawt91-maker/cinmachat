@@ -418,6 +418,59 @@ service cloud.firestore {
       allow delete: if settingId != '_meta';
     }
 
+    // --- Module 19 Main Broadcast (main_broadcast_room / broadcast_settings) ---
+    // Dedicated, isolated Firestore schema for the پەخشی گشتی public broadcast.
+    // main_broadcast_room/state holds the live stream URL + pause/resume/seek
+    // state, its /messages subcollection holds the public live chat, and
+    // broadcast_settings/default holds preview/title settings. Zero overlap
+    // with VIP rooms, syncGroups or config so nothing cross-contaminates.
+    // Validated public writes (anonymous auth disabled on this project, same
+    // pattern as genres/config/channel_settings).
+
+    function isValidBroadcastState(data) {
+      return (data.get('currentMovieUrl', '') is string && data.get('currentMovieUrl', '').size() <= 2000)
+        && data.get('isPlaying', false) is bool
+        && (data.get('currentTime', 0) is int || data.get('currentTime', 0) is float)
+        && data.get('currentTime', 0) >= 0
+        && (data.get('name', null) == null || data.name is string)
+        && (data.get('updatedAt', null) == null || data.updatedAt is string || data.updatedAt is timestamp)
+        && (data.get('updatedBy', null) == null || data.updatedBy is string);
+    }
+
+    function isValidBroadcastMessage(data) {
+      return data.get('sender', '') is string
+        && data.get('senderCode', '') is string
+        && data.get('text', '') is string && data.get('text', '').size() <= 2000
+        && (data.get('timestamp', null) == null || data.timestamp is string || data.timestamp is timestamp)
+        && (data.get('createdAt', null) == null || data.createdAt is timestamp);
+    }
+
+    function isValidBroadcastSettings(data) {
+      return (data.get('previewEnabled', null) == null || data.previewEnabled is bool)
+        && (data.get('previewAutoplay', null) == null || data.previewAutoplay is bool)
+        && (data.get('broadcastTitle', null) == null || (data.broadcastTitle is string && data.broadcastTitle.size() <= 200))
+        && (data.get('updatedAt', null) == null || data.updatedAt is string || data.updatedAt is timestamp)
+        && (data.get('updatedBy', null) == null || data.updatedBy is string);
+    }
+
+    match /main_broadcast_room/{docId} {
+      allow read: if true;
+      allow create, update: if isValidBroadcastState(incoming());
+      allow delete: if docId != '_meta';
+
+      match /messages/{messageId} {
+        allow read: if true;
+        allow create: if isValidBroadcastMessage(incoming());
+        allow update, delete: if false;
+      }
+    }
+
+    match /broadcast_settings/{settingId} {
+      allow read: if true;
+      allow create, update: if isValidBroadcastSettings(incoming());
+      allow delete: if settingId != '_meta';
+    }
+
     // --- Collection Group Rules ---
     match /{path=**}/messages/{messageId} {
       allow read: if isAdmin();

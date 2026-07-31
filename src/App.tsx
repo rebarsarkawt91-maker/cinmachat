@@ -102,6 +102,16 @@ import {
   saveChannelSettings,
   isValidHttpUrl,
 } from "./services/channelLinks";
+import {
+  subscribeBroadcastState,
+  loadBroadcastState,
+  updateBroadcastState,
+  subscribeBroadcastSettings,
+  loadBroadcastSettings,
+  saveBroadcastSettings,
+  DEFAULT_BROADCAST_SETTINGS,
+} from "./services/mainBroadcast";
+import type { BroadcastState, BroadcastSettings } from "./services/mainBroadcast";
 import { Movie, SyncGroup, SocialUser } from "./types";
 import { useSocialAuth } from "./context/SocialAuthContext";
 import jsQR from "jsqr";
@@ -3918,74 +3928,100 @@ const WhatsAppAutomationModule = () => {
 
 
 const BroadcastControlModule = () => {
-  const [room, setRoom] = React.useState<any>(null);
+  const [room, setRoom] = React.useState<BroadcastState | null>(null);
   const [videoUrl, setVideoUrl] = React.useState("");
   const [localMovies, setLocalMovies] = React.useState<any[]>([]);
   const [isUpdating, setIsUpdating] = React.useState(false);
   const [msg, setMsg] = React.useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [settings, setSettings] = React.useState<BroadcastSettings>(
+    DEFAULT_BROADCAST_SETTINGS,
+  );
+  const [titleInput, setTitleInput] = React.useState("");
 
-  const fetchState = async () => {
-    try {
-      const res = await fetch("/api/rooms/main_broadcast_room");
-      if (res.ok) {
-        const data = await res.json();
-        setRoom(data);
-        if (!videoUrl && data.currentMovieUrl) {
-          setVideoUrl(data.currentMovieUrl);
-        }
-      }
-    } catch (err) {
-      console.warn("Error fetching broadcast room state:", err);
-    }
-  };
+  // Live room state (stream URL + pause/resume/seek) from the dedicated
+  // main_broadcast_room/state doc — replaces the dead /api/rooms polling.
+  React.useEffect(() => {
+    loadBroadcastState().then((st) => {
+      setRoom(st);
+      if (st.currentMovieUrl) setVideoUrl(st.currentMovieUrl);
+    });
+    const unsub = subscribeBroadcastState((st) => {
+      setRoom(st);
+      if (st.currentMovieUrl) setVideoUrl(st.currentMovieUrl);
+    });
+    return () => unsub();
+  }, []);
 
+  // Live preview settings from broadcast_settings/default.
+  React.useEffect(() => {
+    loadBroadcastSettings().then((s) => {
+      setSettings(s);
+      setTitleInput(s.broadcastTitle);
+    });
+    const unsub = subscribeBroadcastSettings((s) => {
+      setSettings(s);
+      setTitleInput(s.broadcastTitle);
+    });
+    return () => unsub();
+  }, []);
+
+  // Movie catalogue straight from the durable Firestore movies collection.
   const fetchCatalogMovies = async () => {
     try {
-      const res = await fetch("/api/movies");
-      if (res.ok) {
-        const data = await res.json();
-        setLocalMovies(Array.isArray(data) ? data : []);
-      }
+      const snap = await getDocs(collection(db, "movies"));
+      setLocalMovies(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
     } catch (err) {
-      console.warn("Could not fetch catalog movies:", err);
+      console.warn("Could not load catalog movies from Firestore:", err);
     }
   };
 
   React.useEffect(() => {
-    fetchState();
     fetchCatalogMovies();
-    const interval = setInterval(fetchState, 3000);
-    return () => clearInterval(interval);
   }, []);
 
   const handleUpdateBroadcast = async (urlToSet?: string, playState?: boolean, seekTime?: number) => {
     setIsUpdating(true);
     setMsg(null);
     try {
-      const payload: any = {};
-      if (urlToSet !== undefined) payload.currentMovieUrl = urlToSet;
-      if (playState !== undefined) payload.isPlaying = playState;
-      if (seekTime !== undefined) payload.currentTime = seekTime;
-
-      const res = await fetch("/api/rooms/main_broadcast_room/update", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setRoom(data.room);
-        setMsg({ type: "success", text: "زانیارییەکان بە سەرکەوتوویی نوێکرانەوە!" });
-      } else {
-        setMsg({ type: "error", text: "هەڵەیەک لە نوێکردنەوە ڕوویدا" });
-      }
+      const patch: Partial<BroadcastState> = {};
+      if (urlToSet !== undefined) patch.currentMovieUrl = urlToSet;
+      if (playState !== undefined) patch.isPlaying = playState;
+      if (seekTime !== undefined) patch.currentTime = seekTime;
+      await updateBroadcastState(patch, "admin");
+      setMsg({ type: "success", text: "زانیارییەکان بە سەرکەوتوویی نوێکرانەوە!" });
     } catch (err) {
-      setMsg({ type: "error", text: "ناتوانرێت پەیوەندی بە سێرڤەرەوە بکرێت" });
+      console.error("Broadcast update failed:", err);
+      setMsg({ type: "error", text: "هەڵەیەک لە نوێکردنەوە ڕوویدا" });
     } finally {
       setIsUpdating(false);
     }
   };
+
+  const handleSaveSettings = async () => {
+    try {
+      await saveBroadcastSettings(
+        {
+          previewEnabled: settings.previewEnabled,
+          previewAutoplay: settings.previewAutoplay,
+          broadcastTitle: titleInput,
+        },
+        "admin",
+      );
+      setMsg({ type: "success", text: "ڕێکخستنەکانی پێشبینین پاشەکەوتکران!" });
+    } catch (err) {
+      console.error("Broadcast settings save failed:", err);
+      setMsg({ type: "error", text: "پاشەکەوتکردنی ڕێکخستنەکان سەرکەوتوو نەبوو" });
+    }
+  };
+
+  const getMoviePlayUrl = (m: any) =>
+    m.url ||
+    m.embedUrl ||
+    m.streamingUrl ||
+    m.videoUrl ||
+    m.youtubeMovieUrl ||
+    m.youtubeUrl ||
+    "";
 
   const handleSeekShift = (offsetSeconds: number) => {
     if (!room) return;
@@ -4027,7 +4063,7 @@ const BroadcastControlModule = () => {
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-400">ژمانەی بینەران</span>
-                <span className="font-mono text-purple-400 font-bold">{room?.activeUsers?.length || 0} بینەر</span>
+                <span className="font-mono text-purple-400 font-bold">1 بینەر</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-400">لێدان / ڕاوەستان</span>
@@ -4132,6 +4168,41 @@ const BroadcastControlModule = () => {
 
       </div>
 
+      {/* Module 19 settings: live preview toggle + broadcast title (broadcast_settings/default) */}
+      <div className="p-6 bg-[#0c0d12]/60 border border-white/5 rounded-2xl space-y-4">
+        <h4 className="text-white font-bold text-sm kurdish-text">ڕێکخستنەکانی پێشبینینی ڕاستەوخۆ (broadcast_settings)</h4>
+        <div className="flex flex-col md:flex-row md:items-center gap-4">
+          <div className="flex items-center gap-3">
+            <span className="text-[10px] text-gray-400 kurdish-text">پیشاندانی پێشبینینی فیلمەکە:</span>
+            <button
+              onClick={() =>
+                setSettings((prev) => ({ ...prev, previewEnabled: !prev.previewEnabled }))
+              }
+              className={`px-4 py-2 rounded-xl text-xs font-black cursor-pointer transition-all border ${
+                settings.previewEnabled
+                  ? "bg-purple-600/30 border-purple-500/30 text-purple-300"
+                  : "bg-zinc-900 border-white/10 text-gray-500"
+              }`}
+            >
+              {settings.previewEnabled ? "چالاکە ✓" : "ناچالاکە"}
+            </button>
+          </div>
+          <input
+            type="text"
+            value={titleInput}
+            onChange={(e) => setTitleInput(e.target.value)}
+            placeholder="ناونیشانی پەخش..."
+            className="flex-1 bg-black/40 border border-white/5 rounded-xl px-4 py-2.5 text-xs text-white placeholder-zinc-600 text-left font-mono"
+          />
+          <button
+            onClick={handleSaveSettings}
+            className="px-5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-black kurdish-text cursor-pointer transition-all"
+          >
+            پاشەکەوتکردنی ڕێکخستنەکان
+          </button>
+        </div>
+      </div>
+
       {/* Direct Catalogue selector */}
       <div className="p-6 bg-zinc-950/80 border border-white/5 rounded-2xl space-y-4">
         <h4 className="text-white font-bold text-sm kurdish-text flex items-center justify-between">
@@ -4147,16 +4218,17 @@ const BroadcastControlModule = () => {
               <div
                 key={movie.id}
                 onClick={() => {
-                  if (movie.url) {
-                    setVideoUrl(movie.url);
-                    handleUpdateBroadcast(movie.url);
+                  const url = getMoviePlayUrl(movie);
+                  if (url) {
+                    setVideoUrl(url);
+                    handleUpdateBroadcast(url);
                   }
                 }}
                 className={`p-3 bg-zinc-900/60 border rounded-xl hover:border-purple-500/40 hover:bg-zinc-900 cursor-pointer transition-all flex items-center gap-3 group`}
               >
-                {movie.thumbnail && (
+                {(movie.thumbnail || movie.image) && (
                   <img
-                    src={movie.thumbnail}
+                    src={movie.thumbnail || movie.image}
                     alt=""
                     className="w-12 h-16 object-cover rounded-lg bg-zinc-800 shrink-0 border border-white/5"
                     referrerPolicy="no-referrer"

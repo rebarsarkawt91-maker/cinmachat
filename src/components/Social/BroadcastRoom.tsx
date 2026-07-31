@@ -1,13 +1,18 @@
 import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { loadYouTubeAPI } from "../../utils/youtube";
-import { 
-  Tv, 
-  Send, 
-  Users, 
-  Clock, 
-  Volume2, 
-  VolumeX, 
+import {
+  subscribeBroadcastState,
+  subscribeBroadcastMessages,
+  sendBroadcastMessage,
+} from "../../services/mainBroadcast";
+import {
+  Tv,
+  Send,
+  Users,
+  Clock,
+  Volume2,
+  VolumeX,
   Info,
   ChevronLeft,
   MessageSquare,
@@ -23,9 +28,9 @@ interface Comment {
 }
 
 interface Room {
-  id: string;
-  name: string;
-  hostCode: string;
+  id?: string;
+  name?: string;
+  hostCode?: string;
   currentMovieUrl: string;
   isPlaying: boolean;
   currentTime: number;
@@ -48,8 +53,7 @@ export const BroadcastRoom: React.FC<BroadcastRoomProps> = ({
 }) => {
   const [activeRoom, setActiveRoom] = useState<Room | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [errorText, setErrorText] = useState("");
-  
+
   // Public Chat states
   const [chats, setChats] = useState<Comment[]>([]);
   const [newMsgText, setNewMsgText] = useState("");
@@ -69,7 +73,6 @@ export const BroadcastRoom: React.FC<BroadcastRoomProps> = ({
   );
 
   const playerRef = useRef<any>(null);
-  const checkIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const purgeIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -78,39 +81,36 @@ export const BroadcastRoom: React.FC<BroadcastRoomProps> = ({
     loadYouTubeAPI();
   }, []);
 
-  // Poll Broadcast Room State
-  const fetchRoomState = async () => {
-    try {
-      const uCode = encodeURIComponent(localUserCodeRef.current);
-      const res = await fetch(`/api/rooms/main_broadcast_room?userCode=${uCode}`);
-      if (res.ok) {
-        const data: Room = await res.json();
-        setActiveRoom(data);
-        
-        // Statically filter messages older than 1 hour for ui immediacy
-        const oneHourAgo = Date.now() - 3600000;
-        const validChats = (data.chatMessages || []).filter((msg) => {
-          const t = new Date(msg.timestamp).getTime();
-          return t > oneHourAgo;
-        });
-        setChats(validChats);
-        setIsLoading(false);
-      } else {
-        setErrorText("کێشەیەک لە بارکردنی ژووری گشتی هەیە");
-      }
-    } catch (err) {
-      console.warn("Could not load broadcast room state:", err);
-    }
-  };
-
+  // Real-time room state (stream URL + pause/resume/seek) from the dedicated
+  // main_broadcast_room/state Firestore doc — replaces the dead /api polling.
   useEffect(() => {
-    fetchRoomState();
-    // Poll every 2 seconds for real-time play control updates from admin
-    checkIntervalRef.current = setInterval(fetchRoomState, 2000);
+    const unsub = subscribeBroadcastState((st) => {
+      setActiveRoom(st as any);
+      setIsLoading(false);
+    });
+    return () => unsub();
+  }, []);
 
-    return () => {
-      if (checkIntervalRef.current) clearInterval(checkIntervalRef.current);
-    };
+  // Real-time public chat from main_broadcast_room/state/messages.
+  useEffect(() => {
+    const unsub = subscribeBroadcastMessages((msgs) => {
+      const oneHourAgo = Date.now() - 3600000;
+      const valid: Comment[] = msgs
+        .filter((m) => {
+          const t = new Date(m.timestamp || "").getTime();
+          return !isNaN(t) && t > oneHourAgo;
+        })
+        .map((m) => ({
+          id: m.id || "",
+          sender: m.sender,
+          senderCode: m.senderCode,
+          text: m.text,
+          timestamp: m.timestamp || "",
+        }))
+        .reverse(); // newest-last for chronological display
+      setChats(valid);
+    });
+    return () => unsub();
   }, []);
 
   // Auto-Delete local display purge ticker: runs every 5 seconds to wipe messages > 1 Hour immediately
@@ -247,33 +247,12 @@ export const BroadcastRoom: React.FC<BroadcastRoomProps> = ({
 
     setIsSending(true);
     try {
-      const msgBody = {
+      await sendBroadcastMessage({
         sender: localUsernameRef.current,
         senderCode: localUserCodeRef.current,
         text: newMsgText.trim()
-      };
-
-      const res = await fetch("/api/rooms/main_broadcast_room/update", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chatMessage: msgBody,
-          userCode: localUserCodeRef.current
-        })
       });
-
-      if (res.ok) {
-        const data = await res.json();
-        setNewMsgText("");
-        
-        // Filter updated messages immediately in client
-        const oneHourAgo = Date.now() - 3600000;
-        const validChats = (data.room?.chatMessages || []).filter((msg: any) => {
-          const t = new Date(msg.timestamp).getTime();
-          return t > oneHourAgo;
-        });
-        setChats(validChats);
-      }
+      setNewMsgText("");
     } catch (err) {
       console.warn("Message delivery error:", err);
     } finally {

@@ -1,6 +1,10 @@
 import React, { useState, useEffect } from "react";
 import { motion } from "motion/react";
 import { Tv } from "lucide-react";
+import {
+  subscribeBroadcastState,
+  subscribeBroadcastSettings,
+} from "../../services/mainBroadcast";
 
 interface BroadcastPreviewCardProps {
   onJoinBroadcast: () => void;
@@ -9,42 +13,35 @@ interface BroadcastPreviewCardProps {
 
 export const BroadcastPreviewCard: React.FC<BroadcastPreviewCardProps> = ({
   onJoinBroadcast,
-  socialProfile,
 }) => {
   const [previewVideoId, setPreviewVideoId] = useState<string>("");
+  const [previewEnabled, setPreviewEnabled] = useState(true);
 
-  // Periodically fetch main broadcast room status (lightweight live feed preview monitoring)
+  // Live broadcast preview: subscribe to the dedicated main_broadcast_room/state
+  // doc so the frame continuously renders the active broadcast movie in real
+  // time (replaces the dead /api polling). broadcast_settings/default controls
+  // whether the preview is shown.
   useEffect(() => {
-    let active = true;
-    const fetchPreviewUrl = async () => {
-      try {
-        const uCode = encodeURIComponent(socialProfile?.uniqueCode || "guest");
-        const res = await fetch(`/api/rooms/main_broadcast_room?userCode=${uCode}`);
-        if (res.ok && active) {
-          const data = await res.json();
-          const url = data.currentMovieUrl || "";
-          let videoId = "";
-          const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
-          const match = url.match(regExp);
-          if (match && match[2].length === 11) {
-            videoId = match[2];
-          } else {
-            videoId = url; // fallback
-          }
-          setPreviewVideoId(videoId);
-        }
-      } catch (err) {
-        console.warn("Could not load preview broadcast room state:", err);
+    const unsubState = subscribeBroadcastState((st) => {
+      const url = st.currentMovieUrl || "";
+      let videoId = "";
+      const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+      const match = url.match(regExp);
+      if (match && match[2].length === 11) {
+        videoId = match[2];
+      } else {
+        videoId = url; // fallback (direct embed / mp4)
       }
-    };
-
-    fetchPreviewUrl();
-    const interval = setInterval(fetchPreviewUrl, 10000); // lightweight: every 10 seconds
+      setPreviewVideoId(videoId);
+    });
+    const unsubSettings = subscribeBroadcastSettings((s) => {
+      setPreviewEnabled(s.previewEnabled);
+    });
     return () => {
-      active = false;
-      clearInterval(interval);
+      unsubState();
+      unsubSettings();
     };
-  }, [socialProfile?.uniqueCode]);
+  }, []);
 
   return (
     <div className="bg-zinc-900 border border-white/10 rounded-[3rem] overflow-hidden relative group h-full flex flex-col justify-between">
@@ -56,7 +53,7 @@ export const BroadcastPreviewCard: React.FC<BroadcastPreviewCardProps> = ({
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-48 h-48 bg-purple-500/10 blur-[80px] rounded-full animate-pulse pointer-events-none" />
         <div className="absolute inset-0 bg-black/40" />
 
-        {previewVideoId ? (
+        {previewEnabled && previewVideoId ? (
           <iframe
             src={
               previewVideoId.startsWith("http://") ||
