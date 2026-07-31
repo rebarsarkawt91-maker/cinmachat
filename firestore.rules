@@ -118,6 +118,24 @@ service cloud.firestore {
       allow delete: if isAdmin() && !isStaff();
     }
 
+    // --- Genres Collection (dynamic پۆلێنەکان) ---
+    // Public read so the main nav renders live; writes are restricted to admins.
+    function isValidGenre(data) {
+      return data.get('name', '') is string
+        && data.get('name', '').size() > 0 && data.get('name', '').size() <= 50
+        && data.get('tag', '') is string
+        && data.get('tag', '').size() > 0 && data.get('tag', '').size() <= 50
+        && data.get('sortOrder', 0) is int
+        && data.get('sortOrder', 0) >= 0
+        && (data.get('createdAt', null) == null || data.get('createdAt', null) is timestamp);
+    }
+
+    match /genres/{genreId} {
+      allow read: if true;
+      allow create, update: if isAdmin() && isValidGenre(incoming());
+      allow delete: if isAdmin() && genreId != '_meta';
+    }
+
     // --- System Check Collection ---
     match /system_check/{docId} {
       allow read, write: if true;

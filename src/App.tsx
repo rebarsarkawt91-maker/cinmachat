@@ -82,6 +82,15 @@ import { UsersIcon } from "lucide-react";
 import "plyr-react/plyr.css";
 import { GoogleGenAI } from "@google/genai";
 import { api } from "./services/api";
+import {
+  subscribeGenres,
+  addGenre,
+  deleteGenre,
+  fetchGenreNames,
+  seedDefaultGenres,
+  DEFAULT_GENRES,
+} from "./services/genres";
+import type { Genre } from "./services/genres";
 import { Movie, SyncGroup, SocialUser } from "./types";
 import { useSocialAuth } from "./context/SocialAuthContext";
 import jsQR from "jsqr";
@@ -551,19 +560,21 @@ const getAI = () => {
   return new GoogleGenAI({ apiKey });
 };
 
-const CATEGORIES = [
-  { name: "هەمووی", icon: TrendingUp, tag: "all" },
-  { name: "فیلمە نوێیەکان", icon: Sparkles, tag: "New Releases" },
-  { name: "دۆبلاج", icon: MessageCircle, tag: "دۆبلاج" },
-  { name: "دراما", icon: Film, tag: "دراما" },
-  { name: "ئاکشن", icon: Sword, tag: "ئاکشن" },
-  { name: "ترسناک", icon: Ghost, tag: "ترسناک" },
-  { name: "کۆمیدی", icon: Smile, tag: "کۆمیدی" },
-  { name: "ئەنیمەیشن", icon: Calendar, tag: "ئەنیمەیشن" },
-  { name: "خەیاڵی", icon: Flame, tag: "خەیاڵی" },
-  { name: "زنجیرە", icon: Clock, tag: "زنجیرە" },
-  { name: "کوردستان", icon: ShieldCheck, tag: "کوردستان" },
-];
+// Dynamic genre icons: known genres get a themed icon, any genre added later
+// by an admin falls back to the generic Film icon.
+const GENRE_ICONS: Record<string, any> = {
+  "New Releases": Sparkles,
+  "فیلمە نوێیەکان": Sparkles,
+  "دۆبلاژ": MessageCircle,
+  "دراما": Film,
+  "ئاکشن": Sword,
+  "ترسناک": Ghost,
+  "کۆمیدی": Smile,
+  "ئەنیمەیشن": Calendar,
+  "خەیاڵی": Flame,
+  "زنجیرە": Clock,
+  "کوردستان": ShieldCheck,
+};
 
 // Dashboard Sub-components
 const SidebarItem = ({ icon: Icon, label, active, onClick }: any) => (
@@ -906,9 +917,9 @@ const ContentModule = ({
   };
 
   useEffect(() => {
-    fetchApi("/api/admin/categories")
-      .then((r) => r.json())
-      .then(setCategories)
+    // Load genres from Firestore (dynamic — reflects admin changes instantly)
+    fetchGenreNames()
+      .then((names) => setCategories(names))
       .catch(() => {});
   }, []);
 
@@ -2035,10 +2046,13 @@ const HeroModule = ({ onSync }: any) => {
   );
 };
 
-const CategoryModule = ({ movies, onRefresh }: any) => {
-  const [categories, setCategories] = useState<string[]>([]);
+const CategoryModule = ({ movies }: any) => {
+  const [categories, setCategories] = useState<Genre[]>([]);
   const [newCat, setNewCat] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [error, setError] = useState("");
 
   const getAdminUsername = () => {
     try {
@@ -2062,73 +2076,50 @@ const CategoryModule = ({ movies, onRefresh }: any) => {
     return false;
   })();
 
-  const fetchCategories = async () => {
-    setLoading(true);
-    try {
-      const adminName = getAdminUsername();
-      const res = await fetchApi(`/api/admin/categories?adminName=${encodeURIComponent(adminName)}`);
-      const data = await res.json();
-      if (Array.isArray(data)) {
-        setCategories(data);
-      } else {
-        console.warn("Categories fetched is not an array:", data);
-        setCategories([]);
-      }
-    } catch (e) {
-      console.error("Failed to fetch categories", e);
-      setCategories([]);
-    }
-    setLoading(false);
-  };
-
+  // Real-time Firestore sync: any add/delete in the admin panel (or any other
+  // device) reflects here and in the main nav instantly — no manual refresh.
   useEffect(() => {
-    fetchCategories();
+    const unsub = subscribeGenres((list) => {
+      setCategories(list);
+      setLoading(false);
+      // Seed the default catalog once on first visit if the collection is empty
+      if (list.length === 0) seedDefaultGenres();
+    });
+    return unsub;
   }, []);
 
   const handleAdd = async () => {
-    if (!newCat) return;
-    setLoading(true);
-    try {
-      const adminName = getAdminUsername();
-      const res = await fetchApi(`/api/admin/categories`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newCat, adminName }),
-      });
-      if (res.ok) {
-        setNewCat("");
-        fetchCategories();
-        onRefresh?.();
-      } else {
-        const err = await res.json();
-        alert(err.error || "هەڵەیەک ڕوویدا");
-      }
-    } catch (e) {
-      alert("کێشەی پەیوەندی هەیە");
+    const name = newCat.trim();
+    if (!name) {
+      setError("ناوی پۆلێن پێویستە");
+      return;
     }
-    setLoading(false);
+    setError("");
+    setAdding(true);
+    try {
+      await addGenre(name, getAdminUsername());
+      setNewCat(""); // the live subscription adds it to the list instantly
+    } catch (e: any) {
+      setError(e?.message || "هەڵەیەک ڕوویدا لە زیادکردنی پۆلێن");
+    }
+    setAdding(false);
   };
 
-  const handleDelete = async (name: string) => {
-    if (confirm(`ئایا دڵنیایت لە سڕینەوەی پۆلێنی "${name}"؟`)) {
-      setLoading(true);
-      try {
-        const adminName = getAdminUsername();
-        const res = await fetch(
-          `/api/admin/categories/${encodeURIComponent(name)}?adminName=${encodeURIComponent(adminName)}`,
-          {
-            method: "DELETE",
-          },
-        );
-        if (res.ok) {
-          fetchCategories();
-          onRefresh?.();
-        }
-      } catch (e) {
-        alert("کێشەی پەیوەندی هەیە");
-      }
-      setLoading(false);
+  const handleDelete = async (genre: Genre) => {
+    if (!confirm(`ئایا دڵنیایت لە سڕینەوەی پۆلێنی "${genre.name}"؟`)) return;
+    setError("");
+    setDeletingId(genre.id);
+    try {
+      await deleteGenre(genre.id); // the live subscription removes it instantly
+    } catch (e) {
+      setError("کێشەیەک ڕوویدا لە سڕینەوە — تکایە دووبارە هەوڵبدەرەوە");
     }
+    setDeletingId(null);
+  };
+
+  const genreIcon = (g: Genre) => {
+    const Icon = GENRE_ICONS[g.tag] || GENRE_ICONS[g.name] || Film;
+    return <Icon className="w-5 h-5" />;
   };
 
   return (
@@ -2143,29 +2134,43 @@ const CategoryModule = ({ movies, onRefresh }: any) => {
             بەڕێوەبەرایەتی پۆلێنەکان
           </h3>
           <p className="text-gray-500 kurdish-text text-sm">
-            زیادکردن و سڕینەوەی جۆرەکانی فیلم (Genre)
+            زیادکردن و سڕینەوەی جۆرەکانی فیلم (Genre) — دەستبەجێ لە فایەربەیسەوە
+            دەبەسترێتەوە
           </p>
         </div>
       </div>
+
+      {error && (
+        <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-2xl text-red-400 text-sm kurdish-text font-bold">
+          {error}
+        </div>
+      )}
 
       <div className="p-8 bg-white/5 border border-white/10 rounded-[2.5rem] space-y-4">
         <label className="text-xs font-black text-gray-500 kurdish-text uppercase tracking-widest">
           زیادکردنی پۆلێنی نوێ
         </label>
-        <div className="flex gap-3">
+        <div className="flex gap-3 flex-wrap">
           <input
             type="text"
             placeholder="ناوی پۆلێن (بۆ نموونە: ئەکشن، دراما...)"
             value={newCat}
-            onChange={(e) => setNewCat(e.target.value)}
-            className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-white kurdish-text outline-none focus:border-brand-primary transition-all"
+            onChange={(e) => {
+              setNewCat(e.target.value);
+              if (error) setError("");
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleAdd();
+            }}
+            maxLength={50}
+            className="flex-1 min-w-[200px] bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-white kurdish-text outline-none focus:border-brand-primary transition-all"
           />
           <button
             onClick={handleAdd}
-            disabled={loading || !newCat}
+            disabled={adding || !newCat.trim()}
             className="px-8 py-4 bg-brand-primary text-white rounded-2xl font-black kurdish-text hover:bg-red-700 transition-all disabled:opacity-50 flex items-center gap-2"
           >
-            {loading ? (
+            {adding ? (
               <Loader2 className="w-5 h-5 animate-spin" />
             ) : (
               <Plus className="w-5 h-5" />
@@ -2176,7 +2181,7 @@ const CategoryModule = ({ movies, onRefresh }: any) => {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {loading && (!categories || categories.length === 0)
+        {loading && categories.length === 0
           ? Array(6)
               .fill(0)
               .map((_, i) => (
@@ -2185,35 +2190,49 @@ const CategoryModule = ({ movies, onRefresh }: any) => {
                   className="h-24 bg-white/5 rounded-3xl animate-pulse"
                 />
               ))
-          : Array.isArray(categories) && categories.map((cat) => (
-              <div
-                key={cat}
-                className="p-6 bg-white/5 border border-white/10 rounded-3xl flex items-center justify-between group hover:bg-white/10 transition-all"
-              >
-                <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 bg-brand-primary/10 rounded-xl flex items-center justify-center text-brand-primary">
-                    <Film className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <span className="text-lg font-black kurdish-text text-white block">
-                      {cat}
-                    </span>
-                    <span className="text-[10px] text-gray-500 font-bold">
-                      {movies.filter((m: any) => m.tags.includes(cat)).length}{" "}
-                      فیلم و زنجیرە
-                    </span>
-                  </div>
-                </div>
-                {!isStaff && (
-                  <button
-                    onClick={() => handleDelete(cat)}
-                    className="p-2 text-gray-600 hover:text-red-500 hover:bg-red-500/10 rounded-xl transition-all opacity-0 group-hover:opacity-100"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                )}
+          : categories.length === 0 && (
+              <div className="col-span-full p-10 text-center text-gray-500 kurdish-text text-sm bg-white/5 rounded-3xl border border-dashed border-white/10">
+                هیچ پۆلێنێک نییە — لە سەرەوە پۆلێنی نوێ زیاد بکە
               </div>
-            ))}
+            )}
+        {categories.map((cat) => (
+          <div
+            key={cat.id}
+            className="p-6 bg-white/5 border border-white/10 rounded-3xl flex items-center justify-between group hover:bg-white/10 transition-all"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-10 h-10 bg-brand-primary/10 rounded-xl flex items-center justify-center text-brand-primary">
+                {genreIcon(cat)}
+              </div>
+              <div>
+                <span className="text-lg font-black kurdish-text text-white block">
+                  {cat.name}
+                </span>
+                <span className="text-[10px] text-gray-500 font-bold">
+                  {movies.filter(
+                    (m: any) =>
+                      Array.isArray(m.tags) && m.tags.includes(cat.tag),
+                  ).length}{" "}
+                  فیلم و زنجیرە
+                </span>
+              </div>
+            </div>
+            {!isStaff && (
+              <button
+                onClick={() => handleDelete(cat)}
+                disabled={deletingId === cat.id}
+                className="p-2 text-gray-600 hover:text-red-500 hover:bg-red-500/10 rounded-xl transition-all opacity-0 group-hover:opacity-100 disabled:opacity-40"
+                title="سڕینەوە"
+              >
+                {deletingId === cat.id ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Trash2 className="w-4 h-4" />
+                )}
+              </button>
+            )}
+          </div>
+        ))}
       </div>
     </motion.div>
   );
@@ -4967,6 +4986,32 @@ export default function App() {
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
   const [showPlayer, setShowPlayer] = useState(false);
 
+  // Dynamic genres from Firestore (real-time). While the snapshot hasn't
+  // arrived yet we fall back to the default catalog so the nav never flashes
+  // empty on slow networks / cold rules.
+  const [dynamicGenres, setDynamicGenres] = useState<Genre[]>([]);
+  const [genresReady, setGenresReady] = useState(false);
+
+  useEffect(() => {
+    const unsub = subscribeGenres((list) => {
+      setDynamicGenres(list);
+      setGenresReady(true);
+      // Seed the default catalog once when the collection is empty (best-effort;
+      // only admins can actually persist it — everyone else sees defaults below)
+      if (list.length === 0) seedDefaultGenres();
+    });
+    return unsub;
+  }, []);
+
+  // If the currently selected genre is deleted in the admin panel, fall back to
+  // the "all" view instead of leaving a dead filter active.
+  useEffect(() => {
+    if (!genresReady) return;
+    if (activeTab !== "all" && !dynamicGenres.some((g) => g.tag === activeTab)) {
+      setActiveTab("all");
+    }
+  }, [dynamicGenres, genresReady, activeTab]);
+
   const [autoPlay, setAutoPlay] = useState(false);
   const [isHeroMuted, setIsHeroMuted] = useState(false);
   const [activeInvitation, setActiveInvitation] = useState<any>(null);
@@ -6769,6 +6814,20 @@ export default function App() {
     return filteredMovies.slice(startIndex, startIndex + moviesPerPage);
   }, [filteredMovies, currentPage]);
 
+  // Navigation genre list: always starts with the special "هەمووی" (all) view,
+  // followed by the genres from Firestore with live per-genre movie counts.
+  const navGenres = useMemo(() => {
+    const source = genresReady ? dynamicGenres : DEFAULT_GENRES;
+    return source.map((g) => ({
+      id: (g as Genre).id || g.tag,
+      name: g.name,
+      tag: g.tag,
+      count: movies.filter(
+        (m) => Array.isArray(m.tags) && m.tags.includes(g.tag),
+      ).length,
+    }));
+  }, [dynamicGenres, genresReady, movies]);
+
   useEffect(() => {
     setTranslatedContent(null);
   }, [selectedMovie]);
@@ -7232,26 +7291,55 @@ export default function App() {
 
 
 
-            {/* Categories / Navigation Section */}
+            {/* Categories / Navigation Section (dynamic genres from Firestore) */}
             <section className="sticky top-[73px] z-50 bg-black/95 backdrop-blur-3xl py-4 px-8 border-b border-white/5 shadow-2xl">
               <div className="max-w-7xl mx-auto flex items-center gap-4 overflow-x-auto no-scrollbar">
-                {CATEGORIES.map((cat) => (
-                  <button
-                    key={cat.tag}
-                    onClick={() => {
-                      setActiveTab(cat.tag);
-                      setCurrentPage(1);
-                    }}
-                    className={`px-6 py-2.5 rounded-full font-bold kurdish-text whitespace-nowrap transition-all flex items-center gap-2 border-2 ${
-                      activeTab === cat.tag
-                        ? "bg-brand-primary border-brand-primary text-white shadow-xl shadow-red-600/20 scale-105"
-                        : "bg-white/5 border-white/10 text-gray-400 hover:bg-white/10 hover:border-white/20"
-                    }`}
-                  >
-                    <cat.icon className="w-4 h-4" />
-                    {cat.name}
-                  </button>
-                ))}
+                {/* Special "all" view */}
+                <button
+                  key="all"
+                  onClick={() => {
+                    setActiveTab("all");
+                    setCurrentPage(1);
+                  }}
+                  className={`px-6 py-2.5 rounded-full font-bold kurdish-text whitespace-nowrap transition-all flex items-center gap-2 border-2 ${
+                    activeTab === "all"
+                      ? "bg-brand-primary border-brand-primary text-white shadow-xl shadow-red-600/20 scale-105"
+                      : "bg-white/5 border-white/10 text-gray-400 hover:bg-white/10 hover:border-white/20"
+                  }`}
+                >
+                  <TrendingUp className="w-4 h-4" />
+                  هەمووی
+                </button>
+                {navGenres.map((cat) => {
+                  const Icon = GENRE_ICONS[cat.tag] || GENRE_ICONS[cat.name] || Film;
+                  return (
+                    <button
+                      key={cat.id || cat.tag}
+                      onClick={() => {
+                        setActiveTab(cat.tag);
+                        setCurrentPage(1);
+                      }}
+                      className={`px-6 py-2.5 rounded-full font-bold kurdish-text whitespace-nowrap transition-all flex items-center gap-2 border-2 ${
+                        activeTab === cat.tag
+                          ? "bg-brand-primary border-brand-primary text-white shadow-xl shadow-red-600/20 scale-105"
+                          : "bg-white/5 border-white/10 text-gray-400 hover:bg-white/10 hover:border-white/20"
+                      }`}
+                    >
+                      <Icon className="w-4 h-4" />
+                      {cat.name}
+                      <span
+                        className={`text-[9px] font-black px-1.5 py-0.5 rounded-full ${
+                          activeTab === cat.tag
+                            ? "bg-white/20 text-white"
+                            : "bg-white/10 text-gray-500"
+                        }`}
+                        title={`${cat.count} فیلم`}
+                      >
+                        {cat.count}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </section>
 
