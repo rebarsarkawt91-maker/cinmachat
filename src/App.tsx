@@ -96,6 +96,12 @@ import {
   markSecurityOffline,
   logUserActivity,
 } from "./services/securityMonitor";
+import {
+  subscribeChannelSettings,
+  loadChannelSettings,
+  saveChannelSettings,
+  isValidHttpUrl,
+} from "./services/channelLinks";
 import { Movie, SyncGroup, SocialUser } from "./types";
 import { useSocialAuth } from "./context/SocialAuthContext";
 import jsQR from "jsqr";
@@ -4198,6 +4204,15 @@ const ChannelSettingsModule = ({
   const [ig, setIg] = useState(instagramUrl || "");
   const [fb, setFb] = useState(facebookUrl || "");
   const [isSaving, setIsSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<
+    "idle" | "saved" | "error"
+  >("idle");
+  const [errors, setErrors] = useState<{
+    yt?: string;
+    tk?: string;
+    ig?: string;
+    fb?: string;
+  }>({});
 
   useEffect(() => {
     setYt(youtubeUrl || "");
@@ -4207,6 +4222,19 @@ const ChannelSettingsModule = ({
   }, [youtubeUrl, tiktokUrl, instagramUrl, facebookUrl]);
 
   const handleSave = async () => {
+    const errs: typeof errors = {};
+    if (!isValidHttpUrl(yt))
+      errs.yt = "بەستەرەکە دروست نییە — دەبێت بە http:// یان https:// دەستپێبکات.";
+    if (!isValidHttpUrl(tk))
+      errs.tk = "بەستەرەکە دروست نییە — دەبێت بە http:// یان https:// دەستپێبکات.";
+    if (!isValidHttpUrl(ig))
+      errs.ig = "بەستەرەکە دروست نییە — دەبێت بە http:// یان https:// دەستپێبکات.";
+    if (!isValidHttpUrl(fb))
+      errs.fb = "بەستەرەکە دروست نییە — دەبێت بە http:// یان https:// دەستپێبکات.";
+    setErrors(errs);
+    setSaveStatus("idle");
+    if (Object.keys(errs).length > 0) return;
+
     setIsSaving(true);
     try {
       await onUpdate({
@@ -4215,6 +4243,11 @@ const ChannelSettingsModule = ({
         instagramUrl: ig,
         facebookUrl: fb,
       });
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus("idle"), 3500);
+    } catch (err) {
+      console.error("Channel links save failed:", err);
+      setSaveStatus("error");
     } finally {
       setIsSaving(false);
     }
@@ -4253,10 +4286,19 @@ const ChannelSettingsModule = ({
                   type="text"
                   value={yt}
                   onChange={(e) => setYt(e.target.value)}
-                  className="w-full bg-black/40 border border-white/10 rounded-xl pl-12 pr-4 py-3.5 text-white outline-none focus:border-brand-primary text-sm transition-all"
+                  className={`w-full bg-black/40 border ${
+                    errors.yt
+                      ? "border-red-500 focus:border-red-500"
+                      : "border-white/10 focus:border-brand-primary"
+                  } rounded-xl pl-12 pr-4 py-3.5 text-white outline-none text-sm transition-all`}
                   placeholder="https://www.youtube.com/@ChatCinama"
                 />
               </div>
+              {errors.yt && (
+                <p className="text-[11px] text-red-400 kurdish-text">
+                  {errors.yt}
+                </p>
+              )}
             </div>
 
             {/* tiktok option */}
@@ -4272,10 +4314,19 @@ const ChannelSettingsModule = ({
                   type="text"
                   value={tk}
                   onChange={(e) => setTk(e.target.value)}
-                  className="w-full bg-black/40 border border-white/10 rounded-xl pl-12 pr-4 py-3.5 text-white outline-none focus:border-brand-primary text-sm transition-all"
+                  className={`w-full bg-black/40 border ${
+                    errors.tk
+                      ? "border-red-500 focus:border-red-500"
+                      : "border-white/10 focus:border-brand-primary"
+                  } rounded-xl pl-12 pr-4 py-3.5 text-white outline-none text-sm transition-all`}
                   placeholder="https://www.tiktok.com/@ChatCinama"
                 />
               </div>
+              {errors.tk && (
+                <p className="text-[11px] text-red-400 kurdish-text">
+                  {errors.tk}
+                </p>
+              )}
             </div>
 
             {/* instagram option */}
@@ -4291,10 +4342,19 @@ const ChannelSettingsModule = ({
                   type="text"
                   value={ig}
                   onChange={(e) => setIg(e.target.value)}
-                  className="w-full bg-black/40 border border-white/10 rounded-xl pl-12 pr-4 py-3.5 text-white outline-none focus:border-brand-primary text-sm transition-all"
+                  className={`w-full bg-black/40 border ${
+                    errors.ig
+                      ? "border-red-500 focus:border-red-500"
+                      : "border-white/10 focus:border-brand-primary"
+                  } rounded-xl pl-12 pr-4 py-3.5 text-white outline-none text-sm transition-all`}
                   placeholder="https://www.instagram.com/ChatCinama"
                 />
               </div>
+              {errors.ig && (
+                <p className="text-[11px] text-red-400 kurdish-text">
+                  {errors.ig}
+                </p>
+              )}
             </div>
 
             {/* facebook option */}
@@ -4310,10 +4370,19 @@ const ChannelSettingsModule = ({
                   type="text"
                   value={fb}
                   onChange={(e) => setFb(e.target.value)}
-                  className="w-full bg-black/40 border border-white/10 rounded-xl pl-12 pr-4 py-3.5 text-white outline-none focus:border-brand-primary text-sm transition-all"
+                  className={`w-full bg-black/40 border ${
+                    errors.fb
+                      ? "border-red-500 focus:border-red-500"
+                      : "border-white/10 focus:border-brand-primary"
+                  } rounded-xl pl-12 pr-4 py-3.5 text-white outline-none text-sm transition-all`}
                   placeholder="https://www.facebook.com/ChatCinama"
                 />
               </div>
+              {errors.fb && (
+                <p className="text-[11px] text-red-400 kurdish-text">
+                  {errors.fb}
+                </p>
+              )}
             </div>
           </div>
 
@@ -4327,6 +4396,16 @@ const ChannelSettingsModule = ({
                 <>
                   <Loader2 className="w-5 h-5 animate-spin" />
                   <span>پاشەکەوت دەکرێت...</span>
+                </>
+              ) : saveStatus === "saved" ? (
+                <>
+                  <CheckCircle2 className="w-5 h-5 text-green-400" />
+                  <span>پاشەکەوتی سەرکەوتوو! هەموو بەستەرەکان نوێ بوونەوە.</span>
+                </>
+              ) : saveStatus === "error" ? (
+                <>
+                  <AlertCircle className="w-5 h-5 text-red-400" />
+                  <span>هەڵەیەک ڕوویدا لە کاتی پاشەکەوتکردن — دیسان هەوڵ بدەوە.</span>
                 </>
               ) : (
                 <>
@@ -7150,6 +7229,67 @@ export default function App() {
     fetchConfig();
   }, []);
 
+  // Module 9: Channel & Brand links — live from the dedicated channel_settings
+  // collection. Any save in the admin panel propagates app-wide in real time
+  // (footer, hero button, viewing modals) via onSnapshot.
+  useEffect(() => {
+    let active = true;
+    const applyLinks = (links: {
+      youtubeUrl: string;
+      tiktokUrl: string;
+      instagramUrl: string;
+      facebookUrl: string;
+    }) => {
+      if (!active) return;
+      setConfig((prev) => ({
+        ...prev,
+        youtubeChannelUrl: links.youtubeUrl,
+        youtubeUrl: links.youtubeUrl,
+        tiktokUrl: links.tiktokUrl,
+        instagramUrl: links.instagramUrl,
+        facebookUrl: links.facebookUrl,
+      }));
+    };
+    loadChannelSettings().then(applyLinks);
+    const unsub = subscribeChannelSettings(applyLinks);
+    return () => {
+      active = false;
+      unsub();
+    };
+  }, []);
+
+  // Module 9 save handler: validate URL formats, persist to Firestore, then
+  // best-effort sync to the legacy (dead) server without blocking success.
+  const handleSaveChannelLinks = async (updates: {
+    youtubeUrl: string;
+    tiktokUrl: string;
+    instagramUrl: string;
+    facebookUrl: string;
+  }) => {
+    for (const key of Object.keys(updates) as (keyof typeof updates)[]) {
+      if (!isValidHttpUrl(updates[key])) {
+        throw new Error(`invalid channel link: ${key}`);
+      }
+    }
+    // Optimistic local update so the whole app reflects the new links instantly.
+    setConfig((prev) => ({
+      ...prev,
+      youtubeChannelUrl: updates.youtubeUrl,
+      youtubeUrl: updates.youtubeUrl,
+      tiktokUrl: updates.tiktokUrl,
+      instagramUrl: updates.instagramUrl,
+      facebookUrl: updates.facebookUrl,
+    }));
+    // Persistent save in the dedicated channel_settings collection.
+    await saveChannelSettings(updates, currentUser?.username || "admin");
+    // Best-effort legacy server sync (non-blocking).
+    fetchApi("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updates),
+    }).catch(() => {});
+  };
+
   const handleAdminClick = () => {
     if (currentUser) {
       setShowAdminPanel(true);
@@ -8897,6 +9037,62 @@ export default function App() {
                       </div>
                     </div> {/* WhatsApp Button */}
 
+                    {/* Module 9: Channel & Brand links (live from channel_settings) */}
+                    <div className="hidden md:flex items-center gap-2">
+                      {typeof config.youtubeUrl === "string" &&
+                        config.youtubeUrl !== "#" &&
+                        config.youtubeUrl.trim() !== "" && (
+                          <a
+                            href={config.youtubeUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 hover:bg-red-500/20 transition-all"
+                            title="YouTube"
+                          >
+                            <Youtube className="w-5 h-5" />
+                          </a>
+                        )}
+                      {typeof config.tiktokUrl === "string" &&
+                        config.tiktokUrl !== "#" &&
+                        config.tiktokUrl.trim() !== "" && (
+                          <a
+                            href={config.tiktokUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="p-3 bg-cyan-400/10 border border-cyan-400/20 rounded-xl text-cyan-400 hover:bg-cyan-400/20 transition-all"
+                            title="TikTok"
+                          >
+                            <Video className="w-5 h-5" />
+                          </a>
+                        )}
+                      {typeof config.instagramUrl === "string" &&
+                        config.instagramUrl !== "#" &&
+                        config.instagramUrl.trim() !== "" && (
+                          <a
+                            href={config.instagramUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="p-3 bg-pink-500/10 border border-pink-500/20 rounded-xl text-pink-400 hover:bg-pink-500/20 transition-all"
+                            title="Instagram"
+                          >
+                            <Instagram className="w-5 h-5" />
+                          </a>
+                        )}
+                      {typeof config.facebookUrl === "string" &&
+                        config.facebookUrl !== "#" &&
+                        config.facebookUrl.trim() !== "" && (
+                          <a
+                            href={config.facebookUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="p-3 bg-blue-500/10 border border-blue-500/20 rounded-xl text-blue-400 hover:bg-blue-500/20 transition-all"
+                            title="Facebook"
+                          >
+                            <Facebook className="w-5 h-5" />
+                          </a>
+                        )}
+                    </div>
+
                     {/* Point 71: Similar Movies */}
                     <div className="mt-12">
                       <h4 className="text-xs font-black uppercase tracking-widest text-gray-500 mb-6 kurdish-text flex items-center gap-2">
@@ -9983,9 +10179,7 @@ export default function App() {
                           tiktokUrl={config.tiktokUrl}
                           instagramUrl={config.instagramUrl}
                           facebookUrl={config.facebookUrl}
-                          onUpdate={async (updates) => {
-                            await updateConfig(updates);
-                          }}
+                          onUpdate={handleSaveChannelLinks}
                         />
                       )}
 

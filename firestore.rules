@@ -397,6 +397,27 @@ service cloud.firestore {
       allow delete: if ipId != '_meta';
     }
 
+    // --- Module 9 Channel & Brand Settings (channel_settings) ---
+    // Dedicated collection persisting the 4 social/brand URLs (YouTube,
+    // TikTok, Instagram, Facebook). Validated public writes keep the admin
+    // save button working without Firebase Auth (anonymous auth is disabled
+    // on this project, same pattern as genres/config); the whole app reads
+    // the doc via onSnapshot for real-time sync.
+    function isValidChannelSettings(data) {
+      return data.get('youtubeUrl', '') is string && data.get('youtubeUrl', '').size() <= 500
+        && data.get('tiktokUrl', '') is string && data.get('tiktokUrl', '').size() <= 500
+        && data.get('instagramUrl', '') is string && data.get('instagramUrl', '').size() <= 500
+        && data.get('facebookUrl', '') is string && data.get('facebookUrl', '').size() <= 500
+        && (data.get('updatedAt', null) == null || data.updatedAt is string || data.updatedAt is timestamp)
+        && (data.get('updatedBy', null) == null || data.updatedBy is string);
+    }
+
+    match /channel_settings/{settingId} {
+      allow read: if true;
+      allow create, update: if isValidChannelSettings(incoming());
+      allow delete: if settingId != '_meta';
+    }
+
     // --- Collection Group Rules ---
     match /{path=**}/messages/{messageId} {
       allow read: if isAdmin();
