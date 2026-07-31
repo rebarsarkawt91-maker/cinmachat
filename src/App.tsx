@@ -4067,20 +4067,48 @@ const HeroSection: React.FC<{
   // Load YouTube IFrame API eagerly so it's ready ASAP
   const apiReady = useRef(loadYouTubeAPI());
 
-  // Create or destroy YT.Player when videoId changes
+  // Separate cleanup only on component unmount (not on videoId change)
   useEffect(() => {
-    const id = "hero-yt-player";
-    if (!document.getElementById(id)) return;
-    if (!videoId) return;
-    let cancelled = false;
-
-    const initPlayer = () => {
-      if (cancelled) return;
+    return () => {
       if (playerRef.current) {
         try { playerRef.current.destroy(); } catch (_) {}
         playerRef.current = null;
       }
+    };
+  }, []);
+
+  // Create or hot-swap YT.Player when videoId changes (no destroy/recreate)
+  useEffect(() => {
+    const id = "hero-yt-player";
+    const container = document.getElementById(id);
+    if (!container || !videoId) return;
+    let cancelled = false;
+
+    const initPlayer = () => {
+      if (cancelled) return;
       if (!(window as any).YT?.Player) return;
+
+      // Reuse existing player seamlessly instead of destroy+recreate
+      if (playerRef.current) {
+        try {
+          playerRef.current.loadVideoById(videoId);
+          playerRef.current.playVideo();
+          playerRef.current.setPlaybackQuality('hd1080');
+          setIsPlaying(true);
+          const tryUnmute = () => {
+            if (playerRef.current && typeof playerRef.current.isMuted === 'function' && !playerRef.current.isMuted()) return;
+            try { playerRef.current.unMute(); } catch (_) {}
+            if (typeof playerRef.current.isMuted === 'function' && playerRef.current.isMuted()) {
+              setTimeout(tryUnmute, 200);
+            }
+          };
+          tryUnmute();
+          return;
+        } catch (_) {
+          try { playerRef.current.destroy(); } catch (_) {}
+          playerRef.current = null;
+        }
+      }
 
       playerRef.current = new (window as any).YT.Player(id, {
         videoId: videoId,
@@ -4127,10 +4155,6 @@ const HeroSection: React.FC<{
 
     return () => {
       cancelled = true;
-      if (playerRef.current) {
-        try { playerRef.current.destroy(); } catch (_) {}
-        playerRef.current = null;
-      }
     };
   }, [videoId]);
 
