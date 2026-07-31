@@ -24,6 +24,18 @@ import {
   Image as ImageIcon
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import {
+  db,
+  collection,
+  onSnapshot,
+  doc,
+  getDoc,
+  getDocs,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  addDoc
+} from "../../lib/firebase";
 
 interface VIPSetting {
   qrCodeUrl: string;
@@ -56,9 +68,9 @@ const FileUploaderInput: React.FC<FileUploaderInputProps> = ({
   const [isUploading, setIsUploading] = useState(false);
 
   const handleFileChange = async (file: File) => {
-    const MAX_SIZE = 2 * 1024 * 1024; // 2MB
+    const MAX_SIZE = 250 * 1024; // keeps base64 payloads well under Firestore's 1MiB doc limit (QR + logo share one doc)
     if (file.size > MAX_SIZE) {
-      onError(`⚠️ قەبارەی وێنە ناتوانێت لە ٢ مێگابایت زیاتر بێت!`);
+      onError(`⚠️ قەبارەی وێنە ناتوانێت لە ٢٥٠ کیلۆبایت زیاتر بێت!`);
       return;
     }
 
@@ -70,32 +82,18 @@ const FileUploaderInput: React.FC<FileUploaderInputProps> = ({
 
     setIsUploading(true);
     try {
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-        const base64Data = e.target?.result as string;
-        const res = await fetch("/api/admin/vip/upload", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            fileData: base64Data,
-            fileName: file.name,
-            adminName
-          })
-        });
-
-        const data = await res.json();
-        if (res.ok && data.success) {
-          onChange(data.url);
-        } else {
-          onError(data.error || "تێکشکان لە لۆدکردنی وێنەکە.");
-        }
-      };
-      reader.onerror = () => {
-        onError("هەڵەیەک ڕوویدا لە خوێندنەوەی پەڕگەکە.");
-      };
-      reader.readAsDataURL(file);
+      // Firebase Storage is unavailable on this free (Spark) project, so VIP
+      // images are stored inline as base64 data URLs directly in the Firestore
+      // document. This needs no billing and survives the dead Render server.
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error("FileReader failed"));
+        reader.readAsDataURL(file);
+      });
+      onChange(base64);
     } catch (err: any) {
-      onError("کێشەیەکی ناوخۆیی هەیە: " + (err.message || String(err)));
+      onError("کێشەیەک هەیە لە خوێندنەوەی وێنەکە: " + (err.message || String(err)));
     } finally {
       setIsUploading(false);
     }
@@ -281,6 +279,7 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [videoUrl, setVideoUrl] = useState("");
+  const [trailerUrl, setTrailerUrl] = useState("");
   const [selectedVipVideoId, setSelectedVipVideoId] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
@@ -303,49 +302,110 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
 
   const adminName = currentUser?.username || "Admin";
 
+  // Map a Firestore query snapshot to plain objects ({ id, ...data }).
+  const mapDocs = (snap: any) => snap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+
+  // Deterministic unique ticket code (also used as the vip_tickets doc id).
+  const generateTicketCode = () => {
+    const rand = Math.random().toString(36).substring(2, 10) + Date.now().toString(36);
+    return `VIP-${rand.toUpperCase()}`;
+  };
+
   const loadVIPData = async () => {
     setIsLoading(true);
     try {
-      // 1. Load tickets
-      const ticketsRes = await fetch("/api/admin/vip/tickets");
-      if (ticketsRes.ok) {
-        const tList = await ticketsRes.json();
-        if (Array.isArray(tList)) setTickets(tList);
-      }
-      
-      // 2. Load settings
-      const settingsRes = await fetch("/api/admin/vip/settings");
-      if (settingsRes.ok) {
-        const sData = await settingsRes.json();
-        setSettings(sData);
+      // 1. Tickets
+      const ticketsSnap = await getDocs(collection(db, "vip_tickets"));
+      const tList = mapDocs(ticketsSnap);
+      tList.sort((a: any, b: any) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+      setTickets(tList);
+
+      // 2. Settings
+      const settingsSnap = await getDoc(doc(db, "vip_settings", "default"));
+      if (settingsSnap.exists()) {
+        const sData = settingsSnap.data();
+        setSettings(sData as VIPSetting);
         setFormQr(sData.qrCodeUrl || "");
         setFormDetails(sData.paymentDetails || "");
         setFormInst(sData.instructions || "");
         setFormLogo(sData.paymentLogoUrl || "");
       }
 
-      // 3. Load videos
-      const videosRes = await fetch("/api/admin/vip/videos");
-      if (videosRes.ok) {
-        const vList = await videosRes.json();
-        if (Array.isArray(vList)) setVipVideos(vList);
-      }
+      // 3. Videos
+      const videosSnap = await getDocs(collection(db, "vip_videos"));
+      const vList = mapDocs(videosSnap);
+      vList.sort((a: any, b: any) => (a.sortOrder || 0) - (b.sortOrder || 0));
+      setVipVideos(vList);
 
-      // 4. Load pending requests
-      const requestsRes = await fetch("/api/admin/vip/requests");
-      if (requestsRes.ok) {
-        const rList = await requestsRes.json();
-        if (Array.isArray(rList)) setVipRequests(rList);
-      }
+      // 4. Requests
+      const requestsSnap = await getDocs(collection(db, "vip_requests"));
+      const rList = mapDocs(requestsSnap);
+      rList.sort((a: any, b: any) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+      setVipRequests(rList);
     } catch (err) {
       console.error("Error loading VIP module:", err);
+      setErrorText("کێشە لە بارکردنی داتاکانی VIP (Firestore).");
     } finally {
       setIsLoading(false);
     }
   };
 
+  // Real-time Firestore sync: the side panel updates instantly when a user
+  // submits a request, a ticket is generated, settings are saved, or a VIP
+  // video is added — no server round-trip needed.
   useEffect(() => {
     loadVIPData();
+
+    const unsubTickets = onSnapshot(
+      collection(db, "vip_tickets"),
+      (snap) => {
+        const tList = mapDocs(snap);
+        tList.sort((a: any, b: any) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+        setTickets(tList);
+      },
+      (err) => console.warn("vip_tickets listener:", err)
+    );
+
+    const unsubVideos = onSnapshot(
+      collection(db, "vip_videos"),
+      (snap) => {
+        const vList = mapDocs(snap);
+        vList.sort((a: any, b: any) => (a.sortOrder || 0) - (b.sortOrder || 0));
+        setVipVideos(vList);
+      },
+      (err) => console.warn("vip_videos listener:", err)
+    );
+
+    const unsubSettings = onSnapshot(
+      doc(db, "vip_settings", "default"),
+      (snap) => {
+        if (!snap.exists()) return;
+        const sData = snap.data();
+        setSettings(sData as VIPSetting);
+        setFormQr(sData.qrCodeUrl || "");
+        setFormDetails(sData.paymentDetails || "");
+        setFormInst(sData.instructions || "");
+        setFormLogo(sData.paymentLogoUrl || "");
+      },
+      (err) => console.warn("vip_settings listener:", err)
+    );
+
+    const unsubRequests = onSnapshot(
+      collection(db, "vip_requests"),
+      (snap) => {
+        const rList = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        rList.sort((a: any, b: any) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+        setVipRequests(rList);
+      },
+      (err) => console.warn("vip_requests listener:", err)
+    );
+
+    return () => {
+      unsubTickets();
+      unsubVideos();
+      unsubSettings();
+      unsubRequests();
+    };
   }, []);
 
   // Copy code utility
@@ -368,30 +428,36 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
 
     try {
       setIsLoading(true);
-      const res = await fetch("/api/admin/vip/tickets/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          customerName,
-          customerPhone,
-          videoUrl,
-          vipVideoId: selectedVipVideoId,
-          adminName
-        })
+      const code = generateTicketCode();
+      const boundUrl =
+        videoUrl.trim() ||
+        vipVideos.find((v: any) => v.id === selectedVipVideoId)?.videoUrl ||
+        "";
+
+      await setDoc(doc(db, "vip_tickets", code), {
+        code,
+        customerName: customerName.trim(),
+        customerPhone: customerPhone.trim(),
+        videoUrl: boundUrl,
+        vipVideoId: selectedVipVideoId || "",
+        usedCount: 0,
+        lastIp: "",
+        lastDevice: "",
+        status: "active",
+        createdAt: new Date().toISOString(),
       });
 
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setSuccessText(`✓ تیکێت بە سەرکەوتوویی دروستکرا! کۆد: ${data.ticket.code}`);
-        setCustomerName("");
-        setCustomerPhone("");
-        setVideoUrl("");
-        loadVIPData();
-      } else {
-        setErrorText(data.error || "شکست لە داڕشتن.");
-      }
+      setSuccessText(`✓ تیکێت بە سەرکەوتوویی دروستکرا! کۆد: ${code}`);
+      setCustomerName("");
+      setCustomerPhone("");
+      setVideoUrl("");
+      setSelectedVipVideoId("");
+      loadVIPData();
     } catch (err) {
-      setErrorText("کێشەی ڕایەڵە هەیە لە پێوەندی.");
+      setErrorText(
+        "کێشە لە دروستکردنی بلیتەکە (Firestore): " +
+          (err instanceof Error ? err.message : String(err)),
+      );
     } finally {
       setIsLoading(false);
     }
@@ -405,27 +471,22 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
 
     try {
       setIsLoading(true);
-      const res = await fetch("/api/admin/vip/settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      await setDoc(
+        doc(db, "vip_settings", "default"),
+        {
           qrCodeUrl: formQr,
           paymentDetails: formDetails,
           instructions: formInst,
           paymentLogoUrl: formLogo,
-          adminName
-        })
-      });
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true },
+      );
 
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setSuccessText("✓ ڕێکخستنەکانی کڕینی VIP بە سەرکەوتوویی پاشەکەوت کران.");
-        loadVIPData();
-      } else {
-        setErrorText(data.error || "کێشەیەک لە پاشەکەوتدا هەیە.");
-      }
+      setSuccessText("✓ ڕێکخستنەکانی کڕینی VIP بە سەرکەوتوویی پاشەکەوت کران.");
+      loadVIPData();
     } catch (err) {
-      setErrorText("کێشەی نوێکردنەوە لە ڕایەڵە.");
+      setErrorText("کێشەی نوێکردنەوە لە Firestore.");
     } finally {
       setIsLoading(false);
     }
@@ -439,29 +500,45 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
 
     try {
       setIsLoading(true);
-      const res = await fetch("/api/admin/vip/requests/approve", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          requestId,
-          videoUrl: boundUrl,
-          adminName
-        })
+      const req = vipRequests.find((r: any) => r.id === requestId);
+      if (!req) {
+        setErrorText("داواکارییەکە نەدۆزرایەوە.");
+        return;
+      }
+
+      const code = generateTicketCode();
+      const finalUrl =
+        boundUrl ||
+        req.videoUrl ||
+        (vipVideos.length > 0 ? vipVideos[vipVideos.length - 1]?.videoUrl || "" : "");
+
+      await setDoc(doc(db, "vip_tickets", code), {
+        code,
+        customerName: req.customerName,
+        customerPhone: req.customerPhone,
+        videoUrl: finalUrl,
+        vipVideoId: "",
+        usedCount: 0,
+        lastIp: "",
+        lastDevice: "",
+        status: "active",
+        createdAt: new Date().toISOString(),
       });
 
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setSuccessText(`✓ داواکاری بە سەرکەوتوویی قبوڵکرا! کۆدی VIP دروستبوو: ${data.ticket.code}`);
-        // Clear temp binding URL
-        const updatedBinds = { ...requestVideoUrls };
-        delete updatedBinds[requestId];
-        setRequestVideoUrls(updatedBinds);
-        loadVIPData();
-      } else {
-        setErrorText(data.error || "هەڵەیەک لە پەسەندکردنی داواکارییەکەدا هەیە.");
-      }
+      await updateDoc(doc(db, "vip_requests", requestId), {
+        status: "Approved",
+        approvedCode: code,
+        videoUrl: finalUrl,
+      });
+
+      setSuccessText(`✓ داواکاری بە سەرکەوتوویی قبوڵکرا! کۆدی VIP دروستبوو: ${code}`);
+      // Clear temp binding URL
+      const updatedBinds = { ...requestVideoUrls };
+      delete updatedBinds[requestId];
+      setRequestVideoUrls(updatedBinds);
+      loadVIPData();
     } catch (err) {
-      setErrorText("کێشەی پێوەندی ڕایەڵە هەیە.");
+      setErrorText("هەڵەیەک لە پەسەندکردنی داواکارییەکەدا هەیە.");
     } finally {
       setIsLoading(false);
     }
@@ -474,24 +551,11 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
 
     try {
       setIsLoading(true);
-      const res = await fetch("/api/admin/vip/requests/delete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          requestId,
-          adminName
-        })
-      });
-
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setSuccessText("✓ داواکارییەکە بە سەرکەوتوویی ڕەتکرایەوە یان سڕایەوە.");
-        loadVIPData();
-      } else {
-        setErrorText(data.error || "شکست لە ئەنجامدانی کردارەکە.");
-      }
+      await deleteDoc(doc(db, "vip_requests", requestId));
+      setSuccessText("✓ داواکارییەکە بە سەرکەوتوویی ڕەتکرایەوە یان سڕایەوە.");
+      loadVIPData();
     } catch (err) {
-      setErrorText("نەتوانرا لەگەڵ ڕایەڵە پەیوەند بپەڕێت.");
+      setErrorText("شکست لە سڕینەوەی داواکارییەکە.");
     } finally {
       setIsLoading(false);
     }
@@ -978,14 +1042,28 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
                   value={videoUrl}
                   onChange={(e) => setVideoUrl(e.target.value)}
                 />
+                <input 
+                  type="text" 
+                  placeholder="بەستەری ترەیلەر (Trailer URL - ئارەزوومەند)" 
+                  className="w-full px-4 py-2 bg-zinc-900 border border-white/5 rounded-xl text-xs text-white"
+                  value={trailerUrl}
+                  onChange={(e) => setTrailerUrl(e.target.value)}
+                />
                 <button 
                   onClick={async () => {
-                     const res = await fetch("/api/admin/vip/videos/add", {
-                       method: "POST",
-                       headers: { "Content-Type": "application/json" },
-                       body: JSON.stringify({ title: customerName, videoUrl: videoUrl, adminName })
+                     if (!customerName.trim() || !videoUrl.trim()) {
+                       setErrorText("⚠️ ناو و بەستەری ڤیدیۆکە پێویستن!");
+                       return;
+                     }
+                     await addDoc(collection(db, "vip_videos"), {
+                       title: customerName.trim(),
+                       videoUrl: videoUrl.trim(),
+                       trailerUrl: trailerUrl.trim(),
+                       sortOrder: vipVideos.length,
+                       createdAt: new Date().toISOString()
                      });
-                     if (res.ok) { loadVIPData(); setCustomerName(""); setVideoUrl(""); }
+                     setCustomerName(""); setVideoUrl(""); setTrailerUrl("");
+                     setSuccessText("✓ ڤیدیۆی VIP بە سەرکەوتوویی زیادکرا.");
                   }}
                   className="px-4 py-2 bg-purple-600 text-white rounded-lg text-xs font-black"
                 >
@@ -996,16 +1074,17 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
 
             <div className="space-y-2">
               {vipVideos.map(v => (
-                <div key={v.id} className="flex justify-between items-center p-3 bg-white/5 rounded-xl border border-white/10">
-                  <span className="text-xs text-white">{v.title}</span>
+                <div key={v.id} className="flex justify-between items-center gap-3 p-3 bg-white/5 rounded-xl border border-white/10">
+                  <div className="min-w-0">
+                    <span className="text-xs text-white block truncate">{v.title}</span>
+                    {v.trailerUrl && (
+                      <span className="text-[9px] text-amber-400 font-black block mt-0.5">🎬 ترەیلەر دیاریکراوە</span>
+                    )}
+                  </div>
                   <button 
                   onClick={async () => {
-                     await fetch("/api/admin/vip/videos/delete", {
-                       method: "POST",
-                       headers: { "Content-Type": "application/json" },
-                       body: JSON.stringify({ id: v.id, adminName })
-                     });
-                     loadVIPData();
+                     await deleteDoc(doc(db, "vip_videos", v.id));
+                     setSuccessText("✓ ڤیدیۆی VIP سڕایەوە.");
                   }}
                   className="p-2 bg-red-500/10 text-red-500 rounded-lg text-xs"
                   ><Trash2 className="w-3 h-3" /></button>

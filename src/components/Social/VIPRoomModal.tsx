@@ -18,6 +18,16 @@ import {
   ThumbsUp
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import {
+  db,
+  collection,
+  onSnapshot,
+  doc,
+  getDoc,
+  getDocs,
+  addDoc,
+  updateDoc
+} from "../../lib/firebase";
 
 interface VIPRoomModalProps {
   isOpen: boolean;
@@ -106,35 +116,29 @@ export const VIPRoomModal: React.FC<VIPRoomModalProps> = ({ isOpen, onClose, onJ
 
   const fetchSettings = async () => {
     try {
-      // Re-verify existing localStorage ticket if present
+      // Re-verify existing localStorage ticket if present (Firestore read)
       const savedTicketStr = localStorage.getItem("vipRoom_verifiedTicket");
       if (savedTicketStr) {
         try {
           const parsed = JSON.parse(savedTicketStr);
           if (parsed && parsed.code) {
-            const valRes = await fetch("/api/vip/check-validity", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ code: parsed.code })
-            });
-            if (valRes.ok) {
-              const valData = await valRes.json();
-              if (valData.success) {
-                setVerifiedTicket(valData.ticket);
-                try {
-                  localStorage.setItem("vipRoom_verifiedTicket", JSON.stringify(valData.ticket));
-                } catch (err) {
-                  console.warn(err);
-                }
-              } else {
-                setVerifiedTicket(null);
-                try {
-                  localStorage.removeItem("vipRoom_verifiedTicket");
-                } catch (err) {
-                  console.warn(err);
-                }
-                setErrorMsg("⚠️ بلیتەکەت بەسەرچووە یان لەلایەن بەڕێوبەرەوە ڕاگیراوە!");
+            const tSnap = await getDoc(doc(db, "vip_tickets", parsed.code));
+            if (tSnap.exists()) {
+              const ticketData = tSnap.data();
+              setVerifiedTicket(ticketData);
+              try {
+                localStorage.setItem("vipRoom_verifiedTicket", JSON.stringify(ticketData));
+              } catch (err) {
+                console.warn(err);
               }
+            } else {
+              setVerifiedTicket(null);
+              try {
+                localStorage.removeItem("vipRoom_verifiedTicket");
+              } catch (err) {
+                console.warn(err);
+              }
+              setErrorMsg("⚠️ بلیتەکەت بەسەرچووە یان لەلایەن بەڕێوبەرەوە ڕاگیراوە!");
             }
           }
         } catch (e) {
@@ -142,18 +146,13 @@ export const VIPRoomModal: React.FC<VIPRoomModalProps> = ({ isOpen, onClose, onJ
         }
       }
 
-      const res = await fetch("/api/admin/vip/settings");
-      if (res.ok) {
-        const sData = await res.json();
-        setVipSettings(sData);
-      }
-      const resVids = await fetch("/api/admin/vip/videos");
-      if (resVids.ok) {
-        const vData = await resVids.json();
-        if (Array.isArray(vData)) {
-          setVipVideos(vData);
-        }
-      }
+      const sSnap = await getDoc(doc(db, "vip_settings", "default"));
+      if (sSnap.exists()) setVipSettings(sSnap.data());
+
+      const vSnap = await getDocs(collection(db, "vip_videos"));
+      const vList = vSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      vList.sort((a: any, b: any) => (a.sortOrder || 0) - (b.sortOrder || 0));
+      setVipVideos(vList);
     } catch (err) {
       console.error("Error loading settings:", err);
     }
@@ -162,16 +161,13 @@ export const VIPRoomModal: React.FC<VIPRoomModalProps> = ({ isOpen, onClose, onJ
   const checkTrackedRequestStatus = async (reqId: string) => {
     setIsCheckingStatus(true);
     try {
-      const res = await fetch("/api/admin/vip/requests");
-      if (res.ok) {
-        const requestsList = await res.json();
-        const found = requestsList.find((r: any) => r.id === reqId);
-        if (found) {
-          setTrackedRequestStatus(found);
-          // If approved, automatically fill code & highlight to make user flow effortless
-          if (found.status === "Approved" && found.approvedCode) {
-            setCode(found.approvedCode);
-          }
+      const snap = await getDoc(doc(db, "vip_requests", reqId));
+      if (snap.exists()) {
+        const found = { id: snap.id, ...snap.data() } as any;
+        setTrackedRequestStatus(found);
+        // If approved, automatically fill code & highlight to make user flow effortless
+        if (found.status === "Approved" && found.approvedCode) {
+          setCode(found.approvedCode);
         }
       }
     } catch (err) {
@@ -180,6 +176,25 @@ export const VIPRoomModal: React.FC<VIPRoomModalProps> = ({ isOpen, onClose, onJ
       setIsCheckingStatus(false);
     }
   };
+
+  // Real-time request status: when the admin approves the tracked request, the
+  // code auto-fills here instantly (no refresh needed).
+  useEffect(() => {
+    if (!trackedRequestId) return;
+    const unsub = onSnapshot(
+      doc(db, "vip_requests", trackedRequestId),
+      (snap) => {
+        if (!snap.exists()) return;
+        const found = { id: snap.id, ...snap.data() } as any;
+        setTrackedRequestStatus(found);
+        if (found.status === "Approved" && found.approvedCode) {
+          setCode(found.approvedCode);
+        }
+      },
+      (err) => console.warn("vip_requests listener:", err),
+    );
+    return () => unsub();
+  }, [trackedRequestId]);
 
   const handleVerify = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -193,26 +208,39 @@ export const VIPRoomModal: React.FC<VIPRoomModalProps> = ({ isOpen, onClose, onJ
     }
 
     try {
-      const res = await fetch("/api/vip/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: code.trim() })
-      });
+      const snap = await getDoc(doc(db, "vip_tickets", code.trim()));
+      if (snap.exists()) {
+        const ticketData = { id: snap.id, ...snap.data() } as any;
+        if (ticketData.status === "active" || ticketData.status === "used") {
+          // Increment usage counter and record the activating device.
+          const nextUsedCount = Math.min((ticketData.usedCount || 0) + 1, 2);
+          const device = (typeof navigator !== "undefined" ? navigator.userAgent || "" : "").substring(0, 120);
+          const updated = { ...ticketData, usedCount: nextUsedCount, lastDevice: device, lastIp: "" };
+          if (nextUsedCount >= 2 && updated.status === "active") updated.status = "used";
 
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setVerifiedTicket(data.ticket);
-        setVipSettings(data.settings);
-        try {
-          localStorage.setItem("vipRoom_verifiedTicket", JSON.stringify(data.ticket));
-        } catch (e) {
-          console.warn("Storage warning in setting vipRoom_verifiedTicket:", e);
+          await updateDoc(doc(db, "vip_tickets", code.trim()), {
+            usedCount: nextUsedCount,
+            lastDevice: device,
+            lastIp: "",
+            status: updated.status,
+          });
+
+          setVerifiedTicket(updated);
+          const sSnap = await getDoc(doc(db, "vip_settings", "default"));
+          if (sSnap.exists()) setVipSettings(sSnap.data());
+          try {
+            localStorage.setItem("vipRoom_verifiedTicket", JSON.stringify(updated));
+          } catch (e) {
+            console.warn("Storage warning in setting vipRoom_verifiedTicket:", e);
+          }
+        } else {
+          setErrorMsg("کۆدەکە هەڵەیە یان بەسەرچووە!");
         }
       } else {
-        setErrorMsg(data.message || "کۆدەکە هەڵەیە یان بەسەرچووە!");
+        setErrorMsg("کۆدەکە هەڵەیە یان بەسەرچووە!");
       }
     } catch (err) {
-      setErrorMsg("کێشەیەک لە پەیوەندی سێرڤەر هەیە!");
+      setErrorMsg("کێشەیەک لە پەیوەندی Firestore هەیە!");
     } finally {
       setLoading(false);
     }
@@ -230,30 +258,31 @@ export const VIPRoomModal: React.FC<VIPRoomModalProps> = ({ isOpen, onClose, onJ
     }
 
     try {
-      const res = await fetch("/api/vip/request", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          customerName: vName.trim(),
-          customerPhone: vPhone.trim(),
-          bankScreenshot: "ڕەوانەکرا بۆ وەتسئاپ / Manual WhatsApp Flow"
-        })
+      const reqRef = await addDoc(collection(db, "vip_requests"), {
+        customerName: vName.trim(),
+        customerPhone: vPhone.trim(),
+        bankScreenshot: "ڕەوانەکرا بۆ وەتسئاپ / Manual WhatsApp Flow",
+        status: "Pending",
+        createdAt: new Date().toISOString(),
       });
 
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setRequestSaved(data.request);
-        localStorage.setItem("vipRoom_myPendingRequest", data.request.id);
-        setTrackedRequestId(data.request.id);
-        setTrackedRequestStatus(data.request);
-        setActiveTab("requested");
-        setVName("");
-        setVPhone("");
-      } else {
-        setErrorMsg(data.error || "هەڵەیەک ڕوویدا لە تۆمارکردنی داواکاری!");
-      }
+      const requestData = {
+        id: reqRef.id,
+        customerName: vName.trim(),
+        customerPhone: vPhone.trim(),
+        status: "Pending",
+        createdAt: new Date().toISOString(),
+      };
+
+      setRequestSaved(requestData);
+      localStorage.setItem("vipRoom_myPendingRequest", reqRef.id);
+      setTrackedRequestId(reqRef.id);
+      setTrackedRequestStatus(requestData);
+      setActiveTab("requested");
+      setVName("");
+      setVPhone("");
     } catch (err) {
-      setErrorMsg("کێشەیەک هەیە لە پەیوەندیکردن بە ویندۆی فایەربەیس.");
+      setErrorMsg("کێشەیەک هەیە لە تۆمارکردنی داواکاری!");
     } finally {
       setIsSubmitting(false);
     }

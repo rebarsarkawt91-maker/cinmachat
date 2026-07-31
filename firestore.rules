@@ -225,6 +225,108 @@ service cloud.firestore {
       }
     }
 
+    // --- VIP Module 14 Collections (vip_tickets / vip_videos / vip_rooms / vip_requests / vip_settings) ---
+    // Dedicated Firestore schema for the VIP ticketing & broadcast system.
+    // Anonymous Firebase Auth is DISABLED on this project, so isAdmin()/isSignedIn()
+    // gates would DENY every client write; instead we use validated public writes
+    // (same pattern as genres/config/users). This keeps the admin side panel and
+    // the user modal fully real-time and guarantees VIP data never crosses into
+    // the regular movies catalog (zero cross-contamination).
+
+    function isValidVipTicket(data) {
+      return data.get('code', '') is string
+        && data.get('code', '').size() > 0 && data.get('code', '').size() <= 64
+        && data.get('customerName', '') is string
+        && data.get('customerName', '').size() > 0 && data.get('customerName', '').size() <= 200
+        && data.get('customerPhone', '') is string
+        && data.get('customerPhone', '').size() > 0 && data.get('customerPhone', '').size() <= 40
+        && (data.get('videoUrl', null) == null || data.videoUrl is string)
+        && (data.get('vipVideoId', null) == null || data.vipVideoId is string)
+        && data.get('usedCount', 0) is int && data.get('usedCount', 0) >= 0 && data.get('usedCount', 0) <= 2
+        && (data.get('lastIp', null) == null || data.lastIp is string)
+        && (data.get('lastDevice', null) == null || data.lastDevice is string)
+        && data.get('status', 'active') in ['active', 'used', 'Expired']
+        && (data.get('createdAt', null) == null || data.createdAt is string || data.createdAt is timestamp);
+    }
+
+    function isValidVipVideo(data) {
+      return data.get('title', '') is string
+        && data.get('title', '').size() > 0 && data.get('title', '').size() <= 200
+        && data.get('videoUrl', '') is string
+        && data.get('videoUrl', '').size() > 0 && data.get('videoUrl', '').size() <= 2000
+        && (data.get('trailerUrl', null) == null || (data.trailerUrl is string && data.trailerUrl.size() <= 2000))
+        && (data.get('image', null) == null || data.image is string)
+        && data.get('sortOrder', 0) is int && data.get('sortOrder', 0) >= 0
+        && (data.get('createdAt', null) == null || data.createdAt is string || data.createdAt is timestamp);
+    }
+
+    function isValidVipRequest(data) {
+      return data.get('customerName', '') is string
+        && data.get('customerName', '').size() > 0 && data.get('customerName', '').size() <= 200
+        && data.get('customerPhone', '') is string
+        && data.get('customerPhone', '').size() > 0 && data.get('customerPhone', '').size() <= 40
+        && (data.get('bankScreenshot', null) == null || data.bankScreenshot is string)
+        && data.get('status', 'Pending') is string
+        && (data.get('approvedCode', null) == null || data.approvedCode is string)
+        && (data.get('videoUrl', null) == null || data.videoUrl is string)
+        && (data.get('createdAt', null) == null || data.createdAt is string || data.createdAt is timestamp);
+    }
+
+    function isValidVipMessage(data) {
+      return data.senderId is string
+        && data.senderName is string
+        && (data.text == null || (data.text is string && data.text.size() <= 2000))
+        && (data.audio == null || (data.audio is string && data.audio.size() <= 2000000))
+        && data.type in ['text', 'voice']
+        && (data.createdAt == null || data.createdAt is timestamp);
+    }
+
+    function isValidReactionPublic(data) {
+      return data.senderId is string
+        && data.type is string && data.type.size() <= 10
+        && (data.createdAt == null || data.createdAt is timestamp);
+    }
+
+    match /vip_tickets/{ticketCode} {
+      allow read: if true;
+      allow create, update: if isValidVipTicket(incoming());
+      allow delete: if ticketCode != '_meta';
+    }
+
+    match /vip_videos/{videoId} {
+      allow read: if true;
+      allow create, update: if isValidVipVideo(incoming());
+      allow delete: if videoId != '_meta';
+    }
+
+    match /vip_requests/{requestId} {
+      allow read: if true;
+      allow create, update: if isValidVipRequest(incoming());
+      allow delete: if requestId != '_meta';
+    }
+
+    match /vip_settings/{settingId} {
+      allow read, write: if true;
+    }
+
+    // VIP rooms live in their own collection (never in syncGroups) so the VIP
+    // lounge playback never leaks into the regular sync room list.
+    match /vip_rooms/{roomId} {
+      allow read: if true;
+      allow create, update: if isValidSyncGroup(incoming()) && incoming().get('isVIP', false) == true;
+      allow delete: if roomId != '_meta';
+
+      match /messages/{messageId} {
+        allow read: if true;
+        allow create: if isValidVipMessage(incoming());
+      }
+
+      match /reactions/{reactionId} {
+        allow read: if true;
+        allow create: if isValidReactionPublic(incoming());
+      }
+    }
+
     // --- Invitations Collection ---
     match /invitations/{inviteId} {
       allow read, write: if true;

@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { SocialUser } from '../../types'; // Assuming SocialUser is defined in types.ts
 import { getYTId, loadYouTubeAPI } from '../../utils/youtube'; // Import the helper functions
+import { db, collection, getDocs } from '../../lib/firebase';
 
 interface UserObj { // Explicitly define UserObj
   username: string;
@@ -95,7 +96,7 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
       try {
         const [resMovies, resVip] = await Promise.all([
           fetch("/api/movies"),
-          fetch("/api/admin/vip/videos").catch(() => null)
+          getDocs(collection(db, "vip_videos")).catch(() => null)
         ]);
 
         let moviesList = [];
@@ -105,15 +106,8 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
         }
 
         let vipUrlsList: string[] = [];
-        if (resVip && resVip.ok) {
-          try {
-            const vipData = await resVip.json();
-            if (Array.isArray(vipData)) {
-              vipUrlsList = vipData.map((v: any) => (v.videoUrl || "").trim().toLowerCase());
-            }
-          } catch(err) {
-            console.error("Error parsing VIP videos JSON:", err);
-          }
+        if (resVip && resVip.size > 0) {
+          vipUrlsList = resVip.docs.map((d) => (d.data()?.videoUrl || "").trim().toLowerCase());
         }
 
         // Filter out any movies that are registered as VIP Room videos

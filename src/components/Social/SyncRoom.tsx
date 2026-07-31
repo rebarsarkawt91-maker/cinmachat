@@ -46,11 +46,12 @@ interface SyncRoomProps {
   onClose: () => void;
   onSyncPlayback: (time: number, playing: boolean) => void;
   vipVideoUrl?: string;
+  onSelectVipVideo?: (url: string, title?: string, isTrailer?: boolean) => void;
 }
 
 const AGORA_APP_ID = (import.meta.env.VITE_AGORA_APP_ID || '').trim();
 
-export const SyncRoom: React.FC<SyncRoomProps> = ({ room, currentMovie, onClose, onSyncPlayback, vipVideoUrl }) => {
+export const SyncRoom: React.FC<SyncRoomProps> = ({ room, currentMovie, onClose, onSyncPlayback, vipVideoUrl, onSelectVipVideo }) => {
   const { socialProfile } = useSocialAuth();
   // Check for Agora ID and warn if missing
   useEffect(() => {
@@ -95,6 +96,23 @@ export const SyncRoom: React.FC<SyncRoomProps> = ({ room, currentMovie, onClose,
   const [isMutedByAdmin, setIsMutedByAdmin] = useState(false);
   const [isKickedByAdmin, setIsKickedByAdmin] = useState(false);
   const [bannedKeywords, setBannedKeywords] = useState<string[]>([]);
+
+  // VIP video catalog for the in-room VIP strip (dedicated vip_videos collection).
+  const [vipVideos, setVipVideos] = useState<{ id: string; title?: string; videoUrl?: string; trailerUrl?: string; sortOrder?: number }[]>([]);
+
+  useEffect(() => {
+    if (!room.isVIP) return;
+    const unsub = onSnapshot(
+      collection(db, 'vip_videos'),
+      (snap) => {
+        const list = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as { id: string; title?: string; videoUrl?: string; trailerUrl?: string; sortOrder?: number }[];
+        list.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+        setVipVideos(list);
+      },
+      (err) => console.warn('VIP videos listener:', err),
+    );
+    return () => unsub();
+  }, [room.isVIP]);
 
   useEffect(() => {
     const fetchKeywords = async () => {
@@ -772,27 +790,61 @@ export const SyncRoom: React.FC<SyncRoomProps> = ({ room, currentMovie, onClose,
                 </div>
               </div>
 
-              {/* Translation Subtitles Layer */}
-              {((translationLang && currentSubtitle) || (roomSubtitles && roomSubtitles.length > 0 && currentSubtitle)) && isPlaying && (
-                <div className="absolute inset-x-0 bottom-32 md:bottom-24 flex justify-center z-[1000] pointer-events-none px-8">
-                  <motion.div 
-                    initial={{ y: 20, opacity: 0 }}
-                    animate={{ y: 0, opacity: 1 }}
-                    className="max-w-4xl bg-black/60 backdrop-blur-2xl border border-white/10 px-8 py-4 rounded-[2rem] shadow-[0_32px_64px_-16px_rgba(0,0,0,0.8)]"
-                  >
-                    <div className="flex items-center justify-center gap-3 mb-2">
-                      <div className="w-2 h-2 rounded-full bg-brand-primary animate-pulse" />
-                      <span className="text-[10px] font-black text-brand-primary uppercase tracking-[0.2em] kurdish-text">
-                        {roomSubtitles && roomSubtitles.length > 0 ? "ژێڕنووسی فیلم" : `AI وەرگێڕانی ڕاستەوخۆ: ${translationLang}`}
-                      </span>
-                    </div>
-                    <p className="text-white kurdish-text text-xl md:text-2xl font-black leading-relaxed drop-shadow-2xl text-center">
-                      {currentSubtitle}
-                    </p>
-                  </motion.div>
-                </div>
-              )}
-           </div>
+               {/* Translation Subtitles Layer */}
+               {((translationLang && currentSubtitle) || (roomSubtitles && roomSubtitles.length > 0 && currentSubtitle)) && isPlaying && (
+                 <div className="absolute inset-x-0 bottom-32 md:bottom-24 flex justify-center z-[1000] pointer-events-none px-8">
+                   <motion.div 
+                     initial={{ y: 20, opacity: 0 }}
+                     animate={{ y: 0, opacity: 1 }}
+                     className="max-w-4xl bg-black/60 backdrop-blur-2xl border border-white/10 px-8 py-4 rounded-[2rem] shadow-[0_32px_64px_-16px_rgba(0,0,0,0.8)]"
+                   >
+                     <div className="flex items-center justify-center gap-3 mb-2">
+                       <div className="w-2 h-2 rounded-full bg-brand-primary animate-pulse" />
+                       <span className="text-[10px] font-black text-brand-primary uppercase tracking-[0.2em] kurdish-text">
+                         {roomSubtitles && roomSubtitles.length > 0 ? "ژێڕنووسی فیلم" : `AI وەرگێڕانی ڕاستەوخۆ: ${translationLang}`}
+                       </span>
+                     </div>
+                     <p className="text-white kurdish-text text-xl md:text-2xl font-black leading-relaxed drop-shadow-2xl text-center">
+                       {currentSubtitle}
+                     </p>
+                   </motion.div>
+                 </div>
+               )}
+
+               {/* VIP Video Options Strip (Premium rooms only) */}
+               {room.isVIP && vipVideos.length > 0 && (
+                 <div className="absolute inset-x-0 bottom-6 flex flex-col items-center gap-2 z-[500] pointer-events-auto px-4">
+                   <span className="text-[8px] font-black text-brand-primary uppercase tracking-[0.3em] drop-shadow-lg kurdish-text">
+                     بەکارخەری شاھانە — هەڵبژاردنی بابەتەکان
+                   </span>
+                   <div className="flex flex-wrap items-center justify-center gap-2">
+                     {vipVideos.map((v, i) => {
+                       const isFourth = i === 3;
+                       const activeUrl = isFourth
+                         ? (v.trailerUrl || v.videoUrl || '')
+                         : (v.videoUrl || '');
+                       const isActive =
+                         activeUrl && activeUrl === vipVideoUrl;
+                       return (
+                         <button
+                           key={v.id}
+                           onClick={() => onSelectVipVideo && onSelectVipVideo(activeUrl, v.title, isFourth)}
+                           disabled={!activeUrl}
+                           className={`px-4 py-2 rounded-full border text-[10px] font-black uppercase tracking-widest transition-all ${
+                             isActive
+                               ? 'bg-brand-primary text-white border-brand-primary shadow-[0_0_24px_rgba(255,170,0,0.4)]'
+                               : 'bg-black/50 backdrop-blur-md text-white border-white/15 hover:border-brand-primary hover:text-brand-primary'
+                           } disabled:opacity-40`}
+                           title={activeUrl}
+                         >
+                           {isFourth ? (v.title ? `${v.title} (ترەیلەر)` : 'ترەیلەر') : (v.title || `بابەت ${i + 1}`)}
+                         </button>
+                       );
+                     })}
+                   </div>
+                 </div>
+               )}
+            </div>
         </div>
 
         {/* Sidebar Chat */}

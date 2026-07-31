@@ -4834,46 +4834,55 @@ const RoomSection: React.FC<{
   console.log("RoomSection state:", activeFeaturedMovie);
 
   const [vipPreviewVideoId, setVipPreviewVideoId] = React.useState<string>("");
+  const [vipVideoList, setVipVideoList] = React.useState<any[]>([]);
+
+  // Real-time VIP video catalog from the dedicated vip_videos collection.
+  React.useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, "vip_videos"),
+      (snap) => {
+        const vList = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        vList.sort((a: any, b: any) => (a.sortOrder || 0) - (b.sortOrder || 0));
+        setVipVideoList(vList);
+      },
+      (err) => console.warn("RoomSection vip_videos listener:", err),
+    );
+    return () => unsub();
+  }, []);
 
   React.useEffect(() => {
     let active = true;
     const fetchVipPreview = async () => {
       try {
-        // 1. Try to read from localStorage verified ticket and check with server
+        // 1. Prefer the video bound to the verified localStorage ticket.
         let selectedUrl = "";
         const saved = localStorage.getItem("vipRoom_verifiedTicket");
         if (saved) {
           try {
             const parsed = JSON.parse(saved);
             if (parsed && parsed.code) {
-              const valRes = await fetch("/api/vip/check-validity", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ code: parsed.code })
-              });
-              if (valRes.ok) {
-                const valData = await valRes.json();
-                if (valData.success && valData.ticket) {
-                  selectedUrl = valData.ticket.videoUrl || "";
-                  if (!selectedUrl && active) {
-                    // Fallback to settings or the last VIP video if valid but has no custom stream
-                    const resVids = await fetch("/api/admin/vip/videos");
-                    if (resVids.ok) {
-                      const data = await resVids.json();
-                      if (Array.isArray(data) && data.length > 0) {
-                        selectedUrl = data[data.length - 1]?.videoUrl || "";
-                      }
-                    }
-                  }
-                } else {
-                  // Expired or deleted
-                  localStorage.removeItem("vipRoom_verifiedTicket");
-                }
+              const tSnap = await getDoc(doc(db, "vip_tickets", parsed.code));
+              if (tSnap.exists()) {
+                selectedUrl = tSnap.data().videoUrl || "";
+              } else {
+                localStorage.removeItem("vipRoom_verifiedTicket");
               }
             }
           } catch (e) {
             console.warn("Could not parse verified ticket from localStorage:", e);
           }
+        }
+
+        // 2. Requirement: when at least 4 VIP videos exist, the 4th option's
+        //    trailer/video renders in the upper preview frame.
+        if (!selectedUrl && vipVideoList.length >= 4) {
+          const fourth = vipVideoList[3];
+          selectedUrl = fourth.trailerUrl || fourth.videoUrl || "";
+        }
+
+        // 3. Fallback: last VIP video.
+        if (!selectedUrl && vipVideoList.length > 0) {
+          selectedUrl = vipVideoList[vipVideoList.length - 1]?.videoUrl || "";
         }
 
         if (selectedUrl && active) {
@@ -4900,7 +4909,7 @@ const RoomSection: React.FC<{
       active = false;
       clearInterval(interval);
     };
-  }, []);
+  }, [vipVideoList]);
 
   return (
     <section id="live-stream-room" className="relative z-[100] px-8 pb-20 animate-fade-in font-sans">
@@ -5478,6 +5487,56 @@ export default function App() {
       setShowPlayer(false);
     }
   }, [activeSyncGroup, selectedMovie]);
+
+  // VIP room video-option switcher (called from the SyncRoom VIP strip).
+  // Swaps the virtual VIP movie source so the chosen option (incl. the 4th
+  // trailer option) renders in the upper player frame.
+  const handleVipSelectVideo = React.useCallback(
+    (url: string, title?: string, isTrailer?: boolean) => {
+      if (!url) return;
+      const base = selectedMovie?.id?.startsWith("vip_movie_id_")
+        ? selectedMovie
+        : activeSyncGroup
+          ? {
+              id: `vip_movie_id_${Date.now()}`,
+              title: activeSyncGroup.name || "کۆڕی شاهانەی VIP (Premium Lounge)",
+              quality: "VIP Premium HD",
+              tags: ["VIP", "Exclusive"],
+              image: "https://i.ibb.co/3kWy3m9/fastpay-qr-mock.png",
+              description:
+                "سەرچاوەی بێهاوتای قوفڵکراو چوونەژوور بە سەرکەوتوویی بەهۆی کۆدی VIP.",
+              whatsappLink: "",
+              date: new Date().toISOString(),
+            }
+          : null;
+      if (!base) return;
+
+      const virtualMovie: Movie = {
+        ...base,
+        title: isTrailer && title ? `${title} — ترەیلەر` : title || base.title,
+        streamingUrl: url,
+        videoUrl: url,
+        embedUrl: url,
+      };
+      setSelectedMovie(virtualMovie);
+      setActiveServerUrl(getMovieSourceUrl(virtualMovie));
+      setShowPlayer(true);
+      setActiveSyncGroup((prev) => (prev ? { ...prev, videoUrl: url } : prev));
+
+      // Best-effort mirror into the dedicated vip_rooms doc for real-time sync.
+      if (activeSyncGroup?.isVIP && activeSyncGroup.id) {
+        updateDoc(doc(db, "vip_rooms", activeSyncGroup.id), {
+          videoUrl: url,
+          playback: {
+            currentTime: 0,
+            isPlaying: true,
+            updatedAt: new Date().toISOString(),
+          },
+        }).catch(() => {});
+      }
+    },
+    [selectedMovie, activeSyncGroup],
+  );
 
   // Presence System
   useEffect(() => {
@@ -7882,6 +7941,8 @@ export default function App() {
                               onSyncPlayback={(time, playing) =>
                                 updateGlobalPlayback(time, playing)
                               }
+                              vipVideoUrl={(activeSyncGroup as any)?.videoUrl || undefined}
+                              onSelectVipVideo={handleVipSelectVideo}
                             />
                           </div>
                         </SafeRender>
@@ -8530,6 +8591,29 @@ export default function App() {
         onJoinVIP={(vipRoomData) => {
           setActiveSyncGroup(vipRoomData);
           setSocialTab("party"); // Switch to party tab when joining VIP room
+
+          // Persist the VIP room to its own dedicated collection so it never
+          // cross-contaminates the regular syncGroups rooms list.
+          if (vipRoomData?.id) {
+            setDoc(
+              doc(db, "vip_rooms", vipRoomData.id),
+              {
+                id: vipRoomData.id,
+                name: vipRoomData.name || "کۆڕی شاهانەی VIP (Premium Lounge)",
+                creatorId: "admin",
+                memberIds: ["vip-user"],
+                playback: {
+                  currentTime: 0,
+                  isPlaying: true,
+                  updatedAt: new Date().toISOString(),
+                },
+                videoUrl: vipRoomData.videoUrl || "",
+                isVIP: true,
+                updatedAt: new Date().toISOString(),
+              },
+              { merge: true },
+            ).catch(() => {});
+          }
 
           if (vipRoomData.videoUrl) {
             const virtualMovie: Movie = {
