@@ -118,13 +118,15 @@ service cloud.firestore {
     // write with "Missing or insufficient permissions". isValidMovie keeps the
     // catalog shape sane while guaranteeing posted movies persist as the durable
     // Firestore backup and deletes from the "سەرپەرشتی فیلمەکان" panel remove
-    // the document permanently. Deletes cannot inspect incoming(); as a sanity
-    // guard we require the document being deleted to actually be a movie
-    // (non-empty title), mirroring the genre delete guard.
+    // the document permanently. The delete guard mirrors genres ('_meta' only):
+    // it must NOT read resource.data — a deleted/non-backed-up movie doc has a
+    // null resource, and touching resource.data there throws and DENIES the
+    // delete with "Missing or insufficient permissions". '_meta' is the single
+    // reserved id we keep protected.
     match /movies/{movieId} {
       allow read: if true;
       allow create, update: if isValidMovie(incoming());
-      allow delete: if resource.data.get('title', '') is string && resource.data.get('title', '') != '';
+      allow delete: if movieId != '_meta';
     }
 
     // --- Genres Collection (dynamic پۆلێنەکان) ---

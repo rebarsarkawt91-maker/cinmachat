@@ -6908,9 +6908,11 @@ export default function App() {
 
   // Permanent, all-views movie deletion (Admin "سەرپەرشتی فیلمەکان" panel).
   // 1) Removes the movie from local state instantly — no page refresh needed.
-  // 2) Deletes the Firestore movie doc (the durable backup) so a deleted movie
-  //    can never resurface through the Firestore fallback after a server restart.
-  // 3) Deletes from the server cache so /api/movies stops serving it.
+  // 2) Deletes the Firestore movie doc (movies/{id}) — the durable store the
+  //    admin list actually reads from (the Render backend is unreachable, so
+  //    fetchMovies falls back to Firestore). deleteDoc is a no-op success when
+  //    the doc never existed, so every listed movie clears reliably.
+  // 3) Best-effort server cache sync (non-blocking) in case the backend returns.
   const handleDeleteMovie = async (movie: any) => {
     if (!confirm(`ئایا دڵنیایت لە سڕینەوەی "${movie?.title}" ؟`)) return;
 
@@ -6918,43 +6920,26 @@ export default function App() {
     deletedMovieIdsRef.current.add(movie.id);
     setMovies((prev) => prev.filter((m: any) => m.id !== movie.id));
 
-    let serverOk = false;
-    let firestoreOk = false;
-
     try {
-      const res = await fetchApi(`/api/admin/movies/${movie.id}`, {
-        method: "DELETE",
-      });
-      serverOk = res.ok;
-    } catch (err) {
-      console.warn(
-        "[DeleteMovie] Server delete failed (continuing to Firestore):",
-        err,
-      );
-    }
-
-    try {
-      // Permanent Firestore deletion — the durable source of truth for the
-      // movies backup. deleteDoc succeeds as a no-op when the doc doesn't exist
-      // (e.g. seed movies that were never backed up), so this is always safe.
+      // PRIMARY: permanent Firestore deletion.
       await deleteDoc(doc(realDb, "movies", movie.id));
-      firestoreOk = true;
+      // Both stores are clean, drop the tombstone (deletion is durable).
+      deletedMovieIdsRef.current.delete(movie.id);
+      alert(`فیلمی "${movie?.title}" بە سەرکەوتوویی سڕایەوە`);
     } catch (fsErr) {
       console.error("[DeleteMovie] Firestore delete failed:", fsErr);
-    }
-
-    // Only drop the tombstone once both stores are clean; otherwise keep it so
-    // the 60s poll can't resurrect the movie after a failed server delete.
-    if (serverOk && firestoreOk) {
-      deletedMovieIdsRef.current.delete(movie.id);
-    }
-
-    if (serverOk || firestoreOk) {
-      alert(`فیلمی "${movie?.title}" بە سەرکەوتوویی سڕایەوە`);
-    } else {
+      // Keep the tombstone so the 60s poll can't resurrect the movie.
       alert("سڕینەوەکە تەواو نەبوو — تکایە دووبارە هەوڵبدەرەوە");
       fetchMovies();
+      return;
     }
+
+    // BEST-EFFORT, non-blocking: also clear the server cache so /api/movies
+    // stops serving the movie if the backend is ever reachable again. Never
+    // blocks the success alert above.
+    fetchApi(`/api/admin/movies/${movie.id}`, { method: "DELETE" }).catch(
+      (err) => console.warn("[DeleteMovie] Server cache sync skipped:", err),
+    );
   };
 
   useEffect(() => {
