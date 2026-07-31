@@ -4112,6 +4112,8 @@ const HeroSection: React.FC<{
   const userAudioControlRef = useRef(false);
   // Handle to a pending forceUnmuteAutoplay retry so it can be cancelled
   const unmuteRetryTimerRef = useRef<any>(null);
+  // Handle to the mobile 3s auto-unmute timer (simulated overlay tap)
+  const unmuteAutoTimerRef = useRef<any>(null);
 
   // User takes control of audio: cancel any pending autoplay retry loop.
   const takeAudioControl = () => {
@@ -4165,6 +4167,31 @@ const HeroSection: React.FC<{
     safePlayerCall(player, "playVideo");
     setIsMuted(false);
     forcePlay(player, 4);
+  };
+
+  // Mobile/Android auto-trigger: 3 seconds after the player mounts, programmatically
+  // simulate the exact "کاراکردنی دەنگ" overlay tap (unMute + setVolume(100) +
+  // playVideo + forcePlay) so playback starts instantly without manual touch.
+  // Unlike a real tap this is NOT a user gesture, so if the policy still blocks
+  // the unmute, state is reconciled back to the player's REAL muted state and
+  // the overlay stays visible for a genuine tap.
+  const autoTriggerUnmute = (player: any) => {
+    if (!player || safePlayerCall(player, "isMuted") !== true) return;
+    safePlayerCall(player, "unMute");
+    safePlayerCall(player, "setVolume", 100);
+    safePlayerCall(player, "playVideo");
+    forcePlay(player, 4);
+    setIsHeroMuted(safePlayerCall(player, "isMuted") === true);
+  };
+
+  // Schedule the 3s auto-trigger right when the player mounts on mobile/Android.
+  const scheduleMobileAutoUnmute = (player: any) => {
+    if (!isMobile) return;
+    if (unmuteAutoTimerRef.current) {
+      clearTimeout(unmuteAutoTimerRef.current);
+      unmuteAutoTimerRef.current = null;
+    }
+    unmuteAutoTimerRef.current = setTimeout(() => autoTriggerUnmute(player), 3000);
   };
 
   // Forced unmuted autoplay: playVideo + unMute + setVolume(100) wrapped in a
@@ -4244,6 +4271,10 @@ const HeroSection: React.FC<{
   // Cleanup: destroy the player only on component unmount (not on videoId change)
   useEffect(() => {
     return () => {
+      if (unmuteAutoTimerRef.current) {
+        clearTimeout(unmuteAutoTimerRef.current);
+        unmuteAutoTimerRef.current = null;
+      }
       if (playerRef.current) {
         try { playerRef.current.destroy(); } catch (_) {}
         playerRef.current = null;
@@ -4274,6 +4305,8 @@ const HeroSection: React.FC<{
               // way to auto-start a new video on Android/iOS (muted autoplay).
               safePlayerCall(playerRef.current, "playVideo");
               setIsHeroMuted(true);
+              // Auto-trigger the overlay tap 3s after the hot-swap as well
+              scheduleMobileAutoUnmute(playerRef.current);
             } else {
               // User already took control of audio: keep their choice and just
               // re-assert playback (works because of the prior real gesture)
@@ -4331,6 +4364,9 @@ const HeroSection: React.FC<{
               // user taps the pulsing "کاراکردنی دەنگ" overlay.
               safePlayerCall(event.target, "playVideo");
               setIsHeroMuted(true);
+              // Auto-trigger: 3s after mount, simulate the overlay tap so
+              // playback starts with sound if the policy allows it
+              scheduleMobileAutoUnmute(event.target);
             } else {
               // Desktop: universal unmuted autoplay — playVideo + unMute +
               // setVolume(100) inside a safe retry loop. If the policy blocks
