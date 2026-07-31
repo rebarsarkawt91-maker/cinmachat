@@ -4064,10 +4064,8 @@ const HeroSection: React.FC<{
   const playerRef = useRef<any>(null);
   const videoId = activeFeaturedMovie?.videoId || heroVideoId;
 
-  // Load YouTube IFrame API via shared utility
-  useEffect(() => {
-    loadYouTubeAPI();
-  }, []);
+  // Load YouTube IFrame API eagerly so it's ready ASAP
+  const apiReady = useRef(loadYouTubeAPI());
 
   // Create or destroy YT.Player when videoId changes
   useEffect(() => {
@@ -4090,7 +4088,7 @@ const HeroSection: React.FC<{
         width: "100%",
         playerVars: {
           autoplay: 1,
-          mute: 0,
+          mute: 1,
           loop: 1,
           playlist: videoId,
           controls: 0,
@@ -4118,7 +4116,7 @@ const HeroSection: React.FC<{
       });
     };
 
-    loadYouTubeAPI().then(initPlayer);
+    apiReady.current.then(initPlayer);
 
     return () => {
       cancelled = true;
@@ -4161,7 +4159,12 @@ const HeroSection: React.FC<{
         className="w-full h-full overflow-hidden pointer-events-none"
         style={{ position: "absolute", inset: 0, zIndex: 0 }}
       >
-        <div className="w-full h-full scale-[1.35]" id="hero-player" ref={containerRef}>
+        <div
+          className="w-full h-full scale-[1.35] bg-cover bg-center"
+          id="hero-player"
+          ref={containerRef}
+          style={videoId ? { backgroundImage: `url(https://img.youtube.com/vi/${videoId}/maxresdefault.jpg)` } : undefined}
+        >
           <div id="hero-yt-player" className="w-full h-full" />
         </div>
         {/* The YouTube iframe will be injected here by the YouTube Iframe API */}
