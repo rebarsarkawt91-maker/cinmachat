@@ -4068,6 +4068,9 @@ const HeroSection: React.FC<{
   // Live mirror of isPlaying so onStateChange never fights intentional pauses
   const isPlayingRef = useRef(true);
   isPlayingRef.current = isPlaying;
+  // Live mirror of isMuted so the one-time document listener reads fresh state
+  const isMutedRef = useRef(isHeroMuted);
+  isMutedRef.current = isHeroMuted;
   const [isTouchPromptVisible, setIsTouchPromptVisible] = useState(false);
   // Clears the lingering poster once real frames render (prevents old-frame artifacts)
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
@@ -4082,12 +4085,14 @@ const HeroSection: React.FC<{
     return () => clearTimeout(timer);
   }, []);
 
-  // Detect mobile/touch devices: their autoplay policies block unmuted autoplay
+  // Detect mobile/touch devices: their autoplay policies block unmuted autoplay.
+  // Uses touch detection OR a small viewport (window.innerWidth < 768).
   const isMobile = useMemo(() => {
     if (typeof navigator === "undefined") return false;
     return (
       /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
-      "ontouchstart" in window
+      "ontouchstart" in window ||
+      window.innerWidth < 768
     );
   }, []);
 
@@ -4357,6 +4362,29 @@ const HeroSection: React.FC<{
     return () => clearTimeout(timer);
   }, [showPlayer]);
 
+  // 6) One-time document interaction listener: the FIRST tap/click anywhere on
+  //    the page unmutes the hero video (browsers require a user gesture to start
+  //    audio). Fires only while still muted, then removes itself.
+  useEffect(() => {
+    const onFirstInteraction = () => {
+      const player = playerRef.current;
+      if (player && isMutedRef.current) {
+        safePlayerCall(player, "unMute");
+        safePlayerCall(player, "setVolume", 100);
+        setIsMuted(false);
+        setIsTouchPromptVisible(false);
+      }
+      document.removeEventListener("pointerdown", onFirstInteraction);
+      document.removeEventListener("touchstart", onFirstInteraction);
+    };
+    document.addEventListener("pointerdown", onFirstInteraction);
+    document.addEventListener("touchstart", onFirstInteraction);
+    return () => {
+      document.removeEventListener("pointerdown", onFirstInteraction);
+      document.removeEventListener("touchstart", onFirstInteraction);
+    };
+  }, []);
+
   // 4) Keep React play state in sync with the player
   useEffect(() => {
     if (playerRef.current) {
@@ -4552,32 +4580,37 @@ const HeroSection: React.FC<{
           </button>
         </div>
 
-        {/* Mobile unMute button overlay: clean tap target shown when mobile
-            autoplay had to start muted (browser blocks unmuted autoplay) */}
+        {/* Mobile TAP-TO-WATCH overlay: large centered play button shown while
+            the video is muted (mobile autoplay always starts muted). Any tap
+            starts audio + playback and fades the overlay out. */}
         <AnimatePresence>
-          {isMobile && isTouchPromptVisible && (
-            <div
-              className="absolute inset-x-0 bottom-36 md:bottom-40 z-45 flex justify-center pointer-events-none"
-              key="mobile-unmute-btn"
+          {isMobile && isMuted && (
+            <motion.button
+              key="hero-tap-to-watch"
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              transition={{ duration: 0.3 }}
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsMuted(false);
+                setIsTouchPromptVisible(false);
+                safePlayerCall(playerRef.current, "unMute");
+                safePlayerCall(playerRef.current, "setVolume", 100);
+                safePlayerCall(playerRef.current, "playVideo");
+                forcePlayWithAudio(playerRef.current, 4);
+              }}
+              type="button"
+              className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-4 pointer-events-auto cursor-pointer bg-black/30"
+              title="کلیک بکە بۆ دەستپێکردن"
             >
-              <motion.button
-                initial={{ opacity: 0, scale: 0.9, y: 12 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.9, y: 12 }}
-                transition={{ duration: 0.3 }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setIsMuted(false);
-                  forcePlayWithAudio(playerRef.current, 2);
-                }}
-                type="button"
-                className="pointer-events-auto px-5 py-3 rounded-full bg-white text-black text-xs md:text-sm font-bold flex items-center gap-2 shadow-2xl border border-white/40 active:scale-95 transition-transform duration-150 cursor-pointer"
-                title="کاراکردنی دەنگ"
-              >
-                <Volume2 className="w-4 h-4" />
-                <span className="kurdish-text">کاراکردنی دەنگ</span>
-              </motion.button>
-            </div>
+              <div className="w-20 h-20 md:w-24 md:h-24 rounded-full bg-white text-black flex items-center justify-center shadow-2xl shadow-black/50 active:scale-90 transition-transform duration-150">
+                <Play className="w-10 h-10 md:w-12 md:h-12 translate-x-0.5" />
+              </div>
+              <span className="kurdish-text text-white text-lg md:text-xl font-bold drop-shadow-lg">
+                کلیک بکە بۆ دەستپێکردن
+              </span>
+            </motion.button>
           )}
         </AnimatePresence>
 
