@@ -4071,7 +4071,9 @@ const HeroSection: React.FC<{
   // Live mirror of isMuted so the one-time document listener reads fresh state
   const isMutedRef = useRef(isHeroMuted);
   isMutedRef.current = isHeroMuted;
-  const [isTouchPromptVisible, setIsTouchPromptVisible] = useState(false);
+  // Persistent top-right unmute button: shown on ALL browsers/devices until the
+  // user clicks it once (Edge needs an explicit gesture to enable audio)
+  const [showUnmuteHint, setShowUnmuteHint] = useState(true);
   // Clears the lingering poster once real frames render (prevents old-frame artifacts)
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
   // English closed captions are forced on by default (ccEnabled = true)
@@ -4096,15 +4098,6 @@ const HeroSection: React.FC<{
     );
   }, []);
 
-  // Detect Microsoft Edge: stricter desktop audio policies can silently drop
-  // programmatic unMute() calls unless chained to user gestures / promises
-  const isEdge = useMemo(
-    () =>
-      typeof navigator !== "undefined" &&
-      /Edg\/|Edge\//i.test(navigator.userAgent),
-    [],
-  );
-
   // Safe invocation of any YT.Player method: try/catch + rejected-promise swallow
   const safePlayerCall = (player: any, method: string, ...args: any[]) => {
     try {
@@ -4116,45 +4109,28 @@ const HeroSection: React.FC<{
     }
   };
 
-  // Bulletproof play + unmute with a bounded retry loop (Edge/Chrome/mobile).
-  // Re-checks both muted state AND player state so it actively pushes playback
-  // forward until audio + video are confirmed running.
-  const forcePlayWithAudio = (target: any, attempts = 20) => {
+  // Play-only re-assert (NEVER touches audio). Safe to call outside a gesture.
+  const forcePlay = (target: any, attempts = 6) => {
     if (!target) return;
     safePlayerCall(target, "playVideo");
-    safePlayerCall(target, "unMute");
-    const stillMuted = safePlayerCall(target, "isMuted") ?? false;
     const playerState = safePlayerCall(target, "getPlayerState");
     const PLAYING = (window as any).YT?.PlayerState?.PLAYING ?? 1;
-    if (stillMuted || playerState !== PLAYING) {
-      // Mobile never allows unmute without a gesture → show the tap hint
-      if (stillMuted && isMobile) {
-        setIsTouchPromptVisible(true);
-        return;
-      }
-      if (attempts > 0) {
-        setTimeout(() => forcePlayWithAudio(target, attempts - 1), 200);
-      }
+    if (playerState !== PLAYING && attempts > 0) {
+      setTimeout(() => forcePlay(target, attempts - 1), 200);
     }
   };
 
-  // Microsoft Edge / strict desktop fallback: a 500ms retry timer that
-  // re-forces unMute() + setVolume(100) because Edge may swallow the initial
-  // programmatic unMute() call made right after onReady.
-  const scheduleAudioRetry = (target: any) => {
-    let attempts = 0;
-    const MAX_RETRIES = 8; // 500ms * 8 = up to 4s of guarded retries
-    const tick = () => {
-      if (!target || attempts >= MAX_RETRIES) return;
-      attempts++;
-      safePlayerCall(target, "unMute");
-      safePlayerCall(target, "setVolume", 100);
-      const stillMuted = safePlayerCall(target, "isMuted") ?? false;
-      if (stillMuted) {
-        setTimeout(tick, 500);
-      }
-    };
-    setTimeout(tick, 500);
+  // Unmute + full-volume playback. MUST only be invoked from a direct user
+  // gesture (click/tap): Edge & mobile autoplay policies silently block any
+  // programmatic unMute() call made outside a gesture.
+  const userUnmute = () => {
+    const player = playerRef.current;
+    if (!player) return;
+    safePlayerCall(player, "unMute");
+    safePlayerCall(player, "setVolume", 100);
+    safePlayerCall(player, "playVideo");
+    setIsMuted(false);
+    forcePlay(player, 4);
   };
 
   // Enable English closed captions via the YT IFrame API captions module
@@ -4172,37 +4148,7 @@ const HeroSection: React.FC<{
 
   // Tap anywhere on the hero → guaranteed user-gesture unmute + play
   const handleHeroTap = () => {
-    setIsHeroMuted(false);
-    setIsTouchPromptVisible(false);
-    forcePlayWithAudio(playerRef.current, 2);
-  };
-
-  // Auto-trigger: fires right when the 3s black screen finishes (showPlayer).
-  // Behaves exactly like the white unMute button tap — programmatic unMute +
-  // setVolume(100) + playVideo — so audio starts without a manual touch where
-  // browser policies allow. Polls briefly until the player is mounted.
-  const runAutoUnmute = () => {
-    let attempts = 0;
-    const MAX_WAIT = 10; // 200ms * 10 = up to 2s for the player to mount
-    const attempt = () => {
-      const player = playerRef.current;
-      if (!player) {
-        if (attempts < MAX_WAIT) {
-          attempts++;
-          setTimeout(attempt, 200);
-        }
-        return;
-      }
-      setIsMuted(false);
-      setIsTouchPromptVisible(false);
-      safePlayerCall(player, "unMute");
-      safePlayerCall(player, "setVolume", 100);
-      safePlayerCall(player, "playVideo");
-      // Bounded retry + state reconciliation: where unmute is allowed the audio
-      // starts instantly; where the browser blocks it the overlay is kept.
-      forcePlayWithAudio(player, 8);
-    };
-    attempt();
+    userUnmute();
   };
 
   // CC toggle wired directly to the captions module
@@ -4246,13 +4192,9 @@ const HeroSection: React.FC<{
       if (playerRef.current) {
         try {
           safePlayerCall(playerRef.current, "loadVideoById", videoId);
-          forcePlayWithAudio(playerRef.current);
+          safePlayerCall(playerRef.current, "playVideo");
           safePlayerCall(playerRef.current, "setPlaybackQuality", "hd1080");
           enableCaptions(playerRef.current);
-          // Edge/desktop fallback retry for swallowed unMute() calls
-          if (isEdge && !isMobile) {
-            scheduleAudioRetry(playerRef.current);
-          }
           setIsPlaying(true);
           return;
         } catch (_) {
@@ -4267,9 +4209,10 @@ const HeroSection: React.FC<{
         width: "100%",
         playerVars: {
           autoplay: 1,
-          // Mobile autoplay policies block unmuted video → always start muted
-          // (playsinline: 1 forces fullscreen-free inline playback on iOS/Android)
-          mute: isMobile ? 1 : 0,
+          // ALWAYS start muted (mute:1) on every browser: Edge/Chrome/mobile
+          // autoplay policies block unmuted video without a prior user gesture.
+          // Audio is enabled only through explicit click handlers (userUnmute).
+          mute: 1,
           loop: 1,
           playlist: videoId,
           controls: 0,
@@ -4288,22 +4231,15 @@ const HeroSection: React.FC<{
         },
         events: {
           onReady: (event: any) => {
-            // Sync React mute state to the player's REAL state: mobile starts
-            // muted (playerVars mute:1), but if the auto-unmute trigger already
-            // succeeded the player reports unmuted → keep state truthful.
-            if (safePlayerCall(event.target, "isMuted")) {
-              setIsHeroMuted(true);
-            }
-            // Explicit play + unmute inside a reliable retry / safe try-catch
-            forcePlayWithAudio(event.target);
+            // playerVars forces mute:1 on ALL browsers → keep React state muted.
+            // No programmatic unmute here: Edge silently blocks it outside a
+            // user gesture, so audio stays off until the user clicks/taps.
+            setIsHeroMuted(true);
+            // Play muted only — never touch audio outside a gesture.
+            forcePlay(event.target);
             safePlayerCall(event.target, "setPlaybackQuality", "hd1080");
             enableCaptions(event.target);
             setIsPlaying(true);
-            // Edge/desktop fallback: re-force unMute + setVolume(100) on a
-            // 500ms timer (initial programmatic unMute can be silently dropped)
-            if (isEdge && !isMobile) {
-              scheduleAudioRetry(event.target);
-            }
           },
           onStateChange: (event: any) => {
             const ytState = (window as any).YT.PlayerState;
@@ -4312,8 +4248,6 @@ const HeroSection: React.FC<{
             if (playing) {
               // Real frames are rendering: clear the poster/cache layer
               setHasStartedPlaying(true);
-              // Re-assert play + audio on every PLAYING event (Edge/Chrome)
-              forcePlayWithAudio(playerRef.current, 2);
             } else if (event.data === ytState.PAUSED && isPlayingRef.current) {
               // Keep playback seamless so the center play/pause overlay
               // never lingers on the video surface (unless deliberately paused)
@@ -4335,9 +4269,9 @@ const HeroSection: React.FC<{
   }, [videoId, showPlayer]);
 
   // 3) Keep React mute state in sync with the player, reconciling against the
-  //    player's REAL muted state (browsers can silently block programmatic
-  //    unMute()). If the unMute attempt was swallowed, restore truthful state
-  //    and keep the unMute overlay visible.
+  //    player's REAL muted state (browsers can silently block an unMute() call).
+  //    If the unMute attempt was swallowed, restore the truthful muted state so
+  //    the pulsing unmute button stays available as a fallback.
   useEffect(() => {
     if (!playerRef.current) return;
     if (isMuted) {
@@ -4346,21 +4280,9 @@ const HeroSection: React.FC<{
     }
     safePlayerCall(playerRef.current, "unMute");
     if (safePlayerCall(playerRef.current, "isMuted") === true) {
-      setIsTouchPromptVisible(true);
       setIsMuted(true);
-    } else {
-      setIsTouchPromptVisible(false);
     }
   }, [isMuted]);
-
-  // 5) Auto-unmute trigger: right when the 3s black screen finishes (showPlayer
-  //    flips true) invoke the exact unMute button routine programmatically, so
-  //    the overlay clears and audio starts without requiring a manual tap.
-  useEffect(() => {
-    if (!showPlayer) return;
-    const timer = setTimeout(runAutoUnmute, 500);
-    return () => clearTimeout(timer);
-  }, [showPlayer]);
 
   // 6) One-time document interaction listener: the FIRST tap/click anywhere on
   //    the page unmutes the hero video (browsers require a user gesture to start
@@ -4372,7 +4294,6 @@ const HeroSection: React.FC<{
         safePlayerCall(player, "unMute");
         safePlayerCall(player, "setVolume", 100);
         setIsMuted(false);
-        setIsTouchPromptVisible(false);
       }
       document.removeEventListener("pointerdown", onFirstInteraction);
       document.removeEventListener("touchstart", onFirstInteraction);
@@ -4481,6 +4402,42 @@ const HeroSection: React.FC<{
 
         {/* دگمە هاوبەشە شووشەییەکان لە گۆشەی سەرەوەی ڕاست (Glass Overlay Buttons in Top Right Corner) */}
         <div className="absolute top-4 right-6 md:right-12 z-40 flex items-center gap-1.5 md:gap-3 pointer-events-none">
+          {/* Persistent pulsing unmute button: shown on ALL browsers/devices while
+              muted (video starts muted=1). Unmutes inside a real user gesture and
+              hides after the first click — the permanent toggle stays below. */}
+          <AnimatePresence>
+            {showUnmuteHint && isMuted && (
+              <motion.button
+                key="hero-unmute-hint"
+                exit={{
+                  opacity: 0,
+                  scale: 0.7,
+                  transition: { duration: 0.25 },
+                }}
+                animate={{ scale: [1, 1.12, 1] }}
+                transition={{
+                  repeat: Infinity,
+                  duration: 1.6,
+                  ease: "easeInOut",
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowUnmuteHint(false);
+                  userUnmute();
+                }}
+                className="pointer-events-auto p-2 md:p-3 bg-black/50 border rounded-xl md:rounded-2xl backdrop-blur-md shadow-lg active:scale-[0.98] group/unmute text-green-400 border-green-500/40"
+                title="کلیک بکە بۆ کاراکردنی دەنگ"
+                id="hero-unmute-hint-btn"
+              >
+                {isMuted ? (
+                  <VolumeX className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/unmute:scale-110" />
+                ) : (
+                  <Volume2 className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/unmute:scale-110" />
+                )}
+              </motion.button>
+            )}
+          </AnimatePresence>
+
           {/* Mute/Unmute Button */}
           <button
             onClick={(e) => {
@@ -4593,12 +4550,7 @@ const HeroSection: React.FC<{
               transition={{ duration: 0.3 }}
               onClick={(e) => {
                 e.stopPropagation();
-                setIsMuted(false);
-                setIsTouchPromptVisible(false);
-                safePlayerCall(playerRef.current, "unMute");
-                safePlayerCall(playerRef.current, "setVolume", 100);
-                safePlayerCall(playerRef.current, "playVideo");
-                forcePlayWithAudio(playerRef.current, 4);
+                userUnmute();
               }}
               type="button"
               className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-4 pointer-events-auto cursor-pointer bg-black/30"
