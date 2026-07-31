@@ -4090,7 +4090,7 @@ const HeroSection: React.FC<{
         width: "100%",
         playerVars: {
           autoplay: 1,
-          mute: 1,
+          mute: 0,
           loop: 1,
           playlist: videoId,
           controls: 0,
@@ -4107,7 +4107,8 @@ const HeroSection: React.FC<{
         events: {
           onReady: (event: any) => {
             event.target.playVideo();
-            if (isMuted) event.target.mute();
+            event.target.unMute();
+            event.target.setPlaybackQuality('hd1080');
             setIsPlaying(true);
           },
           onStateChange: (event: any) => {
@@ -4220,27 +4221,6 @@ const HeroSection: React.FC<{
 
         {/* دگمە هاوبەشە شووشەییەکان لە گۆشەی سەرەوەی ڕاست (Glass Overlay Buttons in Top Right Corner) */}
         <div className="absolute top-4 right-6 md:right-12 z-40 flex items-center gap-1.5 md:gap-3 pointer-events-none">
-          {/* Play/Pause Button */}
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setIsPlaying(!isPlaying);
-            }}
-            className={`pointer-events-auto p-2 md:p-3 bg-black/50 border rounded-xl md:rounded-2xl backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/play ${
-              isPlaying
-                ? "text-brand-primary border-brand-primary/20 hover:border-brand-primary/35 hover:bg-brand-primary/15"
-                : "text-white border-white/10 hover:border-white/25 hover:bg-white/10"
-            }`}
-            title={isPlaying ? "ڕاگرتن" : "لێدان"}
-            id="hero-play-btn"
-          >
-            {isPlaying ? (
-              <Pause className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/play:scale-110" />
-            ) : (
-              <Play className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/play:scale-110" />
-            )}
-          </button>
-
           {/* Mute/Unmute Button */}
           <button
             onClick={(e) => {
@@ -4604,7 +4584,7 @@ export default function App() {
   const [showPlayer, setShowPlayer] = useState(false);
 
   const [autoPlay, setAutoPlay] = useState(false);
-  const [isHeroMuted, setIsHeroMuted] = useState(true);
+  const [isHeroMuted, setIsHeroMuted] = useState(false);
   const [activeInvitation, setActiveInvitation] = useState<any>(null);
   const [hasInteracted, setHasInteracted] = useState(false);
   const [countdown, setCountdown] = useState(0);
@@ -4960,6 +4940,12 @@ export default function App() {
     null,
   );
   const [activeAudioSource, setActiveAudioSource] = useState<"hero" | "room">("hero");
+
+  useEffect(() => {
+    if (showPlayer) {
+      setIsHeroMuted(true);
+    }
+  }, [showPlayer]);
 
   useEffect(() => {
     if (activeSyncGroup) {
