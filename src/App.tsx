@@ -4063,6 +4063,42 @@ const HeroSection: React.FC<{
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<any>(null);
   const videoId = activeFeaturedMovie?.videoId || heroVideoId;
+  const [isTouchPromptVisible, setIsTouchPromptVisible] = useState(false);
+
+  // Detect mobile/touch devices: mobile autoplay policies block unmuted autoplay
+  const isMobile = useMemo(() => {
+    if (typeof navigator === "undefined") return false;
+    return (
+      /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
+      "ontouchstart" in window
+    );
+  }, []);
+
+  // Clean tap-to-unmute trigger (mobile-safe: runs inside a user gesture)
+  const handleHeroTap = () => {
+    setIsHeroMuted(false);
+    setIsTouchPromptVisible(false);
+    if (playerRef.current) {
+      try { playerRef.current.unMute(); } catch (_) {}
+      try { playerRef.current.playVideo(); } catch (_) {}
+    }
+  };
+
+  // Unmute strategy: desktop retries aggressively; mobile attempts once and
+  // falls back to the tap-to-unmute prompt so autoplay is never broken.
+  const ensureUnmuted = (target: any) => {
+    if (!target || typeof target.unMute !== "function") return;
+    try { target.unMute(); } catch (_) {}
+    const stillMuted =
+      typeof target.isMuted === "function" ? target.isMuted() : false;
+    if (stillMuted) {
+      if (isMobile) {
+        setIsTouchPromptVisible(true);
+      } else {
+        setTimeout(() => ensureUnmuted(target), 200);
+      }
+    }
+  };
 
   // Load YouTube IFrame API eagerly so it's ready ASAP
   const apiReady = useRef(loadYouTubeAPI());
@@ -4095,14 +4131,7 @@ const HeroSection: React.FC<{
           playerRef.current.playVideo();
           playerRef.current.setPlaybackQuality('hd1080');
           setIsPlaying(true);
-          const tryUnmute = () => {
-            if (playerRef.current && typeof playerRef.current.isMuted === 'function' && !playerRef.current.isMuted()) return;
-            try { playerRef.current.unMute(); } catch (_) {}
-            if (typeof playerRef.current.isMuted === 'function' && playerRef.current.isMuted()) {
-              setTimeout(tryUnmute, 200);
-            }
-          };
-          tryUnmute();
+          ensureUnmuted(playerRef.current);
           return;
         } catch (_) {
           try { playerRef.current.destroy(); } catch (_) {}
@@ -4135,14 +4164,7 @@ const HeroSection: React.FC<{
             event.target.playVideo();
             event.target.setPlaybackQuality('hd1080');
             setIsPlaying(true);
-            const tryUnmute = () => {
-              if (event.target && typeof event.target.isMuted === 'function' && !event.target.isMuted()) return;
-              try { event.target.unMute(); } catch (_) {}
-              if (typeof event.target.isMuted === 'function' && event.target.isMuted()) {
-                setTimeout(tryUnmute, 200);
-              }
-            };
-            tryUnmute();
+            ensureUnmuted(event.target);
           },
           onStateChange: (event: any) => {
             setIsPlaying(event.data === (window as any).YT.PlayerState.PLAYING);
@@ -4163,6 +4185,7 @@ const HeroSection: React.FC<{
     if (playerRef.current) {
       isMuted ? playerRef.current.mute() : playerRef.current.unMute();
     }
+    if (!isMuted) setIsTouchPromptVisible(false);
   }, [isMuted]);
 
   // Sync play state via YT.Player API
@@ -4205,10 +4228,11 @@ const HeroSection: React.FC<{
         <div className="absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-black to-transparent z-2 pointer-events-none" />
       </div>
 
-      {/* Protective Shield overlay for Youtube iframe clicks */}
+      {/* Protective Shield overlay for Youtube iframe clicks + tap-to-unmute trigger */}
       <div 
         className="absolute inset-0 bg-transparent pointer-events-auto" 
         style={{ zIndex: 10 }}
+        onClick={handleHeroTap}
       />
 
       {/* UI Elements Container Wrapper (z-index: 100, position: relative) */}
@@ -4332,6 +4356,25 @@ const HeroSection: React.FC<{
             <Share2 className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/share:scale-110" />
           </button>
         </div>
+
+        {/* Mobile touch-to-unmute hint (shows only when mobile blocks unmuted autoplay) */}
+        <AnimatePresence>
+          {isTouchPromptVisible && (
+            <motion.div
+              key="touch-unmute-hint"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 10 }}
+              transition={{ duration: 0.3 }}
+              className="absolute inset-x-0 bottom-36 md:bottom-40 z-45 flex justify-center pointer-events-none"
+            >
+              <div className="px-4 py-2.5 rounded-full bg-black/60 border border-white/15 backdrop-blur-md text-white text-xs font-semibold flex items-center gap-2 shadow-lg">
+                <VolumeX className="w-3.5 h-3.5 text-green-400" />
+                <span className="kurdish-text">بۆ کاراکردنی دەنگ لێرە لێ بدا</span>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Text Details Area */}
         <div className="absolute inset-x-0 bottom-0 h-48 flex flex-col justify-end pb-12 px-8 z-30">
