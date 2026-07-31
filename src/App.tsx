@@ -4106,6 +4106,42 @@ const HeroSection: React.FC<{
     }
   };
 
+  // True once the user manually controls hero audio (button / overlay / tap).
+  // The forceUnmuteAutoplay retry loop stops as soon as this is set so it can
+  // never fight the user's choice or re-show the overlay behind their back.
+  const userAudioControlRef = useRef(false);
+  // Handle to a pending forceUnmuteAutoplay retry so it can be cancelled
+  const unmuteRetryTimerRef = useRef<any>(null);
+
+  // User takes control of audio: cancel any pending autoplay retry loop.
+  const takeAudioControl = () => {
+    userAudioControlRef.current = true;
+    if (unmuteRetryTimerRef.current) {
+      clearTimeout(unmuteRetryTimerRef.current);
+      unmuteRetryTimerRef.current = null;
+    }
+  };
+
+  // Mute/unmute toggle: calls mute()/unMute() SYNCHRONOUSLY inside the click
+  // gesture. Calling unMute() from a useEffect runs OUTSIDE the gesture context,
+  // so strict autoplay policies silently swallow it, player.isMuted() stays
+  // true, and the reconciliation would lock the overlay on — audio could never
+  // be re-enabled from the button. unMute() here is a real gesture → reliable.
+  const toggleMute = () => {
+    const player = playerRef.current;
+    const next = !isMuted;
+    takeAudioControl();
+    if (player) {
+      if (next) {
+        safePlayerCall(player, "mute");
+      } else {
+        safePlayerCall(player, "unMute");
+        safePlayerCall(player, "setVolume", 100);
+      }
+    }
+    setIsMuted(next);
+  };
+
   // Play-only re-assert (NEVER touches audio). Safe to call outside a gesture.
   const forcePlay = (target: any, attempts = 6) => {
     if (!target) return;
@@ -4123,6 +4159,7 @@ const HeroSection: React.FC<{
   const userUnmute = () => {
     const player = playerRef.current;
     if (!player) return;
+    takeAudioControl();
     safePlayerCall(player, "unMute");
     safePlayerCall(player, "setVolume", 100);
     safePlayerCall(player, "playVideo");
@@ -4162,9 +4199,14 @@ const HeroSection: React.FC<{
       return;
     }
 
-    // Reflect a blocked / not-yet-playing state while we keep retrying
+    // Reflect a blocked / not-yet-playing state while we keep retrying. Each
+    // retry is cancellable via takeAudioControl() (user gesture) and stops
+    // immediately if the user has manually taken control of audio.
     setIsHeroMuted(!!stillMuted);
-    setTimeout(() => forceUnmuteAutoplay(target, attempts - 1), 200);
+    unmuteRetryTimerRef.current = setTimeout(() => {
+      if (userAudioControlRef.current) return;
+      forceUnmuteAutoplay(target, attempts - 1);
+    }, 200);
   };
 
   // Enable English closed captions via the YT IFrame API captions module
@@ -4305,8 +4347,11 @@ const HeroSection: React.FC<{
 
   // 3) Keep React mute state in sync with the player, reconciling against the
   //    player's REAL muted state (browsers can silently block an unMute() call).
-  //    If the unMute attempt was swallowed, restore the truthful muted state so
-  //    the pulsing unmute button stays available as a fallback.
+  //    Reconcile ONLY while the autoplay phase is still running (user has not
+  //    manually controlled audio): a swallowed programmatic unMute reverts to
+  //    muted so the overlay shows. After the user takes control, their explicit
+  //    gesture choice is trusted — never reverting prevents the overlay from
+  //    locking back on and blocking audio.
   useEffect(() => {
     if (!playerRef.current) return;
     if (isMuted) {
@@ -4314,7 +4359,10 @@ const HeroSection: React.FC<{
       return;
     }
     safePlayerCall(playerRef.current, "unMute");
-    if (safePlayerCall(playerRef.current, "isMuted") === true) {
+    if (
+      !userAudioControlRef.current &&
+      safePlayerCall(playerRef.current, "isMuted") === true
+    ) {
       setIsMuted(true);
     }
   }, [isMuted]);
@@ -4326,6 +4374,7 @@ const HeroSection: React.FC<{
     const onFirstInteraction = () => {
       const player = playerRef.current;
       if (player && isMutedRef.current) {
+        takeAudioControl();
         safePlayerCall(player, "unMute");
         safePlayerCall(player, "setVolume", 100);
         setIsMuted(false);
@@ -4353,6 +4402,13 @@ const HeroSection: React.FC<{
   // Mute hero video if room audio is active
   useEffect(() => {
     if (activeAudioSource === "room") {
+      // Stop the autoplay retry loop so it never re-enables hero audio while
+      // the room stream is the active audio source
+      userAudioControlRef.current = true;
+      if (unmuteRetryTimerRef.current) {
+        clearTimeout(unmuteRetryTimerRef.current);
+        unmuteRetryTimerRef.current = null;
+      }
       setIsMuted(true);
       setIsHeroMuted(true);
     }
@@ -4408,7 +4464,17 @@ const HeroSection: React.FC<{
               transition={{ duration: 0.5 }}
               className="absolute inset-0 z-55 flex flex-col items-center justify-center bg-black/90 backdrop-blur-md cursor-pointer pointer-events-auto"
               onClick={() => {
+                // Skip countdown: unmute inside this real gesture if the player
+                // is already mounted (strict policies never block an in-gesture
+                // unMute). If not mounted yet (before the 3s gate), state alone
+                // is set and onReady forceUnmuteAutoplay takes over.
                 setCountdown(0);
+                const player = playerRef.current;
+                if (player) {
+                  takeAudioControl();
+                  safePlayerCall(player, "unMute");
+                  safePlayerCall(player, "setVolume", 100);
+                }
                 setIsMuted(false);
                 setIsPlaying(true);
               }}
@@ -4437,11 +4503,12 @@ const HeroSection: React.FC<{
 
         {/* دگمە هاوبەشە شووشەییەکان لە گۆشەی سەرەوەی ڕاست (Glass Overlay Buttons in Top Right Corner) */}
         <div className="absolute top-4 right-6 md:right-12 z-40 flex items-center gap-1.5 md:gap-3 pointer-events-none">
-          {/* Mute/Unmute Button */}
+          {/* Mute/Unmute Button — toggles the player inside the click gesture so
+              a strict autoplay policy never swallows the unMute() call. */}
           <button
             onClick={(e) => {
               e.stopPropagation();
-              setIsMuted(!isMuted);
+              toggleMute();
             }}
             className={`pointer-events-auto p-2 md:p-3 bg-black/50 border rounded-xl md:rounded-2xl backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/audio ${
               !isMuted
