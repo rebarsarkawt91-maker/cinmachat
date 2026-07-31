@@ -4172,6 +4172,34 @@ const HeroSection: React.FC<{
     forcePlayWithAudio(playerRef.current, 2);
   };
 
+  // Auto-trigger: fires right when the 3s black screen finishes (showPlayer).
+  // Behaves exactly like the white unMute button tap — programmatic unMute +
+  // setVolume(100) + playVideo — so audio starts without a manual touch where
+  // browser policies allow. Polls briefly until the player is mounted.
+  const runAutoUnmute = () => {
+    let attempts = 0;
+    const MAX_WAIT = 10; // 200ms * 10 = up to 2s for the player to mount
+    const attempt = () => {
+      const player = playerRef.current;
+      if (!player) {
+        if (attempts < MAX_WAIT) {
+          attempts++;
+          setTimeout(attempt, 200);
+        }
+        return;
+      }
+      setIsMuted(false);
+      setIsTouchPromptVisible(false);
+      safePlayerCall(player, "unMute");
+      safePlayerCall(player, "setVolume", 100);
+      safePlayerCall(player, "playVideo");
+      // Bounded retry + state reconciliation: where unmute is allowed the audio
+      // starts instantly; where the browser blocks it the overlay is kept.
+      forcePlayWithAudio(player, 8);
+    };
+    attempt();
+  };
+
   // CC toggle wired directly to the captions module
   const toggleCaptions = () => {
     const next = !ccEnabled;
@@ -4255,9 +4283,10 @@ const HeroSection: React.FC<{
         },
         events: {
           onReady: (event: any) => {
-            // Mobile: player was created with mute:1 → keep React state in sync
-            // so the Mute button + unMute overlay reflect the muted start
-            if (isMobile) {
+            // Sync React mute state to the player's REAL state: mobile starts
+            // muted (playerVars mute:1), but if the auto-unmute trigger already
+            // succeeded the player reports unmuted → keep state truthful.
+            if (safePlayerCall(event.target, "isMuted")) {
               setIsHeroMuted(true);
             }
             // Explicit play + unmute inside a reliable retry / safe try-catch
@@ -4300,15 +4329,33 @@ const HeroSection: React.FC<{
     };
   }, [videoId, showPlayer]);
 
-  // 3) Keep React mute state in sync with the player
+  // 3) Keep React mute state in sync with the player, reconciling against the
+  //    player's REAL muted state (browsers can silently block programmatic
+  //    unMute()). If the unMute attempt was swallowed, restore truthful state
+  //    and keep the unMute overlay visible.
   useEffect(() => {
-    if (playerRef.current) {
-      isMuted
-        ? safePlayerCall(playerRef.current, "mute")
-        : safePlayerCall(playerRef.current, "unMute");
+    if (!playerRef.current) return;
+    if (isMuted) {
+      safePlayerCall(playerRef.current, "mute");
+      return;
     }
-    if (!isMuted) setIsTouchPromptVisible(false);
+    safePlayerCall(playerRef.current, "unMute");
+    if (safePlayerCall(playerRef.current, "isMuted") === true) {
+      setIsTouchPromptVisible(true);
+      setIsMuted(true);
+    } else {
+      setIsTouchPromptVisible(false);
+    }
   }, [isMuted]);
+
+  // 5) Auto-unmute trigger: right when the 3s black screen finishes (showPlayer
+  //    flips true) invoke the exact unMute button routine programmatically, so
+  //    the overlay clears and audio starts without requiring a manual tap.
+  useEffect(() => {
+    if (!showPlayer) return;
+    const timer = setTimeout(runAutoUnmute, 500);
+    return () => clearTimeout(timer);
+  }, [showPlayer]);
 
   // 4) Keep React play state in sync with the player
   useEffect(() => {
