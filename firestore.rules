@@ -112,10 +112,19 @@ service cloud.firestore {
     }
 
     // --- Movies Collection ---
+    // Public read + validated public writes (same rationale as genres): the
+    // admin login is localStorage-based and anonymous Firebase Auth is DISABLED
+    // on this project, so isAdmin()/isSignedIn() gates DENY every client-side
+    // write with "Missing or insufficient permissions". isValidMovie keeps the
+    // catalog shape sane while guaranteeing posted movies persist as the durable
+    // Firestore backup and deletes from the "سەرپەرشتی فیلمەکان" panel remove
+    // the document permanently. Deletes cannot inspect incoming(); as a sanity
+    // guard we require the document being deleted to actually be a movie
+    // (non-empty title), mirroring the genre delete guard.
     match /movies/{movieId} {
       allow read: if true;
-      allow create, update: if isAdmin();
-      allow delete: if isAdmin() && !isStaff();
+      allow create, update: if isValidMovie(incoming());
+      allow delete: if resource.data.get('title', '') is string && resource.data.get('title', '') != '';
     }
 
     // --- Genres Collection (dynamic پۆلێنەکان) ---

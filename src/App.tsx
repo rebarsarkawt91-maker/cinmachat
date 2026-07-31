@@ -5062,6 +5062,12 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [movies, setMovies] = useState<Movie[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+
+  // Tombstone guard for deleted movies. Keeps a deleted movie out of the UI
+  // instantly (optimistic removal) AND stops the 60s /api/movies poll or the
+  // Firestore fallback from resurrecting it while the server delete is in
+  // flight, or if the server is unreachable at delete time.
+  const deletedMovieIdsRef = useRef<Set<string>>(new Set());
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
   const [showPlayer, setShowPlayer] = useState(false);
 
@@ -6830,12 +6836,16 @@ export default function App() {
         );
 
         setMovies(
-          unique.sort((a: any, b: any) => {
-            const idA = parseInt(String(a.id).replace("manual-", ""));
-            const idB = parseInt(String(b.id).replace("manual-", ""));
-            if (!isNaN(idA) && !isNaN(idB)) return idB - idA;
-            return new Date(b.date).getTime() - new Date(a.date).getTime();
-          }),
+          unique
+            .filter(
+              (m: any) => !deletedMovieIdsRef.current.has(m.id),
+            )
+            .sort((a: any, b: any) => {
+              const idA = parseInt(String(a.id).replace("manual-", ""));
+              const idB = parseInt(String(b.id).replace("manual-", ""));
+              if (!isNaN(idA) && !isNaN(idB)) return idB - idA;
+              return new Date(b.date).getTime() - new Date(a.date).getTime();
+            }),
         );
         setErrorMsg(null); // Clear any previous error
       } else {
@@ -6849,7 +6859,11 @@ export default function App() {
           const firestoreMovies: any[] = [];
           snapshot.forEach((doc) => firestoreMovies.push({ ...doc.data(), id: doc.id }));
           if (firestoreMovies.length > 0) {
-            setMovies(firestoreMovies);
+            setMovies(
+              firestoreMovies.filter(
+                (m: any) => !deletedMovieIdsRef.current.has(m.id),
+              ),
+            );
             setErrorMsg(null);
           }
         } catch (fsErr) {
@@ -6870,7 +6884,11 @@ export default function App() {
         const firestoreMovies: any[] = [];
         snapshot.forEach((doc) => firestoreMovies.push({ ...doc.data(), id: doc.id }));
         if (firestoreMovies.length > 0) {
-          setMovies(firestoreMovies);
+          setMovies(
+            firestoreMovies.filter(
+              (m: any) => !deletedMovieIdsRef.current.has(m.id),
+            ),
+          );
           setErrorMsg(null);
         }
       } catch (fsErr) {
@@ -6885,6 +6903,57 @@ export default function App() {
       }
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // Permanent, all-views movie deletion (Admin "سەرپەرشتی فیلمەکان" panel).
+  // 1) Removes the movie from local state instantly — no page refresh needed.
+  // 2) Deletes the Firestore movie doc (the durable backup) so a deleted movie
+  //    can never resurface through the Firestore fallback after a server restart.
+  // 3) Deletes from the server cache so /api/movies stops serving it.
+  const handleDeleteMovie = async (movie: any) => {
+    if (!confirm(`ئایا دڵنیایت لە سڕینەوەی "${movie?.title}" ؟`)) return;
+
+    // Tombstone + optimistic UI removal: the movie vanishes from every view at once.
+    deletedMovieIdsRef.current.add(movie.id);
+    setMovies((prev) => prev.filter((m: any) => m.id !== movie.id));
+
+    let serverOk = false;
+    let firestoreOk = false;
+
+    try {
+      const res = await fetchApi(`/api/admin/movies/${movie.id}`, {
+        method: "DELETE",
+      });
+      serverOk = res.ok;
+    } catch (err) {
+      console.warn(
+        "[DeleteMovie] Server delete failed (continuing to Firestore):",
+        err,
+      );
+    }
+
+    try {
+      // Permanent Firestore deletion — the durable source of truth for the
+      // movies backup. deleteDoc succeeds as a no-op when the doc doesn't exist
+      // (e.g. seed movies that were never backed up), so this is always safe.
+      await deleteDoc(doc(realDb, "movies", movie.id));
+      firestoreOk = true;
+    } catch (fsErr) {
+      console.error("[DeleteMovie] Firestore delete failed:", fsErr);
+    }
+
+    // Only drop the tombstone once both stores are clean; otherwise keep it so
+    // the 60s poll can't resurrect the movie after a failed server delete.
+    if (serverOk && firestoreOk) {
+      deletedMovieIdsRef.current.delete(movie.id);
+    }
+
+    if (serverOk || firestoreOk) {
+      alert(`فیلمی "${movie?.title}" بە سەرکەوتوویی سڕایەوە`);
+    } else {
+      alert("سڕینەوەکە تەواو نەبوو — تکایە دووبارە هەوڵبدەرەوە");
+      fetchMovies();
     }
   };
 
@@ -9157,19 +9226,7 @@ export default function App() {
                                       currentUser?.role === "staff"
                                     ) && (
                                       <button
-                                        onClick={async () => {
-                                          if (
-                                            confirm(
-                                              `ئایا دڵنیایت لە سڕینەوەی "${movie.title}" ؟`,
-                                            )
-                                          ) {
-                                            const res = await fetchApi(
-                                              `/api/admin/movies/${movie.id}`,
-                                              { method: "DELETE" },
-                                            );
-                                            if (res.ok) fetchMovies();
-                                          } // Delete movie confirmation
-                                        }}
+                                        onClick={() => handleDeleteMovie(movie)}
                                         className="p-1.5 text-gray-700 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all"
                                       >
                                         <Trash2 className="w-4 h-4" />
