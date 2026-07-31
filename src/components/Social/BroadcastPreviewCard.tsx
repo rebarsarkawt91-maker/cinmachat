@@ -63,7 +63,7 @@ export const BroadcastPreviewCard: React.FC<BroadcastPreviewCardProps> = ({
               previewVideoId.startsWith("https://") ||
               previewVideoId.includes("/")
                 ? previewVideoId
-                : `https://www.youtube.com/embed/${previewVideoId}?autoplay=1&mute=1&controls=0&modestbranding=1&rel=0&showinfo=0&iv_load_policy=3&playlist=${previewVideoId}&loop=1`
+                : `https://www.youtube.com/embed/${previewVideoId}?autoplay=1&mute=1&controls=0&modestbranding=1&rel=0&showinfo=0&iv_load_policy=3&playlist=${previewVideoId}&loop=1&playsinline=1&enablejsapi=1&origin=${window.location.origin}`
             }
             className="w-full h-full pointer-events-none select-none"
             title="Live Stream Preview"

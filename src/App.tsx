@@ -741,12 +741,12 @@ function getMovieSourceUrl(movie: any): string | null {
   );
 }
 
-import { getYTId as extractYouTubeId } from './utils/youtube'; // Use the shared utility
+import { getYTId as extractYouTubeId, loadYouTubeAPI } from './utils/youtube'; // Use the shared utility
 
 const buildOptimizedYouTubeEmbedUrl = (url: string) => {
   const videoId = extractYouTubeId(url);
   if (videoId) {
-    return `https://www.youtube.com/embed/${videoId}?autoplay=1&mute=0&controls=0&rel=0&modestbranding=1&showinfo=0&iv_load_policy=3&autohide=1&enablejsapi=1&disablekb=1&fs=0&origin=${window.location.origin}`;
+    return `https://www.youtube.com/embed/${videoId}?autoplay=1&mute=1&controls=0&rel=0&modestbranding=1&showinfo=0&iv_load_policy=3&enablejsapi=1&disablekb=1&fs=0&playsinline=1&loop=1&playlist=${videoId}&origin=${window.location.origin}`;
   }
   return url;
 };
@@ -1244,7 +1244,7 @@ const ContentModule = ({
       return;
     }
 
-    const loopedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&mute=0&loop=1&playlist=${videoId}&enablejsapi=1`;
+    const loopedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&mute=1&loop=1&playlist=${videoId}&controls=0&rel=0&modestbranding=1&showinfo=0&iv_load_policy=3&enablejsapi=1&disablekb=1&fs=0&playsinline=1&origin=${window.location.origin}`;
 
     setIsPosting(true);
     const movieData = {
@@ -4102,39 +4102,85 @@ const HeroSection: React.FC<{
   const isMuted = isHeroMuted;
   const setIsMuted = setIsHeroMuted;
   const containerRef = useRef<HTMLDivElement>(null);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const playerRef = useRef<any>(null);
   const videoId = activeFeaturedMovie?.videoId || heroVideoId || "DEFAULT_ID";
 
-  // Send YouTube IFrame API commands via postMessage
-  const sendYTCommand = useCallback((command: string, args: any[] = []) => {
-    const iframe = iframeRef.current;
-    if (iframe && iframe.contentWindow) {
-      iframe.contentWindow.postMessage(JSON.stringify({
-        event: "command",
-        func: command,
-        args,
-      }), "*");
-    }
+  // Load YouTube IFrame API via shared utility
+  useEffect(() => {
+    loadYouTubeAPI();
   }, []);
 
-  // Mute/Unmute via YouTube API without iframe reload
+  // Create or destroy YT.Player when videoId changes
   useEffect(() => {
-    sendYTCommand(isMuted ? "mute" : "unMute");
-  }, [isMuted, sendYTCommand]);
+    const id = "hero-yt-player";
+    if (!document.getElementById(id)) return;
+    let cancelled = false;
 
-  // Play/Pause via YouTube API without iframe reload
+    const initPlayer = () => {
+      if (cancelled) return;
+      if (playerRef.current) {
+        try { playerRef.current.destroy(); } catch (_) {}
+        playerRef.current = null;
+      }
+      if (!(window as any).YT?.Player) return;
+
+      playerRef.current = new (window as any).YT.Player(id, {
+        videoId: videoId,
+        height: "100%",
+        width: "100%",
+        playerVars: {
+          autoplay: 1,
+          mute: 1,
+          loop: 1,
+          playlist: videoId,
+          controls: 0,
+          showinfo: 0,
+          rel: 0,
+          modestbranding: 1,
+          iv_load_policy: 3,
+          fs: 0,
+          disablekb: 1,
+          playsinline: 1,
+          enablejsapi: 1,
+          origin: window.location.origin,
+        },
+        events: {
+          onReady: (event: any) => {
+            event.target.playVideo();
+            if (isMuted) event.target.mute();
+            setIsPlaying(true);
+          },
+          onStateChange: (event: any) => {
+            setIsPlaying(event.data === (window as any).YT.PlayerState.PLAYING);
+          },
+        },
+      });
+    };
+
+    loadYouTubeAPI().then(initPlayer);
+
+    return () => {
+      cancelled = true;
+      if (playerRef.current) {
+        try { playerRef.current.destroy(); } catch (_) {}
+        playerRef.current = null;
+      }
+    };
+  }, [videoId]);
+
+  // Sync mute state via YT.Player API
   useEffect(() => {
-    sendYTCommand(isPlaying ? "playVideo" : "pauseVideo");
-  }, [isPlaying, sendYTCommand]);
+    if (playerRef.current) {
+      isMuted ? playerRef.current.mute() : playerRef.current.unMute();
+    }
+  }, [isMuted]);
 
-  // When iframe loads, unmute after a short delay (for autoplay compliance)
-  const handleHeroIframeLoad = useCallback(() => {
-    // YouTube requires initial mute for autoplay; unmute shortly after
-    setTimeout(() => {
-      sendYTCommand("unMute");
-      sendYTCommand("playVideo");
-    }, 1000);
-  }, [sendYTCommand]);
+  // Sync play state via YT.Player API
+  useEffect(() => {
+    if (playerRef.current) {
+      isPlaying ? playerRef.current.playVideo() : playerRef.current.pauseVideo();
+    }
+  }, [isPlaying]);
 
   // Mute hero video if room audio is active
   useEffect(() => {
@@ -4155,17 +4201,7 @@ const HeroSection: React.FC<{
         style={{ position: "absolute", inset: 0, zIndex: 0 }}
       >
         <div className="w-full h-full scale-[1.35]" id="hero-player" ref={containerRef}>
-          <iframe
-            ref={iframeRef}
-            key={videoId}
-            src={`https://www.youtube.com/embed/${videoId}?autoplay=1&mute=1&loop=1&playlist=${videoId}&controls=0&showinfo=0&rel=0&modestbranding=1&enablejsapi=1`}
-            allow="autoplay; encrypted-media"
-            allowFullScreen
-            className="w-full h-full pointer-events-none"
-            width="100%"
-            height="100%"
-            onLoad={handleHeroIframeLoad}
-          />
+          <div id="hero-yt-player" className="w-full h-full" />
         </div>
         {/* The YouTube iframe will be injected here by the YouTube Iframe API */}
         {/* <div className="w-full h-full scale-[1.35]" id="hero-player-iframe"></div> */}
@@ -4465,7 +4501,7 @@ const RoomSection: React.FC<{
                     vipPreviewVideoId.startsWith("https://") ||
                     vipPreviewVideoId.includes("/")
                       ? vipPreviewVideoId
-                      : `https://www.youtube.com/embed/${vipPreviewVideoId}?autoplay=1&mute=1&controls=0&modestbranding=1&rel=0&showinfo=0&iv_load_policy=3&playlist=${vipPreviewVideoId}&loop=1`
+                      : `https://www.youtube.com/embed/${vipPreviewVideoId}?autoplay=1&mute=1&controls=0&modestbranding=1&rel=0&showinfo=0&iv_load_policy=3&playlist=${vipPreviewVideoId}&loop=1&playsinline=1&enablejsapi=1&origin=${window.location.origin}`
                   }
                   className="w-full h-full pointer-events-none select-none"
                   title="VIP Room Live Preview"
@@ -4684,7 +4720,7 @@ export default function App() {
           func: command,
           args: [],
         }),
-        "*",
+        "https://www.youtube.com",
       );
     }
   };
@@ -4710,7 +4746,7 @@ export default function App() {
           func: command,
           args: [],
         }),
-        "*",
+        "https://www.youtube.com",
       );
     }
   };
@@ -4849,18 +4885,9 @@ export default function App() {
 
   const getCleanYouTubeUrl = (url: string | null | undefined) => {
     if (!url) return null;
-    let videoId = "";
-
-    if (url.includes("v=")) {
-      videoId = url.split("v=")[1]?.split("&")[0];
-    } else if (url.includes("youtu.be/")) {
-      videoId = url.split("youtu.be/")[1]?.split("?")[0];
-    } else if (url.includes("embed/")) {
-      videoId = url.split("embed/")[1]?.split("?")[0];
-    }
-
+    const videoId = extractYouTubeId(url);
     if (videoId) {
-      return `https://www.youtube.com/embed/${videoId}?autoplay=1&mute=0&controls=0&loop=1&playlist=${videoId}&enablejsapi=1&rel=0&showinfo=0&iv_load_policy=3&modestbranding=1&autohide=1&disablekb=1&fs=0&origin=${window.location.origin}`;
+      return `https://www.youtube.com/embed/${videoId}?autoplay=1&mute=1&controls=0&loop=1&playlist=${videoId}&enablejsapi=1&rel=0&showinfo=0&iv_load_policy=3&modestbranding=1&disablekb=1&fs=0&playsinline=1&origin=${window.location.origin}`;
     }
     return url;
   };

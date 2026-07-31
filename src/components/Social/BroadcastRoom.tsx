@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
+import { loadYouTubeAPI } from "../../utils/youtube";
 import { 
   Tv, 
   Send, 
@@ -72,16 +73,9 @@ export const BroadcastRoom: React.FC<BroadcastRoomProps> = ({
   const purgeIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // Initialize YT Player API script
+  // Initialize YT Player API script via shared utility
   useEffect(() => {
-    if (!(window as any).YT) {
-      const tag = document.createElement("script");
-      tag.src = "https://www.youtube.com/iframe_api";
-      const firstScriptTag = document.getElementsByTagName("script")[0];
-      if (firstScriptTag && firstScriptTag.parentNode) {
-        firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
-      }
-    }
+    loadYouTubeAPI();
   }, []);
 
   // Poll Broadcast Room State
@@ -151,11 +145,11 @@ export const BroadcastRoom: React.FC<BroadcastRoomProps> = ({
 
     if (!videoId) return;
 
-    // Direct YT Player creation/update
-    if (!(window as any).YT || !(window as any).YT.Player) {
-      return;
-    }
+    let cancelled = false;
 
+    // Direct YT Player creation/update via shared API loader
+    loadYouTubeAPI().then(() => {
+    if (cancelled) return;
     if (!playerRef.current) {
       playerRef.current = new (window as any).YT.Player("broadcast-yt-player", {
         height: "100%",
@@ -163,13 +157,17 @@ export const BroadcastRoom: React.FC<BroadcastRoomProps> = ({
         videoId: videoId,
         playerVars: {
           autoplay: 1,
-          controls: 0, // Disabled controls to make sure users cannot play/pause/seek
+          mute: 1,
+          controls: 0,
           disablekb: 1,
           fs: 0,
           modestbranding: 1,
           rel: 0,
           showinfo: 0,
-          iv_load_policy: 3
+          iv_load_policy: 3,
+          playsinline: 1,
+          enablejsapi: 1,
+          origin: window.location.origin,
         },
         events: {
           onReady: (event: any) => {
@@ -198,6 +196,8 @@ export const BroadcastRoom: React.FC<BroadcastRoomProps> = ({
         console.warn("YT sync glitch:", err);
       }
     }
+    });
+    return () => { cancelled = true; };
   }, [activeRoom?.currentMovieUrl, activeRoom?.isPlaying, activeRoom?.currentTime]);
 
   // Handle Mute changes

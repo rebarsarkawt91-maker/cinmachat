@@ -19,7 +19,7 @@ import {
   Video
 } from "lucide-react";
 import { SocialUser } from '../../types'; // Assuming SocialUser is defined in types.ts
-import { getYTId } from '../../utils/youtube'; // Import the helper function
+import { getYTId, loadYouTubeAPI } from '../../utils/youtube'; // Import the helper functions
 
 interface UserObj { // Explicitly define UserObj
   username: string;
@@ -374,50 +374,45 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
     const videoId = getYTId(activeRoom.currentMovieUrl);
     if (!videoId) return;
 
-    // Load API script if not loaded
-    if (!(window as any).YT) {
-      const tag = document.createElement("script");
-      tag.src = "https://www.youtube.com/iframe_api";
-      const firstScriptTag = document.getElementsByTagName("script")[0];
-      firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag);
-    }
+    let cancelled = false;
+    const id = "camehere-yt-player";
 
-    const initPlayer = (): void => { // Explicitly type initPlayer
+    const initPlayer = (): void => {
+      if (cancelled) return;
       if (playerRef.current) {
         try {
           playerRef.current.destroy();
         } catch(e){}
       }
 
-      playerRef.current = new (window as any).YT.Player("camehere-yt-player", {
+      playerRef.current = new (window as any).YT.Player(id, {
         videoId: videoId,
         playerVars: {
-          // Autoplay is handled by the parent component's logic (activeRoom.isPlaying)
-          // Setting autoplay=0 here to prevent issues with YouTube's autoplay policies
-          // and allow the parent component to control playback via API.
           autoplay: 0,
-          controls: isHost ? 1 : 0, // only host gets controls directly
+          mute: 1,
+          controls: isHost ? 1 : 0,
           disablekb: isHost ? 0 : 1,
           fs: 1,
           modestbranding: 1,
           rel: 0,
+          playsinline: 1,
+          enablejsapi: 1,
+          origin: window.location.origin,
         },
         events: {
-          onReady: (event: { target: any }) => { // Explicitly type event
+          onReady: (event: { target: any }) => {
             if (isMuted) {
               event.target.mute();
             } else {
               event.target.unMute();
             }
-            // Force playback on room join/entry directly
             event.target.playVideo();
             
             if (activeRoom.currentTime > 0) {
               event.target.seekTo(activeRoom.currentTime, true);
             }
           },
-          onStateChange: (event: { data: number; target: any }) => { // Explicitly type event
-            // Standard YT states: PLAYING = 1, PAUSED = 2
+          onStateChange: (event: { data: number; target: any }) => {
             if (isHost) {
               const state = event.data;
               let isPlaying = activeRoom.isPlaying;
@@ -427,7 +422,7 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
               const curTime = event.target.getCurrentTime();
               currentVideoTimeRef.current = curTime;
 
-              setActiveRoom((prev: Room | null) => { // Explicitly type prev
+              setActiveRoom((prev: Room | null) => {
                 if (!prev) return null;
                 return { ...prev, isPlaying, currentTime: curTime };
               });
@@ -437,11 +432,8 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
       });
     };
 
-    if ((window as any).YT && (window as any).YT.Player) {
-      initPlayer();
-    } else {
-      (window as any).onYouTubeIframeAPIReady = initPlayer;
-    }
+    loadYouTubeAPI().then(initPlayer);
+    return () => { cancelled = true; };
   }, [activeRoom?.id, activeRoom?.currentMovieUrl]);
 
   // Adjust volume / mute locally

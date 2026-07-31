@@ -135,9 +135,23 @@
 /* Clean Video UI: Block pointer events to prevent clicking or navigating into YouTube */
 .plyr__video-embed iframe,
 .plyr__video-wrapper iframe,
-iframe#hero-player,
+#hero-yt-player iframe,
 iframe#room-player,
 iframe#room-sync-player,
 iframe#streaming-player {
   pointer-events: none !important;
+}
+
+/* Block YouTube overlay click-through for all embedded player containers */
+#broadcast-yt-player iframe,
+#camehere-yt-player iframe {
+  pointer-events: none !important;
+}
+
+/* Ensure YT.Player generated iframes fill their containers */
+#hero-yt-player,
+#broadcast-yt-player,
+#camehere-yt-player {
+  width: 100%;
+  height: 100%;
 }
