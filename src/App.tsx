@@ -4071,9 +4071,6 @@ const HeroSection: React.FC<{
   // Live mirror of isMuted so the one-time document listener reads fresh state
   const isMutedRef = useRef(isHeroMuted);
   isMutedRef.current = isHeroMuted;
-  // Persistent top-right unmute button: shown on ALL browsers/devices until the
-  // user clicks it once (Edge needs an explicit gesture to enable audio)
-  const [showUnmuteHint, setShowUnmuteHint] = useState(true);
   // Clears the lingering poster once real frames render (prevents old-frame artifacts)
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
   // English closed captions are forced on by default (ccEnabled = true)
@@ -4097,13 +4094,6 @@ const HeroSection: React.FC<{
       window.innerWidth < 768
     );
   }, []);
-
-  // Detect Microsoft Edge: its strict media policy blocks unmuted autoplay, so
-  // Edge starts with a 500ms muted-autoplay head start before audio is forced on
-  const isEdge = useMemo(
-    () => typeof navigator !== "undefined" && /Edg/i.test(navigator.userAgent),
-    [],
-  );
 
   // Safe invocation of any YT.Player method: try/catch + rejected-promise swallow
   const safePlayerCall = (player: any, method: string, ...args: any[]) => {
@@ -4144,7 +4134,7 @@ const HeroSection: React.FC<{
   // safe retry loop so the hero starts with SOUND right after the 3s black
   // screen, no click needed. If the browser's autoplay policy still blocks
   // audio, React state is reconciled to the real muted state so the pulsing
-  // unmute button / TAP-TO-WATCH overlay stay available as a fallback.
+  // "کاراکردنی دەنگ" overlay appears as a fallback.
   const forceUnmuteAutoplay = (target: any, attempts = 20) => {
     if (!target) return;
     safePlayerCall(target, "playVideo");
@@ -4167,7 +4157,7 @@ const HeroSection: React.FC<{
     }
 
     if (stillMuted && isMobile) {
-      // Mobile never allows unmute without a gesture → keep the tap-to-watch UI
+      // Mobile never allows unmute without a gesture → keep the unmute overlay
       setIsHeroMuted(true);
       return;
     }
@@ -4236,12 +4226,8 @@ const HeroSection: React.FC<{
       if (playerRef.current) {
         try {
           safePlayerCall(playerRef.current, "loadVideoById", videoId);
-          if (isEdge) {
-            // Edge: keep muted — audio is enabled only by a user click
-            setIsHeroMuted(true);
-          } else {
-            forceUnmuteAutoplay(playerRef.current);
-          }
+          // Universal unmuted autoplay on every source change (all browsers)
+          forceUnmuteAutoplay(playerRef.current);
           safePlayerCall(playerRef.current, "setPlaybackQuality", "hd1080");
           enableCaptions(playerRef.current);
           setIsPlaying(true);
@@ -4258,12 +4244,11 @@ const HeroSection: React.FC<{
         width: "100%",
         playerVars: {
           autoplay: 1,
-          // Edge: always start muted (mute:1) so the video plays instantly and
-          // smoothly — Edge blocks programmatic unMute(), so audio is enabled
-          // only by the user's click on the centered pulsing overlay.
-          // Chrome & other browsers: direct unmuted start (mute:0) + onReady
-          // forceUnmuteAutoplay, so sound is on right after the 3s black screen.
-          mute: isEdge ? 1 : 0,
+          // Universal unmuted start (mute:0) on every browser — Chrome, Edge,
+          // Safari, mobile. If a strict autoplay policy blocks the unmuted
+          // start, React state reconciles to muted and the pulsing "کاراکردنی
+          // دەنگ" overlay appears so a single user click enables audio.
+          mute: 0,
           loop: 1,
           playlist: videoId,
           controls: 0,
@@ -4282,17 +4267,11 @@ const HeroSection: React.FC<{
         },
         events: {
           onReady: (event: any) => {
-            if (isEdge) {
-              // Edge: always start muted (mute:1) so the video plays instantly
-              // without freezing. Edge blocks programmatic unMute() outside a
-              // direct user click — so NO unmute is attempted here; audio is
-              // enabled only by the user's click on the centered overlay.
-              setIsHeroMuted(true);
-            } else {
-              // Chrome & other browsers: direct unmuted autoplay — playVideo +
-              // unMute + setVolume(100) inside a safe retry loop.
-              forceUnmuteAutoplay(event.target);
-            }
+            // Universal unmuted autoplay for every browser — playVideo + unMute
+            // + setVolume(100) inside a safe retry loop right after the 3s black
+            // screen. If the policy blocks it, state reconciles to muted so the
+            // pulsing "کاراکردنی دەنگ" overlay shows as a fallback.
+            forceUnmuteAutoplay(event.target);
             safePlayerCall(event.target, "setPlaybackQuality", "hd1080");
             enableCaptions(event.target);
             setIsPlaying(true);
@@ -4458,42 +4437,6 @@ const HeroSection: React.FC<{
 
         {/* دگمە هاوبەشە شووشەییەکان لە گۆشەی سەرەوەی ڕاست (Glass Overlay Buttons in Top Right Corner) */}
         <div className="absolute top-4 right-6 md:right-12 z-40 flex items-center gap-1.5 md:gap-3 pointer-events-none">
-          {/* Persistent pulsing unmute button: shown on ALL browsers/devices while
-              muted (video starts muted=1). Unmutes inside a real user gesture and
-              hides after the first click — the permanent toggle stays below. */}
-          <AnimatePresence>
-            {!isEdge && showUnmuteHint && isMuted && (
-              <motion.button
-                key="hero-unmute-hint"
-                exit={{
-                  opacity: 0,
-                  scale: 0.7,
-                  transition: { duration: 0.25 },
-                }}
-                animate={{ scale: [1, 1.12, 1] }}
-                transition={{
-                  repeat: Infinity,
-                  duration: 1.6,
-                  ease: "easeInOut",
-                }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowUnmuteHint(false);
-                  userUnmute();
-                }}
-                className="pointer-events-auto p-2 md:p-3 bg-black/50 border rounded-xl md:rounded-2xl backdrop-blur-md shadow-lg active:scale-[0.98] group/unmute text-green-400 border-green-500/40"
-                title="کلیک بکە بۆ کاراکردنی دەنگ"
-                id="hero-unmute-hint-btn"
-              >
-                {isMuted ? (
-                  <VolumeX className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/unmute:scale-110" />
-                ) : (
-                  <Volume2 className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/unmute:scale-110" />
-                )}
-              </motion.button>
-            )}
-          </AnimatePresence>
-
           {/* Mute/Unmute Button */}
           <button
             onClick={(e) => {
@@ -4593,43 +4536,14 @@ const HeroSection: React.FC<{
           </button>
         </div>
 
-        {/* Mobile TAP-TO-WATCH overlay: large centered play button shown while
-            the video is muted (mobile autoplay always starts muted). Any tap
-            starts audio + playback and fades the overlay out. */}
+        {/* Universal unmute overlay (ALL browsers/devices): shown whenever the
+            video is muted. If Edge/mobile (or any strict autoplay policy) blocks
+            the unmuted start, this prominent pulsing button lets a single user
+            click enable audio 100% reliably — it runs inside a real gesture. */}
         <AnimatePresence>
-          {isMobile && isMuted && (
+          {isMuted && (
             <motion.button
-              key="hero-tap-to-watch"
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.9 }}
-              transition={{ duration: 0.3 }}
-              onClick={(e) => {
-                e.stopPropagation();
-                userUnmute();
-              }}
-              type="button"
-              className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-4 pointer-events-auto cursor-pointer bg-black/30"
-              title="کلیک بکە بۆ دەستپێکردن"
-            >
-              <div className="w-20 h-20 md:w-24 md:h-24 rounded-full bg-white text-black flex items-center justify-center shadow-2xl shadow-black/50 active:scale-90 transition-transform duration-150">
-                <Play className="w-10 h-10 md:w-12 md:h-12 translate-x-0.5" />
-              </div>
-              <span className="kurdish-text text-white text-lg md:text-xl font-bold drop-shadow-lg">
-                کلیک بکە بۆ دەستپێکردن
-              </span>
-            </motion.button>
-          )}
-        </AnimatePresence>
-
-        {/* Edge-specific centered unmute overlay: Edge ALWAYS starts the video
-            muted (mute:1) because it blocks programmatic unMute() without a
-            direct click. This highly visible pulsing action makes a single user
-            click 100% reliable for enabling audio (real user gesture). */}
-        <AnimatePresence>
-          {isEdge && !isMobile && isMuted && (
-            <motion.button
-              key="edge-unmute-overlay"
+              key="hero-unmute-overlay"
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.9 }}
@@ -4640,7 +4554,7 @@ const HeroSection: React.FC<{
               }}
               type="button"
               className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-5 pointer-events-auto cursor-pointer bg-black/30"
-              title="کلیک بکە بۆ کاراکردنی دەنگ"
+              title="کاراکردنی دەنگ"
             >
               <motion.div
                 animate={{ scale: [1, 1.1, 1] }}
@@ -4651,10 +4565,10 @@ const HeroSection: React.FC<{
                 }}
                 className="w-24 h-24 md:w-28 md:h-28 rounded-full bg-white text-black flex items-center justify-center shadow-2xl shadow-black/50 active:scale-90 transition-transform duration-150"
               >
-                <Play className="w-12 h-12 md:w-14 md:h-14 translate-x-0.5" />
+                <VolumeX className="w-12 h-12 md:w-14 md:h-14" />
               </motion.div>
               <span className="kurdish-text text-white text-lg md:text-xl font-bold drop-shadow-lg">
-                کلیک بکە بۆ دەستپێکردن
+                کاراکردنی دەنگ
               </span>
             </motion.button>
           )}
