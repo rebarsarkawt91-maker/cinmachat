@@ -4098,6 +4098,13 @@ const HeroSection: React.FC<{
     );
   }, []);
 
+  // Detect Microsoft Edge: its strict media policy blocks unmuted autoplay, so
+  // Edge starts with a 500ms muted-autoplay head start before audio is forced on
+  const isEdge = useMemo(
+    () => typeof navigator !== "undefined" && /Edg/i.test(navigator.userAgent),
+    [],
+  );
+
   // Safe invocation of any YT.Player method: try/catch + rejected-promise swallow
   const safePlayerCall = (player: any, method: string, ...args: any[]) => {
     try {
@@ -4170,6 +4177,32 @@ const HeroSection: React.FC<{
     setTimeout(() => forceUnmuteAutoplay(target, attempts - 1), 200);
   };
 
+  // Edge-specific: run AFTER a 500ms muted-autoplay head start. Executes the
+  // exact sequence unMute() → setVolume(100) → playVideo() to switch audio on.
+  // If Edge still blocks it, React state stays muted so the pulsing unmute
+  // button remains fully clickable as a seamless fallback.
+  const edgeUnmuteSequence = (target: any, attempts = 10) => {
+    if (!target) return;
+    safePlayerCall(target, "unMute");
+    safePlayerCall(target, "setVolume", 100);
+    safePlayerCall(target, "playVideo");
+    const stillMuted = safePlayerCall(target, "isMuted") ?? false;
+    const playerState = safePlayerCall(target, "getPlayerState");
+    const PLAYING = (window as any).YT?.PlayerState?.PLAYING ?? 1;
+    if (!stillMuted && playerState === PLAYING) {
+      // Audio confirmed: playing with sound
+      setIsHeroMuted(false);
+      return;
+    }
+    if (attempts <= 0) {
+      // Edge blocked the audio → keep truthful muted state (pulsing fallback)
+      setIsHeroMuted(!!stillMuted);
+      return;
+    }
+    setIsHeroMuted(!!stillMuted);
+    setTimeout(() => edgeUnmuteSequence(target, attempts - 1), 200);
+  };
+
   // Enable English closed captions via the YT IFrame API captions module
   const enableCaptions = (target: any) => {
     if (!target) return;
@@ -4229,7 +4262,12 @@ const HeroSection: React.FC<{
       if (playerRef.current) {
         try {
           safePlayerCall(playerRef.current, "loadVideoById", videoId);
-          forceUnmuteAutoplay(playerRef.current);
+          if (isEdge) {
+            // Edge: preserve the muted-autoplay head start, then force audio on
+            setTimeout(() => edgeUnmuteSequence(playerRef.current), 500);
+          } else {
+            forceUnmuteAutoplay(playerRef.current);
+          }
           safePlayerCall(playerRef.current, "setPlaybackQuality", "hd1080");
           enableCaptions(playerRef.current);
           setIsPlaying(true);
@@ -4246,11 +4284,11 @@ const HeroSection: React.FC<{
         width: "100%",
         playerVars: {
           autoplay: 1,
-          // Start UNMUTED (mute:0): the video should play with sound right
-          // after the 3s black screen. onReady forces unMute + setVolume(100)
-          // via a safe retry loop; browsers that still block audio fall back
-          // to the pulsing unmute button / TAP-TO-WATCH overlay.
-          mute: 0,
+          // Edge: start muted (mute:1) for a 500ms head start to bypass its
+          // strict media policy, then audio is forced on via edgeUnmuteSequence.
+          // Chrome & other browsers: direct unmuted start (mute:0) + onReady
+          // forceUnmuteAutoplay, so sound is on right after the 3s black screen.
+          mute: isEdge ? 1 : 0,
           loop: 1,
           playlist: videoId,
           controls: 0,
@@ -4269,10 +4307,16 @@ const HeroSection: React.FC<{
         },
         events: {
           onReady: (event: any) => {
-            // Start playing with sound immediately after the 3s black screen:
-            // playVideo + unMute + setVolume(100) via a safe retry loop, with
-            // React state reconciled to the player's real audio state.
-            forceUnmuteAutoplay(event.target);
+            if (isEdge) {
+              // Edge: player initialized with mute:1 → keep state muted while
+              // it autoplays muted for 500ms, then force audio on in sequence.
+              setIsHeroMuted(true);
+              setTimeout(() => edgeUnmuteSequence(event.target), 500);
+            } else {
+              // Chrome & other browsers: direct unmuted autoplay — playVideo +
+              // unMute + setVolume(100) inside a safe retry loop.
+              forceUnmuteAutoplay(event.target);
+            }
             safePlayerCall(event.target, "setPlaybackQuality", "hd1080");
             enableCaptions(event.target);
             setIsPlaying(true);
