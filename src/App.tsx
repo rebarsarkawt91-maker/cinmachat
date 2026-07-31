@@ -4062,6 +4062,9 @@ const HeroSection: React.FC<{
   const setIsMuted = setIsHeroMuted;
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<any>(null);
+  // Live mirror of isPlaying so onStateChange never fights intentional pauses
+  const isPlayingRef = useRef(true);
+  isPlayingRef.current = isPlaying;
   const videoId = activeFeaturedMovie?.videoId || heroVideoId;
   const [isTouchPromptVisible, setIsTouchPromptVisible] = useState(false);
   // Tracks whether the current video has actually begun playing, so the
@@ -4161,6 +4164,8 @@ const HeroSection: React.FC<{
           safePlayerCall(playerRef.current, "playVideo");
           safePlayerCall(playerRef.current, "unMute");
           safePlayerCall(playerRef.current, "setPlaybackQuality", "hd1080");
+          safePlayerCall(playerRef.current, "setOption", "cc", "lang", "en");
+          safePlayerCall(playerRef.current, "setOption", "cc", "reload", true);
           setIsPlaying(true);
           ensureUnmuted(playerRef.current);
           return;
@@ -4189,6 +4194,9 @@ const HeroSection: React.FC<{
           playsinline: 1,
           enablejsapi: 1,
           origin: window.location.origin,
+          cc_load_policy: 1,
+          cc_lang_pref: "en",
+          hl: "en",
         },
         events: {
           onReady: (event: any) => {
@@ -4198,15 +4206,27 @@ const HeroSection: React.FC<{
             safePlayerCall(event.target, "unMute");
             // 3) Request highest available quality
             safePlayerCall(event.target, "setPlaybackQuality", "hd1080");
+            // 4) Auto-enable English closed captions/subtitles
+            safePlayerCall(event.target, "setOption", "cc", "lang", "en");
+            safePlayerCall(event.target, "setOption", "cc", "reload", true);
             setIsPlaying(true);
-            // 4) Graceful fallback if a browser still blocks the unmute
+            // 5) Graceful fallback if a browser still blocks the unmute
             ensureUnmuted(event.target);
           },
           onStateChange: (event: any) => {
-            const playing = event.data === (window as any).YT.PlayerState.PLAYING;
+            const ytState = (window as any).YT.PlayerState;
+            const playing = event.data === ytState.PLAYING;
             setIsPlaying(playing);
             // Video is now rendering real frames: fully clear the poster/cache layer
             if (playing) setHasStartedPlaying(true);
+            // Keep playback seamless so YouTube's center play/pause overlay
+            // never lingers on the video surface (unless deliberately paused).
+            if (event.data === ytState.PAUSED && isPlayingRef.current) {
+              setTimeout(
+                () => safePlayerCall(playerRef.current, "playVideo"),
+                50,
+              );
+            }
           },
         },
       });
