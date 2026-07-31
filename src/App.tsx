@@ -90,6 +90,12 @@ import {
   DEFAULT_GENRES,
 } from "./services/genres";
 import type { Genre } from "./services/genres";
+import {
+  getClientIp,
+  syncSecurityProfile,
+  markSecurityOffline,
+  logUserActivity,
+} from "./services/securityMonitor";
 import { Movie, SyncGroup, SocialUser } from "./types";
 import { useSocialAuth } from "./context/SocialAuthContext";
 import jsQR from "jsqr";
@@ -2334,61 +2340,161 @@ const ManagedUsersModule = ({ currentUser }: { currentUser: any }) => {
   }
 
   const [users, setUsers] = useState<any[]>([]);
-  const [bannedIps, setBannedIps] = useState<string[]>([]);
+  const [securityUsers, setSecurityUsers] = useState<any[]>([]);
+  const [activityLogs, setActivityLogs] = useState<any[]>([]);
+  const [bannedIps, setBannedIps] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [editingRoleUser, setEditingRoleUser] = useState<any>(null);
 
-  const fetchManagedUsers = async () => {
+  // One-shot load (used on mount + the manual refresh button).
+  const loadOnce = async () => {
     setLoading(true);
     try {
-      const res = await fetchApi("/api/admin/managed-users");
-      const data = await res.json();
-      setUsers(Array.isArray(data) ? data : []);
+      const [uSnap, sSnap, bSnap, aSnap] = await Promise.all([
+        getDocs(collection(db, "users")),
+        getDocs(collection(db, "admin_security_users")),
+        getDocs(collection(db, "banned_ips")),
+        getDocs(
+          query(
+            collection(db, "user_activity_logs"),
+            orderBy("createdAt", "desc"),
+            limit(100),
+          ),
+        ),
+      ]);
+      setUsers(
+        uSnap.docs
+          .map((d) => ({ id: d.id, ...d.data() }))
+          .filter((x: any) => x.uid && x.id !== "_meta"),
+      );
+      setSecurityUsers(sSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      setBannedIps(bSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      setActivityLogs(aSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
     } catch (err) {
-      console.error("Failed to fetch users:", err);
+      console.warn("Failed to preload security panel:", err);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
-  const fetchBannedIps = async () => {
-    try {
-      const res = await fetchApi("/api/admin/banned-ips");
-      const data = await res.json();
-      setBannedIps(Array.isArray(data) ? data : []);
-    } catch (err) {
-      console.error("Failed to fetch banned IPs:", err);
-    }
-  };
-
+  // Live listeners: counters and the table reflect the current sessions in
+  // real time (no polling, no dead /api endpoints).
   useEffect(() => {
-    fetchManagedUsers();
-    fetchBannedIps();
+    loadOnce();
+
+    const unsubUsers = onSnapshot(
+      collection(db, "users"),
+      (snap) => {
+        setUsers(
+          snap.docs
+            .map((d) => ({ id: d.id, ...d.data() }))
+            .filter((x: any) => x.uid && x.id !== "_meta"),
+        );
+      },
+      (err) => console.warn("users listener:", err),
+    );
+
+    const unsubSecurity = onSnapshot(
+      collection(db, "admin_security_users"),
+      (snap) => {
+        setSecurityUsers(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      },
+      (err) => console.warn("admin_security_users listener:", err),
+    );
+
+    const unsubBanned = onSnapshot(
+      collection(db, "banned_ips"),
+      (snap) => {
+        setBannedIps(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      },
+      (err) => console.warn("banned_ips listener:", err),
+    );
+
+    const unsubLogs = onSnapshot(
+      query(
+        collection(db, "user_activity_logs"),
+        orderBy("createdAt", "desc"),
+        limit(100),
+      ),
+      (snap) => {
+        setActivityLogs(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      },
+      (err) => console.warn("user_activity_logs listener:", err),
+    );
+
+    return () => {
+      unsubUsers();
+      unsubSecurity();
+      unsubBanned();
+      unsubLogs();
+    };
   }, []);
 
+  // Merge the app `users` docs with the isolated admin_security_users records
+  // so every row shows IP, location, login history and session dates.
+  const mergedUsers = useMemo(() => {
+    return users.map((u) => {
+      const sec = securityUsers.find((s) => s.uid === u.uid) || {};
+      return {
+        ...u,
+        active: !!u.isOnline,
+        deviceIp: sec.deviceIp || u.deviceIp || "",
+        residence: sec.residence || u.residence || "",
+        country: sec.country || u.country || "",
+        firstSeen: sec.firstSeen || u.createdAt || "",
+        lastLoginAt: sec.lastLoginAt || "",
+        loginCount: sec.loginCount || 0,
+        securityStatus: sec.status || "active",
+      };
+    });
+  }, [users, securityUsers]);
+
+  const formatTimestamp = (ts: any) => {
+    if (!ts) return "—";
+    try {
+      if (typeof ts === "number") return new Date(ts).toLocaleString();
+      if (typeof ts === "string") return new Date(ts).toLocaleString();
+      if (ts.seconds) return new Date(ts.seconds * 1000).toLocaleString();
+    } catch (e) {
+      /* fall through */
+    }
+    return String(ts);
+  };
+
   const handleExportCSV = () => {
-    if (users.length === 0) return;
+    if (mergedUsers.length === 0) return;
     const header = [
       "UID",
       "Name",
+      "Location (Country / Residence)",
       "Phone",
       "UniqueCode",
       "Device IP",
       "Role",
+      "Status",
+      "First Seen",
       "Last Active",
+      "Login Count",
     ];
-    const rows = users.map((u) => [
-      u.uid,
-      u.name || "",
-      u.phone || "",
-      u.uniqueCode || "",
-      u.deviceIp || "N/A",
-      u.role || "Member",
-      u.lastActive || "",
+    const rows = mergedUsers.map((u) => [
+      `"${(u.uid || "").replace(/"/g, '""')}"`,
+      `"${(u.name || "").replace(/"/g, '""')}"`,
+      `"${(`${u.country || ""} / ${u.residence || ""}`).replace(/"/g, '""')}"`,
+      `"${(u.phone || "").replace(/"/g, '""')}"`,
+      `"${(u.uniqueCode || "").replace(/"/g, '""')}"`,
+      `"${(u.deviceIp || "N/A").replace(/"/g, '""')}"`,
+      `"${(u.role || "Member").replace(/"/g, '""')}"`,
+      `"${u.active ? "ONLINE" : "OFFLINE"}"`,
+      `"${formatTimestamp(u.firstSeen)}"`,
+      `"${formatTimestamp(u.lastLoginAt || u.lastActive)}"`,
+      `"${u.loginCount || 0}"`,
     ]);
 
     const csvContent = [header, ...rows].map((e) => e.join(",")).join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const blob = new Blob(["\ufeff" + csvContent], {
+      type: "text/csv;charset=utf-8;",
+    });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.setAttribute("href", url);
@@ -2397,14 +2503,30 @@ const ManagedUsersModule = ({ currentUser }: { currentUser: any }) => {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const handleKickUser = async (uid: string) => {
     if (!confirm("ئایا دڵنیایت لە دەرکردنی ئەم بەکارهێنەرە؟")) return;
     try {
-      await fetch(`/api/admin/managed-users/kick/${uid}`, { method: "POST" });
-      fetchManagedUsers();
+      const u = mergedUsers.find((x) => x.uid === uid);
+      await updateDoc(doc(db, "users", uid), { isKicked: true });
+      await updateDoc(doc(db, "admin_security_users", uid), {
+        isOnline: false,
+        status: "kicked",
+      }).catch(() => {});
+      logUserActivity({
+        uid,
+        name: u?.name,
+        uniqueCode: u?.uniqueCode,
+        action: "kick",
+        detail: "دەرکردنی بەکارهێنەر لە سیستەمەکە",
+        role: u?.role,
+        deviceIp: u?.deviceIp,
+      });
+      alert("بەکارهێنەرەکە بە سەرکەوتوویی دەرکرا.");
     } catch (err) {
+      console.error(err);
       alert("درێژەی کێشا، دووبارە هەوڵ بدەرەوە.");
     }
   };
@@ -2413,15 +2535,27 @@ const ManagedUsersModule = ({ currentUser }: { currentUser: any }) => {
     if (!confirm("ئایا دڵنیایت لە سڕینەوەی ئەم بەکارهێنەرە بە یەکجاری؟"))
       return;
     try {
-      await fetch(`/api/admin/managed-users/${uid}`, { method: "DELETE" });
-      fetchManagedUsers();
+      const u = mergedUsers.find((x) => x.uid === uid);
+      await deleteDoc(doc(db, "users", uid));
+      await deleteDoc(doc(db, "admin_security_users", uid)).catch(() => {});
+      logUserActivity({
+        uid,
+        name: u?.name,
+        uniqueCode: u?.uniqueCode,
+        action: "delete",
+        detail: "سڕینەوەی بەکارهێنەر بە تەواوی",
+        role: u?.role,
+        deviceIp: u?.deviceIp,
+      });
+      alert("بەکارهێنەرەکە بە سەرکەوتوویی سڕایەوە.");
     } catch (err) {
+      console.error(err);
       alert("سڕینەوە سەرکەوتوو نەبوو.");
     }
   };
 
   const handleBanIp = async (ip: string) => {
-    if (!ip) {
+    if (!ip || ip === "N/A") {
       alert("ئەم بەکارهێنەرە هیچ ئایپیەکی جێگیری نییە.");
       return;
     }
@@ -2433,18 +2567,35 @@ const ManagedUsersModule = ({ currentUser }: { currentUser: any }) => {
       return;
 
     try {
-      const res = await fetchApi("/api/admin/ban-ip", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ip }),
+      await setDoc(doc(db, "banned_ips", ip), {
+        ip,
+        reason: "بلۆککرا لە پەنێلی بەکارهێنەران و مافەکان",
+        bannedBy: currentUser?.username || "admin",
+        createdAt: new Date().toISOString(),
       });
-      if (res.ok) {
-        alert("ئایپی بەکارهێنەر بە سەرکەوتوویی بلۆک کرا.");
-        fetchBannedIps();
-        fetchManagedUsers();
-      } else {
-        alert("بلۆککردن سەرکەوتوو نەبوو.");
+
+      // Force-kick every currently-active user on that IP.
+      const affected = mergedUsers.filter((x) => x.deviceIp === ip);
+      for (const u of affected) {
+        await updateDoc(doc(db, "users", u.uid), { isKicked: true }).catch(
+          () => {},
+        );
+        await setDoc(
+          doc(db, "admin_security_users", u.uid),
+          { isOnline: false, status: "banned" },
+          { merge: true },
+        ).catch(() => {});
+        logUserActivity({
+          uid: u.uid,
+          name: u.name,
+          uniqueCode: u.uniqueCode,
+          action: "ban",
+          detail: `بلۆککردنی ئایپی ${ip}`,
+          role: u.role,
+          deviceIp: ip,
+        });
       }
+      alert("ئایپی بەکارهێنەر بە سەرکەوتوویی بلۆک کرا.");
     } catch (err) {
       console.error(err);
       alert("هەڵەیەک ڕوویدا لە کاتی بلۆککردن.");
@@ -2455,50 +2606,84 @@ const ManagedUsersModule = ({ currentUser }: { currentUser: any }) => {
     if (!confirm(`ئایا دڵنیایت لە لادانی بلۆکی ئایپی: ${ip}؟`)) return;
 
     try {
-      const res = await fetchApi("/api/admin/unban-ip", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ip }),
-      });
-      if (res.ok) {
-        alert("بلۆکی ئایپی لادرا.");
-        fetchBannedIps();
-        fetchManagedUsers();
-      } else {
-        alert("لادانی بلۆکی ئایپی سەرکەوتوو نەبوو.");
+      await deleteDoc(doc(db, "banned_ips", ip));
+
+      // Restore users previously banned on that IP.
+      const affected = mergedUsers.filter((x) => x.deviceIp === ip);
+      for (const u of affected) {
+        await updateDoc(doc(db, "users", u.uid), { isKicked: false }).catch(
+          () => {},
+        );
+        await setDoc(
+          doc(db, "admin_security_users", u.uid),
+          { status: "active" },
+          { merge: true },
+        ).catch(() => {});
+        logUserActivity({
+          uid: u.uid,
+          name: u.name,
+          uniqueCode: u.uniqueCode,
+          action: "unban",
+          detail: `لادانی بلۆکی ئایپی ${ip}`,
+          role: u.role,
+          deviceIp: ip,
+        });
       }
+      alert("بلۆکی ئایپی لادرا.");
     } catch (err) {
       console.error(err);
+      alert("لادانی بلۆکی ئایپی سەرکەوتوو نەبوو.");
     }
   };
 
   const handleUpdateRole = async (uid: string, role: string) => {
     try {
-      await fetchApi("/api/admin/managed-users/role", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uid, role }),
+      const u = mergedUsers.find((x) => x.uid === uid);
+      await updateDoc(doc(db, "users", uid), { role });
+      await setDoc(
+        doc(db, "admin_security_users", uid),
+        { role },
+        { merge: true },
+      ).catch(() => {});
+      logUserActivity({
+        uid,
+        name: u?.name,
+        uniqueCode: u?.uniqueCode,
+        action: "role_change",
+        detail: `ڕۆڵی بەکارهێنەر گۆڕدرا بۆ ${role}`,
+        role: role,
+        deviceIp: u?.deviceIp,
       });
       setEditingRoleUser(null);
-      fetchManagedUsers();
     } catch (err) {
+      console.error(err);
       alert("گۆڕینی ڕۆڵ سەرکەوتوو نەبوو.");
     }
   };
 
-  const filteredUsers = users.filter(
-    (u) =>
-      u.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      u.phone?.includes(searchTerm) ||
-      u.uniqueCode?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      u.deviceIp?.includes(searchTerm),
-  );
+  const filteredUsers = mergedUsers.filter((u) => {
+    const q = searchTerm.toLowerCase().trim();
+    if (!q) return true;
+    return (
+      u.name?.toLowerCase().includes(q) ||
+      u.phone?.includes(q) ||
+      u.uid?.toLowerCase().includes(q) ||
+      u.uniqueCode?.toLowerCase().includes(q) ||
+      u.deviceIp?.includes(q) ||
+      u.country?.toLowerCase().includes(q) ||
+      u.residence?.toLowerCase().includes(q)
+    );
+  });
 
   const stats = {
-    total: users.length,
-    active: users.filter((u) => u.active).length,
-    admins: users.filter((u) => u.role === "Admin" || u.role === "SuperAdmin")
-      .length,
+    total: mergedUsers.length,
+    active: mergedUsers.filter((u) => u.active).length,
+    admins: mergedUsers.filter(
+      (u) =>
+        ["Admin", "SuperAdmin", "admin", "super_admin", "owner"].includes(
+          u.role,
+        ),
+    ).length,
   };
 
   return (
@@ -2536,7 +2721,7 @@ const ManagedUsersModule = ({ currentUser }: { currentUser: any }) => {
           </div>
           <div className="text-center px-4">
             <button
-              onClick={fetchManagedUsers}
+              onClick={loadOnce}
               className="p-2 hover:bg-white/10 rounded-xl transition-all"
             >
               <RefreshCw
@@ -2560,17 +2745,17 @@ const ManagedUsersModule = ({ currentUser }: { currentUser: any }) => {
             </h4>
           </div>
           <span className="bg-green-500/10 text-green-400 border border-green-500/20 px-2.5 py-0.5 rounded-full text-[10px] font-black">
-            {users.filter((u) => u.active).length} چالاک
+            {mergedUsers.filter((u) => u.active).length} چالاک
           </span>
         </div>
 
-        {users.filter((u) => u.active).length === 0 ? (
+        {mergedUsers.filter((u) => u.active).length === 0 ? (
           <p className="text-gray-500 text-[11px] kurdish-text py-4 text-center">
             لە ئێستادا چاڵاکییەک نییە لەسەر هێڵ
           </p>
         ) : (
           <div className="max-h-[280px] overflow-y-auto custom-scrollbar flex flex-col gap-2 pr-1">
-            {users
+            {mergedUsers
               .filter((u) => u.active)
               .map((au) => (
                 <div
@@ -2621,12 +2806,12 @@ const ManagedUsersModule = ({ currentUser }: { currentUser: any }) => {
           <div className="flex flex-wrap gap-2">
             {bannedIps.map((bip) => (
               <div
-                key={bip}
+                key={bip.id || bip.ip}
                 className="bg-red-500/5 hover:bg-red-500/10 border border-red-500/10 px-3 py-1.5 rounded-xl text-xs font-mono text-gray-400 flex items-center gap-3"
               >
-                <span>{bip}</span>
+                <span>{bip.ip}</span>
                 <button
-                  onClick={() => handleUnbanIp(bip)}
+                  onClick={() => handleUnbanIp(bip.ip)}
                   className="text-red-500 hover:underline font-black kurdish-text"
                 >
                   لادانی بلۆک
@@ -2722,6 +2907,13 @@ const ManagedUsersModule = ({ currentUser }: { currentUser: any }) => {
                               >
                                 {user.active ? "● ONLINE" : "○ OFFLINE"}
                               </span>
+                              {(user.country || user.residence) && (
+                                <span className="block text-[9px] text-gray-500 kurdish-text leading-tight">
+                                  📍 {user.country || ""}
+                                  {user.country && user.residence ? " / " : ""}
+                                  {user.residence || ""}
+                                </span>
+                              )}
                             </div>
                           </div>
                         </td>
@@ -2796,6 +2988,77 @@ const ManagedUsersModule = ({ currentUser }: { currentUser: any }) => {
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* Actions / Activity History (کردارەکان) */}
+      <div className="bg-white/5 border border-white/10 rounded-[2rem] overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-5 border-b border-white/5">
+          <h4 className="text-sm font-black text-white kurdish-text">
+            مێژووی چالاکی و کردارەکان (تۆمارە ئەمنییەکان)
+          </h4>
+          <span className="bg-white/10 text-gray-400 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+            {activityLogs.length} تۆمار
+          </span>
+        </div>
+        {activityLogs.length === 0 ? (
+          <p className="text-gray-500 text-[11px] kurdish-text py-10 text-center">
+            هیچ چالاکییەک تۆمار نەکراوە هێشتا
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-right kurdish-text">
+              <thead className="bg-white/5">
+                <tr className="border-b border-white/10">
+                  <th className="px-6 py-4 text-xs font-black text-gray-500 uppercase tracking-widest">
+                    بەکارهێنەر / کۆد
+                  </th>
+                  <th className="px-6 py-4 text-xs font-black text-gray-500 uppercase tracking-widest">
+                    کردار
+                  </th>
+                  <th className="px-6 py-4 text-xs font-black text-gray-500 uppercase tracking-widest">
+                    وردەکاری
+                  </th>
+                  <th className="px-6 py-4 text-xs font-black text-gray-500 uppercase tracking-widest">
+                    IP
+                  </th>
+                  <th className="px-6 py-4 text-xs font-black text-gray-500 uppercase tracking-widest">
+                    کاتی تۆمارکردن
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {activityLogs.slice(0, 50).map((log) => (
+                  <tr key={log.id} className="hover:bg-white/5 transition-colors">
+                    <td className="px-6 py-4">
+                      <span className="block font-black text-white text-xs">
+                        {log.name || "بێ ناو"}
+                      </span>
+                      {log.uniqueCode && (
+                        <span className="text-[9px] text-brand-primary font-mono">
+                          {log.uniqueCode}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-[10px] font-black">
+                        {log.action || "—"}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 text-[11px] text-gray-400">
+                      {log.detail || "—"}
+                    </td>
+                    <td className="px-6 py-4 text-[10px] font-mono text-gray-500">
+                      {log.deviceIp || "—"}
+                    </td>
+                    <td className="px-6 py-4 text-[10px] font-mono text-gray-500">
+                      {formatTimestamp(log.createdAt)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* Role Edit Modal */}
@@ -2877,7 +3140,8 @@ const ChatSecurityModule = ({ currentUser }: { currentUser: any }) => {
   }
 
   const [users, setUsers] = useState<any[]>([]);
-  const [bannedIps, setBannedIps] = useState<string[]>([]);
+  const [securityUsers, setSecurityUsers] = useState<any[]>([]);
+  const [bannedIps, setBannedIps] = useState<any[]>([]);
   const [messages, setMessages] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
@@ -2913,31 +3177,46 @@ const ChatSecurityModule = ({ currentUser }: { currentUser: any }) => {
     return () => unsubAuth();
   }, [socialProfile, currentUser]);
 
-  const fetchManagedUsers = async () => {
-    try {
-      const res = await fetchApi("/api/admin/managed-users");
-      const data = await res.json();
-      setUsers(Array.isArray(data) ? data : []);
-    } catch (err) {
-      console.error("Failed to fetch users:", err);
-    }
-  };
-
-  const fetchBannedIps = async () => {
-    try {
-      const res = await fetchApi("/api/admin/banned-ips");
-      const data = await res.json();
-      setBannedIps(Array.isArray(data) ? data : []);
-    } catch (err) {
-      console.error("Failed to fetch banned IPs:", err);
-    }
-  };
-
+  // Live Firestore listeners — the dead /api/admin/managed-users and
+  // /api/admin/banned-ips backend calls are replaced with real-time sync.
   useEffect(() => {
-    setLoading(true);
-    Promise.all([fetchManagedUsers(), fetchBannedIps()]).finally(() => {
-      setLoading(false);
-    });
+    const unsubUsers = onSnapshot(
+      collection(db, "users"),
+      (snap) => {
+        setUsers(
+          snap.docs
+            .map((d) => ({ id: d.id, ...d.data() }))
+            .filter((x: any) => x.uid && x.id !== "_meta"),
+        );
+        setLoading(false);
+      },
+      (err) => {
+        console.warn("chat users listener:", err);
+        setLoading(false);
+      },
+    );
+
+    const unsubBanned = onSnapshot(
+      collection(db, "banned_ips"),
+      (snap) => {
+        setBannedIps(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      },
+      (err) => console.warn("chat banned_ips listener:", err),
+    );
+
+    const unsubSecurity = onSnapshot(
+      collection(db, "admin_security_users"),
+      (snap) => {
+        setSecurityUsers(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      },
+      (err) => console.warn("chat admin_security_users listener:", err),
+    );
+
+    return () => {
+      unsubUsers();
+      unsubBanned();
+      unsubSecurity();
+    };
   }, []);
 
   // Real-time Chat Monitor across all rooms using collectionGroup 'messages'
@@ -3035,7 +3314,6 @@ const ChatSecurityModule = ({ currentUser }: { currentUser: any }) => {
           ? "دەنگی بەکارهێنەر لادرا و دەتوانێت نامە بنێرێتەوە."
           : "نامەناردنی بەکارهێنەر بێدەنگ کرا.",
       );
-      fetchManagedUsers();
     } catch (err) {
       console.error("Failed to update mute state:", err);
       alert("گۆڕانکاری سەرکەوتوو نەبوو.");
@@ -3046,17 +3324,24 @@ const ChatSecurityModule = ({ currentUser }: { currentUser: any }) => {
   const handleKickUser = async (uid: string) => {
     if (!confirm("ئایا دڵنیایت لە دەرکردنی ئەم بەکارهێنەرە؟")) return;
     try {
-      // Set kicked state in Firestore to trigger real-time onClose in client
+      // Set kicked state in Firestore to trigger real-time logout in client
       const userRef = firestoreDoc(realDb, "users", uid);
       await firestoreUpdateDoc(userRef, { isKicked: true });
-
-      // Call server backend kick
-      await fetchApi(`/api/admin/managed-users/kick/${uid}`, {
-        method: "POST",
+      const u = mergedUsers.find((x) => x.uid === uid);
+      await firestoreUpdateDoc(
+        firestoreDoc(realDb, "admin_security_users", uid),
+        { isOnline: false, status: "kicked" },
+      ).catch(() => {});
+      logUserActivity({
+        uid,
+        name: u?.name,
+        uniqueCode: u?.uniqueCode,
+        action: "kick",
+        detail: "دەرکردنی بەکارهێنەر لە سیستەمەکە",
+        role: u?.role,
+        deviceIp: u?.deviceIp,
       });
-
       alert("بەکارهێنەرەکە بە سەرکەوتوویی دەرکرا و لە ژوورەکەی لادرا.");
-      fetchManagedUsers();
     } catch (err) {
       console.error("Kick failed:", err);
       alert("دەرکردنی بەکارهێنەر سەرکەوتوو نەبوو.");
@@ -3065,7 +3350,7 @@ const ChatSecurityModule = ({ currentUser }: { currentUser: any }) => {
 
   // Ban IP address
   const handleBanIp = async (ip: string) => {
-    if (!ip) {
+    if (!ip || ip === "N/A") {
       alert("بەکارهێنەر هیچ ئایپیەکی جێگیری نییە.");
       return;
     }
@@ -3076,18 +3361,33 @@ const ChatSecurityModule = ({ currentUser }: { currentUser: any }) => {
     )
       return;
     try {
-      const res = await fetchApi("/api/admin/ban-ip", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ip }),
+      await setDoc(doc(db, "banned_ips", ip), {
+        ip,
+        reason: "بلۆککرا لە پەنێلی چات و ئاسایش",
+        bannedBy: currentUser?.username || "admin",
+        createdAt: new Date().toISOString(),
       });
-      if (res.ok) {
-        alert("ئایپی بەکارهێنەر بە سەرکەوتوویی خرایە لیستی بلۆکەوە.");
-        fetchBannedIps();
-        fetchManagedUsers();
-      } else {
-        alert("بلۆککردنی ئایپی سەرکەوتوو نەبوو.");
+      const affected = mergedUsers.filter((x) => x.deviceIp === ip);
+      for (const u of affected) {
+        await updateDoc(doc(db, "users", u.uid), { isKicked: true }).catch(
+          () => {},
+        );
+        await setDoc(
+          doc(db, "admin_security_users", u.uid),
+          { isOnline: false, status: "banned" },
+          { merge: true },
+        ).catch(() => {});
+        logUserActivity({
+          uid: u.uid,
+          name: u.name,
+          uniqueCode: u.uniqueCode,
+          action: "ban",
+          detail: `بلۆککردنی ئایپی ${ip}`,
+          role: u.role,
+          deviceIp: ip,
+        });
       }
+      alert("ئایپی بەکارهێنەر بە سەرکەوتوویی خرایە لیستی بلۆکەوە.");
     } catch (err) {
       console.error(err);
       alert("کێشەیەک ڕوویدا لە کاتی بلۆککردنی ئایپی.");
@@ -3098,24 +3398,52 @@ const ChatSecurityModule = ({ currentUser }: { currentUser: any }) => {
   const handleUnbanIp = async (ip: string) => {
     if (!confirm(`ئایا دڵنیایت لە لادانی بلۆککردنی ئایپی ${ip}؟`)) return;
     try {
-      const res = await fetchApi("/api/admin/unban-ip", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ip }),
-      });
-      if (res.ok) {
-        alert("ئایپی لە لیستی بلۆککراوەکان لادرا.");
-        fetchBannedIps();
-        fetchManagedUsers();
-      } else {
-        alert("لادانی بلۆکی ئایپی سەرکەوتوو نەبوو.");
+      await deleteDoc(doc(db, "banned_ips", ip));
+      const affected = mergedUsers.filter((x) => x.deviceIp === ip);
+      for (const u of affected) {
+        await updateDoc(doc(db, "users", u.uid), { isKicked: false }).catch(
+          () => {},
+        );
+        await setDoc(
+          doc(db, "admin_security_users", u.uid),
+          { status: "active" },
+          { merge: true },
+        ).catch(() => {});
+        logUserActivity({
+          uid: u.uid,
+          name: u.name,
+          uniqueCode: u.uniqueCode,
+          action: "unban",
+          detail: `لادانی بلۆکی ئایپی ${ip}`,
+          role: u.role,
+          deviceIp: ip,
+        });
       }
+      alert("ئایپی لە لیستی بلۆککراوەکان لادرا.");
     } catch (err) {
       console.error(err);
+      alert("لادانی بلۆکی ئایپی سەرکەوتوو نەبوو.");
     }
   };
 
-  const filteredUsers = users.filter(
+  // Merge the app `users` docs with the isolated security records so IPs,
+  // roles and session dates survive without the dead backend.
+  const mergedUsers = useMemo(() => {
+    return users.map((u) => {
+      const sec = securityUsers.find((s) => s.uid === u.uid) || {};
+      return {
+        ...u,
+        active: !!u.isOnline,
+        deviceIp: sec.deviceIp || u.deviceIp || "",
+        country: sec.country || u.country || "",
+        residence: sec.residence || u.residence || "",
+        firstSeen: sec.firstSeen || u.createdAt || "",
+        lastLoginAt: sec.lastLoginAt || "",
+      };
+    });
+  }, [users, securityUsers]);
+
+  const filteredUsers = mergedUsers.filter(
     (u) =>
       u.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       u.uid?.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -3367,15 +3695,15 @@ const ChatSecurityModule = ({ currentUser }: { currentUser: any }) => {
                   </td>
                 </tr>
               ) : (
-                bannedIps.map((ip) => (
-                  <tr key={ip} className="hover:bg-white/5 transition-colors">
-                    <td className="py-3 text-red-400 font-black">{ip}</td>
+                bannedIps.map((bip) => (
+                  <tr key={bip.id || bip.ip} className="hover:bg-white/5 transition-colors">
+                    <td className="py-3 text-red-400 font-black">{bip.ip}</td>
                     <td className="py-3 text-gray-400 font-sans kurdish-text text-[10px]">
                       🛑 بلۆکی گشتی جێگیر
                     </td>
                     <td className="py-3 text-center">
                       <button
-                        onClick={() => handleUnbanIp(ip)}
+                        onClick={() => handleUnbanIp(bip.ip)}
                         className="px-2.5 py-1 bg-white/5 hover:bg-red-500 hover:text-white rounded border border-white/10 text-[10px] text-gray-300 font-sans kurdish-text font-black transition-all"
                       >
                         Unban
@@ -5539,6 +5867,11 @@ export default function App() {
   );
 
   // Presence System
+  // Security session flags: logs one session_start per page load and prevents
+  // duplicate kick/ban alerts after the account has already been blocked.
+  const securitySessionLoggedRef = React.useRef(false);
+  const securityBlockedRef = React.useRef(false);
+
   useEffect(() => {
     if (!fbUser || !socialProfile || fbUser.uid === "admin_local_bypass") return;
 
@@ -5556,12 +5889,51 @@ export default function App() {
       }
     }
 
+    // Enriched security profile mirror stored in the dedicated
+    // admin_security_users collection (isolated from the app `users` data).
+    const securityProfile = {
+      uid: socialProfile.uid,
+      name: socialProfile.name || "",
+      phone: socialProfile.phone || "",
+      uniqueCode: socialProfile.uniqueCode || "",
+      residence: socialProfile.residence || "",
+      country: socialProfile.country || "",
+      role: socialProfile.role || socialProfile.userRole || "Member",
+    };
+
     const setOnline = async () => {
       await updateDoc(userDoc, {
         isOnline: true,
         currentRoomId: activeSyncGroup?.id || null,
         lastActive: serverTimestamp(),
       }).catch(console.error);
+
+      // Persist the isolated security record + client-side IP + session log.
+      const ip = await getClientIp();
+      const isNewSession = !securitySessionLoggedRef.current;
+      const { firstSeen, isBanned } = await syncSecurityProfile(
+        securityProfile,
+        ip,
+        isNewSession,
+      );
+      if (isBanned && !securityBlockedRef.current) {
+        securityBlockedRef.current = true;
+        fbLogout();
+        alert("ئەم هەژمارە بلۆککراوە. ناتوانیت بچیتە ناو سایتەکە.");
+        return;
+      }
+      if (isNewSession) {
+        securitySessionLoggedRef.current = true;
+        logUserActivity({
+          uid: socialProfile.uid,
+          name: securityProfile.name,
+          uniqueCode: securityProfile.uniqueCode,
+          action: "session_start",
+          detail: `چوونەژوورەوە (یەکەم بینین: ${firstSeen})`,
+          role: securityProfile.role,
+          deviceIp: ip,
+        });
+      }
     };
 
     const setOffline = async () => {
@@ -5570,6 +5942,7 @@ export default function App() {
         currentRoomId: null,
         lastActive: serverTimestamp(),
       }).catch(console.error);
+      await markSecurityOffline(socialProfile.uid);
     };
 
     setOnline();
@@ -5581,6 +5954,54 @@ export default function App() {
 
     window.addEventListener("beforeunload", setOffline);
     document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    // Admin kick enforcement: isKicked set on the users doc force-logouts.
+    const unsubKick = onSnapshot(
+      userDoc,
+      (snap) => {
+        const d = snap.data();
+        if (d && d.isKicked && !securityBlockedRef.current) {
+          securityBlockedRef.current = true;
+          logUserActivity({
+            uid: socialProfile.uid,
+            name: securityProfile.name,
+            uniqueCode: securityProfile.uniqueCode,
+            action: "kicked",
+            detail: "لەلایەن بەڕێوبەرەوە لە سیستم دەرکرا",
+            role: securityProfile.role,
+          });
+          fbLogout();
+          alert("هەژمارەکەت لەلایەن بەڕێوبەرەوە داخراوە.");
+        }
+      },
+      (err) => console.warn("Kick enforcement listener:", err),
+    );
+
+    // Admin IP-ban enforcement: banned_ips is watched live so a newly banned
+    // IP blocks the browser immediately without a reload.
+    const unsubBan = onSnapshot(
+      collection(db, "banned_ips"),
+      async (snap) => {
+        const ip = await getClientIp();
+        if (!ip || securityBlockedRef.current) return;
+        const isBanned = snap.docs.some((d) => d.id === ip);
+        if (isBanned) {
+          securityBlockedRef.current = true;
+          logUserActivity({
+            uid: socialProfile.uid,
+            name: securityProfile.name,
+            uniqueCode: securityProfile.uniqueCode,
+            action: "banned",
+            detail: `ئایپی ${ip} بلۆککراوە — بەکارهێنەر لە سیستەمەکە دەرچوو`,
+            role: securityProfile.role,
+            deviceIp: ip,
+          });
+          fbLogout();
+          alert("ئەم ئایپیە بلۆککراوە. ناتوانیت بچیتە ناو سایتەکە.");
+        }
+      },
+      (err) => console.warn("Ban enforcement listener:", err),
+    );
 
     // Sync with local server for User Management & IP Logging (STABLE)
     const syncWithServer = async () => {
@@ -5634,6 +6055,8 @@ export default function App() {
 
     return () => {
       setOffline();
+      unsubKick();
+      unsubBan();
       window.removeEventListener("beforeunload", setOffline);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };

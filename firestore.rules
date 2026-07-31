@@ -332,6 +332,71 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
+    // --- Module 8 Security Panel Collections (admin_security_users / user_activity_logs / banned_ips) ---
+    // Dedicated, isolated Firestore schema for the "بەکارهێنەران و مافەکان" panel.
+    // User sessions, IPs, locations, roles and security logs live here — never in
+    // the app `users` collection — so tracking data has zero cross-contamination.
+    // Anonymous Firebase Auth is DISABLED on this project, so isAdmin()/isSignedIn()
+    // gates would DENY every client write; validated public writes are used instead
+    // (same pattern as genres/config/users/VIP collections).
+
+    function isValidSecurityUser(data) {
+      return data.get('uid', '') is string
+        && data.get('uid', '').size() > 0 && data.get('uid', '').size() <= 128
+        && data.get('name', '') is string
+        && (data.get('phone', null) == null || data.phone is string)
+        && (data.get('uniqueCode', null) == null || data.uniqueCode is string)
+        && (data.get('residence', null) == null || data.residence is string)
+        && (data.get('country', null) == null || data.country is string)
+        && (data.get('role', null) == null || data.role is string)
+        && (data.get('deviceIp', null) == null || (data.deviceIp is string && data.deviceIp.size() <= 64))
+        && (data.get('isOnline', null) == null || data.isOnline is bool)
+        && (data.get('status', 'active') in ['active', 'banned', 'kicked'])
+        && (data.get('loginCount', 0) is int && data.get('loginCount', 0) >= 0)
+        && (data.get('firstSeen', null) == null || data.firstSeen is string || data.firstSeen is timestamp)
+        && (data.get('lastLoginAt', null) == null || data.lastLoginAt is string || data.lastLoginAt is timestamp)
+        && (data.get('lastActive', null) == null || data.lastActive is string || data.lastActive is timestamp);
+    }
+
+    function isValidActivityLog(data) {
+      return data.get('uid', '') is string
+        && data.get('uid', '').size() > 0 && data.get('uid', '').size() <= 128
+        && data.get('action', '') is string
+        && data.get('action', '').size() > 0 && data.get('action', '').size() <= 100
+        && (data.get('name', null) == null || data.name is string)
+        && (data.get('uniqueCode', null) == null || data.uniqueCode is string)
+        && (data.get('detail', null) == null || (data.detail is string && data.detail.size() <= 2000))
+        && (data.get('role', null) == null || data.role is string)
+        && (data.get('deviceIp', null) == null || data.deviceIp is string)
+        && (data.get('createdAt', null) == null || data.createdAt is string || data.createdAt is timestamp);
+    }
+
+    function isValidBannedIp(data) {
+      return data.get('ip', '') is string
+        && data.get('ip', '').size() > 0 && data.get('ip', '').size() <= 64
+        && (data.get('reason', null) == null || data.reason is string)
+        && (data.get('bannedBy', null) == null || data.bannedBy is string)
+        && (data.get('createdAt', null) == null || data.createdAt is string || data.createdAt is timestamp);
+    }
+
+    match /admin_security_users/{userId} {
+      allow read: if true;
+      allow create, update: if isValidSecurityUser(incoming());
+      allow delete: if userId != '_meta';
+    }
+
+    match /user_activity_logs/{logId} {
+      allow read: if true;
+      allow create, update: if isValidActivityLog(incoming());
+      allow delete: if logId != '_meta';
+    }
+
+    match /banned_ips/{ipId} {
+      allow read: if true;
+      allow create, update: if isValidBannedIp(incoming());
+      allow delete: if ipId != '_meta';
+    }
+
     // --- Collection Group Rules ---
     match /{path=**}/messages/{messageId} {
       allow read: if isAdmin();
