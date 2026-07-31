@@ -243,7 +243,7 @@ async function fetchApi(
             statusText: "OK",
             json: async () => ({
               ads: {},
-              heroVideoUrl: getCachedHeroVideoUrl() || "https://www.youtube.com/watch?v=YPY7J-flzE8",
+                heroVideoUrl: getCachedHeroVideoUrl() || "",
               socialLinks: { whatsapp: "", group: "", instagram: "", facebook: "" },
               youtubeChannelUrl: "https://www.youtube.com/",
               youtubeUrl: "https://www.youtube.com/",
@@ -265,12 +265,8 @@ async function fetchApi(
             status: 200,
             statusText: "OK",
             json: async () => ({
-              heroVideoUrl: "https://www.youtube.com/watch?v=YPY7J-flzE8",
-              heroPlaylist: [
-                "https://www.youtube.com/watch?v=YPY7J-flzE8",
-                "https://www.youtube.com/watch?v=YPY7J-flzE8",
-                "https://www.youtube.com/watch?v=YPY7J-flzE8",
-              ],
+              heroVideoUrl: "",
+              heroPlaylist: [],
             }),
             text: async () => "{}",
             clone: () => res,
@@ -325,12 +321,8 @@ async function fetchApi(
             path.includes("/api/movies/hero")
           ) {
             return {
-              heroVideoUrl: "https://www.youtube.com/watch?v=YPY7J-flzE8",
-              heroPlaylist: [
-                "https://www.youtube.com/watch?v=YPY7J-flzE8",
-                "https://www.youtube.com/watch?v=YPY7J-flzE8",
-                "https://www.youtube.com/watch?v=YPY7J-flzE8",
-              ],
+              heroVideoUrl: "",
+              heroPlaylist: [],
             };
           }
           if (path.includes("/api/admin/users")) {
@@ -556,39 +548,6 @@ const getAI = () => {
   if (!apiKey) return null;
   return new GoogleGenAI({ apiKey });
 };
-
-const MOCK_MOVIES: Movie[] = [
-  {
-    id: "1",
-    title: "Extraction 2",
-    quality: "4K",
-    tags: ["ئاکشن", "دۆبلاج"],
-    image:
-      "https://images.unsplash.com/photo-1626814026160-2237a95fc5a0?auto=format&fit=crop&q=80&w=800",
-    description: "چیرۆکی بکوژێکی بەناوبانگ کە ڕووبەڕووی دوژمنێکی نوێ دەبێتەوە.",
-    whatsappLink: "https://chat.whatsapp.com/DIwWkE5ZGuTYJrmODE0mI0",
-    isNetflixOriginal: true,
-    isTrending: true,
-    views: 1250,
-    date: "2024-04-27",
-    embedUrl: "https://www.youtube.com/embed/YPY7J-flzE8",
-  },
-  {
-    id: "2",
-    title: "John Wick: Chapter 4",
-    quality: "Full HD",
-    tags: ["ئاکشن", "دۆبلاج"],
-    image:
-      "https://images.unsplash.com/photo-1594908900066-3f47337549d8?auto=format&fit=crop&q=80&w=800",
-    description:
-      "جۆن ویک بەرەو شەڕێکی گەورەتر دەچێت بۆ ئەوەی ڕزگاری بێت لە ڕێکخراوی گەورە.",
-    whatsappLink: "https://chat.whatsapp.com/DIwWkE5ZGuTYJrmODE0mI0",
-    isTrending: true,
-    views: 5200,
-    date: "2024-04-28",
-    embedUrl: "https://www.youtube.com/embed/qEVUrkHuqe8",
-  },
-];
 
 const CATEGORIES = [
   { name: "هەمووی", icon: TrendingUp, tag: "all" },
@@ -4103,7 +4062,7 @@ const HeroSection: React.FC<{
   const setIsMuted = setIsHeroMuted;
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<any>(null);
-  const videoId = activeFeaturedMovie?.videoId || heroVideoId || "DEFAULT_ID";
+  const videoId = activeFeaturedMovie?.videoId || heroVideoId;
 
   // Load YouTube IFrame API via shared utility
   useEffect(() => {
@@ -4114,6 +4073,7 @@ const HeroSection: React.FC<{
   useEffect(() => {
     const id = "hero-yt-player";
     if (!document.getElementById(id)) return;
+    if (!videoId) return;
     let cancelled = false;
 
     const initPlayer = () => {
@@ -4638,7 +4598,7 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
-  const [movies, setMovies] = useState<Movie[]>(MOCK_MOVIES);
+  const [movies, setMovies] = useState<Movie[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
   const [showPlayer, setShowPlayer] = useState(false);
@@ -4656,11 +4616,7 @@ export default function App() {
   const [currentVideoIndex, setCurrentVideoIndex] = useState(0);
   const [index, setIndex] = useState(0);
   const [roomIndex, setRoomIndex] = useState(0);
-  const [heroTrailerPlaylist, setHeroTrailerPlaylist] = useState<string[]>([
-    "https://www.youtube.com/watch?v=YPY7J-flzE8",
-    "https://www.youtube.com/watch?v=YPY7J-flzE8",
-    "https://www.youtube.com/watch?v=YPY7J-flzE8",
-  ]);
+  const [heroTrailerPlaylist, setHeroTrailerPlaylist] = useState<string[]>([]);
   const [globalStreamURL, setGlobalStreamURL] = useState<string | null>(null);
   const [lastSyncTime, setLastSyncTime] = useState(0);
 
@@ -4936,30 +4892,21 @@ export default function App() {
         return;
       }
     }
-    setHeroTrailerPlaylist(["https://www.youtube.com/watch?v=YPY7J-flzE8"]);
+    setHeroTrailerPlaylist([]);
   }, [activeFeaturedMovie]);
 
   const currentHeroVideoUrl = useMemo(() => {
-    if (!activeFeaturedMovie) {
-      return "https://www.youtube.com/watch?v=YPY7J-flzE8";
-    }
-    const rawUrl =
-      activeFeaturedMovie.embedUrl ||
-      activeFeaturedMovie.videoUrl ||
-      "https://www.youtube.com/watch?v=YPY7J-flzE8";
-    if (!rawUrl || rawUrl.trim() === "") {
-      return "https://www.youtube.com/watch?v=YPY7J-flzE8";
-    }
+    if (!activeFeaturedMovie) return "";
+    const rawUrl = activeFeaturedMovie.embedUrl || activeFeaturedMovie.videoUrl || "";
+    if (!rawUrl || rawUrl.trim() === "") return "";
     const vidId = extractYouTubeId(rawUrl);
-    if (vidId) {
-      return `https://www.youtube.com/watch?v=${vidId}`;
-    }
+    if (vidId) return `https://www.youtube.com/watch?v=${vidId}`;
     return rawUrl;
   }, [activeFeaturedMovie]);
 
   const heroVideoId = useMemo(() => {
     const videoId = extractYouTubeId(currentHeroVideoUrl);
-    return videoId || "YPY7J-flzE8";
+    return videoId || "";
   }, [currentHeroVideoUrl]);
 
   // Add an event listener to the whole document to detect the first click for click-to-initiate autoplay
@@ -5274,7 +5221,7 @@ export default function App() {
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [dashboardCreateRoomName, setDashboardCreateRoomName] = useState("");
   const [dashboardCreateHostCode, setDashboardCreateHostCode] = useState("");
-  const [dashboardCreateMovieUrl, setDashboardCreateMovieUrl] = useState("https://www.youtube.com/watch?v=Rsztt5qDj_A");
+  const [dashboardCreateMovieUrl, setDashboardCreateMovieUrl] = useState("");
   const [dashboardIsLoading, setDashboardIsLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState("");
   const [dashboardSuccess, setDashboardSuccess] = useState("");
@@ -5288,7 +5235,7 @@ export default function App() {
 
   // Auto-select first movie for room creation by default
   useEffect(() => { // Ensure movies is available before setting default
-    if (movies.length > 0 && (!dashboardCreateMovieUrl || dashboardCreateMovieUrl === "https://www.youtube.com/watch?v=Rsztt5qDj_A")) {
+    if (movies.length > 0 && !dashboardCreateMovieUrl) {
       const firstMovie = movies[0];
       const url = getMovieSourceUrl(firstMovie) || "";
       setDashboardCreateMovieUrl(url);
@@ -8644,9 +8591,7 @@ export default function App() {
                             }
 
                             const applyHeroLocally = (finalUrl: string) => {
-                              const firstUrl =
-                                finalUrl ||
-                                "https://www.youtube.com/watch?v=YPY7J-flzE8";
+                              const firstUrl = finalUrl;
                               const isYoutube =
                                 firstUrl.includes("youtube.com") ||
                                 firstUrl.includes("youtu.be");

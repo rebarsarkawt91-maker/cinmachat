@@ -55,14 +55,8 @@ const INITIAL_DB = {
   users: [] as any[],
   categories: ["هەمووی", "ئاکشن", "کۆمیدی", "دراما", "ترسناک", "ئەنیمێ", "دۆکیومێنتاری"],
   heroConfig: {
-    youtubeId: 'YPY7J-flzE8', // Default extraction 2 trailer
-    manualFeaturedId: null as string | null,
-    heroVideoUrl: 'https://www.youtube.com/watch?v=YPY7J-flzE8',
-    heroPlaylist: [
-      'https://www.youtube.com/watch?v=YPY7J-flzE8',
-      'https://www.youtube.com/watch?v=YPY7J-flzE8',
-      'https://www.youtube.com/watch?v=YPY7J-flzE8'
-    ]
+    heroVideoUrl: '',
+    heroPlaylist: [] as string[]
   },
   syncGroups: {
     "global_room_official": {
@@ -77,8 +71,8 @@ const INITIAL_DB = {
       videoData: {
         id: "hero-promo",
         title: "پەخشی ڕاستەوخۆ",
-        isYouTube: true,
-        url: "https://www.youtube.com/embed/YPY7J-flzE8"
+        isYouTube: false,
+        url: ""
       }
     }
   },
@@ -87,27 +81,15 @@ const INITIAL_DB = {
   manualMovies: [] as any[],
   vipVideos: [] as any[],
   tagOverrides: {} as Record<string, string[]>,
-  rooms: {
-    "global_room_official": {
-      id: "global_room_official",
-      name: "ژووری سەرەکی",
-      currentMovieId: "hero-promo",
-      playback: {
-        isPlaying: true,
-        currentTime: 0,
-        updatedAt: new Date().toISOString()
-      },
-      videoData: null
-    }
-  }
+  rooms: {} as Record<string, any>
 };
 
 const INITIAL_BROADCAST_ROOM = {
   id: 'main_broadcast_room',
   name: 'هۆڵی پەخشی سەرەکی (Broadcast)',
   hostCode: 'ADMIN_BROADCAST',
-  currentMovieUrl: 'https://www.youtube.com/watch?v=ffW64N3gGv8',
-  isPlaying: true,
+  currentMovieUrl: '',
+  isPlaying: false,
   currentTime: 0,
   activeUsers: [],
   chatMessages: [],
@@ -229,7 +211,7 @@ async function startServer() {
 
   // Initialize syncGroups if not present, ensuring global room exists
   if (!db.syncGroups) db.syncGroups = {};
-  if (!db.syncGroups["global_room_official"]) db.syncGroups["global_room_official"] = INITIAL_GLOBAL_ROOM;
+  if (!db.syncGroups["global_room_official"]) db.syncGroups["global_room_official"] = { ...INITIAL_DB.syncGroups["global_room_official"] };
   if (!db.vipVideos) db.vipVideos = [];
   // if (!Array.isArray(db.rooms)) db.rooms = []; // Removed
   if (!db.vipSettings) db.vipSettings = {
@@ -1280,7 +1262,7 @@ async function startServer() {
   // --- MODULE 13: SMART ANALYTICS ENDPOINTS ---
   app.get('/api/admin/smart-analytics', (req, res) => {
     const usersCount = Array.isArray(db.users) ? db.users.length : 0;
-    const roomsCount = db.rooms ? (Array.isArray(db.rooms) ? db.rooms.length : Object.keys(db.rooms).length) : 0;
+    const roomsCount = db.syncGroups ? Object.keys(db.syncGroups).length : 0;
     const moviesCount = Array.isArray(db.manualMovies) ? db.manualMovies.length : 0;
     const bannedIpsCount = Array.isArray(db.bannedIps) ? db.bannedIps.length : 0;
     const errorsCount = Array.isArray(db.systemErrorLogs) ? db.systemErrorLogs.length : 0;
@@ -2686,39 +2668,21 @@ async function startServer() {
 
       // Room chatMessages
       const roomMsgs: any[] = [];
-      let roomsObj = db.rooms || {};
-      if (Array.isArray(roomsObj)) {
-        roomsObj.forEach((r: any) => {
-          if (r && Array.isArray(r.chatMessages)) {
-            r.chatMessages.forEach((msg: any) => {
-              if ((msg.userCode || '').trim().toUpperCase() === cleanCode) {
-                roomMsgs.push({
-                  id: msg.id,
-                  roomName: r.name || r.id,
-                  text: msg.text,
-                  timestamp: msg.timestamp
-                });
-              }
-            });
-          }
-        });
-      } else if (typeof roomsObj === 'object') {
-        Object.keys(roomsObj).forEach(roomId => {
-          const r = roomsObj[roomId];
-          if (r && Array.isArray(r.chatMessages)) {
-            r.chatMessages.forEach((msg: any) => {
-              if ((msg.userCode || '').trim().toUpperCase() === cleanCode) {
-                roomMsgs.push({
-                  id: msg.id,
-                  roomName: r.name || r.id,
-                  text: msg.text,
-                  timestamp: msg.timestamp
-                });
-              }
-            });
-          }
-        });
-      }
+      const roomsObj = db.syncGroups || {};
+      Object.values(roomsObj).forEach((r: any) => {
+        if (r && Array.isArray(r.chatMessages)) {
+          r.chatMessages.forEach((msg: any) => {
+            if ((msg.userCode || '').trim().toUpperCase() === cleanCode) {
+              roomMsgs.push({
+                id: msg.id,
+                roomName: r.name || r.id,
+                text: msg.text,
+                timestamp: msg.timestamp
+              });
+            }
+          });
+        }
+      });
 
       // Combine messages sorted by timestamp
       const allMessages = [
@@ -2888,10 +2852,6 @@ async function startServer() {
     const update = req.body;
     if (!db.syncGroups) db.syncGroups = {};
     db.syncGroups[id] = { ...(db.syncGroups[id] || { id }), ...update };
-    
-    // Sync back to rooms
-    if (!db.rooms) db.rooms = {};
-    db.rooms[id] = { ...db.rooms[id], ...update };
 
     await saveDB(db);
     res.json({ success: true, data: db.syncGroups[id] });
@@ -2902,11 +2862,10 @@ async function startServer() {
   });
 
   app.post('/api/admin/hero', async (req, res) => {
-    const playlist = req.body.heroPlaylist || req.body.video_trailers;
+    const playlist = req.body.heroPlaylist;
     const { adminName } = req.body;
     if (playlist && Array.isArray(playlist)) {
-      db.heroConfig.heroPlaylist = playlist.filter(Boolean); // Filter out null/empty strings
-      db.heroConfig.video_trailers = playlist;
+      db.heroConfig.heroPlaylist = playlist.filter(Boolean);
       db.heroConfig.heroVideoUrl = playlist[0] || '';
       await addAuditLog(db, adminName, "Update Hero Playlist", `پلیلیستی ڤیدیۆ نوێکرایەوە`);
       await saveDB(db);
@@ -2914,19 +2873,17 @@ async function startServer() {
     res.json({ success: true, config: db.heroConfig });
   });
 
-  // Alias for hero update requested by user
+  // Alias for hero update
   app.post('/api/movies/hero', async (req, res) => {
     if (!req.body) return res.status(400).json({ success: false, error: "Body is empty" });
-    const playlist = req.body.heroPlaylist || req.body.video_trailers;
+    const playlist = req.body.heroPlaylist;
     if (playlist && Array.isArray(playlist)) {
-      db.heroConfig.heroPlaylist = playlist.filter(Boolean); // Filter out null/empty strings
-      db.heroConfig.video_trailers = playlist;
+      db.heroConfig.heroPlaylist = playlist.filter(Boolean);
       db.heroConfig.heroVideoUrl = playlist[0] || '';
-      // Also update some metadata if needed, but primary is heroPlaylist
       await saveDB(db);
       return res.json({ success: true, config: db.heroConfig });
     }
-    res.status(400).json({ success: false, error: "heroPlaylist or video_trailers required" });
+    res.status(400).json({ success: false, error: "heroPlaylist is required" });
   });
 
   app.post('/api/admin/post-movie', async (req, res) => {
@@ -3215,12 +3172,12 @@ async function startServer() {
       let results: any[] = [...moviesCache];
       
       const ytRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
-      const heroUrl = db.heroConfig.heroVideoUrl || 'https://www.youtube.com/watch?v=YPY7J-flzE8';
-      const ytMatch = heroUrl.match(ytRegex);
+      const heroUrl = db.heroConfig.heroVideoUrl;
+      const ytMatch = heroUrl ? heroUrl.match(ytRegex) : null;
       const isYouTube = !!ytMatch;
-      const embedUrl = isYouTube ? `https://www.youtube.com/embed/${ytMatch![1]}` : heroUrl;
+      const embedUrl = isYouTube ? `https://www.youtube.com/embed/${ytMatch![1]}` : (heroUrl || '');
 
-      const heroPlaylist = db.heroConfig.heroPlaylist || [heroUrl, heroUrl, heroUrl];
+      const heroPlaylist = db.heroConfig.heroPlaylist || [];
       const heroMovie: any = {
         id: 'hero-promo',
         title: 'پرۆمۆی تایبەت',

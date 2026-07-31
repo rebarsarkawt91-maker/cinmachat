@@ -404,7 +404,7 @@ export const VIPRoomModal: React.FC<VIPRoomModalProps> = ({ isOpen, onClose, onJ
       finalVideoUrl = vipVideos[vipVideos.length - 1]?.videoUrl || "";
     }
     if (!finalVideoUrl.trim()) {
-      finalVideoUrl = "https://www.youtube.com/watch?v=ffW64N3gGv8";
+      return;
     }
 
     const officialVipRoom = {
