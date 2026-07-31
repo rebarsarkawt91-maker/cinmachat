@@ -4091,6 +4091,15 @@ const HeroSection: React.FC<{
     );
   }, []);
 
+  // Detect Microsoft Edge: stricter desktop audio policies can silently drop
+  // programmatic unMute() calls unless chained to user gestures / promises
+  const isEdge = useMemo(
+    () =>
+      typeof navigator !== "undefined" &&
+      /Edg\/|Edge\//i.test(navigator.userAgent),
+    [],
+  );
+
   // Safe invocation of any YT.Player method: try/catch + rejected-promise swallow
   const safePlayerCall = (player: any, method: string, ...args: any[]) => {
     try {
@@ -4122,6 +4131,25 @@ const HeroSection: React.FC<{
         setTimeout(() => forcePlayWithAudio(target, attempts - 1), 200);
       }
     }
+  };
+
+  // Microsoft Edge / strict desktop fallback: a 500ms retry timer that
+  // re-forces unMute() + setVolume(100) because Edge may swallow the initial
+  // programmatic unMute() call made right after onReady.
+  const scheduleAudioRetry = (target: any) => {
+    let attempts = 0;
+    const MAX_RETRIES = 8; // 500ms * 8 = up to 4s of guarded retries
+    const tick = () => {
+      if (!target || attempts >= MAX_RETRIES) return;
+      attempts++;
+      safePlayerCall(target, "unMute");
+      safePlayerCall(target, "setVolume", 100);
+      const stillMuted = safePlayerCall(target, "isMuted") ?? false;
+      if (stillMuted) {
+        setTimeout(tick, 500);
+      }
+    };
+    setTimeout(tick, 500);
   };
 
   // Enable English closed captions via the YT IFrame API captions module
@@ -4188,6 +4216,10 @@ const HeroSection: React.FC<{
           forcePlayWithAudio(playerRef.current);
           safePlayerCall(playerRef.current, "setPlaybackQuality", "hd1080");
           enableCaptions(playerRef.current);
+          // Edge/desktop fallback retry for swallowed unMute() calls
+          if (isEdge && !isMobile) {
+            scheduleAudioRetry(playerRef.current);
+          }
           setIsPlaying(true);
           return;
         } catch (_) {
@@ -4202,7 +4234,9 @@ const HeroSection: React.FC<{
         width: "100%",
         playerVars: {
           autoplay: 1,
-          mute: 0,
+          // Mobile autoplay policies block unmuted video → always start muted
+          // (playsinline: 1 forces fullscreen-free inline playback on iOS/Android)
+          mute: isMobile ? 1 : 0,
           loop: 1,
           playlist: videoId,
           controls: 0,
@@ -4221,11 +4255,21 @@ const HeroSection: React.FC<{
         },
         events: {
           onReady: (event: any) => {
+            // Mobile: player was created with mute:1 → keep React state in sync
+            // so the Mute button + unMute overlay reflect the muted start
+            if (isMobile) {
+              setIsHeroMuted(true);
+            }
             // Explicit play + unmute inside a reliable retry / safe try-catch
             forcePlayWithAudio(event.target);
             safePlayerCall(event.target, "setPlaybackQuality", "hd1080");
             enableCaptions(event.target);
             setIsPlaying(true);
+            // Edge/desktop fallback: re-force unMute + setVolume(100) on a
+            // 500ms timer (initial programmatic unMute can be silently dropped)
+            if (isEdge && !isMobile) {
+              scheduleAudioRetry(event.target);
+            }
           },
           onStateChange: (event: any) => {
             const ytState = (window as any).YT.PlayerState;
@@ -4461,22 +4505,32 @@ const HeroSection: React.FC<{
           </button>
         </div>
 
-        {/* Mobile touch-to-unmute hint (shows only when mobile blocks unmuted autoplay) */}
+        {/* Mobile unMute button overlay: clean tap target shown when mobile
+            autoplay had to start muted (browser blocks unmuted autoplay) */}
         <AnimatePresence>
-          {isTouchPromptVisible && (
-            <motion.div
-              key="touch-unmute-hint"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 10 }}
-              transition={{ duration: 0.3 }}
+          {isMobile && isTouchPromptVisible && (
+            <div
               className="absolute inset-x-0 bottom-36 md:bottom-40 z-45 flex justify-center pointer-events-none"
+              key="mobile-unmute-btn"
             >
-              <div className="px-4 py-2.5 rounded-full bg-black/60 border border-white/15 backdrop-blur-md text-white text-xs font-semibold flex items-center gap-2 shadow-lg">
-                <VolumeX className="w-3.5 h-3.5 text-green-400" />
-                <span className="kurdish-text">بۆ کاراکردنی دەنگ لێرە لێ بدا</span>
-              </div>
-            </motion.div>
+              <motion.button
+                initial={{ opacity: 0, scale: 0.9, y: 12 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.9, y: 12 }}
+                transition={{ duration: 0.3 }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsMuted(false);
+                  forcePlayWithAudio(playerRef.current, 2);
+                }}
+                type="button"
+                className="pointer-events-auto px-5 py-3 rounded-full bg-white text-black text-xs md:text-sm font-bold flex items-center gap-2 shadow-2xl border border-white/40 active:scale-95 transition-transform duration-150 cursor-pointer"
+                title="کاراکردنی دەنگ"
+              >
+                <Volume2 className="w-4 h-4" />
+                <span className="kurdish-text">کاراکردنی دەنگ</span>
+              </motion.button>
+            </div>
           )}
         </AnimatePresence>
 
