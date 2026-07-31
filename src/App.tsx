@@ -4105,9 +4105,16 @@ const HeroSection: React.FC<{
         events: {
           onReady: (event: any) => {
             event.target.playVideo();
-            event.target.unMute();
             event.target.setPlaybackQuality('hd1080');
             setIsPlaying(true);
+            const tryUnmute = () => {
+              if (event.target && typeof event.target.isMuted === 'function' && !event.target.isMuted()) return;
+              try { event.target.unMute(); } catch (_) {}
+              if (typeof event.target.isMuted === 'function' && event.target.isMuted()) {
+                setTimeout(tryUnmute, 200);
+              }
+            };
+            tryUnmute();
           },
           onStateChange: (event: any) => {
             setIsPlaying(event.data === (window as any).YT.PlayerState.PLAYING);
