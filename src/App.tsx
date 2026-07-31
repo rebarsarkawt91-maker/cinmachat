@@ -4067,6 +4067,15 @@ const HeroSection: React.FC<{
   // Tracks whether the current video has actually begun playing, so the
   // lingering background poster can be cleared (prevents old-frame artifacts).
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
+  // 3-second clean black buffer on initial load: hides any old frame / poster
+  // mismatch until the muted-autoplay player is fully initialized underneath.
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+
+  // Auto-reveal the player after the brief 3s buffer on mount only
+  useEffect(() => {
+    const timer = setTimeout(() => setIsInitialLoading(false), 3000);
+    return () => clearTimeout(timer);
+  }, []);
 
   // Detect mobile/touch devices: mobile autoplay policies block unmuted autoplay
   const isMobile = useMemo(() => {
@@ -4429,6 +4438,22 @@ const HeroSection: React.FC<{
           </motion.div>
         </div>
       </div>
+
+      {/* 3-Second Black Loading/Buffer Wrapper (hides old frames & poster mismatches) */}
+      <AnimatePresence>
+        {isInitialLoading && (
+          <motion.div
+            key="hero-initial-buffer"
+            initial={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.6, ease: "easeOut" }}
+            className="absolute inset-0 bg-black flex items-center justify-center"
+            style={{ zIndex: 300 }}
+          >
+            <div className="w-10 h-10 rounded-full border-2 border-t-brand-primary border-white/10 animate-spin" />
+          </motion.div>
+        )}
+      </AnimatePresence>
     </section>
   );
 };
