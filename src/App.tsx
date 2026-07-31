@@ -4064,6 +4064,9 @@ const HeroSection: React.FC<{
   const playerRef = useRef<any>(null);
   const videoId = activeFeaturedMovie?.videoId || heroVideoId;
   const [isTouchPromptVisible, setIsTouchPromptVisible] = useState(false);
+  // Tracks whether the current video has actually begun playing, so the
+  // lingering background poster can be cleared (prevents old-frame artifacts).
+  const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
 
   // Detect mobile/touch devices: mobile autoplay policies block unmuted autoplay
   const isMobile = useMemo(() => {
@@ -4132,6 +4135,10 @@ const HeroSection: React.FC<{
     if (!container || !videoId) return;
     let cancelled = false;
 
+    // New source: show the new video's poster until it truly starts playing,
+    // so no old/previous frame or lingering cache is ever visible.
+    setHasStartedPlaying(false);
+
     const initPlayer = () => {
       if (cancelled) return;
       if (!(window as any).YT?.Player) return;
@@ -4185,7 +4192,10 @@ const HeroSection: React.FC<{
             ensureUnmuted(event.target);
           },
           onStateChange: (event: any) => {
-            setIsPlaying(event.data === (window as any).YT.PlayerState.PLAYING);
+            const playing = event.data === (window as any).YT.PlayerState.PLAYING;
+            setIsPlaying(playing);
+            // Video is now rendering real frames: fully clear the poster/cache layer
+            if (playing) setHasStartedPlaying(true);
           },
         },
       });
@@ -4239,7 +4249,7 @@ const HeroSection: React.FC<{
           className="w-full h-full scale-[1.35] bg-cover bg-center"
           id="hero-player"
           ref={containerRef}
-          style={videoId ? { backgroundImage: `url(https://img.youtube.com/vi/${videoId}/maxresdefault.jpg)` } : undefined}
+          style={!hasStartedPlaying && videoId ? { backgroundImage: `url(https://img.youtube.com/vi/${videoId}/maxresdefault.jpg)` } : undefined}
         >
           <div id="hero-yt-player" className="w-full h-full" />
         </div>
