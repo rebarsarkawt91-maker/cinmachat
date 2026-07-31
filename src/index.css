@@ -155,3 +155,12 @@ iframe#streaming-player {
   width: 100%;
   height: 100%;
 }
+
+/* Mobile autoplay fix: block pointer-events on the hero player WRAPPER too, so
+   mobile browsers never trap the touch on YouTube's default (red) play overlay.
+   Programmatic muted autoplay takes over after the 3s black screen, and our own
+   shield/overlay captures taps for the unmute gesture instead. */
+#hero-player,
+#hero-yt-player {
+  pointer-events: none !important;
+}

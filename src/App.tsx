@@ -4268,8 +4268,21 @@ const HeroSection: React.FC<{
       if (playerRef.current) {
         try {
           safePlayerCall(playerRef.current, "loadVideoById", videoId);
-          // Universal unmuted autoplay on every source change (all browsers)
-          forceUnmuteAutoplay(playerRef.current);
+          if (isMobile) {
+            if (!userAudioControlRef.current) {
+              // Mobile: keep muted and re-assert autoplay — the only reliable
+              // way to auto-start a new video on Android/iOS (muted autoplay).
+              safePlayerCall(playerRef.current, "playVideo");
+              setIsHeroMuted(true);
+            } else {
+              // User already took control of audio: keep their choice and just
+              // re-assert playback (works because of the prior real gesture)
+              forcePlay(playerRef.current, 4);
+            }
+          } else {
+            // Desktop: universal unmuted autoplay on every source change
+            forceUnmuteAutoplay(playerRef.current);
+          }
           safePlayerCall(playerRef.current, "setPlaybackQuality", "hd1080");
           enableCaptions(playerRef.current);
           setIsPlaying(true);
@@ -4286,11 +4299,13 @@ const HeroSection: React.FC<{
         width: "100%",
         playerVars: {
           autoplay: 1,
-          // Universal unmuted start (mute:0) on every browser — Chrome, Edge,
-          // Safari, mobile. If a strict autoplay policy blocks the unmuted
-          // start, React state reconciles to muted and the pulsing "کاراکردنی
-          // دەنگ" overlay appears so a single user click enables audio.
-          mute: 0,
+          // Mobile/Android: start MUTED (mute:1) — strict mobile policies only
+          // ever allow autoplay while muted, so this guarantees the video starts
+          // playing right after the 3s black screen with no manual tap on
+          // YouTube's red play button. The pulsing "کاراکردنی دەنگ" overlay then
+          // lets one tap enable sound. Desktop (Chrome/Edge/Safari): direct
+          // unmuted start (mute:0) via onReady forceUnmuteAutoplay.
+          mute: isMobile ? 1 : 0,
           loop: 1,
           playlist: videoId,
           controls: 0,
@@ -4309,11 +4324,19 @@ const HeroSection: React.FC<{
         },
         events: {
           onReady: (event: any) => {
-            // Universal unmuted autoplay for every browser — playVideo + unMute
-            // + setVolume(100) inside a safe retry loop right after the 3s black
-            // screen. If the policy blocks it, state reconciles to muted so the
-            // pulsing "کاراکردنی دەنگ" overlay shows as a fallback.
-            forceUnmuteAutoplay(event.target);
+            if (isMobile) {
+              // Mobile: muted autoplay is already permitted (mute:1) — re-assert
+              // playVideo() so playback starts automatically without the user
+              // tapping YouTube's red play button. Sound stays muted until the
+              // user taps the pulsing "کاراکردنی دەنگ" overlay.
+              safePlayerCall(event.target, "playVideo");
+              setIsHeroMuted(true);
+            } else {
+              // Desktop: universal unmuted autoplay — playVideo + unMute +
+              // setVolume(100) inside a safe retry loop. If the policy blocks
+              // it, state reconciles to muted so the overlay shows as a fallback.
+              forceUnmuteAutoplay(event.target);
+            }
             safePlayerCall(event.target, "setPlaybackQuality", "hd1080");
             enableCaptions(event.target);
             setIsPlaying(true);
