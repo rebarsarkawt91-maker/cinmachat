@@ -7531,80 +7531,80 @@ export default function App() {
     }
   };
 
+  // Merge two movie lists into one, deduplicating by id. `primary` (Firestore)
+  // wins on conflicts because it is the durable, admin-controlled store.
+  const mergeMovieLists = (primary: any[], enrichment: any[]) => {
+    const map = new Map<string, any>();
+    for (const m of enrichment) if (m && m.id) map.set(m.id, m);
+    for (const m of primary) if (m && m.id) map.set(m.id, m);
+    return Array.from(map.values());
+  };
+
+  // Apply a list to `movies`: dedupe, drop tombstones, sort newest-first.
+  // This only ever sets state from real data — it never clears the grid.
+  const applyMovies = (list: any[]) => {
+    const unique = Array.from(new Map(list.map((m: any) => [m.id, m])).values());
+    setMovies(
+      unique
+        .filter((m: any) => !deletedMovieIdsRef.current.has(m.id))
+        .sort((a: any, b: any) => {
+          const idA = parseInt(String(a.id).replace("manual-", ""));
+          const idB = parseInt(String(b.id).replace("manual-", ""));
+          if (!isNaN(idA) && !isNaN(idB)) return idB - idA;
+          const timeA = a.date ? new Date(a.date).getTime() : 0;
+          const timeB = b.date ? new Date(b.date).getTime() : 0;
+          return timeB - timeA;
+        }),
+    );
+  };
+
+  // Fetch the durable Firestore movie catalog, enriched (never replaced) by the
+  // server list. The server's /api/movies may return a partial payload (e.g.
+  // only the hero-promo placeholder), so server data is used strictly as extra
+  // entries and can never shrink the grid. Firestore is the source of truth.
   const fetchMovies = async () => {
     try {
-      const results = await api.getMovies();
-      // Only replace if we got actual data
-      if (results && Array.isArray(results) && results.length > 0) {
-        // Safety deduplication by ID (ensure unique movies)
-        const unique = Array.from(
-          new Map(results.map((m: any) => [m.id, m])).values(),
-        );
+      const moviesRef = collection(realDb, "movies");
+      const snapshot = await getDocs(
+        query(moviesRef, orderBy("createdAt", "desc"), limit(200)),
+      );
+      const firestoreMovies: any[] = [];
+      snapshot.forEach((doc) =>
+        firestoreMovies.push({ ...doc.data(), id: doc.id }),
+      );
 
-        setMovies(
-          unique
-            .filter(
-              (m: any) => !deletedMovieIdsRef.current.has(m.id),
-            )
-            .sort((a: any, b: any) => {
-              const idA = parseInt(String(a.id).replace("manual-", ""));
-              const idB = parseInt(String(b.id).replace("manual-", ""));
-              if (!isNaN(idA) && !isNaN(idB)) return idB - idA;
-              return new Date(b.date).getTime() - new Date(a.date).getTime();
-            }),
-        );
-        setErrorMsg(null); // Clear any previous error
-      } else {
-        // Server returned empty — try Firestore as permanent backup
-        console.log("[Movies] Server returned no movies, trying Firestore...");
-        try {
-          const moviesRef = collection(realDb, "movies");
-          const snapshot = await getDocs(
-            query(moviesRef, orderBy("createdAt", "desc"), limit(200))
-          );
-          const firestoreMovies: any[] = [];
-          snapshot.forEach((doc) => firestoreMovies.push({ ...doc.data(), id: doc.id }));
-          if (firestoreMovies.length > 0) {
-            setMovies(
-              firestoreMovies.filter(
-                (m: any) => !deletedMovieIdsRef.current.has(m.id),
-              ),
-            );
-            setErrorMsg(null);
-          }
-        } catch (fsErr) {
-          console.warn("[Movies] Firestore fallback also failed:", fsErr);
-          if (movies.length === 0) {
-            setErrorMsg("کێشەیەک لە پەیوەندی بە سێرڤەر و فایەربەیس ڕوویدا");
-          }
+      // Enrichment only: the promo placeholder is never shown in the grid.
+      let serverMovies: any[] = [];
+      try {
+        const results = await api.getMovies();
+        if (Array.isArray(results)) {
+          serverMovies = results.filter((m: any) => m && m.id !== "hero-promo");
         }
+      } catch (srvErr) {
+        console.warn("[Movies] Server enrichment skipped:", srvErr);
+      }
+
+      const merged = mergeMovieLists(firestoreMovies, serverMovies);
+      if (merged.length > 0) {
+        applyMovies(merged);
+        setErrorMsg(null);
       }
     } catch (err) {
-      console.error("fetchMovies failed, trying Firestore:", err);
-      // Fallback to Firestore if server is unreachable
+      // Firestore read failed — keep whatever is already on screen.
+      console.error("fetchMovies failed:", err);
       try {
-        const moviesRef = collection(realDb, "movies");
-        const snapshot = await getDocs(
-          query(moviesRef, orderBy("createdAt", "desc"), limit(200))
-        );
-        const firestoreMovies: any[] = [];
-        snapshot.forEach((doc) => firestoreMovies.push({ ...doc.data(), id: doc.id }));
-        if (firestoreMovies.length > 0) {
-          setMovies(
-            firestoreMovies.filter(
-              (m: any) => !deletedMovieIdsRef.current.has(m.id),
-            ),
-          );
+        const results = await api.getMovies();
+        const serverMovies = Array.isArray(results)
+          ? results.filter((m: any) => m && m.id !== "hero-promo")
+          : [];
+        if (serverMovies.length > 0) {
+          applyMovies(serverMovies);
           setErrorMsg(null);
         }
-      } catch (fsErr) {
-        console.warn("[Movies] Firestore fallback also failed:", fsErr);
+      } catch (srvErr) {
+        console.warn("[Movies] Server-only fallback also failed:", srvErr);
         if (movies.length === 0) {
-          setErrorMsg(
-            err instanceof Error
-              ? `هەڵەی پەیوەندی: ${err.message}`
-              : "کێشەیەک لە پەیوەندی سێرڤەر ڕوویدا",
-          );
+          setErrorMsg("کێشەیەک لە پەیوەندی بە سێرڤەر و فایەربەیس ڕوویدا");
         }
       }
     } finally {
@@ -7648,6 +7648,40 @@ export default function App() {
     );
   };
 
+  // Real-time Firestore listener: the durable source of truth for the movie
+  // grid. Mounted once, never unmounts, and only ever ADDS/updates state — it
+  // can never clear or collapse the grid.
+  useEffect(() => {
+    let cancelled = false;
+    const moviesRef = collection(realDb, "movies");
+    const q = query(moviesRef, orderBy("createdAt", "desc"), limit(200));
+
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        if (cancelled) return;
+        const firestoreMovies: any[] = [];
+        snapshot.forEach((doc) =>
+          firestoreMovies.push({ ...doc.data(), id: doc.id }),
+        );
+        if (firestoreMovies.length > 0) {
+          applyMovies(firestoreMovies);
+          setErrorMsg(null);
+        }
+        setIsLoading(false);
+      },
+      (fsErr) => {
+        console.warn("[Movies] Firestore real-time listener failed:", fsErr);
+        fetchMovies(); // fall back to one-shot reads
+      },
+    );
+
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+  }, []);
+
   useEffect(() => {
     fetchMovies();
     const interval = setInterval(fetchMovies, 60000); // Poll every 60 seconds for movie updates
@@ -7664,14 +7698,18 @@ export default function App() {
   }, [movies]);
 
   const filteredMovies = useMemo(() => {
+    const query = searchQuery.toLowerCase();
     return movies.filter((movie) => {
+      const tags = Array.isArray(movie.tags)
+        ? movie.tags.map((t: string) => String(t).toLowerCase())
+        : [];
       const matchesSearch =
-        movie.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        movie.tags.some((t) =>
-          t.toLowerCase().includes(searchQuery.toLowerCase()),
-        );
+        String(movie.title || "").toLowerCase().includes(query) ||
+        tags.some((t: string) => t.includes(query));
 
-      const matchesTab = activeTab === "all" || movie.tags.includes(activeTab);
+      const matchesTab =
+        activeTab === "all" ||
+        (Array.isArray(movie.tags) && movie.tags.includes(activeTab));
 
       return matchesSearch && matchesTab;
     });
@@ -8233,16 +8271,12 @@ export default function App() {
 
             {/* Movie Grid Section */}
             <div className="max-w-7xl mx-auto px-8 pb-32">
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-6 md:gap-8">
-                <AnimatePresence>
-                  {paginatedMovies.flatMap((movie, idx) => {
-                    const movieCard = (
-                      <motion.div
-                        key={movie.id}
-                        initial={{ opacity: 0, scale: 0.9 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        exit={{ opacity: 0, scale: 0.9 }}
-                        className="group relative cursor-pointer"
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-6 md:gap-8 items-start content-start">
+                {paginatedMovies.flatMap((movie, idx) => {
+                  const movieCard = (
+                    <div
+                      key={movie.id}
+                      className="group relative cursor-pointer min-w-0"
                         onClick={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
@@ -8304,7 +8338,7 @@ export default function App() {
                           </h3>
                           <div className="flex items-center justify-between mt-1">
                             <span className="text-[9px] text-gray-500 font-bold uppercase tracking-widest">
-                              {movie.date.split("T")[0]}
+                              {movie.date ? String(movie.date).split("T")[0] : ""}
                             </span>
                             {movie.isTrending && (
                               <div className="flex items-center gap-1 text-orange-500">
@@ -8316,16 +8350,14 @@ export default function App() {
                             )}
                           </div> {/* Movie Title and Details */}
                         </div>
-                      </motion.div>
+                      </div>
                     );
 
                     if (idx === 5 && config.ads.banner.image) {
                       return [
                         movieCard,
-                        <motion.div
+                        <div
                           key="ad-banner"
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
                           className="col-span-full my-12"
                         >
                           <a
@@ -8343,12 +8375,11 @@ export default function App() {
                               </div>
                             </div>
                           </a>
-                        </motion.div>,
+                        </div>,
                       ];
                     }
                     return [movieCard];
                   })}
-                </AnimatePresence>
               </div>
 
               {paginatedMovies.length === 0 && (
