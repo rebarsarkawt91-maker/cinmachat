@@ -159,6 +159,7 @@ import { CameHereRoom } from "./components/Social/CameHereRoom";
 import { BroadcastRoom } from "./components/Social/BroadcastRoom";
 import { BroadcastPreviewCard } from "./components/Social/BroadcastPreviewCard";
 import { DirectMessagesModal } from "./components/Social/DirectMessagesModal";
+import { WhatsAppFloatButton } from "./components/Social/WhatsAppFloatButton";
 import UserActivityMonitor from "./components/Admin/UserActivityMonitor";
 
 import { 
@@ -7205,6 +7206,17 @@ export default function App() {
     facebookUrl: "https://www.facebook.com/",
   });
 
+  // Global Floating WhatsApp URL — resolved once so the button is always present
+  // and correct on every screen: env group link > env number (wa.me) > admin
+  // config socialLinks > hardcoded default (never empty, never missing).
+  const floatingWhatsAppUrl =
+    import.meta.env.VITE_WHATSAPP_GROUP_LINK ||
+    (import.meta.env.VITE_WHATSAPP_NUMBER
+      ? `https://wa.me/${String(import.meta.env.VITE_WHATSAPP_NUMBER).replace(/[^0-9]/g, "")}`
+      : config.socialLinks.group ||
+        config.socialLinks.whatsapp ||
+        "https://wa.me/9647701966649");
+
   // Silent Access Control / Route Guard for Module 17 and Staff permissions
   useEffect(() => {
     const isOwner =
@@ -7711,6 +7723,7 @@ export default function App() {
             بکە.
           </p>
         </motion.div>
+        <WhatsAppFloatButton href={floatingWhatsAppUrl} />
       </div>
     );
   }
@@ -7739,6 +7752,7 @@ export default function App() {
             کەمێکی تر سەردان بکەنەوە.
           </p>
         </motion.div>
+        <WhatsAppFloatButton href={floatingWhatsAppUrl} />
       </div>
     );
   }
@@ -7751,6 +7765,7 @@ export default function App() {
           transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
           className="w-12 h-12 border-4 border-brand-primary border-t-transparent rounded-full"
         />
+        <WhatsAppFloatButton href={floatingWhatsAppUrl} />
       </div>
     );
   }
@@ -8219,12 +8234,11 @@ export default function App() {
             {/* Movie Grid Section */}
             <div className="max-w-7xl mx-auto px-8 pb-32">
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-6 md:gap-8">
-                <AnimatePresence mode="popLayout">
+                <AnimatePresence>
                   {paginatedMovies.flatMap((movie, idx) => {
                     const movieCard = (
                       <motion.div
-                        key={`main-card-${movie.id}-${idx}`}
-                        layout
+                        key={movie.id}
                         initial={{ opacity: 0, scale: 0.9 }}
                         animate={{ opacity: 1, scale: 1 }}
                         exit={{ opacity: 0, scale: 0.9 }}
@@ -8310,7 +8324,6 @@ export default function App() {
                         movieCard,
                         <motion.div
                           key="ad-banner"
-                          layout
                           initial={{ opacity: 0 }}
                           animate={{ opacity: 1 }}
                           className="col-span-full my-12"
@@ -10291,25 +10304,9 @@ export default function App() {
           )}
       </AnimatePresence>
 
-      {/* Point 15/20: Floating WhatsApp Button */}
-      {(import.meta.env.VITE_WHATSAPP_NUMBER || // Floating WhatsApp button
-        import.meta.env.VITE_WHATSAPP_GROUP_LINK) && (
-        <motion.a
-          href={
-            import.meta.env.VITE_WHATSAPP_GROUP_LINK ||
-            `https://wa.me/${import.meta.env.VITE_WHATSAPP_NUMBER}`
-          }
-          target="_blank"
-          rel="noreferrer"
-          initial={{ scale: 0, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          whileHover={{ scale: 1.1 }}
-          className="fixed bottom-8 left-8 z-[150] w-14 h-14 bg-[#25D366] rounded-full flex items-center justify-center shadow-2xl shadow-[#25D366]/40 text-white cursor-pointer"
-        >
-          <MessageCircle className="w-7 h-7" />
-          <div className="absolute inset-0 bg-[#25D366] rounded-full animate-ping opacity-20"></div>
-        </motion.a>
-      )}
+      {/* Point 15/20: Global Floating WhatsApp Button — rendered on every view,
+          never gated behind build-time env vars. */}
+      <WhatsAppFloatButton href={floatingWhatsAppUrl} />
 
       <footer className="official-footer"> {/* Main Footer */}
         <div className="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-20 relative z-10">
