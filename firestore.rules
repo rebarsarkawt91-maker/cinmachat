@@ -471,6 +471,54 @@ service cloud.firestore {
       allow delete: if settingId != '_meta';
     }
 
+    // --- Friends Room (ژوورەکانی هاوڕێیان) ---
+    // Dedicated, isolated Firestore schema for the "Came Here Rooms" module.
+    // friends_rooms/{roomId} holds the room (name, host code, generated unique
+    // join code, category/genre filters, current movie + play/seek state, joined
+    // members); its /messages subcollection holds the per-room live chat. Zero
+    // overlap with VIP rooms, syncGroups, the main broadcast or config. Validated
+    // public writes (anonymous Firebase Auth is DISABLED on this project, same
+    // pattern as genres/config/VIP/main_broadcast). Chat messages are immutable.
+
+    function isValidFriendsRoom(data) {
+      return (data.get('id', '') is string && data.get('id', '').size() <= 128)
+        && (data.get('name', '') is string && data.get('name', '').size() > 0 && data.get('name', '').size() <= 200)
+        && (data.get('hostCode', '') is string && data.get('hostCode', '').size() > 0 && data.get('hostCode', '').size() <= 64)
+        && (data.get('hostName', null) == null || data.hostName is string)
+        && (data.get('uniqueCode', '') is string && data.get('uniqueCode', '').size() > 0 && data.get('uniqueCode', '').size() <= 64)
+        && (data.get('category', null) == null || data.category is string)
+        && (data.get('genre', null) == null || data.genre is string)
+        && (data.get('currentMovieUrl', '') is string && data.get('currentMovieUrl', '').size() <= 2000)
+        && (data.get('currentMovieTitle', null) == null || data.currentMovieTitle is string)
+        && (data.get('currentMovieImage', null) == null || data.currentMovieImage is string)
+        && (data.get('isPlaying', null) == null || data.isPlaying is bool)
+        && ((data.get('currentTime', 0) is int) || (data.get('currentTime', 0) is float))
+        && data.get('currentTime', 0) >= 0
+        && (data.get('activeUsers', null) == null || data.activeUsers is list)
+        && (data.get('createdAt', null) == null || data.createdAt is string || data.createdAt is timestamp)
+        && (data.get('updatedAt', null) == null || data.updatedAt is string || data.updatedAt is timestamp);
+    }
+
+    function isValidFriendsRoomMessage(data) {
+      return (data.get('sender', '') is string && data.get('sender', '').size() > 0 && data.get('sender', '').size() <= 100)
+        && (data.get('senderCode', '') is string && data.get('senderCode', '').size() > 0 && data.get('senderCode', '').size() <= 64)
+        && (data.get('text', '') is string && data.get('text', '').size() > 0 && data.get('text', '').size() <= 2000)
+        && (data.get('timestamp', null) == null || data.timestamp is string)
+        && (data.get('createdAt', null) == null || data.createdAt is timestamp);
+    }
+
+    match /friends_rooms/{roomId} {
+      allow read: if true;
+      allow create, update: if isValidFriendsRoom(incoming());
+      allow delete: if roomId != '_meta';
+
+      match /messages/{messageId} {
+        allow read: if true;
+        allow create: if isValidFriendsRoomMessage(incoming());
+        allow update, delete: if false;
+      }
+    }
+
     // --- Collection Group Rules ---
     match /{path=**}/messages/{messageId} {
       allow read: if isAdmin();

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   Users, 
@@ -16,56 +16,38 @@ import {
   Cast,
   Check, 
   Key,
-  Video
+  Video,
+  RefreshCw
 } from "lucide-react";
-import { SocialUser } from '../../types'; // Assuming SocialUser is defined in types.ts
-import { getYTId, loadYouTubeAPI } from '../../utils/youtube'; // Import the helper functions
+import { SocialUser } from '../../types';
+import { getYTId, loadYouTubeAPI } from '../../utils/youtube';
 import { db, collection, getDocs } from '../../lib/firebase';
-
-interface UserObj { // Explicitly define UserObj
-  username: string;
-  uniqueCode: string;
-  joinedAt: string;
-}
-
-interface ChatMsg {
-  id: string;
-  sender: string;
-  senderCode: string;
-  text: string;
-  timestamp: string;
-}
-
-interface Room { // Explicitly define Room
-  id: string;
-  name: string;
-  hostCode: string;
-  currentMovieUrl: string;
-  isPlaying: boolean;
-  currentTime: number;
-  activeUsers: UserObj[]; // Use UserObj
-  chatMessages: ChatMsg[]; // Use ChatMsg
-  updatedAt?: string; // Add optional property if it exists
-  emptySince?: string; // Add optional property if it exists
-}
-
-interface Invitation { // Explicitly define Invitation
-  id: string;
-  fromUserCode: string;
-  fromUserName: string;
-  targetCodeOrName: string; // Add targetCodeOrName
-  roomId: string;
-  roomName: string;
-  status: 'pending' | 'accepted' | 'declined';
-  timestamp: string;
-  updatedAt?: string;
-}
+import {
+  createFriendsRoom,
+  getFriendsRoom,
+  resolveRoomByCode,
+  joinFriendsRoom,
+  subscribeFriendsRoom,
+  subscribeFriendsRooms,
+  updateFriendsRoom,
+  subscribeFriendsRoomMessages,
+  sendFriendsRoomMessage,
+  sendInvitation,
+  respondToInvitation,
+  subscribeInvitations,
+  generateRoomCode,
+} from '../../services/friendsRooms';
+import type {
+  FriendsRoom,
+  FriendsRoomMessage,
+  FriendsInvitation,
+} from '../../services/friendsRooms';
 
 interface CameHereRoomProps {
-  socialProfile: SocialUser | null; // Assuming SocialUser is defined in types.ts
+  socialProfile: SocialUser | null;
   onBackToMovies: () => void;
   initialRoomId?: string;
-  onJoinBroadcast?: () => void; // This prop is optional
+  onJoinBroadcast?: () => void;
 }
 
 export const CameHereRoom: React.FC<CameHereRoomProps> = ({ 
@@ -74,35 +56,42 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
   initialRoomId, 
   onJoinBroadcast 
 }) => {
-  const [activeRoom, setActiveRoom] = useState<Room | null>(null);
-  const [roomIdInput, setRoomIdInput] = useState<string>(initialRoomId || "");
+  // --- Core identity (unique code + display name) ---
   const [userCodeInput, setUserCodeInput] = useState<string>(socialProfile?.uniqueCode || "");
-  const [usernameInput, setUsernameInput] = useState<string>(socialProfile?.username || "");
-  
-  // Update roomIdInput when initialRoomId changes
-  useEffect(() => {
-    if (initialRoomId) {
-      setRoomIdInput(initialRoomId);
-    }
-  }, [initialRoomId]);
-  
+  const [usernameInput, setUsernameInput] = useState<string>(socialProfile?.username || socialProfile?.name || "");
+
+  // --- Join / Create form state ---
+  const [roomIdInput, setRoomIdInput] = useState<string>(initialRoomId || "");
+  const [activeRoom, setActiveRoom] = useState<FriendsRoom | null>(null);
   const [createRoomName, setCreateRoomName] = useState<string>("");
   const [createHostCode, setCreateHostCode] = useState<string>(socialProfile?.uniqueCode || "");
   const [createMovieUrl, setCreateMovieUrl] = useState<string>("");
-  const [localMovies, setLocalMovies] = useState<any[]>([]); // Assuming 'any' for now, define a Movie interface if available
+  const [createMovieTitle, setCreateMovieTitle] = useState<string>("");
+  const [createCategory, setCreateCategory] = useState<string>("");
+  const [createGenre, setCreateGenre] = useState<string>("");
+  const [createCode, setCreateCode] = useState<string>(() => generateRoomCode());
 
+  // --- Movie catalog (durable Firestore `movies` source) ---
+  const [localMovies, setLocalMovies] = useState<any[]>([]);
+  const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
+
+  // Update roomIdInput when initialRoomId changes
+  useEffect(() => {
+    if (initialRoomId) setRoomIdInput(initialRoomId);
+  }, [initialRoomId]);
+
+  // Load the durable Firestore movie catalog once + derive category options
   useEffect(() => {
     const fetchLocalMovies = async () => {
       try {
         const [resMovies, resVip] = await Promise.all([
-          fetch("/api/movies"),
-          getDocs(collection(db, "vip_videos")).catch(() => null)
+          getDocs(collection(db, "movies")).catch(() => null),
+          getDocs(collection(db, "vip_videos")).catch(() => null),
         ]);
 
-        let moviesList = [];
-        if (resMovies && resMovies.ok) {
-          const data = await resMovies.json();
-          moviesList = Array.isArray(data) ? data : (data.results || []);
+        let moviesList: any[] = [];
+        if (resMovies) {
+          moviesList = resMovies.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
         }
 
         let vipUrlsList: string[] = [];
@@ -110,17 +99,24 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
           vipUrlsList = resVip.docs.map((d) => (d.data()?.videoUrl || "").trim().toLowerCase());
         }
 
-        // Filter out any movies that are registered as VIP Room videos
+        // Filter out any movies registered as VIP Room videos (zero crossover)
         const filteredList = moviesList.filter((m: any) => {
           const mUrl = (m.embedUrl || m.videoUrl || "").trim().toLowerCase();
           if (!mUrl) return true;
-          return !vipUrlsList.some(vipUrl => vipUrl && (mUrl.includes(vipUrl) || vipUrl.includes(mUrl)));
+          return !vipUrlsList.some((vipUrl) => vipUrl && (mUrl.includes(vipUrl) || vipUrl.includes(mUrl)));
         });
 
         setLocalMovies(filteredList);
+
+        // Category options come from the movies collection (distinct category values)
+        const cats: string[] = [];
+        filteredList.forEach((m: any) => {
+          if (m.category && typeof m.category === "string" && !cats.includes(m.category)) cats.push(m.category);
+        });
+        setCategoryOptions(cats);
+
         if (filteredList.length > 0) {
           const firstMovie = filteredList[0];
-          setCreateMovieUrl("");
           setCreateRoomName(`ژووری هاوڕێیانی ${firstMovie.title}`);
         }
       } catch (e) {
@@ -129,13 +125,13 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
     };
     fetchLocalMovies();
   }, []);
-  
+
   const [errorText, setErrorText] = useState<string>("");
   const [successText, setSuccessText] = useState<string>("");
   const [isCopied, setIsCopied] = useState<boolean>(false);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [chatInput, setChatInput] = useState<string>("");
-  
+
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
   // Sidebar passcode / uniqueCode editor states inside room next to chat
@@ -158,110 +154,86 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const syncIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const currentVideoTimeRef = useRef<number>(0);
-  const isHost = activeRoom && activeRoom.hostCode.trim().toUpperCase() === userCodeInput.trim().toUpperCase();
+  const isPlayingRef = useRef<boolean>(false);
+  const isHost = !!activeRoom && activeRoom.hostCode.trim().toUpperCase() === userCodeInput.trim().toUpperCase();
 
-  // Handle member sync safely - MOVED DECLARATION HERE TO RESOLVE HOISTING ISSUE
-  // Periodically fetch invitations for current user
-  useEffect(() => {
-    if (!userCodeInput) return;
+  // Movie URL resolution shared by create + in-room selectors (embed-first)
+  const moviePlayUrl = (m: any): string =>
+    (m && (m.embedUrl || m.videoUrl || m.streamingUrl || m.youtubeMovieUrl || m.external_link || m.externalMovieLink)) || "";
 
-    const fetchInvitations = async () => {
-      try {
-        const res = await fetch(`/api/notifications/${encodeURIComponent(userCodeInput)}`);
-        if (res.ok) {
-          const contentType = res.headers.get("content-type");
-          if (contentType && contentType.includes("application/json")) {
-            const data = await res.json();
-            // Keep only invitations that are 'pending' and the user is not currently in that room
-            const filteredInvites = data.filter((inv: Invitation) => !activeRoom || inv.roomId !== activeRoom.id);
-            setActiveInvitations(filteredInvites);
-          }
-        }
-      } catch (err) {
-        console.warn("Could not load invitations:", err);
-      }
-    };
-
-    fetchInvitations();
-    const interval = setInterval(fetchInvitations, 4000);
-    return () => clearInterval(interval);
-  }, [userCodeInput, activeRoom?.id]);
-
-  // Join a specific room from notification
-  const joinSpecificRoom = async (targetRoomId: string): Promise<void> => {
-    if (!userCodeInput.trim()) {
-      setErrorText("تکایە پێشەکی کۆدی ناسنامەی خۆت بنووسە بۆ چوونەژوورەوە");
-      return;
-    }
-    setIsLoading(true);
-    setErrorText("");
-    try {
-      const res = await fetch(`/api/rooms/${targetRoomId}/join`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          uniqueCode: userCodeInput,
-          username: usernameInput || `میوان-${userCodeInput.substring(0, 4)}`,
-        }),
+  // Genre options derive from the tags of movies in the chosen category
+  const genreOptions = useMemo(() => {
+    const source = createCategory
+      ? localMovies.filter((m: any) => m.category === createCategory)
+      : localMovies;
+    const genres: string[] = [];
+    source.forEach((m: any) => {
+      const tags = Array.isArray(m.tags) ? m.tags : m.tags ? [m.tags] : [];
+      tags.forEach((t: any) => {
+        if (typeof t === "string" && t.trim() && !genres.includes(t)) genres.push(t);
       });
+    });
+    return genres;
+  }, [localMovies, createCategory]);
 
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data?.message || "Failed to join room");
-      }
-
-      setActiveRoom(data.room || data);
-      setSuccessText("چوونە ژوورەوە سەرکەوتوو بوو");
-      setErrorText("");
-      setRoomIdInput(targetRoomId);
-    } catch (err) {
-      setErrorText(err instanceof Error ? err.message : "نەتوانرا بچیتە ژوورەوە");
-    } finally {
-      setIsLoading(false);
+  // Movies offered in the create picker, filtered by category + genre
+  const createMovieList = useMemo(() => {
+    let list = localMovies;
+    if (createCategory) list = list.filter((m: any) => m.category === createCategory);
+    if (createGenre) {
+      list = list.filter((m: any) =>
+        Array.isArray(m.tags) ? m.tags.includes(createGenre) : m.tags === createGenre,
+      );
     }
-  };
+    return list;
+  }, [localMovies, createCategory, createGenre]);
 
-  // Invitation & notification states
+  // Movies offered inside the active room (follows the room's category/genre)
+  const roomMovieList = useMemo(() => {
+    let list = localMovies;
+    if (activeRoom && activeRoom.category) list = list.filter((m: any) => m.category === activeRoom.category);
+    if (activeRoom && activeRoom.genre) {
+      list = list.filter((m: any) =>
+        Array.isArray(m.tags) ? m.tags.includes(activeRoom.genre) : m.tags === activeRoom.genre,
+      );
+    }
+    return list;
+  }, [localMovies, activeRoom?.category, activeRoom?.genre]);
+
+  // --- Invitation & notification states ---
   const [inviteTarget, setInviteTarget] = useState<string>("");
   const [inviteError, setInviteError] = useState<string>("");
   const [inviteSuccess, setInviteSuccess] = useState<string>("");
   const [isInviting, setIsInviting] = useState<boolean>(false);
-  const [activeInvitations, setActiveInvitations] = useState<Invitation[]>([]);
+  const [activeInvitations, setActiveInvitations] = useState<FriendsInvitation[]>([]);
+  const [chatMessages, setChatMessages] = useState<FriendsRoomMessage[]>([]);
+  const [availableRooms, setAvailableRooms] = useState<FriendsRoom[]>([]);
 
-  const [availableRooms, setAvailableRooms] = useState<Room[]>([]);
+  // Real-time incoming invitations for the current user (pending only)
+  useEffect(() => {
+    if (!userCodeInput.trim()) return;
+    const unsub = subscribeInvitations(userCodeInput, (invites) => {
+      setActiveInvitations(invites.filter((inv) => !activeRoom || inv.roomId !== activeRoom.id));
+    });
+    return unsub;
+  }, [userCodeInput, activeRoom?.id]);
 
-  // Poll available rooms (runs when not inside a room)
+  // Live available rooms list (runs when not inside a room)
   useEffect(() => {
     if (activeRoom) return;
-
-    const fetchAvailableRooms = async (): Promise<void> => { // Explicitly type fetchAvailableRooms
-      try {
-        const res = await fetch("/api/rooms");
-        if (res.ok) {
-          const data = await res.json();
-          setAvailableRooms(data);
-        }
-      } catch (err) {
-        console.error("Failed to load available rooms:", err);
-      }
-    };
-
-    fetchAvailableRooms();
-    const interval = setInterval(fetchAvailableRooms, 3000);
-    return () => clearInterval(interval);
+    const unsub = subscribeFriendsRooms((rooms) => setAvailableRooms(rooms));
+    return unsub;
   }, [activeRoom]);
 
   // Load room if roomId is in search query
-  useEffect((): void => { // Explicitly type useEffect callback
+  useEffect((): void => {
     const params = new URLSearchParams(window.location.search);
     const rid = params.get("roomId");
-    if (rid) { // Check if rid is not null
-      setRoomIdInput(rid);
-    }
+    if (rid) setRoomIdInput(rid);
   }, []);
 
   // Handle member sync safely
-  const handleMemberPlaybackSync = React.useCallback((updatedRoom: Room): void => {
+  const handleMemberPlaybackSync = React.useCallback((updatedRoom: FriendsRoom): void => {
     if (!playerRef.current || typeof playerRef.current.getPlayerState !== "function") return;
 
     try {
@@ -286,45 +258,28 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
     }
   }, []);
 
-  // Poll state logic (Sync engine runs every 2.5 seconds)
-  useEffect((): (() => void) | undefined => { // Explicitly type useEffect callback
-    if (!activeRoom) {
-      if (syncIntervalRef.current) clearInterval(syncIntervalRef.current);
-      return;
-    }
+  // Real-time room state subscription + host-driven playback sync engine.
+  // Guests mirror the host's isPlaying/currentTime/currentMovieUrl from the
+  // friends_rooms/{id} doc; the host periodically pushes its player clock.
+  useEffect((): (() => void) | undefined => {
+    if (!activeRoom) return;
 
-    const pollRoomState = async (): Promise<void> => { // Explicitly type pollRoomState
-      try {
-        const uCode = encodeURIComponent(userCodeInput);
-        const response = await fetch(`/api/rooms/${activeRoom.id}?userCode=${uCode}`);
-        if (response.ok) {
-          const contentType = response.headers.get("content-type");
-          if (contentType && contentType.includes("application/json")) { // Check if JSON
-            const roomData: Room = await response.json();
-            
-            // Update local state except playback to let the local player process seeking smoothly
-            setActiveRoom((prev: Room | null) => { // Explicitly type prev
-              if (!prev) return roomData; // prev is Room | null
-              
-              // Sync playbacks if not host
-              if (!isHost) {
-                handleMemberPlaybackSync(roomData);
-              }
-              
-              return {
-                ...roomData,
-                // Keep chat message inputs or states if any
-              };
-            });
-          }
-        }
-      } catch (err) {
-        console.warn("Could not poll room state:", err);
+    // Guests follow the live doc; the host just mirrors it into UI state
+    // (never force-seeks their own player).
+    const unsubRoom = subscribeFriendsRoom(activeRoom.id, (room) => {
+      if (!room) {
+        setActiveRoom(null);
+        return;
       }
-    };
+      setActiveRoom((prev: FriendsRoom | null) => {
+        if (!prev) return room;
+        if (!isHost) handleMemberPlaybackSync(room);
+        return room;
+      });
+    });
 
-    // If host, periodically push playback times to server (Host-driven sync)
-    const pushHostState = async (): Promise<void> => { // Explicitly type pushHostState
+    // If host, periodically push playback times to the room doc (host-driven sync)
+    const pushHostState = async (): Promise<void> => {
       if (!isHost || !activeRoom) return;
       try {
         let currentTime = currentVideoTimeRef.current;
@@ -333,33 +288,26 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
           currentVideoTimeRef.current = currentTime;
         }
 
-        await fetch(`/api/rooms/${activeRoom.id}/update`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            currentTime,
-            isPlaying: activeRoom.isPlaying,
-            currentMovieUrl: activeRoom.currentMovieUrl,
-            userCode: userCodeInput,
-          }),
+        await updateFriendsRoom(activeRoom.id, {
+          currentTime,
+          isPlaying: !!isPlayingRef.current,
+          currentMovieUrl: activeRoom.currentMovieUrl,
         });
       } catch (err) {
         console.warn("Could not push host state:", err);
       }
     };
 
-    // Master sync interval
+    // Master sync interval (2.5s)
     syncIntervalRef.current = setInterval(() => {
-      pollRoomState();
-      if (isHost) { // Only host pushes state
-        pushHostState();
-      }
+      if (isHost) pushHostState();
     }, 2500);
 
     return () => {
+      unsubRoom();
       if (syncIntervalRef.current) clearInterval(syncIntervalRef.current);
     };
-  }, [activeRoom?.id, isHost, activeRoom?.isPlaying, activeRoom?.currentMovieUrl, userCodeInput, handleMemberPlaybackSync]);
+  }, [activeRoom?.id, isHost, activeRoom?.currentMovieUrl, handleMemberPlaybackSync]);
 
   // YouTube Iframe API setup for Host Control & Client Muting (Player initialization)
   useEffect((): (() => void) | undefined => {
@@ -400,25 +348,26 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
             } else {
               event.target.unMute();
             }
-            event.target.playVideo();
-            
+
             if (activeRoom.currentTime > 0) {
               event.target.seekTo(activeRoom.currentTime, true);
             }
+            if (activeRoom.isPlaying) {
+              event.target.playVideo();
+            }
           },
           onStateChange: (event: { data: number; target: any }) => {
+            const state = event.data;
+            if (state === 1) isPlayingRef.current = true;
+            if (state === 2 || state === 0) isPlayingRef.current = false;
+
+            const curTime = event.target.getCurrentTime();
+            currentVideoTimeRef.current = curTime;
+
             if (isHost) {
-              const state = event.data;
-              let isPlaying = activeRoom.isPlaying;
-              if (state === 1) isPlaying = true;
-              if (state === 2) isPlaying = false;
-
-              const curTime = event.target.getCurrentTime();
-              currentVideoTimeRef.current = curTime;
-
-              setActiveRoom((prev: Room | null) => {
-                if (!prev) return null;
-                return { ...prev, isPlaying, currentTime: curTime };
+              setActiveRoom((prev: FriendsRoom | null) => {
+                if (!prev) return prev;
+                return { ...prev, isPlaying: isPlayingRef.current, currentTime: curTime };
               });
             }
           }
@@ -450,8 +399,8 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
     setTimeout(() => setIsCopied(false), 2000);
   };
 
-  // Generate / Create a fresh Room
-  const handleCreateRoom = async (e: React.FormEvent): Promise<void> => { // Explicitly type e
+  // Generate / Create a fresh Room (persisted to friends_rooms)
+  const handleCreateRoom = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
     if (!createRoomName.trim() || !createHostCode.trim()) {
       setErrorText("تکایە هەموو خانەکان بە دروستی پڕ بکەرەوە");
@@ -460,39 +409,46 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
 
     setIsLoading(true);
     setErrorText("");
-    
+
     try {
-      const res = await fetch("/api/rooms/create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: createRoomName,
-          hostCode: createHostCode,
-          currentMovieUrl: createMovieUrl,
-        }),
+      const hostCode = createHostCode.trim().toUpperCase();
+      const room = await createFriendsRoom({
+        name: createRoomName.trim(),
+        hostCode,
+        hostName: usernameInput.trim() || "خانەخوێ",
+        uniqueCode: createCode,
+        category: createCategory,
+        genre: createGenre,
+        currentMovieUrl: createMovieUrl,
+        currentMovieTitle: createMovieTitle,
+        currentMovieImage: "",
+        isPlaying: false,
+        currentTime: 0,
+        activeUsers: [
+          {
+            username: usernameInput.trim() || "خانەخوێ",
+            uniqueCode: hostCode,
+            joinedAt: new Date().toISOString(),
+          },
+        ],
       });
 
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setUserCodeInput(createHostCode);
-        setActiveRoom(data.room);
-        setSuccessText("ژووری تایبەتی بە سەرکەوتوویی دروستکرا!");
-        
-        // Auto update URL parameter
-        const newUrl = `${window.location.origin}${window.location.pathname}?roomId=${data.room.id}`;
-        window.history.pushState({ path: newUrl }, "", newUrl);
-      } else {
-        setErrorText(data.error || "هەڵەیەک ڕوویدا لە کاتی دروستکردنی ژورەکە");
-      }
+      setUserCodeInput(hostCode);
+      setActiveRoom(room);
+      setSuccessText("ژووری تایبەتی بە سەرکەوتوویی دروستکرا!");
+
+      // Auto update URL parameter
+      const newUrl = `${window.location.origin}${window.location.pathname}?roomId=${room.id}`;
+      window.history.pushState({ path: newUrl }, "", newUrl);
     } catch (err: any) {
-      setErrorText("شکستی هێنا لە پەیوەندیکردن بە سێرڤەرەوە");
+      setErrorText("شکستی هێنا لە دروستکردنی ژورەکە");
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Join existing Room
-  const handleJoinRoom = async (e: React.FormEvent): Promise<void> => { // Explicitly type e
+  // Join existing Room by unique code / host code / doc id
+  const handleJoinRoom = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
     if (!roomIdInput.trim() || !userCodeInput.trim()) {
       setErrorText("تکایە ناسنامەی ژوور و کۆدی چوونەژوورەوەت بنووسە");
@@ -503,26 +459,21 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
     setErrorText("");
 
     try {
-      const res = await fetch(`/api/rooms/${roomIdInput.trim()}/join`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          uniqueCode: userCodeInput,
-          username: usernameInput || `میوان-${userCodeInput.substring(0, 4)}`,
-        }),
+      const room = await resolveRoomByCode(roomIdInput);
+      if (!room) throw new Error("کۆدەکەت نادروستە یان ڕێگەت پێ نەدراوە بێیتە ناو ئەم ژوورە");
+
+      await joinFriendsRoom(room, {
+        username: usernameInput || `میوان-${userCodeInput.trim().substring(0, 4)}`,
+        uniqueCode: userCodeInput.trim().toUpperCase(),
+        joinedAt: new Date().toISOString(),
       });
 
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setActiveRoom(data.room);
-        setSuccessText("بە سەرکەوتوویی چووە ژورەوە!");
-        
-        // Auto update URL parameter
-        const newUrl = `${window.location.origin}${window.location.pathname}?roomId=${data.room.id}`;
-        window.history.pushState({ path: newUrl }, "", newUrl);
-      } else {
-        setErrorText(data.error || "کۆدەکەت نادروستە یان ڕێگەت پێ نەدراوە بێیتە ناو ئەم ژوورە");
-      }
+      setActiveRoom(room);
+      setSuccessText("بە سەرکەوتوویی چووە ژورەوە!");
+
+      // Auto update URL parameter
+      const newUrl = `${window.location.origin}${window.location.pathname}?roomId=${room.id}`;
+      window.history.pushState({ path: newUrl }, "", newUrl);
     } catch (err: any) {
       setErrorText("کۆدەکەت متمانەپێکراو نییە یان سێرڤەر بەردەست نییە");
     } finally {
@@ -530,76 +481,87 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
     }
   };
 
-  // Join Room by Room-Id dynamically (for global official room)
-  const handleJoinOfficial = async (): Promise<void> => { // Explicitly type handleJoinOfficial
+  // Join a specific room from an invitation / link
+  const joinSpecificRoom = async (targetRoomId: string): Promise<void> => {
+    if (!userCodeInput.trim()) {
+      setErrorText("تکایە پێشەکی کۆدی ناسنامەی خۆت بنووسە بۆ چوونەژوورەوە");
+      return;
+    }
     setIsLoading(true);
     setErrorText("");
-    const officialId = "global_room_official";
     try {
-      const res = await fetch(`/api/rooms/${officialId}/join`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          uniqueCode: userCodeInput || "GLOBAL_HOST",
-          username: usernameInput || "مێوانی فەرمی",
-        }),
+      const room = await getFriendsRoom(targetRoomId);
+      if (!room) throw new Error("ژوورەکە نەدۆزرایەوە");
+
+      await joinFriendsRoom(room, {
+        username: usernameInput || `میوان-${userCodeInput.trim().substring(0, 4)}`,
+        uniqueCode: userCodeInput.trim().toUpperCase(),
+        joinedAt: new Date().toISOString(),
       });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setUserCodeInput(userCodeInput || "GLOBAL_HOST");
-        setActiveRoom(data.room);
-      } else {
-        setErrorText("ناتوانرێت بچیتە ژووری فەرمیەوە بەبێ پاسپۆرت یان کۆدی ناسنامەی چوونە ژورەوە");
-      }
+
+      setActiveRoom(room);
+      setSuccessText("چوونە ژوورەوە سەرکەوتوو بوو");
+      setErrorText("");
+      setRoomIdInput(targetRoomId);
     } catch (err) {
-      setErrorText("سیستەمی فەرمی تووشی کێشە بووە");
+      setErrorText(err instanceof Error ? err.message : "نەتوانرا بچیتە ژوورەوە");
     } finally {
       setIsLoading(false);
     }
   };
 
+  // "Global official room" now routes to the live broadcast module
+  const handleJoinOfficial = (): void => {
+    if (onJoinBroadcast) {
+      onJoinBroadcast();
+      return;
+    }
+    setErrorText("ژووری گشتی لە ئێستادا بەردەست نییە");
+  };
+
   // Leave active room
-  const handleLeaveRoom = (): void => { // Explicitly type handleLeaveRoom
+  const handleLeaveRoom = (): void => {
     setActiveRoom(null);
+    setChatMessages([]);
     if (syncIntervalRef.current) clearInterval(syncIntervalRef.current);
     // Clear URL parameter safely
     const newUrl = `${window.location.origin}${window.location.pathname}`;
     window.history.pushState({ path: newUrl }, "", newUrl);
   };
 
-  // Send single chat messages
-  const handleSendChat = async (e: React.FormEvent): Promise<void> => { // Explicitly type e
+  // Send single chat messages (friends_rooms/{roomId}/messages subcollection)
+  const handleSendChat = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
     if (!chatInput.trim() || !activeRoom) return;
 
     try {
-      const res = await fetch(`/api/rooms/${activeRoom.id}/update`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chatMessage: {
-            sender: usernameInput || `بەکارھێنەر`,
-            senderCode: userCodeInput,
-            text: chatInput.trim(),
-          }
-        }),
+      await sendFriendsRoomMessage(activeRoom.id, {
+        sender: usernameInput || "بەکارهێنەر",
+        senderCode: userCodeInput.trim().toUpperCase(),
+        text: chatInput.trim(),
       });
-
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setActiveRoom(data.room);
-        setChatInput("");
-      }
+      setChatInput("");
     } catch (err) {
       console.error("Failed to send message:", err);
+      setErrorText("نەتوانرا نامەکە بنێردرێت");
     }
   };
 
-  // Host playback controls
-  const togglePlayState = async (): Promise<void> => { // Explicitly type togglePlayState
+  // Live chat subscription for the active room
+  useEffect(() => {
+    if (!activeRoom) return;
+    const unsub = subscribeFriendsRoomMessages(activeRoom.id, (messages) => {
+      setChatMessages(messages);
+    });
+    return unsub;
+  }, [activeRoom?.id]);
+
+  // Host playback controls (play / pause)
+  const togglePlayState = async (): Promise<void> => {
     if (!activeRoom || !isHost) return;
     const nextPlaying = !activeRoom.isPlaying;
-    
+    isPlayingRef.current = nextPlaying;
+
     // UI update
     if (playerRef.current) {
       if (nextPlaying) {
@@ -609,23 +571,40 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
       }
     }
 
-    setActiveRoom((prev: Room | null) => prev ? { ...prev, isPlaying: nextPlaying } : null); // Explicitly type prev
+    setActiveRoom((prev: FriendsRoom | null) => (prev ? { ...prev, isPlaying: nextPlaying } : prev));
 
     try {
-      await fetch(`/api/rooms/${activeRoom.id}/update`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          isPlaying: nextPlaying,
-          currentTime: currentVideoTimeRef.current,
-        }),
+      await updateFriendsRoom(activeRoom.id, {
+        isPlaying: nextPlaying,
+        currentTime: currentVideoTimeRef.current,
       });
     } catch (err) {
       console.error("Failed to sync play/pause action:", err);
     }
   };
 
-  // Handle invite friend form submission
+  // Host selects a movie in the room strip → updates the room doc live
+  const handleSelectMovieInRoom = async (movie: any): Promise<void> => {
+    if (!activeRoom || !isHost) return;
+    const url = moviePlayUrl(movie);
+    if (!url) return;
+    try {
+      setActiveRoom((prev) =>
+        prev ? { ...prev, currentMovieUrl: url, currentMovieTitle: movie.title, currentMovieImage: movie.image || "" } : prev,
+      );
+      await updateFriendsRoom(activeRoom.id, {
+        currentMovieUrl: url,
+        currentMovieTitle: movie.title,
+        currentMovieImage: movie.image || "",
+        isPlaying: false,
+        currentTime: 0,
+      });
+    } catch (err) {
+      console.error("Failed to select movie in room:", err);
+    }
+  };
+
+  // Handle invite friend form submission (invitations collection)
   const handleInviteFriend = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
     if (!activeRoom || !inviteTarget.trim()) return;
@@ -633,24 +612,15 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
     setInviteError("");
     setInviteSuccess("");
     try {
-      const res = await fetch("/api/notifications/send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          fromUserCode: userCodeInput,
-          fromUserName: usernameInput || "هاوڕێیەک",
-          targetCodeOrName: inviteTarget.trim(),
-          roomId: activeRoom.id,
-          roomName: activeRoom.name,
-        }),
+      await sendInvitation({
+        fromUserCode: userCodeInput.trim().toUpperCase(),
+        fromUserName: usernameInput || "هاوڕێیەک",
+        targetCodeOrName: inviteTarget.trim(),
+        roomId: activeRoom.id,
+        roomName: activeRoom.name,
       });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setInviteSuccess("بانگهێشتکردن سەرکەوتوو بوو ✓");
-        setInviteTarget("");
-      } else {
-        setInviteError(data.error || "نەتوانرا بانگهێشتکردن");
-      }
+      setInviteSuccess("بانگهێشتکردن سەرکەوتوو بوو ✓");
+      setInviteTarget("");
     } catch (err) {
       setInviteError("کێشەیەک ڕوویدا لە پەیوەندیکردن");
     } finally {
@@ -661,19 +631,39 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
   // Handle respond to invitation (accept or decline)
   const handleRespondToInvite = async (inviteId: string, status: "accepted" | "declined", roomId: string): Promise<void> => {
     try {
-      const res = await fetch(`/api/notifications/${inviteId}/respond`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status }),
-      });
-      if (res.ok) {
-        setActiveInvitations((prev) => prev.filter((inv) => inv.id !== inviteId));
-        if (status === "accepted") {
-          await joinSpecificRoom(roomId);
-        }
+      await respondToInvitation(inviteId, status);
+      setActiveInvitations((prev) => prev.filter((inv) => inv.id !== inviteId));
+      if (status === "accepted") {
+        await joinSpecificRoom(roomId);
       }
     } catch (err) {
       console.error("Failed to respond to invitation:", err);
+    }
+  };
+
+  // Sidebar identity registration (join/register unique code in the current room)
+  const handleSidebarJoin = async (e: React.FormEvent): Promise<void> => {
+    e.preventDefault();
+    if (!sidebarCodeInput.trim()) {
+      setSidebarFeedback("تکایە کۆدێکی دروست بنووسە");
+      return;
+    }
+    setIsLoading(true);
+    setSidebarFeedback("");
+    try {
+      if (!activeRoom) throw new Error("ژوورەکە دیار نییە");
+      await joinFriendsRoom(activeRoom, {
+        username: sidebarNameInput.trim() || `میوان-${sidebarCodeInput.trim().substring(0, 4)}`,
+        uniqueCode: sidebarCodeInput.trim().toUpperCase(),
+        joinedAt: new Date().toISOString(),
+      });
+      setUserCodeInput(sidebarCodeInput.trim().toUpperCase());
+      setUsernameInput(sidebarNameInput.trim());
+      setSidebarFeedback("ناسنامەکەت بە سەرکەوتوویی تۆمارکرا! ✓");
+    } catch (err) {
+      setSidebarFeedback("خەتایەک ڕوویدا لە کاتی چوونەژوورە");
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -861,14 +851,65 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
                     </div>
                   )}
 
+                  {/* Category + Genre selectors (data source: movies collection) */}
+                  <div>
+                    <label className="block text-[11px] text-gray-500 kurdish-text font-bold mb-2 uppercase tracking-wide">پۆلێن (Category)</label>
+                    <select
+                      value={createCategory}
+                      onChange={(e) => { setCreateCategory(e.target.value); setCreateGenre(""); }}
+                      className="w-full px-4 py-3 bg-zinc-900 border border-white/5 rounded-xl text-xs text-white kurdish-text focus:outline-none focus:border-emerald-500/50 transition-all font-bold cursor-pointer"
+                    >
+                      <option value="">هەموو پۆلەکان</option>
+                      {categoryOptions.map((c) => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] text-gray-500 kurdish-text font-bold mb-2 uppercase tracking-wide">جۆر / ژانر (Genre)</label>
+                    <select
+                      value={createGenre}
+                      onChange={(e) => setCreateGenre(e.target.value)}
+                      disabled={genreOptions.length === 0}
+                      className="w-full px-4 py-3 bg-zinc-900 border border-white/5 rounded-xl text-xs text-white kurdish-text focus:outline-none focus:border-emerald-500/50 transition-all font-bold cursor-pointer disabled:opacity-50"
+                    >
+                      <option value="">هەموو جۆرەکان</option>
+                      {genreOptions.map((g) => (
+                        <option key={g} value={g}>{g}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] text-gray-500 kurdish-text font-bold mb-2 uppercase tracking-wide">کۆدی بێهاوتای ژوورەکە (بۆ بانگهێشتی هاوڕێیان)</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        readOnly
+                        value={createCode}
+                        className="flex-1 px-4 py-3 bg-zinc-900 border border-emerald-500/20 rounded-xl text-xs text-emerald-300 text-center focus:outline-none transition-all font-mono font-bold tracking-widest"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setCreateCode(generateRoomCode())}
+                        title="نوێکردنەوەی کۆدەکە"
+                        className="p-3 bg-zinc-900 hover:bg-zinc-800 border border-white/5 text-gray-400 hover:text-emerald-400 rounded-xl transition-all cursor-pointer"
+                      >
+                        <RefreshCw className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <p className="text-[9px] text-gray-500 kurdish-text mt-1.5">هاوڕێکانت دەتوانن بەم کۆدە یان کۆدی بێهاوتای تۆ (CC-XXXX) بێنە ژوورەکە.</p>
+                  </div>
+
                   <div>
                     <label className="block text-[10px] text-gray-400 kurdish-text font-bold mb-1.5 uppercase tracking-wide">فیلم و بەرهەمەکان (کلیک بکە بۆ دیاریکردن)</label>
-                    {localMovies.length === 0 ? (
+                    {createMovieList.length === 0 ? (
                       <p className="text-[10px] text-gray-500 kurdish-text">هیچ فیلمێک نییە بۆ هەڵبژاردن</p>
                     ) : (
                       <div className="grid grid-cols-2 gap-2 max-h-56 overflow-y-auto pr-1 bg-zinc-950/20 p-2 rounded-xl border border-white/5">
-                        {localMovies.slice(0, 50).map((movie) => {
-                          const movieUrl = movie.embedUrl || movie.videoUrl || "";
+                        {createMovieList.slice(0, 50).map((movie) => {
+                          const movieUrl = moviePlayUrl(movie);
                           const isSelected = createMovieUrl === movieUrl;
                           return (
                             <button
@@ -876,6 +917,7 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
                               type="button"
                               onClick={() => {
                                 setCreateMovieUrl(movieUrl);
+                                setCreateMovieTitle(movie.title);
                                 if (!createRoomName.trim() || createRoomName.startsWith("ژووری ")) {
                                   setCreateRoomName(`ژووری هاوڕێیانی ${movie.title}`);
                                 }
@@ -944,6 +986,76 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
               </div>
             </motion.div>
           </div>
+
+          {/* Live Available Rooms (real-time from friends_rooms) */}
+          <div className="border-t border-white/5 pt-8">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-purple-500/10 flex items-center justify-center border border-purple-500/20">
+                <Users className="w-5 h-5 text-purple-400" />
+              </div>
+              <div>
+                <h3 className="text-lg font-black text-white kurdish-text">ژوورە چالاکەکان</h3>
+                <p className="text-[10px] text-gray-400 kurdish-text">بە ڕاستەوخۆیی بەردەستە (real-time) — کرتە بکە بۆ چوونە ژوورەوە</p>
+              </div>
+            </div>
+
+            {availableRooms.length === 0 ? (
+              <p className="text-[11px] text-gray-500 kurdish-text py-6 text-center bg-white/5 border border-dashed border-white/10 rounded-2xl">
+                هێشتا هیچ ژوورێک دروست نەکراوە — یەکەم ژوور بۆ خۆت دروست بکە!
+              </p>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {availableRooms.map((room) => (
+                  <div
+                    key={room.id}
+                    onClick={async () => {
+                      if (!userCodeInput.trim()) {
+                        setErrorText("تکایە کۆدی ناسنامەی خۆت بنووسە لە بەشی چوونەژوورەوە");
+                        return;
+                      }
+                      setIsLoading(true);
+                      setErrorText("");
+                      try {
+                        await joinFriendsRoom(room, {
+                          username: usernameInput || `میوان-${userCodeInput.trim().substring(0, 4)}`,
+                          uniqueCode: userCodeInput.trim().toUpperCase(),
+                          joinedAt: new Date().toISOString(),
+                        });
+                        setActiveRoom(room);
+                        setSuccessText("بە سەرکەوتوویی چووە ژورەوە!");
+                      } catch (err) {
+                        setErrorText("نەتوانرا بچیتە ژوورەوە");
+                      } finally {
+                        setIsLoading(false);
+                      }
+                    }}
+                    className="bg-zinc-900/60 border border-white/5 hover:border-purple-500/40 rounded-2xl p-4 cursor-pointer transition-all hover:bg-zinc-900"
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-sm font-black text-white kurdish-text truncate">{room.name}</h4>
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${room.isPlaying ? "bg-emerald-500 animate-pulse" : "bg-gray-600"}`} />
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5 text-[9px]">
+                      <span className="px-2 py-0.5 bg-purple-500/10 border border-purple-500/20 text-purple-300 font-mono font-bold rounded-lg">{room.uniqueCode}</span>
+                      {room.category && (
+                        <span className="px-2 py-0.5 bg-white/5 border border-white/10 text-gray-300 kurdish-text font-bold rounded-lg">{room.category}</span>
+                      )}
+                      {room.genre && (
+                        <span className="px-2 py-0.5 bg-white/5 border border-white/10 text-gray-300 kurdish-text font-bold rounded-lg">{room.genre}</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 mt-2 text-[9px] text-gray-500 font-bold">
+                      <Users className="w-3 h-3" />
+                      {(room.activeUsers || []).length} ئەندام
+                      {room.hostCode && (
+                        <span className="ml-auto font-mono text-indigo-400/80">host: {room.hostCode}</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       ) : (
         /* INSIDE ACTIVE ROOM SCREEN */
@@ -959,6 +1071,11 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
                 <div className="flex items-center gap-2 mt-0.5">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                   <span className="text-[9px] text-gray-500 font-mono">ID: {activeRoom.id}</span>
+                  {activeRoom.uniqueCode && (
+                    <span className="px-1.5 py-0.5 bg-indigo-500/15 border border-indigo-500/30 text-indigo-400 rounded-lg text-[8px] font-black tracking-widest font-mono">
+                      کۆد: {activeRoom.uniqueCode}
+                    </span>
+                  )}
                   {isHost && (
                     <span className="px-1.5 py-0.5 bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 rounded-lg text-[8px] font-black tracking-widest uppercase ml-1">
                       خانەخوێ / HOST
@@ -1014,33 +1131,17 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
                   <Play className="w-3.5 h-3.5 text-indigo-400 fill-current" />
                   فیلم و زنجیرە بڵاوکراوەکان بۆ لێدان لەم ژوورەدا:
                 </p>
-                {localMovies.length === 0 ? (
+                {roomMovieList.length === 0 ? (
                   <p className="text-[10px] text-gray-500 kurdish-text">هیچ فیلمێک بەردەست نییە بۆ هەڵبژاردن</p>
                 ) : (
                   <div className="flex gap-3 overflow-x-auto pb-1 pr-1 no-scrollbar">
-                    {localMovies.map((movie) => {
-                      const movieUrl = movie.embedUrl || movie.videoUrl || "";
+                    {roomMovieList.map((movie) => {
+                      const movieUrl = moviePlayUrl(movie);
                       const isSelected = activeRoom.currentMovieUrl === movieUrl;
                       return (
                         <div
                           key={movie.id}
-                          onClick={async () => {
-                            try {
-                              const res = await fetch(`/api/rooms/${activeRoom.id}/update`, {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({ currentMovieUrl: movieUrl })
-                              });
-                              if (res.ok) {
-                                const data = await res.json();
-                                if (data.success) {
-                                  setActiveRoom(data.room);
-                                }
-                              }
-                            } catch(e) {
-                              console.error("Failed to select movie in room:", e);
-                            }
-                          }}
+                          onClick={() => handleSelectMovieInRoom(movie)}
                           className={`flex-shrink-0 cursor-pointer p-1.5 px-2.5 rounded-xl border flex items-center gap-2 transition-all hover:bg-zinc-805 active:scale-95 ${
                             isSelected 
                               ? "bg-indigo-950/45 border-indigo-500/40 text-indigo-300 shadow-[0_0_12px_rgba(99,102,241,0.2)]"
@@ -1110,7 +1211,7 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
                   <span className="text-[10px] text-gray-400 font-black kurdish-text">ئەندامانی چالاک لەم کۆمەڵەیە ({activeRoom.activeUsers?.length || 0})</span>
                 </div>
                 <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
-                  {activeRoom.activeUsers && activeRoom.activeUsers.map((u: UserObj, i: number) => ( // Explicitly type u and i
+                  {activeRoom.activeUsers && activeRoom.activeUsers.map((u, i) => (
                     <span 
                       key={i} 
                       className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-zinc-900 border border-white/5 rounded-lg text-[9px] text-gray-200"
@@ -1177,38 +1278,7 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
                       initial={{ opacity: 0, height: 0 }}
                       animate={{ opacity: 1, height: "auto" }}
                       exit={{ opacity: 0, height: 0 }}
-                      onSubmit={async (e: React.FormEvent) => { // Explicitly type e
-                        e.preventDefault();
-                        if (!sidebarCodeInput.trim()) {
-                          setSidebarFeedback("تکایە کۆدێکی دروست بنووسە");
-                          return;
-                        }
-                        setIsLoading(true);
-                        setSidebarFeedback("");
-                        try {
-                          const res = await fetch(`/api/rooms/${activeRoom.id}/join`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                              uniqueCode: sidebarCodeInput.trim(),
-                              username: sidebarNameInput.trim() || `میوان-${sidebarCodeInput.trim().substring(0, 4)}`,
-                            }),
-                          });
-                          const data = await res.json();
-                          if (res.ok && data.success) {
-                            setUserCodeInput(sidebarCodeInput.trim().toUpperCase());
-                            setUsernameInput(sidebarNameInput.trim());
-                            setActiveRoom(data.room);
-                            setSidebarFeedback("ناسنامەکەت بە سەرکەوتوویی تۆمارکرا! ✓");
-                          } else {
-                            setSidebarFeedback(data.error || "خەتایەک ڕوویدا لە کاتی چوونەژوورە");
-                          }
-                        } catch (err) {
-                          setSidebarFeedback("کێشە لە پەیوەندی کردن بە سێرڤەرەوە");
-                        } finally {
-                          setIsLoading(false);
-                        }
-                      }}
+                      onSubmit={handleSidebarJoin}
                       className="space-y-3 mt-3 overflow-hidden"
                     >
                       <div>
@@ -1272,7 +1342,7 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
               {/* Real-time Room Chat messages display list */}
               <div className="flex-1 p-4 overflow-y-auto space-y-3 flex flex-col-reverse max-h-[40vh] lg:max-h-none">
                 <div className="space-y-3">
-                  {activeRoom.chatMessages && activeRoom.chatMessages.map((msg: ChatMsg, index: number) => ( // Explicitly type msg and index
+                  {chatMessages && chatMessages.map((msg, index) => (
                     <div 
                       key={msg.id || index}
                       className={`flex flex-col ${msg.senderCode === userCodeInput ? 'items-end' : 'items-start'}`}
@@ -1287,7 +1357,7 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
                       </div>
                     </div>
                   ))}
-                  {(!activeRoom.chatMessages || activeRoom.chatMessages.length === 0) && (
+                  {(!chatMessages || chatMessages.length === 0) && (
                     <div className="text-center py-10 text-gray-500 text-[10px] kurdish-text">
                       هیچ نامەیەک نییە لە ژوورەکەدا، دەستپێ بکە بە نامەناردن! 💬
                     </div>
@@ -1321,7 +1391,7 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
       {/* Real-time Incoming Invitation Alerts */}
       <div className="fixed bottom-6 right-6 z-[9999] flex flex-col gap-3 max-w-sm w-full pointer-events-none">
         <AnimatePresence>
-          {activeInvitations.map((inv: Invitation) => ( // Explicitly type inv
+          {activeInvitations.map((inv) => (
             <motion.div
               key={inv.id}
               initial={{ opacity: 0, y: 30, scale: 0.9 }}
