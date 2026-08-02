@@ -4705,11 +4705,36 @@ const HeroSection: React.FC<{
   const [ccEnabled, setCcEnabled] = useState(true);
   // Strict 3s delayed mounting: zero iframe in the DOM until showPlayer=true
   const [showPlayer, setShowPlayer] = useState(false);
+  // Live online-viewer counter: polls the existing /api/stats endpoint every
+  // 10s so the hero badge reflects the current site traffic in near real time
+  // without any extra backend. Keeps the last known value if the server is down.
+  const [onlineViewers, setOnlineViewers] = useState(0);
 
   // 1) Strict 3-second black screen gate — mount the player after exactly 3s
   useEffect(() => {
     const timer = setTimeout(() => setShowPlayer(true), 3000);
     return () => clearTimeout(timer);
+  }, []);
+
+  // Live viewer counter polling (hero badge)
+  useEffect(() => {
+    let cancelled = false;
+    const updateViewers = async () => {
+      try {
+        const data = await api.getStats();
+        if (!cancelled && data && typeof data.visitors === "number") {
+          setOnlineViewers(data.visitors);
+        }
+      } catch (_) {
+        // Keep the last known count — never block the hero on a failed poll.
+      }
+    };
+    updateViewers();
+    const interval = setInterval(updateViewers, 10000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, []);
 
   // Detect mobile/touch devices: their autoplay policies block unmuted autoplay.
@@ -5181,6 +5206,23 @@ const HeroSection: React.FC<{
 
         {/* دگمە هاوبەشە شووشەییەکان لە گۆشەی سەرەوەی ڕاست (Glass Overlay Buttons in Top Right Corner) */}
         <div className="absolute top-4 right-6 md:right-12 z-40 flex items-center gap-1.5 md:gap-3 pointer-events-none">
+          {/* Live Online Viewer Counter — real-time badge of how many people are
+              currently on the site. Styled to match the glass control buttons. */}
+          <div
+            className="pointer-events-none flex items-center gap-1.5 p-2 md:p-3 bg-black/50 border border-white/10 rounded-xl md:rounded-2xl backdrop-blur-md shadow-lg"
+            title="بینەری ئۆنلاین لە ماڵپەڕ"
+            id="hero-online-badge"
+          >
+            <span className="relative flex w-1.5 h-1.5 md:w-2 md:h-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+              <span className="relative inline-flex rounded-full w-1.5 h-1.5 md:w-2 md:h-2 bg-green-400" />
+            </span>
+            <Users className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 text-green-400" />
+            <span className="text-[11px] md:text-xs font-black text-white font-mono tabular-nums leading-none">
+              {onlineViewers}
+            </span>
+          </div>
+
           {/* Mute/Unmute Button — toggles the player inside the click gesture so
               a strict autoplay policy never swallows the unMute() call. */}
           <button
@@ -5279,32 +5321,27 @@ const HeroSection: React.FC<{
           >
             <Share2 className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/share:scale-110" />
           </button>
-        </div>
 
-        {/* Bottom-right Play/Pause toggle — lets users pause the hero trailer
-            stream directly, styled to match the other glass hero buttons. */}
-        <div className="absolute bottom-5 right-6 md:bottom-8 md:right-12 z-40 flex items-center gap-2 pointer-events-none">
+          {/* Play/Pause Toggle — lives in the top bar alongside the other hero
+              controls, matching their exact style, layout and dimensions. */}
           <button
             onClick={(e) => {
               e.stopPropagation();
               togglePlayPause();
             }}
-            className={`pointer-events-auto flex items-center gap-2 px-3.5 py-2.5 md:px-4 md:py-3 bg-black/50 border rounded-xl md:rounded-2xl backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/play ${
+            className={`pointer-events-auto p-2 md:p-3 bg-black/50 border rounded-xl md:rounded-2xl backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/play ${
               isPlaying
                 ? "text-white border-white/10 hover:border-white/25 hover:bg-white/10"
-                : "text-brand-primary border-brand-primary/30 hover:bg-brand-primary/15"
+                : "text-brand-primary border-brand-primary/20 hover:border-brand-primary/35 hover:bg-brand-primary/15"
             }`}
             title={isPlaying ? "وەستاندنی ڤیدیۆ (Pause)" : "لێدانی ڤیدیۆ (Play)"}
             id="hero-play-btn"
           >
             {isPlaying ? (
-              <Pause className="w-4 h-4 md:w-5 md:h-5 fill-current transition-transform group-hover/play:scale-110" />
+              <Pause className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 fill-current transition-transform group-hover/play:scale-110" />
             ) : (
-              <Play className="w-4 h-4 md:w-5 md:h-5 fill-current transition-transform group-hover/play:scale-110" />
+              <Play className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 fill-current transition-transform group-hover/play:scale-110" />
             )}
-            <span className="kurdish-text text-[11px] md:text-xs font-black select-none">
-              {isPlaying ? "ڕاگرتن" : "لێدان"}
-            </span>
           </button>
         </div>
 
