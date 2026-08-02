@@ -4837,12 +4837,14 @@ const HeroSection: React.FC<{
     }, 200);
   };
 
-  // Enable English closed captions via the YT IFrame API captions module
+  // Enable English closed captions via the YT IFrame API captions module.
+  // NOTE: "captions reload" is intentionally NOT fired — reloading the CC track
+  // makes YouTube paint its native "Click ⚙ for settings" hint text over the
+  // video frame. loadModule + cc lang selection is enough to show captions.
   const enableCaptions = (target: any) => {
     if (!target) return;
     safePlayerCall(target, "loadModule", "captions");
     safePlayerCall(target, "setOption", "cc", "lang", "en");
-    safePlayerCall(target, "setOption", "captions", "reload", true);
   };
 
   const disableCaptions = (target: any) => {
@@ -4863,6 +4865,22 @@ const HeroSection: React.FC<{
       enableCaptions(playerRef.current);
     } else {
       disableCaptions(playerRef.current);
+    }
+  };
+
+  // Play/Pause toggle: called inside the click gesture so the player command is
+  // guaranteed to run. isPlayingRef mirrors isPlaying, which lets onStateChange
+  // know a pause was deliberate and skip its auto-resume.
+  const togglePlayPause = () => {
+    const player = playerRef.current;
+    const next = !isPlaying;
+    setIsPlaying(next);
+    if (player) {
+      if (next) {
+        safePlayerCall(player, "playVideo");
+      } else {
+        safePlayerCall(player, "pauseVideo");
+      }
     }
   };
 
@@ -4948,8 +4966,10 @@ const HeroSection: React.FC<{
           playsinline: 1,
           enablejsapi: 1,
           origin: window.location.origin,
-          cc_load_policy: 1,
-          cc_lang_pref: "en",
+          // NOTE: cc_load_policy/cc_lang_pref are intentionally NOT set here —
+          // forcing captions at embed time makes YouTube surface its native
+          // "Click ⚙ for settings" hint text over the video frame. Captions are
+          // still enabled by default via enableCaptions() in onReady/hot-swap.
           hl: "en",
         },
         events: {
@@ -5258,6 +5278,33 @@ const HeroSection: React.FC<{
             id="hero-share-btn"
           >
             <Share2 className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/share:scale-110" />
+          </button>
+        </div>
+
+        {/* Bottom-right Play/Pause toggle — lets users pause the hero trailer
+            stream directly, styled to match the other glass hero buttons. */}
+        <div className="absolute bottom-5 right-6 md:bottom-8 md:right-12 z-40 flex items-center gap-2 pointer-events-none">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              togglePlayPause();
+            }}
+            className={`pointer-events-auto flex items-center gap-2 px-3.5 py-2.5 md:px-4 md:py-3 bg-black/50 border rounded-xl md:rounded-2xl backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/play ${
+              isPlaying
+                ? "text-white border-white/10 hover:border-white/25 hover:bg-white/10"
+                : "text-brand-primary border-brand-primary/30 hover:bg-brand-primary/15"
+            }`}
+            title={isPlaying ? "وەستاندنی ڤیدیۆ (Pause)" : "لێدانی ڤیدیۆ (Play)"}
+            id="hero-play-btn"
+          >
+            {isPlaying ? (
+              <Pause className="w-4 h-4 md:w-5 md:h-5 fill-current transition-transform group-hover/play:scale-110" />
+            ) : (
+              <Play className="w-4 h-4 md:w-5 md:h-5 fill-current transition-transform group-hover/play:scale-110" />
+            )}
+            <span className="kurdish-text text-[11px] md:text-xs font-black select-none">
+              {isPlaying ? "ڕاگرتن" : "لێدان"}
+            </span>
           </button>
         </div>
 
