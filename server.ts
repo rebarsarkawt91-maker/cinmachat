@@ -80,6 +80,7 @@ const INITIAL_DB = {
   deletedIds: [] as string[],
   bannedIps: [] as string[],
   manualMovies: [] as any[],
+  posterUploads: [] as any[],
   vipVideos: [] as any[],
   tagOverrides: {} as Record<string, string[]>,
   rooms: {} as Record<string, any>
@@ -996,6 +997,86 @@ async function startServer() {
       return res.status(500).json({ 
         success: false, 
         error: "کێشەیەک ڕوویدا لە بارکردنی فایلەکەدا: " + (err.message || String(err)) 
+      });
+    }
+  });
+
+  // Module 4: Movie & YouTube Publishing — secure poster image upload endpoint.
+  // Accepts the Base64 data-URL produced by the client-side canvas compressor,
+  // validates MIME + size, writes a durable copy under /uploads and records the
+  // upload in db.posterUploads. The returned `url` is the self-contained data-URL
+  // so the poster is stored directly in db.json with the movie record and can
+  // never 404 or disappear after a redeploy.
+  app.post('/api/admin/upload-image', async (req, res) => {
+    try {
+      const { imageData, fileName, adminName } = req.body;
+      if (!imageData || typeof imageData !== 'string') {
+        return res.status(400).json({ success: false, error: "داتای وێنە نەنێردراوە (imageData پێویستە)" });
+      }
+
+      // Safe regex match to extract MIME and base64 representation
+      const matches = imageData.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
+      if (!matches || matches.length !== 3) {
+        return res.status(400).json({ success: false, error: "فۆرماتی وێنەکە دروست نییە (تەنها Base64 Data URL پێشوازیکراوە)" });
+      }
+
+      const mimeType = matches[1];
+      const base64Content = matches[2];
+
+      // Raster poster formats only (no SVG — keeps the published poster safe)
+      const allowedMimeTypes = ["image/jpeg", "image/png", "image/jpg", "image/webp"];
+      if (!allowedMimeTypes.includes(mimeType)) {
+        return res.status(400).json({ success: false, error: "ڕێگە تەنها بە وێنەی فۆرماتی PNG, JPEG یان WEBP دراوە" });
+      }
+
+      // File size constraint: Max 2MB
+      const approxSizeBytes = Math.floor((base64Content.length * 3) / 4);
+      if (approxSizeBytes > 2 * 1024 * 1024) {
+        return res.status(400).json({ success: false, error: "قەبارەی وێنە ناتوانێت لە ٢ مێگابایت زیاتر بێت!" });
+      }
+
+      let extension = "png";
+      if (mimeType.includes("jpeg") || mimeType.includes("jpg")) extension = "jpg";
+      else if (mimeType.includes("webp")) extension = "webp";
+
+      const safeBaseName = fileName
+        ? fileName.replace(/[^a-zA-Z0-9_\-]/g, "_").substring(0, 50)
+        : "movie_poster";
+
+      // Durable disk copy under /uploads (also served as /uploads/<name> on the API server)
+      const uniqueFileName = `${safeBaseName}_${Date.now()}_${Math.floor(Math.random() * 100000)}.${extension}`;
+      await fs.mkdir(path.join(process.cwd(), 'uploads'), { recursive: true });
+      await fs.writeFile(path.join(process.cwd(), 'uploads', uniqueFileName), Buffer.from(base64Content, 'base64'));
+
+      // Database integration: keep an auditable, persistent list of poster uploads
+      if (!db.posterUploads) db.posterUploads = [];
+      db.posterUploads.unshift({
+        id: `poster-${Date.now()}`,
+        fileName: `${safeBaseName}.${extension}`,
+        url: `/uploads/${uniqueFileName}`,
+        uploadedBy: String(adminName || 'Admin'),
+        mimeType,
+        sizeBytes: approxSizeBytes,
+        timestamp: new Date().toISOString()
+      });
+      if (db.posterUploads.length > 200) db.posterUploads = db.posterUploads.slice(0, 200);
+
+      await addAuditLog(db, String(adminName || 'Admin'), "Upload Poster", `پۆستەری فیلم بارکرا: "${safeBaseName}.${extension}"`);
+      await saveDB(db);
+
+      return res.json({
+        success: true,
+        url: imageData, // self-contained poster URL (persists inside db.json with the movie)
+        fileUrl: `/uploads/${uniqueFileName}`,
+        mimeType,
+        sizeBytes: approxSizeBytes
+      });
+
+    } catch (err: any) {
+      console.error("Error in Movie Poster Upload Route:", err);
+      return res.status(500).json({
+        success: false,
+        error: "کێشەیەک ڕوویدا لە بارکردنی پۆستەرەکەدا: " + (err.message || String(err))
       });
     }
   });

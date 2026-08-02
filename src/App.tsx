@@ -877,6 +877,8 @@ const ContentModule = ({
   const [isPosting, setIsPosting] = useState(false);
   const [isImdbFetching, setIsImdbFetching] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  // Detected dimensions of the uploaded poster (used for the 500x750 / 2:3 guidance)
+  const [uploadedDims, setUploadedDims] = useState<{ width: number; height: number } | null>(null);
   // Live genres from Firestore — stays in sync with the admin genre panel.
   const [genres, setGenres] = useState<Genre[]>([]);
 
@@ -914,57 +916,61 @@ const ContentModule = ({
 
     setIsUploading(true);
     setPostStatus({ type: null, message: "" }); // Clear previous status
+    setUploadedDims(null);
     try {
-      // Automatic browser compression via canvas helper
-      let fileToUpload: File | Blob = file;
+      // Read the raw file as a data-URL once; used both for compression and as a
+      // guaranteed fallback so the upload never fails with an empty payload.
+      const rawDataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+
+      // Automatic browser compression via canvas helper + dimension detection.
+      // The recommended poster size is 500x750px (2:3 ratio) — we measure the
+      // original so the UI can warn when the chosen image deviates from it.
       let compressedBase64: string | null = null;
+      let detectedDims: { width: number; height: number } | null = null;
       try {
-        compressedBase64 = await new Promise<string | null>((resolve) => {
-          const reader = new FileReader();
-          reader.readAsDataURL(file);
-          reader.onload = (event) => {
-            const img = new window.Image();
-            img.src = event.target?.result as string;
-            img.onload = () => {
-              try {
-                const canvas = document.createElement("canvas");
-                let width = img.width;
-                let height = img.height;
-                const maxDim = 1200; // Max dimension for either width or height
-                if (width > maxDim || height > maxDim) {
-                  if (width > height) {
-                    height = Math.round((height * maxDim) / width);
-                    width = maxDim;
-                  } else {
-                    width = Math.round((width * maxDim) / height);
-                    height = maxDim;
-                  }
-                }
-                canvas.width = width;
-                canvas.height = height;
-                const ctx = canvas.getContext("2d");
-                if (!ctx) {
-                  resolve(null); // Fallback to original if canvas context fails
-                  return;
-                }
-                ctx.drawImage(img, 0, 0, width, height);
-                resolve(canvas.toDataURL("image/jpeg", 0.8)); // Compress to JPEG with 80% quality
-              } catch (e) {
-                console.warn("Error during client-side image compression:", e);
-                resolve(null); // Fallback
-              }
-            };
-            img.onerror = () => resolve(null);
-          };
+        const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+          const image = new window.Image();
+          image.onload = () => resolve(image);
+          image.onerror = () => reject(new Error("Failed to decode image"));
+          image.src = rawDataUrl;
         });
+        detectedDims = { width: img.naturalWidth, height: img.naturalHeight };
+        setUploadedDims(detectedDims);
+
+        const canvas = document.createElement("canvas");
+        let width = img.naturalWidth;
+        let height = img.naturalHeight;
+        const maxDim = 1200; // Max dimension for either width or height
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          } else {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          compressedBase64 = canvas.toDataURL("image/jpeg", 0.8); // Compress to JPEG with 80% quality
+        }
       } catch (e) {
         console.warn("Compression failed, uploading original fallback:", e);
       }
 
-      // Upload to server endpoint
+      // Upload to server endpoint — the server validates the payload again and
+      // persists it in db.json so the poster never disappears after a redeploy.
       const uploadRes = await fetchApi("/api/admin/upload-image", {
         method: "POST",
-        body: JSON.stringify({ imageData: compressedBase64 || (event.target as FileReader)?.result, fileName: file.name, adminName: currentUser?.username || "Admin" }), // Ensure event.target is cast correctly
+        body: JSON.stringify({ imageData: compressedBase64 || rawDataUrl, fileName: file.name, adminName: currentUser?.username || "Admin" }),
       });
       const uploadData = await uploadRes.json();
       if (uploadData.success) {
@@ -1281,6 +1287,7 @@ const ContentModule = ({
         whatsappLink: "",
         externalMovieLink: "",
       });
+      setUploadedDims(null);
 
       setTimeout(() => setPostStatus({ type: null, message: "" }), 5000);
     } catch (error: any) {
@@ -1361,6 +1368,7 @@ const ContentModule = ({
         whatsappLink: "",
         externalMovieLink: "",
       });
+      setUploadedDims(null);
     } catch (error: any) {
       alert("Error: " + error.message);
     } finally {
@@ -1491,6 +1499,26 @@ const ContentModule = ({
                     />
                   </label>
                 </div>
+                <p className="text-[10px] text-gray-500 kurdish-text flex items-center gap-1.5 pt-1">
+                  <AlertCircle className="w-3 h-3 text-purple-400" />
+                  قەبارەی پۆستەری پێشنیارکراو: 500×750 پیکسەل (ڕێژەی ٢:٣) بۆ ڕووکارێکی ورد و تەواو
+                  <span className="hidden md:inline text-gray-600">•</span>
+                  <span className="text-gray-600">گەورەترین قەبارە: ٢MB</span>
+                </p>
+                {uploadedDims && (
+                  <p className={`text-[10px] font-black kurdish-text flex items-center gap-1.5 ${
+                    uploadedDims.width / uploadedDims.height >= 0.6 &&
+                    uploadedDims.width / uploadedDims.height <= 0.75
+                      ? "text-emerald-500"
+                      : "text-amber-500"
+                  }`}>
+                    {uploadedDims.width / uploadedDims.height >= 0.6 &&
+                    uploadedDims.width / uploadedDims.height <= 0.75
+                      ? "✓"
+                      : "⚠"}
+                    قەبارەی وێنەکەت: {uploadedDims.width}×{uploadedDims.height} پیکسەل
+                  </p>
+                )}
               </div>
             </div>
 
@@ -1938,6 +1966,21 @@ const ContentModule = ({
                 </label>
               </div>
             </div>
+
+            {uploadedDims && (
+              <p className={`text-[10px] font-black kurdish-text text-center ${
+                uploadedDims.width / uploadedDims.height >= 0.6 &&
+                uploadedDims.width / uploadedDims.height <= 0.75
+                  ? "text-emerald-500"
+                  : "text-amber-500"
+              }`}>
+                {uploadedDims.width / uploadedDims.height >= 0.6 &&
+                uploadedDims.width / uploadedDims.height <= 0.75
+                  ? "✓"
+                  : "⚠"}
+                قەبارەی پۆستەر: {uploadedDims.width}×{uploadedDims.height} پیکسەل
+              </p>
+            )}
 
             {postStatus.message && (
               <div
