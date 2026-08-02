@@ -12,6 +12,7 @@ import {
   Play,
   Download,
   MessageCircle,
+  Mail,
   X,
   ChevronRight,
   ChevronLeft,
@@ -11550,22 +11551,47 @@ export default function App() {
           </div>
 
           <div className="flex flex-col gap-6">
-            <h3 className="text-xs font-black uppercase tracking-widest text-white kurdish-text">
-              مافی پارێزراو & DMCA
+            <h3 className="text-xs font-black uppercase tracking-widest text-white">
+              Copyright & DMCA
             </h3>
-            <p className="text-[11px] text-gray-600 kurdish-text leading-loose">
-              هەموو ئەو فیلمانەی لەم سایتەدا دەبینرێن لە سەرچاوە دەرەکییەکانەوە
-              (تێلگرام، گۆگڵ درایڤ) وەرگیراون. سینەما چات هیچ فایلێکی ڤیدیۆیی
-              لەسەر سێرڤەری خۆی هەڵناگرێت.
+            <p className="text-[11px] text-gray-600 leading-relaxed max-w-xs">
+              All movies and content shown on this website are streamed from
+              external sources (Telegram, Google Drive) and remain the property
+              of their respective owners. CinemaChat does not host, store, or
+              distribute any video files on its own servers. If you are a
+              copyright holder and believe that any video or content posted here
+              infringes on your rights — or was uploaded by mistake — please
+              contact us immediately and we will review and remove it promptly.
             </p>
-            <div className="flex gap-3">
+            <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 max-w-xs">
+              Note: We only respond to official website and legal service
+              inquiries.
+            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              {/* DMCA Direct-Action Icons */}
+              <a
+                href="https://wa.me/9647701966649"
+                target="_blank"
+                rel="noreferrer"
+                title="Contact via WhatsApp"
+                className="w-10 h-10 bg-white/5 border border-white/10 rounded-xl flex items-center justify-center text-[#25D366] hover:bg-[#25D366]/15 hover:border-[#25D366]/40 hover:scale-105 transition-all group"
+              >
+                <MessageCircle className="w-5 h-5" />
+              </a>
+              <a
+                href="mailto:rebarsarkawt91@gmail.com"
+                title="Contact via Gmail"
+                className="w-10 h-10 bg-white/5 border border-white/10 rounded-xl flex items-center justify-center text-[#EA4335] hover:bg-[#EA4335]/15 hover:border-[#EA4335]/40 hover:scale-105 transition-all group"
+              >
+                <Mail className="w-5 h-5" />
+              </a>
               <div className="px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-[10px] font-black text-gray-500 uppercase tracking-widest">
                 Safe Platform
               </div>
               <div className="px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-[10px] font-black text-gray-500 uppercase tracking-widest">
                 No Tracking
               </div>
-            </div> {/* Footer Badges */}
+            </div> {/* DMCA Action Icons + Footer Badges */}
           </div>
         </div>
         <div className="mt-20 pt-8 border-t border-white/5 text-center flex flex-col md:flex-row items-center justify-between gap-6">
