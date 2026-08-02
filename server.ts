@@ -11,6 +11,7 @@ import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import net from 'node:net';
 import { rateLimiter, sanitizationMiddleware, createAdminGuard, logFailedAttempt } from './security';
+import { generateSubtitle } from './features/subtitles/subtitleGenerator.js';
 
 // Sanitize URLs to decode HTML entities (e.g. &#x2F; → /) and convert YouTube watch links to embed links
 function sanitizeUrl(url: string): string {
@@ -377,6 +378,8 @@ async function startServer() {
         'http://127.0.0.1:5173',
         'http://localhost:3000',
         'http://127.0.0.1:3000',
+        'http://localhost:3001', // Production server's own origin (same-origin SPA + assets)
+        'http://127.0.0.1:3001',
       ];
 
   // If not in production, also allow '*' for flexibility during development
@@ -3203,6 +3206,176 @@ async function startServer() {
     } catch (err) {
       console.error('CRITICAL ERROR in /api/movies:', err);
       res.status(500).json({ status: 'error', error: 'Internal Server Error' });
+    }
+  });
+
+  // Generates SRT subtitles for a movie source on the server (ffmpeg + Whisper +
+  // optional Gemini translation). Used by the player's "درستکردنی وەرگێڕان" button.
+  // YouTube / streaming-source URLs require yt-dlp to be installed on the server;
+  // direct .mp4/.webm file URLs are downloaded with a plain HTTP fetch instead.
+  app.post('/api/subtitle/generate', async (req, res) => {
+    const { url, lang } = req.body || {};
+    if (!url || typeof url !== 'string') {
+      return res.status(400).json({ error: 'Missing or invalid "url" in request body' });
+    }
+    const targetLang =
+      typeof lang === 'string' && /^[a-z]{2,3}$/i.test(lang) ? lang.toLowerCase() : 'en';
+    const sourceUrl = sanitizeUrl(url);
+    if (!/^https?:\/\//i.test(sourceUrl)) {
+      return res.status(400).json({ error: 'Source must be a valid http(s) URL' });
+    }
+
+    const { execFile, spawnSync } = await import('child_process');
+    const osMod = await import('os');
+    const fsMod = await import('fs');
+    const workDir = fsMod.mkdtempSync(path.join(osMod.tmpdir(), 'cinemachat-sub-api-'));
+    const videoPath = path.join(workDir, 'source.mp4');
+    const started = Date.now();
+    const stepLog = (msg: string) =>
+      console.log(`[${new Date().toISOString()}] [subtitle-api] ${msg}`);
+
+    // Run a child process asynchronously with a hard timeout. The event loop is
+    // never blocked, and a stuck process is killed (with its child tree) and the
+    // request gets a clear error instead of hanging forever.
+    const runCmd = (cmd: string, args: string[], timeoutMs: number, onStderr?: (line: string) => void) =>
+      new Promise<void>((resolve, reject) => {
+        const child = execFile(
+          cmd,
+          args,
+          { maxBuffer: 64 * 1024 * 1024, encoding: 'utf-8' },
+          (err, _stdout, stderr) => {
+            if (err) {
+              const reason = err.killed
+                ? `timed out after ${Math.round(timeoutMs / 1000)}s`
+                : (stderr || err.message || 'unknown error').toString().slice(0, 1000);
+              reject(new Error(`${cmd} ${reason}`));
+            } else {
+              resolve();
+            }
+          },
+        );
+        child.stderr?.on('data', (d: Buffer) => {
+          // yt-dlp prints its progress with \r unless --newline is given; split
+          // on both so every progress line is surfaced independently.
+          for (const raw of String(d).split(/\r\n|\r|\n/)) {
+            const line = raw.trim();
+            if (line) onStderr?.(line);
+          }
+        });
+        const timer = setTimeout(() => {
+          if (process.platform === 'win32') {
+            spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+          } else {
+            try { process.kill(child.pid, 'SIGKILL'); } catch { /* gone */ }
+          }
+          reject(new Error(`${cmd} timed out after ${Math.round(timeoutMs / 1000)}s`));
+        }, timeoutMs);
+        child.on('exit', () => clearTimeout(timer));
+      });
+
+    const downloadTimeout = Number(process.env.SUBTITLE_DOWNLOAD_TIMEOUT) || 900000; // 15 min
+    // Only fetch the first N seconds of the video by default. Transcribing a
+    // 1-2 hour movie with Whisper on CPU would take hours; a 5-minute sample is
+    // enough to demo and test the feature quickly. Set SUBTITLE_MAX_DURATION=0
+    // to download the full video instead.
+    const maxDurationSec = Math.floor(Number(process.env.SUBTITLE_MAX_DURATION) || 300);
+
+    try {
+      const isDirectVideo = /\.(mp4|m4v|webm|ogv)(\?|#|$)/i.test(sourceUrl);
+      if (isDirectVideo) {
+        stepLog(`downloading direct video ${sourceUrl.slice(0, 80)}`);
+        const controller = new AbortController();
+        const dlTimer = setTimeout(() => controller.abort(), downloadTimeout);
+        let resp;
+        try {
+          resp = await fetch(sourceUrl, { signal: controller.signal });
+        } catch (e: any) {
+          throw new Error(
+            `Download failed: ${e?.name === 'AbortError' ? `timed out after ${Math.round(downloadTimeout / 1000)}s` : e?.message}`,
+          );
+        } finally {
+          clearTimeout(dlTimer);
+        }
+        if (!resp.ok) throw new Error(`Download failed: HTTP ${resp.status}`);
+        const buf = Buffer.from(await resp.arrayBuffer());
+        fsMod.writeFileSync(videoPath, buf);
+        stepLog(`downloaded ${(buf.length / 1048576).toFixed(1)} MB`);
+      } else {
+        let hasYtDlp = false;
+        try {
+          hasYtDlp = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['yt-dlp']).status === 0;
+        } catch {
+          hasYtDlp = false;
+        }
+        if (!hasYtDlp) {
+          return res.status(400).json({
+            error:
+              'yt-dlp is not installed on the server. Install it (pip install yt-dlp) to generate subtitles from YouTube / streaming sources.',
+          });
+        }
+        stepLog(`downloading ${sourceUrl.slice(0, 80)} via yt-dlp (max ${maxDurationSec}s of audio)`);
+        const ytArgs = [
+          '-f', 'mp4[height<=720]/mp4/best',
+          '--no-playlist',
+          '--newline', '--progress',
+          '--retries', '3',
+          '--fragment-retries', '3',
+          '-o', videoPath,
+        ];
+        if (maxDurationSec > 0) {
+          const mm = Math.floor(maxDurationSec / 60);
+          const ss = String(maxDurationSec % 60).padStart(2, '0');
+          ytArgs.push('--download-sections', `*0:00-${mm}:${ss}`);
+        }
+        ytArgs.push(sourceUrl);
+        // --download-sections hands the fetching to ffmpeg, so yt-dlp prints no
+        // "[download] x%" lines — the "frame=... speed=Nx time=..." ffmpeg lines
+        // ARE the download progress. Log those (throttled to 1/5s) plus any
+        // error/status lines so the user can see it's moving.
+        let lastYtLog = 0;
+        const runYtDlp = () =>
+          runCmd('yt-dlp', ytArgs, downloadTimeout, (line) => {
+            const now = Date.now();
+            const isError = /error|failed|warn/i.test(line);
+            if (isError || now - lastYtLog > 5000) {
+              lastYtLog = now;
+              stepLog(`yt-dlp: ${line.slice(0, 200)}`);
+            }
+          });
+        // YouTube streaming can throw transient TLS / connection-reset errors
+        // mid-download; retry the whole download a few times before giving up.
+        const ytAttempts = 3;
+        for (let attempt = 1; attempt <= ytAttempts; attempt++) {
+          try {
+            await runYtDlp();
+            break;
+          } catch (e: any) {
+            if (attempt === ytAttempts) throw e;
+            stepLog(`yt-dlp attempt ${attempt}/${ytAttempts} failed (${e?.message || e}); retrying in 2s...`);
+            await new Promise((r) => setTimeout(r, 2000));
+          }
+        }
+        stepLog('yt-dlp download complete');
+      }
+
+      if (!fsMod.existsSync(videoPath) || fsMod.statSync(videoPath).size < 1024) {
+        throw new Error('Downloaded video is empty');
+      }
+
+      stepLog(`starting whisper + Gemini pipeline (lang=${targetLang})`);
+      const srtPath = await generateSubtitle(videoPath, targetLang);
+      const srtText = fsMod.readFileSync(srtPath, 'utf-8');
+      stepLog(`generated ${srtText.length} chars in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+      res.json({ success: true, srt: srtText, lang: targetLang });
+    } catch (err: any) {
+      console.error(`[${new Date().toISOString()}] [subtitle-api] ERROR:`, err?.message || err);
+      res.status(500).json({ error: err?.message || 'Subtitle generation failed' });
+    } finally {
+      try {
+        fsMod.rmSync(workDir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
     }
   });
 

@@ -1,0 +1,7 @@
+{
+  "name": "cinemachat-subtitles",
+  "version": "1.0.0",
+  "description": "Standalone CommonJS module: ffmpeg + OpenAI Whisper CLI subtitle generation with optional Gemini translation.",
+  "private": true,
+  "type": "commonjs"
+}
