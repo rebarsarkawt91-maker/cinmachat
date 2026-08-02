@@ -339,7 +339,19 @@ async function startServer() {
   let trackerText = "بەخێربێن بۆ CinamaChat - نوێترین فیلم و زنجیرەکان لێرە ببینە";
   let trackerType = "normal"; 
   let lastFetchTime = new Date().toISOString();
-  let visitors = 1250;
+
+  // Real-time live presence tracking: every /api/stats poll carries a per-tab
+  // session id and registers a heartbeat. Sessions that stop pinging for longer
+  // than SESSION_TTL_MS are pruned, so `visitors` reflects the ACTUAL number of
+  // concurrent viewers instead of a fake ever-growing counter.
+  const activeSessions = new Map<string, number>();
+  const SESSION_TTL_MS = 25000;
+  setInterval(() => {
+    const now = Date.now();
+    for (const [sid, lastSeen] of activeSessions) {
+      if (now - lastSeen > SESSION_TTL_MS) activeSessions.delete(sid);
+    }
+  }, 10000);
   
   // Movie Store (In-Memory Cache) - Use a copy to prevent reference sharing with DB
   let moviesCache: any[] = db.manualMovies ? [...db.manualMovies] : [];
@@ -1327,8 +1339,16 @@ async function startServer() {
   });
 
   app.get('/api/stats', (req, res) => {
-    visitors += Math.floor(Math.random() * 3);
-    res.json({ visitors });
+    const session = typeof req.query.session === 'string' ? req.query.session.trim() : '';
+    const now = Date.now();
+    if (session && session.length <= 64) {
+      activeSessions.set(session, now);
+    }
+    // Prune sessions that have gone quiet so the count only reflects live viewers
+    for (const [sid, lastSeen] of activeSessions) {
+      if (now - lastSeen > SESSION_TTL_MS) activeSessions.delete(sid);
+    }
+    res.json({ visitors: activeSessions.size });
   });
 
   // --- MODULE 14: DYNAMIC 'CAME HERE' ROOMS ENDPOINTS ---

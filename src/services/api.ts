@@ -155,9 +155,10 @@ export const api = {
     }
   },
 
-  async getStats() {
+  async getStats(sessionId?: string) {
     try {
-      return await api.baseFetch('/api/stats');
+      const query = sessionId ? `?session=${encodeURIComponent(sessionId)}` : '';
+      return await api.baseFetch(`/api/stats${query}`);
     } catch { return { visitors: 0 }; }
   },
 

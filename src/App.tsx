@@ -4675,6 +4675,7 @@ const HeroSection: React.FC<{
   config: any;
   setShowVipModal: React.Dispatch<React.SetStateAction<boolean>>;
   activeAudioSource?: "hero" | "room";
+  isMoviePlayerOpen?: boolean;
 }> = ({
   activeFeaturedMovie,
   countdown,
@@ -4686,6 +4687,7 @@ const HeroSection: React.FC<{
   config,
   setShowVipModal,
   activeAudioSource = "hero",
+  isMoviePlayerOpen = false,
 }) => {
   const [isPlaying, setIsPlaying] = useState(true);
   const isMuted = isHeroMuted;
@@ -4696,6 +4698,11 @@ const HeroSection: React.FC<{
   // Live mirror of isPlaying so onStateChange never fights intentional pauses
   const isPlayingRef = useRef(true);
   isPlayingRef.current = isPlaying;
+  // Synchronous intent flag for the Play/Pause toggle: set at the exact moment
+  // the user clicks, so the async onStateChange(PAUSED) event can NEVER re-arm
+  // the 50ms auto-resume against a deliberate pause (that race made the toggle
+  // appear "stuck" — the video kept resuming right after pausing).
+  const deliberatePauseRef = useRef(false);
   // Live mirror of isMuted so the one-time document listener reads fresh state
   const isMutedRef = useRef(isHeroMuted);
   isMutedRef.current = isHeroMuted;
@@ -4705,10 +4712,20 @@ const HeroSection: React.FC<{
   const [ccEnabled, setCcEnabled] = useState(true);
   // Strict 3s delayed mounting: zero iframe in the DOM until showPlayer=true
   const [showPlayer, setShowPlayer] = useState(false);
-  // Live online-viewer counter: polls the existing /api/stats endpoint every
-  // 10s so the hero badge reflects the current site traffic in near real time
-  // without any extra backend. Keeps the last known value if the server is down.
+  // Live online-viewer counter: polls /api/stats every 10s with a stable
+  // per-tab session id. The server uses this as a presence heartbeat and
+  // returns the REAL count of concurrent viewers. Keeps the last known value if
+  // the server is down.
   const [onlineViewers, setOnlineViewers] = useState(0);
+  // Stable per-tab session id (generated once) used as a presence heartbeat so
+  // the server can count real concurrent viewers.
+  const sessionIdRef = useRef<string>("");
+  if (sessionIdRef.current === "") {
+    sessionIdRef.current =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `v-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
 
   // 1) Strict 3-second black screen gate — mount the player after exactly 3s
   useEffect(() => {
@@ -4721,7 +4738,7 @@ const HeroSection: React.FC<{
     let cancelled = false;
     const updateViewers = async () => {
       try {
-        const data = await api.getStats();
+        const data = await api.getStats(sessionIdRef.current);
         if (!cancelled && data && typeof data.visitors === "number") {
           setOnlineViewers(data.visitors);
         }
@@ -4899,6 +4916,9 @@ const HeroSection: React.FC<{
   const togglePlayPause = () => {
     const player = playerRef.current;
     const next = !isPlaying;
+    // Mark intent synchronously (before the iframe echoes the state change) so
+    // the async PAUSED event cannot trigger the auto-resume right after.
+    deliberatePauseRef.current = !next;
     setIsPlaying(next);
     if (player) {
       if (next) {
@@ -5027,8 +5047,9 @@ const HeroSection: React.FC<{
             setIsPlaying(playing);
             if (playing) {
               // Real frames are rendering: clear the poster/cache layer
+              deliberatePauseRef.current = false;
               setHasStartedPlaying(true);
-            } else if (event.data === ytState.PAUSED && isPlayingRef.current) {
+            } else if (event.data === ytState.PAUSED && !deliberatePauseRef.current) {
               // Keep playback seamless so the center play/pause overlay
               // never lingers on the video surface (unless deliberately paused)
               setTimeout(
@@ -5116,6 +5137,32 @@ const HeroSection: React.FC<{
       setIsHeroMuted(true);
     }
   }, [activeAudioSource, setIsHeroMuted]);
+
+  // Smart trailer audio control: when a lower movie/stream player opens above
+  // the hero, pause + mute the trailer so the two sources never fight. On
+  // close, restore exactly the prior play/mute state.
+  const trailerSuppressedRef = useRef(false);
+  const restoreTrailerRef = useRef({ play: false, unmute: false });
+  useEffect(() => {
+    if (isMoviePlayerOpen && !trailerSuppressedRef.current) {
+      trailerSuppressedRef.current = true;
+      restoreTrailerRef.current = {
+        play: isPlayingRef.current,
+        unmute: !isMutedRef.current,
+      };
+      deliberatePauseRef.current = true;
+      setIsPlaying(false);
+      safePlayerCall(playerRef.current, "pauseVideo");
+      setIsHeroMuted(true);
+    } else if (!isMoviePlayerOpen && trailerSuppressedRef.current) {
+      trailerSuppressedRef.current = false;
+      const restore = restoreTrailerRef.current;
+      deliberatePauseRef.current = !restore.play;
+      setIsPlaying(restore.play);
+      if (restore.play) safePlayerCall(playerRef.current, "playVideo");
+      setIsHeroMuted(!restore.unmute);
+    }
+  }, [isMoviePlayerOpen, setIsHeroMuted]);
 
   return (
     <section
@@ -5292,6 +5339,54 @@ const HeroSection: React.FC<{
           >
             <Youtube className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/yt:scale-110" />
           </button>
+
+          {/* Facebook Button — live from Admin Panel channel settings (Module 9) */}
+          {typeof config.facebookUrl === "string" &&
+            config.facebookUrl !== "#" &&
+            config.facebookUrl.trim() !== "" && (
+              <a
+                href={config.facebookUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="pointer-events-auto p-2 md:p-3 bg-black/50 hover:bg-blue-500/20 border border-white/10 hover:border-blue-500/30 rounded-xl md:rounded-2xl text-white hover:text-blue-400 backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/fb"
+                title="فەیسبووک"
+                id="hero-fb-btn"
+              >
+                <Facebook className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/fb:scale-110" />
+              </a>
+            )}
+
+          {/* TikTok Button — live from Admin Panel channel settings (Module 9) */}
+          {typeof config.tiktokUrl === "string" &&
+            config.tiktokUrl !== "#" &&
+            config.tiktokUrl.trim() !== "" && (
+              <a
+                href={config.tiktokUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="pointer-events-auto p-2 md:p-3 bg-black/50 hover:bg-cyan-400/20 border border-white/10 hover:border-cyan-400/30 rounded-xl md:rounded-2xl text-white hover:text-cyan-400 backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/tk"
+                title="تیک تۆک"
+                id="hero-tiktok-btn"
+              >
+                <Video className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/tk:scale-110" />
+              </a>
+            )}
+
+          {/* Instagram Button — live from Admin Panel channel settings (Module 9) */}
+          {typeof config.instagramUrl === "string" &&
+            config.instagramUrl !== "#" &&
+            config.instagramUrl.trim() !== "" && (
+              <a
+                href={config.instagramUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="pointer-events-auto p-2 md:p-3 bg-black/50 hover:bg-pink-500/20 border border-white/10 hover:border-pink-500/30 rounded-xl md:rounded-2xl text-white hover:text-pink-400 backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/ig"
+                title="ئینستاگرام"
+                id="hero-ig-btn"
+              >
+                <Instagram className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/ig:scale-110" />
+              </a>
+            )}
 
           {/* Share Button */}
           <button
@@ -8605,6 +8700,7 @@ export default function App() {
                 config={config}
                 setShowVipModal={setShowVipModal}
                 activeAudioSource={activeAudioSource}
+                isMoviePlayerOpen={!!selectedMovie && showPlayer}
               />
             )}
 
