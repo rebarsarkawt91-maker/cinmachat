@@ -69,6 +69,8 @@ import {
   Loader2,
   Zap,
   RefreshCw,
+  ChevronUp,
+  ChevronDown,
   Edit3,
   Key,
   Database,
@@ -81,6 +83,7 @@ import { Plyr } from "plyr-react";
 import { UsersIcon } from "lucide-react";
 import "plyr-react/plyr.css";
 import { GoogleGenAI } from "@google/genai";
+import ImmersiveShieldedPlayer from "./components/Player/ImmersiveShieldedPlayer";
 import { api } from "./services/api";
 import {
   subscribeGenres,
@@ -734,6 +737,16 @@ function getMovieSourceUrl(movie: any): string | null {
     null
   );
 }
+
+// Immersive player "quality" presets: each step zooms the embedded video in a bit
+// more (crops more of the provider's site chrome). Mirrors the requested
+// "زیاد کردن و کەمکردنی کوالێتی وێنە" control.
+const IMMERSIVE_QUALITY_PRESETS = [
+  { label: "فیلم (Fill)", value: 1 },
+  { label: "بەرزتر (HD)", value: 1.15 },
+  { label: "زۆر بەرز (Full HD)", value: 1.35 },
+  { label: "زوم (4K Zoom)", value: 1.6 },
+];
 
 import { getYTId as extractYouTubeId, loadYouTubeAPI } from './utils/youtube'; // Use the shared utility
 
@@ -5615,6 +5628,11 @@ export default function App() {
   const [showIframeSubtitles, setShowIframeSubtitles] = useState(true);
   const [isIframeFullscreen, setIsIframeFullscreen] = useState(false);
 
+  // Immersive cinematic player: zoom multiplier, subtitle vertical shift, active menu
+  const [immersiveScale, setImmersiveScale] = useState(1);
+  const [subtitlePosition, setSubtitlePosition] = useState(0);
+  const [playerMenu, setPlayerMenu] = useState<null | "quality" | "subtitle">(null);
+
   useEffect(() => {
     const handleFsChange = () => {
       setIsIframeFullscreen(!!document.fullscreenElement);
@@ -5632,6 +5650,18 @@ export default function App() {
     if (!el) return null;
     if (el instanceof HTMLIFrameElement) return el;
     return el.querySelector("iframe");
+  };
+
+  // Best-effort transport control for third-party embeds. Sends the YouTube iframe
+  // API command format (accepted by many providers) so play/pause/mute/captions stay
+  // in sync across diverse streaming servers. Unknown origins use "*".
+  const postVideoCommand = (id: string, func: string) => {
+    const frame = document.getElementById(id) as HTMLIFrameElement | null;
+    if (!frame?.contentWindow) return;
+    frame.contentWindow.postMessage(
+      JSON.stringify({ event: "command", func, args: [] }),
+      "*",
+    );
   };
 
   const toggleIframePlay = () => {
@@ -5662,6 +5692,9 @@ export default function App() {
         "https://www.youtube.com",
       );
     }
+
+    // 3. Control the cinematic shielded embed (hdtoday, vidcloud, ...) if active
+    postVideoCommand("streaming-player", isPlaying ? "playVideo" : "pauseVideo");
   };
 
   const toggleIframeMute = () => {
@@ -5688,6 +5721,9 @@ export default function App() {
         "https://www.youtube.com",
       );
     }
+
+    // 3. Control the cinematic shielded embed (mute / unmute) if active
+    postVideoCommand("streaming-player", isMuted ? "mute" : "unMute");
   };
 
   const toggleIframeSubtitles = () => {
@@ -5713,6 +5749,9 @@ export default function App() {
         "*",
       );
     }
+
+    // 3. Control the cinematic shielded embed (native captions) if active
+    postVideoCommand("streaming-player", "toggleClosedCaptions");
   };
 
   const toggleFullscreenMain = () => {
@@ -8513,7 +8552,7 @@ export default function App() {
                             className="w-full h-[120%] -translate-y-[8.3%] border-none shadow-[0_0_200px_rgba(229,9,20,0.4)] pointer-events-none"
                             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                             allowFullScreen
-                            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                            sandbox="allow-scripts allow-same-origin allow-presentation"
                           />
                           {/* Absolute CSS overlays to completely mask YouTube overlays (branding, controls) */}
                           <div className="absolute top-0 left-0 right-0 h-16 bg-gradient-to-b from-black via-black/40 to-transparent pointer-events-none z-20" />
@@ -8534,14 +8573,13 @@ export default function App() {
                         !activeServerUrl.match(
                           /\.(mp4|m4v|webm|ogv)$|youtube\.com|youtu\.be/i,
                         ) ? (
-                        <iframe
-                          src={activeServerUrl}
-                          className="w-full h-full border-none shadow-[0_0_200px_rgba(229,9,20,0.4)]"
-                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                          allowFullScreen
-                          id="streaming-player"
-                          sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-                        /> // Generic Embed Player
+                        <ImmersiveShieldedPlayer
+                          url={activeServerUrl}
+                          iframeId="streaming-player"
+                          title={`${selectedMovie?.title || "CinemaChat"} — Cinematic Player`}
+                          scale={immersiveScale}
+                          subtitleOffset={subtitlePosition}
+                        /> // Cinematic Shielded Player for external embeds
                       ) : (
                         <div className="relative w-full h-full flex items-center justify-center bg-black">
                           <Plyr
@@ -8667,84 +8705,224 @@ export default function App() {
                         </>
                       )}
 
-                      {/* Video Player Controller: The 4 clean & responsive player buttons at bottom */}
-                      <div className="absolute bottom-0 inset-x-0 h-16 bg-[#0a0a0c]/90 backdrop-blur-xl border-t border-white/5 z-50 flex items-center justify-between px-6 md:px-10 select-none font-sans"> {/* Player Controls */}
-                        {/* CinemaChat Branding Left as Requested */}
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-black text-brand-primary uppercase tracking-[0.3em] font-mono select-none drop-shadow-sm">
-                            CINEMACHAT
-                          </span>
-                          <span className="text-[10px] text-zinc-500 font-bold kurdish-text select-none">
-                            یاریپێکەری فەرمی
-                          </span>
-                        </div>
-                        
-                        {/* The exactly 4 active, working buttons */}
-                        <div className="flex items-center gap-2 sm:gap-4 shrink-0 pointer-events-auto">
-                          {/* 1. Pause/Play (لابردن) */}
-                          <button
-                            onClick={toggleIframePlay}
-                            className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-primary hover:bg-brand-primary/90 text-white rounded-xl text-xs font-black transition-all active:scale-95 cursor-pointer shadow-md"
-                            title="Play/Pause"
-                          >
-                            {isIframePlaying ? (
-                              <Pause className="w-4 h-4 fill-current" />
-                            ) : (
-                              <Play className="w-4 h-4 fill-current" />
-                            )}
-                            <span className="kurdish-text font-black text-[11px]">
-                              لابردن (Pause/Play)
-                            </span>
-                          </button> {/* Play/Pause Button */}
+                      {/* Bottom-left CinemaChat branding (floating, non-blocking) */}
+                      <div className="absolute bottom-0 left-0 h-16 z-50 flex items-center gap-2 px-6 md:px-10 pointer-events-none select-none font-sans">
+                        <span className="text-xs font-black text-brand-primary uppercase tracking-[0.3em] font-mono drop-shadow-sm">
+                          CINEMACHAT
+                        </span>
+                        <span className="text-[10px] text-zinc-500 font-bold kurdish-text drop-shadow">
+                          یاریپێکەری فەرمی
+                        </span>
+                      </div>
 
-                          {/* 2. Volume (دەنگ) */}
-                          <button
-                            onClick={toggleIframeMute}
-                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black transition-all active:scale-95 cursor-pointer shadow-md ${
-                              isIframeMuted
-                                ? "bg-red-600 hover:bg-red-700 text-white"
-                                : "bg-white/5 hover:bg-white/10 text-white"
-                            }`}
-                            title="Volume"
-                          >
-                            {isIframeMuted ? (
-                              <VolumeX className="w-4 h-4" />
-                            ) : (
-                              <Volume2 className="w-4 h-4" />
-                            )}
-                            <span className="kurdish-text font-black text-[11px]">
-                              دەنگ (Volume)
-                            </span>
-                          </button> {/* Volume Button */}
+                      {/* Bottom-right Cinematic Control Bar.
+                          Exact right→left sequence:
+                          [1] Fullscreen Expand · [2] Quality · [3] Play/Pause ·
+                          [4] Subtitle · [5] Exit Fullscreen · [6] Mute */}
+                      <div className="absolute bottom-0 right-0 z-50 h-16 flex items-center gap-1.5 md:gap-2 px-4 md:px-6 pointer-events-auto select-none font-sans">
+                        {/* [6] Mute / Audio Toggle (leftmost of the cluster) */}
+                        <button
+                          type="button"
+                          onClick={toggleIframeMute}
+                          className={`w-10 h-10 md:w-11 md:h-11 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border ${
+                            isIframeMuted
+                              ? "bg-red-600 hover:bg-red-700 text-white border-red-500/40"
+                              : "bg-black/60 hover:bg-white/10 text-white border-white/10"
+                          }`}
+                          title="ڕاگرتنی دەنگ (Mute)"
+                        >
+                          {isIframeMuted ? (
+                            <VolumeX className="w-4.5 h-4.5 md:w-5 md:h-5" />
+                          ) : (
+                            <Volume2 className="w-4.5 h-4.5 md:w-5 md:h-5" />
+                          )}
+                        </button>
 
-                          {/* 3. CC/Subtitles (سەبتایتڵ) */}
+                        {/* [5] Exit Fullscreen (active while fullscreen) */}
+                        <button
+                          type="button"
+                          onClick={toggleFullscreenMain}
+                          disabled={!isIframeFullscreen}
+                          className={`w-10 h-10 md:w-11 md:h-11 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border border-white/10 ${
+                            isIframeFullscreen
+                              ? "bg-white/10 hover:bg-white/20 text-white"
+                              : "bg-black/60 text-white/25 cursor-not-allowed opacity-50"
+                          }`}
+                          title="داخستنی فول سکرین (Exit Fullscreen)"
+                        >
+                          <Minimize className="w-4.5 h-4.5 md:w-5 md:h-5" />
+                        </button>
+
+                        {/* [4] Subtitle + Subtitle Position Adjustment */}
+                        <div className="relative">
                           <button
-                            onClick={toggleIframeSubtitles}
-                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black transition-all active:scale-95 cursor-pointer shadow-md ${
+                            type="button"
+                            onClick={() =>
+                              setPlayerMenu(
+                                playerMenu === "subtitle" ? null : "subtitle",
+                              )
+                            }
+                            className={`w-10 h-10 md:w-11 md:h-11 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border border-white/10 ${
                               !showIframeSubtitles
                                 ? "bg-zinc-800 text-zinc-500"
-                                : "bg-white/5 hover:bg-white/10 text-white"
+                                : "bg-black/60 hover:bg-white/10 text-white"
                             }`}
-                            title="Subtitles/CC"
+                            title="سەبتاتڵ و بەرزکردنەوەی سەبتایتڵ (Subtitles)"
                           >
-                            <Languages className="w-4 h-4" />
-                            <span className="kurdish-text font-black text-[11px]">
-                              سەبتایتڵ (CC/Subtitles)
-                            </span>
-                          </button> {/* Subtitles Button */}
+                            <Languages className="w-4.5 h-4.5 md:w-5 md:h-5" />
+                          </button>
 
-                          {/* 4. Fullscreen (گەورەکردن) */}
-                          <button
-                            onClick={toggleFullscreenMain}
-                            className="flex items-center gap-1.5 px-3 py-1.5 bg-white/5 hover:bg-white/10 text-white rounded-xl text-xs font-black transition-all active:scale-95 cursor-pointer shadow-md"
-                            title="Fullscreen"
-                          >
-                            <Maximize className="w-4 h-4" />
-                            <span className="kurdish-text font-black text-[11px]">
-                              گەورەکردن (Fullscreen)
-                            </span>
-                          </button> {/* Fullscreen Button */}
+                          {playerMenu === "subtitle" && (
+                            <>
+                              <div
+                                className="fixed inset-0 z-[55]"
+                                onClick={() => setPlayerMenu(null)}
+                              />
+                              <div className="absolute bottom-full right-0 mb-2 z-[60] w-52 rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-3 shadow-2xl">
+                                <div className="px-1 pb-2 text-[9px] font-black text-zinc-400 uppercase tracking-widest kurdish-text">
+                                  سەبتایتڵ (CC)
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    toggleIframeSubtitles();
+                                    setPlayerMenu(null);
+                                  }}
+                                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                                    showIframeSubtitles
+                                      ? "bg-brand-primary text-white"
+                                      : "bg-white/5 hover:bg-white/10 text-zinc-300"
+                                  }`}
+                                >
+                                  <span className="kurdish-text">دەرخستنی سەبتایتڵ</span>
+                                  {showIframeSubtitles ? (
+                                    <Captions className="w-4 h-4" />
+                                  ) : (
+                                    <CaptionsOff className="w-4 h-4" />
+                                  )}
+                                </button>
+
+                                <div className="mt-2 flex items-center justify-between gap-2 px-1">
+                                  <span className="text-[10px] font-bold text-zinc-400 kurdish-text">
+                                    بەرزکردنەوە
+                                  </span>
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setSubtitlePosition((p) =>
+                                          Math.max(0, p - 2),
+                                        )
+                                      }
+                                      className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/10 text-white cursor-pointer"
+                                      title="نزمکردنەوە"
+                                    >
+                                      <ChevronDown className="w-4 h-4" />
+                                    </button>
+                                    <span className="w-9 text-center text-xs font-black text-white">
+                                      {subtitlePosition}%
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setSubtitlePosition((p) =>
+                                          Math.min(14, p + 2),
+                                        )
+                                      }
+                                      className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/10 text-white cursor-pointer"
+                                      title="بەرزکردنەوە"
+                                    >
+                                      <ChevronUp className="w-4 h-4" />
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            </>
+                          )}
                         </div>
+
+                        {/* [3] Play / Pause */}
+                        <button
+                          type="button"
+                          onClick={toggleIframePlay}
+                          className="w-11 h-11 md:w-12 md:h-12 flex items-center justify-center rounded-full bg-brand-primary hover:bg-brand-primary/90 text-white transition-all active:scale-95 cursor-pointer shadow-lg shadow-red-600/30 border border-brand-primary/50"
+                          title="پاوس و پلەی (Play/Pause)"
+                        >
+                          {isIframePlaying ? (
+                            <Pause className="w-5 h-5 fill-current" />
+                          ) : (
+                            <Play className="w-5 h-5 fill-current ml-0.5" />
+                          )}
+                        </button>
+
+                        {/* [2] Quality Settings */}
+                        <div className="relative">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setPlayerMenu(
+                                playerMenu === "quality" ? null : "quality",
+                              )
+                            }
+                            className={`w-10 h-10 md:w-11 md:h-11 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border border-white/10 ${
+                              immersiveScale > 1
+                                ? "bg-brand-primary text-white"
+                                : "bg-black/60 hover:bg-white/10 text-white"
+                            }`}
+                            title="زیاد کردن و کەمکردنی کوالێتی وێنە (Quality)"
+                          >
+                            <Settings className="w-4.5 h-4.5 md:w-5 md:h-5" />
+                          </button>
+
+                          {playerMenu === "quality" && (
+                            <>
+                              <div
+                                className="fixed inset-0 z-[55]"
+                                onClick={() => setPlayerMenu(null)}
+                              />
+                              <div className="absolute bottom-full right-0 mb-2 z-[60] w-48 rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-2 shadow-2xl">
+                                <div className="px-3 pb-2 text-[9px] font-black text-zinc-400 uppercase tracking-widest kurdish-text">
+                                  کوالێتی وێنە
+                                </div>
+                                {IMMERSIVE_QUALITY_PRESETS.map((q) => (
+                                  <button
+                                    key={q.value}
+                                    type="button"
+                                    onClick={() => {
+                                      setImmersiveScale(q.value);
+                                      setPlayerMenu(null);
+                                    }}
+                                    className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                                      immersiveScale === q.value
+                                        ? "bg-brand-primary text-white"
+                                        : "bg-white/5 hover:bg-white/10 text-zinc-300"
+                                    }`}
+                                  >
+                                    <span className="kurdish-text">{q.label}</span>
+                                    {immersiveScale === q.value && (
+                                      <CheckCircle2 className="w-4 h-4" />
+                                    )}
+                                  </button>
+                                ))}
+                              </div>
+                            </>
+                          )}
+                        </div>
+
+                        {/* [1] Fullscreen Expand (rightmost of the cluster) */}
+                        <button
+                          type="button"
+                          onClick={toggleFullscreenMain}
+                          disabled={isIframeFullscreen}
+                          className={`w-10 h-10 md:w-11 md:h-11 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border border-white/10 ${
+                            isIframeFullscreen
+                              ? "bg-black/60 text-white/25 cursor-not-allowed opacity-50"
+                              : "bg-white/10 hover:bg-white/20 text-white"
+                          }`}
+                          title="گەورەکردنی شاشە بۆ فول سکرین (Fullscreen)"
+                        >
+                          <Maximize className="w-4.5 h-4.5 md:w-5 md:h-5" />
+                        </button>
                       </div>
 
                       {translatedContent && (
