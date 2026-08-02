@@ -77,6 +77,7 @@ import {
   Ticket,
   BarChart2,
   Share2,
+  Type,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { Plyr } from "plyr-react";
@@ -757,6 +758,48 @@ const buildOptimizedYouTubeEmbedUrl = (url: string) => {
   }
   return url;
 };
+
+// A single timed subtitle cue for the parent-side AI-subtitle overlay.
+type SubtitleCue = { start: number; end: number; text: string };
+
+// Minimal SRT / WebVTT parser: extracts the timing line + following text block for
+// every cue, strips inline VTT tags, and keeps only non-empty cues.
+function parseSubtitleText(content: string): SubtitleCue[] {
+  const normalized = content.replace(/\r\n?/g, "\n");
+  const timeRe = /(\d{1,2}):(\d{2}):(\d{2})[.,](\d{1,3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[.,](\d{1,3})/g;
+  const toSec = (h: string, m: string, s: string, ms: string) =>
+    +h * 3600 + +m * 60 + +s + +("0." + ms.padEnd(3, "0").slice(0, 3));
+  const cues: SubtitleCue[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = timeRe.exec(normalized)) !== null) {
+    const afterTiming = match.index + match[0].length;
+    const lineBreak = normalized.indexOf("\n", afterTiming);
+    const textStart = lineBreak === -1 ? afterTiming : lineBreak + 1;
+    const blank = normalized.indexOf("\n\n", textStart);
+    const blockEnd = blank === -1 ? normalized.length : blank;
+    const text = normalized
+      .slice(textStart, blockEnd)
+      .replace(/<[^>]+>/g, "")
+      .trim();
+    if (text) {
+      cues.push({
+        start: toSec(match[1], match[2], match[3], match[4]),
+        end: toSec(match[5], match[6], match[7], match[8]),
+        text,
+      });
+    }
+  }
+  return cues;
+}
+
+// Format a seconds value as `H:MM:SS` (or `MM:SS` when under an hour) for the seek bar.
+function formatTime(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return `${h > 0 ? `${h}:` : ""}${h > 0 ? String(m).padStart(2, "0") : String(m)}:${String(sec).padStart(2, "0")}`;
+}
 
 const CategoryDropdown = ({ value, onChange, categories }: any) => (
   <select
@@ -5631,7 +5674,18 @@ export default function App() {
   // Immersive cinematic player: zoom multiplier, subtitle vertical shift, active menu
   const [immersiveScale, setImmersiveScale] = useState(1);
   const [subtitlePosition, setSubtitlePosition] = useState(0);
-  const [playerMenu, setPlayerMenu] = useState<null | "quality" | "subtitle">(null);
+  const [playerMenu, setPlayerMenu] = useState<null | "quality" | "subtitle" | "substyle">(null);
+
+  // Subtitle style settings — session-scoped state that survives subtitle mode/language switches.
+  const [subtitleFontSize, setSubtitleFontSize] = useState(24);
+  const [subtitleBrightness, setSubtitleBrightness] = useState(100);
+  const [subtitleBackground, setSubtitleBackground] = useState<"solid" | "glass">("solid");
+
+  // Progress / seek bar state.
+  const [playerCurrentTime, setPlayerCurrentTime] = useState(0);
+  const [playerDuration, setPlayerDuration] = useState(0);
+  const [dragTime, setDragTime] = useState<number | null>(null);
+  const dragTimeRef = useRef<number | null>(null);
 
   useEffect(() => {
     const handleFsChange = () => {
@@ -5644,6 +5698,301 @@ export default function App() {
       document.removeEventListener("webkitfullscreenchange", handleFsChange);
     };
   }, []);
+
+  // The room-player YouTube embed URL starts muted (mute=1) so autoplay is
+  // always permitted by the browser. The app's default audio state is UNMUTED
+  // (isIframeMuted === false), so re-assert `unMute` in a short retry loop after
+  // the iframe mounts — YouTube silently drops commands posted before its player
+  // is ready, which previously left playback silent with a "unmuted" icon.
+  useEffect(() => {
+    if (!showPlayer || isIframeMuted) return;
+    if (!activeServerUrl || !/youtube\.com|youtu\.be/i.test(activeServerUrl)) return;
+    const frame = document.getElementById("room-player") as HTMLIFrameElement | null;
+    if (!frame?.contentWindow) return;
+    let attempts = 0;
+    const timer = window.setInterval(() => {
+      frame.contentWindow?.postMessage(
+        JSON.stringify({ event: "command", func: "unMute", args: [] }),
+        "https://www.youtube.com",
+      );
+      attempts += 1;
+      if (attempts >= 24) window.clearInterval(timer);
+    }, 400);
+    return () => window.clearInterval(timer);
+  }, [showPlayer, activeServerUrl, isIframeMuted]);
+
+  // ---- AI-translated subtitles (parent-side overlay) ----
+  // The embed players (YouTube/hdtoday) are cross-origin iframes, so translated
+  // subtitles cannot be injected as native <track> elements. Instead we render a
+  // text overlay on top of the player, time-synced from the YouTube embed's
+  // infoDelivery postMessages (currentTime) with a local clock fallback for
+  // providers that expose no playback API.
+  const [subtitleMode, setSubtitleMode] = useState<"original" | "ai">("original");
+  const [aiSubtitleCues, setAiSubtitleCues] = useState<SubtitleCue[]>([]);
+  const [aiSubtitleStatus, setAiSubtitleStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [aiSubtitleMessage, setAiSubtitleMessage] = useState("");
+  const [currentAiSubtitle, setCurrentAiSubtitle] = useState<string | null>(null);
+  const [aiSubtitleGenerating, setAiSubtitleGenerating] = useState(false);
+  const ytCurrentTimeRef = useRef(0);
+  const localClockRef = useRef(0);
+  // True while the modal is showing a YouTube source. The infoDelivery filter
+  // resolves the modal's own iframe at message time, so a late-mounting embed
+  // is still accepted and the background hero can't override the clock.
+  const modalYoutubeRef = useRef(false);
+  // True once the modal's YouTube embed actually streams infoDelivery; used to
+  // stop the listening-handshake retry loop (YouTube may init slowly).
+  const ytClockLiveRef = useRef(false);
+
+  // Track the embedded YouTube player's clock via its postMessage events.
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (!/youtube\.com|youtu\.be/.test(event.origin)) return;
+      let data: any;
+      try {
+        data = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      if (data?.event === "infoDelivery" && data.info && typeof data.info.currentTime === "number") {
+        // Accept time only from the modal's own embed (ignore the hero beneath
+        // it). Resolve the iframe now so late-mounted or remounted embeds work.
+        if (!modalYoutubeRef.current) return;
+        const frame = document.getElementById("room-player") as HTMLIFrameElement | null;
+        if (!frame?.contentWindow || event.source !== frame.contentWindow) return;
+        ytClockLiveRef.current = true;
+        ytCurrentTimeRef.current = data.info.currentTime;
+        // Also capture the embed-reported duration so the seek bar knows the total length.
+        if (typeof data.info.duration === "number" && data.info.duration > 0) {
+          setPlayerDuration(data.info.duration);
+        }
+      }
+      // YouTube IFrame API handshake: acknowledge onReady and subscribe to
+      // infoDelivery. Without this the embed never streams currentTime/duration,
+      // which the seek bar and the AI-subtitle overlay both depend on.
+      if (data?.event === "onReady" && data.id && event.source) {
+        (event.source as Window).postMessage(
+          JSON.stringify({
+            event: "listening",
+            id: data.id,
+            channel: "widget",
+            funcs: ["onInfoDelivery"],
+          }),
+          event.origin,
+        );
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
+  // Scope the clock to the modal's YouTube embed while it is open.
+  useEffect(() => {
+    modalYoutubeRef.current = !!activeServerUrl && /youtube\.com|youtu\.be/i.test(activeServerUrl);
+  }, [showPlayer, activeServerUrl, selectedMovie?.id]);
+
+  // YouTube IFrame API `listening` handshake: some embeds never send onReady on
+  // their own, so proactively subscribe to infoDelivery and keep retrying until
+  // the embed actually streams it (YouTube may initialize slowly in some
+  // contexts). Resolves the frame each tick so remounts are handled.
+  useEffect(() => {
+    if (!showPlayer || !activeServerUrl || !/youtube\.com|youtu\.be/i.test(activeServerUrl)) return;
+    ytClockLiveRef.current = false;
+    const msg = JSON.stringify({
+      event: "listening",
+      id: "widget",
+      channel: "widget",
+      funcs: ["onInfoDelivery"],
+    });
+    let attempts = 0;
+    const timer = window.setInterval(() => {
+      if (ytClockLiveRef.current || attempts >= 120) {
+        window.clearInterval(timer);
+        return;
+      }
+      const frame = document.getElementById("room-player") as HTMLIFrameElement | null;
+      frame?.contentWindow?.postMessage(msg, "https://www.youtube.com");
+      attempts += 1;
+    }, 400);
+    return () => window.clearInterval(timer);
+  }, [showPlayer, activeServerUrl]);
+
+  // Load / reset AI subtitle cues whenever a new movie or server is mounted.
+  useEffect(() => {
+    localClockRef.current = 0;
+    ytCurrentTimeRef.current = 0;
+    setCurrentAiSubtitle(null);
+    setAiSubtitleCues([]);
+    const url = selectedMovie?.subtitleUrl;
+    if (url) {
+      setAiSubtitleStatus("loading");
+      fetch(url)
+        .then((r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.text();
+        })
+        .then((text) => {
+          setAiSubtitleCues(parseSubtitleText(text));
+          setAiSubtitleStatus("ready");
+        })
+        .catch(() => setAiSubtitleStatus("error"));
+    } else {
+      setAiSubtitleStatus("idle");
+    }
+  }, [selectedMovie?.id, activeServerUrl]);
+
+  // Ticker: advance the local clock and pick the active AI subtitle cue.
+  useEffect(() => {
+    if (subtitleMode !== "ai" || aiSubtitleCues.length === 0) {
+      setCurrentAiSubtitle(null);
+      return;
+    }
+    const isYouTube = !!activeServerUrl && /youtube\.com|youtu\.be/i.test(activeServerUrl);
+    const tick = () => {
+      if (!isIframePlaying) {
+        setCurrentAiSubtitle(null);
+        return;
+      }
+      const t = isYouTube ? ytCurrentTimeRef.current : localClockRef.current;
+      const cue = aiSubtitleCues.find((c) => t >= c.start && t <= c.end);
+      setCurrentAiSubtitle(cue ? cue.text : null);
+      if (!isYouTube) localClockRef.current += 0.25;
+    };
+    const iv = window.setInterval(tick, 250);
+    return () => window.clearInterval(iv);
+  }, [subtitleMode, aiSubtitleCues, isIframePlaying, activeServerUrl]);
+
+  const selectSubtitleMode = (mode: "original" | "ai") => {
+    if (mode === "original") {
+      setSubtitleMode("original");
+      if (!showIframeSubtitles) toggleIframeSubtitles();
+    } else {
+      setSubtitleMode("ai");
+      // Avoid double subtitles: keep the provider's native CC off while the
+      // parent-side AI overlay is active.
+      if (showIframeSubtitles) toggleIframeSubtitles();
+    }
+    setPlayerMenu(null);
+  };
+
+  const handleGenerateAiSubtitles = async () => {
+    if (!selectedMovie) return;
+    setAiSubtitleGenerating(true);
+    setAiSubtitleMessage("");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 600000);
+    try {
+      const res = await fetch("/api/subtitle/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: getMovieSourceUrl(selectedMovie), lang: "ku" }),
+        signal: controller.signal,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || `Server error ${res.status}`);
+      const cues = parseSubtitleText(data.srt || "");
+      if (cues.length === 0) throw new Error("No subtitles were generated");
+      setAiSubtitleCues(cues);
+      setAiSubtitleStatus("ready");
+    } catch (err: any) {
+      setAiSubtitleStatus("error");
+      setAiSubtitleMessage(
+        err?.name === "AbortError"
+          ? "Generation timed out after 10 minutes — try again"
+          : err?.message || "Failed to generate subtitles",
+      );
+    } finally {
+      clearTimeout(timer);
+      setAiSubtitleGenerating(false);
+    }
+  };
+
+  // ---- Progress / seek bar ----
+  // Poll the active player's clock ~4x/sec to drive the bar and time readout.
+  // YouTube reports real time via infoDelivery; direct videos read Plyr's own
+  // clock; other cross-origin embeds fall back to the local clock.
+  useEffect(() => {
+    if (!showPlayer) return;
+    const isYouTube = !!activeServerUrl && /youtube\.com|youtu\.be/i.test(activeServerUrl);
+    const tick = () => {
+      let t = 0;
+      let d = 0;
+      if (plyrRef.current?.plyr) {
+        const p = plyrRef.current.plyr;
+        t = typeof p.currentTime === "number" ? p.currentTime : 0;
+        d = typeof p.duration === "number" && Number.isFinite(p.duration) ? p.duration : 0;
+      } else if (isYouTube) {
+        t = ytCurrentTimeRef.current;
+      } else {
+        t = localClockRef.current;
+      }
+      // Duration fallback: use the last AI subtitle cue when the player reports none.
+      if (d <= 0 && aiSubtitleCues.length > 0) d = aiSubtitleCues[aiSubtitleCues.length - 1].end;
+      setPlayerCurrentTime(t);
+      if (d > 0) setPlayerDuration(d);
+    };
+    tick();
+    const iv = window.setInterval(tick, 250);
+    return () => window.clearInterval(iv);
+  }, [showPlayer, activeServerUrl, aiSubtitleCues]);
+
+  // Compute the target time from a pointer position on the seek bar.
+  const seekTimeFromEvent = (e: React.PointerEvent) => {
+    const el = e.currentTarget as HTMLElement;
+    const rect = el.getBoundingClientRect();
+    const ratio = rect.width > 0 ? Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)) : 0;
+    return ratio * playerDuration;
+  };
+
+  // Seek the active player to `seconds` (clamped to the known duration).
+  const seekToPlayer = (seconds: number) => {
+    const t = Math.max(0, seconds);
+    setPlayerCurrentTime(t);
+    // 1. Direct video (Plyr): native seek.
+    if (plyrRef.current?.plyr) {
+      plyrRef.current.plyr.currentTime = t;
+    }
+    // 2. YouTube embed: iframe API seekTo command.
+    const roomPlayer = document.getElementById("room-player") as HTMLIFrameElement | null;
+    if (roomPlayer?.contentWindow) {
+      roomPlayer.contentWindow.postMessage(
+        JSON.stringify({ event: "command", func: "seekTo", args: [t, true] }),
+        "https://www.youtube.com",
+      );
+    }
+    // 3. Other embeds: best-effort seek + local-clock fallback so AI subtitles
+    //    re-sync even if the provider ignores the command.
+    const frame = document.getElementById("streaming-player") as HTMLIFrameElement | null;
+    if (frame?.contentWindow) {
+      frame.contentWindow.postMessage(
+        JSON.stringify({ event: "command", func: "seekTo", args: [t, true] }),
+        "*",
+      );
+    }
+    localClockRef.current = t;
+  };
+
+  const startSeekDrag = (e: React.PointerEvent) => {
+    if (playerDuration <= 0) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const nextTime = seekTimeFromEvent(e);
+    dragTimeRef.current = nextTime;
+    setDragTime(nextTime);
+  };
+
+  const updateSeekDrag = (e: React.PointerEvent) => {
+    if (dragTimeRef.current === null) return;
+    const nextTime = seekTimeFromEvent(e);
+    dragTimeRef.current = nextTime;
+    setDragTime(nextTime);
+  };
+
+  const endSeekDrag = () => {
+    const nextTime = dragTimeRef.current;
+    if (nextTime === null) return;
+    seekToPlayer(nextTime);
+    dragTimeRef.current = null;
+    setDragTime(null);
+  };
 
   const getIframe = (id: string): HTMLIFrameElement | null => {
     const el = document.getElementById(id);
@@ -8647,6 +8996,29 @@ export default function App() {
                         </div> // Plyr Player for direct video files
                       )}
 
+                      {/* AI-Translated Subtitle Overlay (parent-side, time-synced) */}
+                      {subtitleMode === "ai" && currentAiSubtitle && (
+                        <div
+                          className="absolute inset-x-0 z-[45] pointer-events-none select-none px-4 md:px-10 flex justify-center"
+                          style={{ bottom: `calc(64px + ${Math.max(0, Math.min(14, subtitlePosition))}%)` }}
+                        >
+                          <div
+                            className={`max-w-[85%] text-center font-bold kurdish-text leading-snug rounded-lg px-3 py-1.5 transition-colors duration-200 ${
+                              subtitleBackground === "glass"
+                                ? "bg-white/10 backdrop-blur-md border border-white/15"
+                                : "bg-black/70"
+                            }`}
+                            style={{
+                              fontSize: `${subtitleFontSize}px`,
+                              color: `rgba(255,255,255,${Math.max(0.35, subtitleBrightness / 100)})`,
+                              textShadow: "0 2px 6px rgba(0,0,0,0.95)",
+                            }}
+                          >
+                            {currentAiSubtitle}
+                          </div>
+                        </div>
+                      )}
+
                       {/* SyncRoom Overlay Integration */}
                       {activeSyncGroup && (
                         <SafeRender fallbackName="Live Sync Room Overlay">
@@ -8778,29 +9150,100 @@ export default function App() {
                                 className="fixed inset-0 z-[55]"
                                 onClick={() => setPlayerMenu(null)}
                               />
-                              <div className="absolute bottom-full right-0 mb-2 z-[60] w-52 rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-3 shadow-2xl">
+                              <div className="absolute bottom-full right-0 mb-2 z-[60] w-60 rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-3 shadow-2xl">
                                 <div className="px-1 pb-2 text-[9px] font-black text-zinc-400 uppercase tracking-widest kurdish-text">
                                   سەبتایتڵ (CC)
                                 </div>
+
+                                {/* Original subtitles: the embed's native captions */}
                                 <button
                                   type="button"
-                                  onClick={() => {
-                                    toggleIframeSubtitles();
-                                    setPlayerMenu(null);
-                                  }}
+                                  onClick={() => selectSubtitleMode("original")}
                                   className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-black transition-all cursor-pointer ${
-                                    showIframeSubtitles
+                                    subtitleMode === "original"
                                       ? "bg-brand-primary text-white"
                                       : "bg-white/5 hover:bg-white/10 text-zinc-300"
                                   }`}
                                 >
-                                  <span className="kurdish-text">دەرخستنی سەبتایتڵ</span>
-                                  {showIframeSubtitles ? (
+                                  <span className="kurdish-text">سەبتایتڵی سەرەکی</span>
+                                  {subtitleMode === "original" ? (
                                     <Captions className="w-4 h-4" />
                                   ) : (
-                                    <CaptionsOff className="w-4 h-4" />
+                                    <span className="w-4 h-4 rounded-full border-2 border-zinc-500" />
                                   )}
                                 </button>
+
+                                {/* AI-translated subtitles: parent-side overlay */}
+                                <button
+                                  type="button"
+                                  onClick={() => selectSubtitleMode("ai")}
+                                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-black transition-all cursor-pointer mt-1 ${
+                                    subtitleMode === "ai"
+                                      ? "bg-brand-primary text-white"
+                                      : "bg-white/5 hover:bg-white/10 text-zinc-300"
+                                  }`}
+                                >
+                                  <span className="kurdish-text">وەرگێڕانی AI</span>
+                                  {subtitleMode === "ai" ? (
+                                    <Captions className="w-4 h-4" />
+                                  ) : (
+                                    <span className="w-4 h-4 rounded-full border-2 border-zinc-500" />
+                                  )}
+                                </button>
+
+                                {/* AI subtitle status / generate flow */}
+                                {subtitleMode === "ai" &&
+                                  (aiSubtitleStatus === "loading" ? (
+                                    <div className="mt-2 px-3 py-1.5 text-[10px] font-bold text-zinc-400 kurdish-text">
+                                      بارکردنی سەبتایتڵ...
+                                    </div>
+                                  ) : aiSubtitleStatus === "ready" ? (
+                                    <div className="mt-2 px-3 py-1.5 text-[10px] font-bold text-emerald-400 kurdish-text">
+                                      {aiSubtitleCues.length} ڕیزی سەبتایتڵ بارکرا
+                                    </div>
+                                  ) : (
+                                    <div className="mt-2 space-y-1.5">
+                                      {aiSubtitleMessage && (
+                                        <div className="px-3 py-1.5 text-[9px] font-bold text-red-400 kurdish-text break-words">
+                                          {aiSubtitleMessage}
+                                        </div>
+                                      )}
+                                      <div className="flex items-center gap-1.5">
+                                        <button
+                                          type="button"
+                                          onClick={handleGenerateAiSubtitles}
+                                          disabled={aiSubtitleGenerating}
+                                          className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-[10px] font-black kurdish-text bg-brand-primary hover:bg-red-700 disabled:opacity-50 transition-all cursor-pointer"
+                                        >
+                                          {aiSubtitleGenerating ? (
+                                            <>
+                                              <span className="w-3 h-3 rounded-full border-2 border-white/40 border-t-white animate-spin" />
+                                              دروستکردن...
+                                            </>
+                                          ) : (
+                                            <>
+                                              <Sparkles className="w-3.5 h-3.5" />
+                                              دروستکردنی وەرگێڕان
+                                            </>
+                                          )}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setPlayerMenu(
+                                              playerMenu === "substyle"
+                                                ? null
+                                                : "substyle",
+                                            )
+                                          }
+                                          className="w-10 h-10 flex items-center justify-center rounded-xl bg-white/5 hover:bg-white/10 text-white transition-all cursor-pointer border border-white/10"
+                                          title="شێوازی سەبتایتڵ"
+                                        >
+                                          <Settings className="w-4 h-4" />
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ))}
 
                                 <div className="mt-2 flex items-center justify-between gap-2 px-1">
                                   <span className="text-[10px] font-bold text-zinc-400 kurdish-text">
@@ -8833,6 +9276,135 @@ export default function App() {
                                       title="بەرزکردنەوە"
                                     >
                                       <ChevronUp className="w-4 h-4" />
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            </>
+                          )}
+                        </div>
+
+                        {/* [3.5] Subtitle Style Settings (font size / brightness / background) */}
+                        <div className="relative">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setPlayerMenu(
+                                playerMenu === "substyle" ? null : "substyle",
+                              )
+                            }
+                            className={`w-10 h-10 md:w-11 md:h-11 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border border-white/10 ${
+                              playerMenu === "substyle"
+                                ? "bg-brand-primary text-white"
+                                : "bg-black/60 hover:bg-white/10 text-white"
+                            }`}
+                            title="شێوازی سەبتایتڵ (Subtitle Style)"
+                          >
+                            <Type className="w-4.5 h-4.5 md:w-5 md:h-5" />
+                          </button>
+
+                          {playerMenu === "substyle" && (
+                            <>
+                              <div
+                                className="fixed inset-0 z-[55]"
+                                onClick={() => setPlayerMenu(null)}
+                              />
+                              <div className="absolute bottom-full right-0 mb-2 z-[60] w-64 rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-3 shadow-2xl">
+                                <div className="px-1 pb-2 text-[9px] font-black text-zinc-400 uppercase tracking-widest kurdish-text">
+                                  شێوازی سەبتایتڵ
+                                </div>
+
+                                {/* Font size */}
+                                <div className="flex items-center justify-between gap-2 px-1">
+                                  <span className="text-[10px] font-bold text-zinc-400 kurdish-text">
+                                    قەبارەی تێکست
+                                  </span>
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setSubtitleFontSize((s) => Math.max(16, s - 2))
+                                      }
+                                      className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/10 text-white cursor-pointer"
+                                      title="کەمکردنەوە"
+                                    >
+                                      <ChevronDown className="w-4 h-4" />
+                                    </button>
+                                    <span className="w-9 text-center text-xs font-black text-white">
+                                      {subtitleFontSize}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setSubtitleFontSize((s) => Math.min(40, s + 2))
+                                      }
+                                      className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/10 text-white cursor-pointer"
+                                      title="زیادکردن"
+                                    >
+                                      <ChevronUp className="w-4 h-4" />
+                                    </button>
+                                  </div>
+                                </div>
+
+                                {/* Brightness */}
+                                <div className="mt-2 flex items-center justify-between gap-2 px-1">
+                                  <span className="text-[10px] font-bold text-zinc-400 kurdish-text">
+                                    ڕووناکی
+                                  </span>
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setSubtitleBrightness((s) => Math.max(40, s - 10))
+                                      }
+                                      className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/10 text-white cursor-pointer"
+                                      title="کەمکردنەوە"
+                                    >
+                                      <ChevronDown className="w-4 h-4" />
+                                    </button>
+                                    <span className="w-9 text-center text-xs font-black text-white">
+                                      {subtitleBrightness}%
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setSubtitleBrightness((s) => Math.min(100, s + 10))
+                                      }
+                                      className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/10 text-white cursor-pointer"
+                                      title="زیادکردن"
+                                    >
+                                      <ChevronUp className="w-4 h-4" />
+                                    </button>
+                                  </div>
+                                </div>
+
+                                {/* Background style */}
+                                <div className="mt-3 space-y-1">
+                                  <span className="block px-1 text-[10px] font-bold text-zinc-400 kurdish-text">
+                                    پاشبنەما
+                                  </span>
+                                  <div className="grid grid-cols-2 gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => setSubtitleBackground("solid")}
+                                      className={`px-2 py-2 rounded-xl text-[10px] font-black kurdish-text transition-all cursor-pointer ${
+                                        subtitleBackground === "solid"
+                                          ? "bg-brand-primary text-white"
+                                          : "bg-white/5 hover:bg-white/10 text-zinc-300"
+                                      }`}
+                                    >
+                                      داڕێژ
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setSubtitleBackground("glass")}
+                                      className={`px-2 py-2 rounded-xl text-[10px] font-black kurdish-text transition-all cursor-pointer ${
+                                        subtitleBackground === "glass"
+                                          ? "bg-brand-primary text-white"
+                                          : "bg-white/5 hover:bg-white/10 text-zinc-300"
+                                      }`}
+                                    >
+                                      شووشە
                                     </button>
                                   </div>
                                 </div>
@@ -8923,6 +9495,49 @@ export default function App() {
                         >
                           <Maximize className="w-4.5 h-4.5 md:w-5 md:h-5" />
                         </button>
+                      </div>
+
+                      {/* Full-width progress / seek bar with live time readout.
+                          Shows the active player's position and lets the user seek by
+                          dragging. Works natively with Plyr + YouTube; best-effort elsewhere. */}
+                      <div className="absolute bottom-16 inset-x-0 z-50 flex items-center gap-3 px-4 md:px-6 select-none font-sans pointer-events-auto">
+                        <span className="min-w-[88px] text-left text-[11px] font-bold text-white tabular-nums drop-shadow">
+                          {formatTime(dragTime ?? playerCurrentTime)}
+                        </span>
+                        <div
+                          role="slider"
+                          aria-label="Progress"
+                          aria-valuemin={0}
+                          aria-valuemax={Math.round(playerDuration || 0)}
+                          aria-valuenow={Math.round(dragTime ?? playerCurrentTime)}
+                          className={`relative flex-1 h-8 flex items-center cursor-pointer touch-none ${
+                            playerDuration <= 0 ? "opacity-40 pointer-events-none" : ""
+                          }`}
+                          onPointerDown={startSeekDrag}
+                          onPointerMove={updateSeekDrag}
+                          onPointerUp={endSeekDrag}
+                          onPointerCancel={endSeekDrag}
+                        >
+                          <div className="relative w-full h-1.5 rounded-full bg-white/20">
+                            <div
+                              className="absolute inset-y-0 left-0 rounded-full bg-brand-primary"
+                              style={{
+                                width: `${playerDuration > 0 ? Math.min(100, ((dragTime ?? playerCurrentTime) / playerDuration) * 100) : 0}%`,
+                              }}
+                            />
+                            <div
+                              className="absolute w-3.5 h-3.5 rounded-full bg-brand-primary border-2 border-white shadow-lg"
+                              style={{
+                                top: "50%",
+                                left: `${playerDuration > 0 ? Math.min(100, ((dragTime ?? playerCurrentTime) / playerDuration) * 100) : 0}%`,
+                                transform: "translate(-50%, -50%)",
+                              }}
+                            />
+                          </div>
+                        </div>
+                        <span className="min-w-[88px] text-right text-[11px] font-bold text-zinc-400 tabular-nums">
+                          {formatTime(playerDuration)}
+                        </span>
                       </div>
 
                       {translatedContent && (
@@ -9046,6 +9661,130 @@ export default function App() {
                             </button>
                           ))}
                         </div>
+                          <div className="relative">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setPlayerMenu(
+                                  playerMenu === "substyle" ? null : "substyle",
+                                )
+                              }
+                              className={`w-8 h-8 flex items-center justify-center rounded-lg transition-all active:scale-95 cursor-pointer shadow-sm border border-brand-primary/20 ${
+                                playerMenu === "substyle"
+                                  ? "bg-brand-primary text-white"
+                                  : "bg-brand-primary/10 hover:bg-brand-primary/20 text-brand-primary"
+                              }`}
+                              title="Subtitle style"
+                            >
+                              <Settings className="w-3.5 h-3.5" />
+                            </button>
+
+                            {playerMenu === "substyle" && (
+                              <>
+                                <div
+                                  className="fixed inset-0 z-[55]"
+                                  onClick={() => setPlayerMenu(null)}
+                                />
+                                <div className="absolute bottom-full right-0 mb-2 z-[60] w-64 rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-3 shadow-2xl">
+                                  <div className="px-1 pb-2 text-[9px] font-black text-zinc-400 uppercase tracking-widest kurdish-text">
+                                    شێوازی سەبتایتڵ
+                                  </div>
+
+                                  <div className="flex items-center justify-between gap-2 px-1">
+                                    <span className="text-[10px] font-bold text-zinc-400 kurdish-text">
+                                      قەبارەی تێکست
+                                    </span>
+                                    <div className="flex items-center gap-1">
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setSubtitleFontSize((s) => Math.max(16, s - 2))
+                                        }
+                                        className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/10 text-white cursor-pointer"
+                                        title="کەمکردنەوە"
+                                      >
+                                        <ChevronDown className="w-4 h-4" />
+                                      </button>
+                                      <span className="w-9 text-center text-xs font-black text-white">
+                                        {subtitleFontSize}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setSubtitleFontSize((s) => Math.min(40, s + 2))
+                                        }
+                                        className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/10 text-white cursor-pointer"
+                                        title="زیادکردن"
+                                      >
+                                        <ChevronUp className="w-4 h-4" />
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  <div className="mt-2 flex items-center justify-between gap-2 px-1">
+                                    <span className="text-[10px] font-bold text-zinc-400 kurdish-text">
+                                      ڕووناکی
+                                    </span>
+                                    <div className="flex items-center gap-1">
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setSubtitleBrightness((s) => Math.max(40, s - 10))
+                                        }
+                                        className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/10 text-white cursor-pointer"
+                                        title="کەمکردنەوە"
+                                      >
+                                        <ChevronDown className="w-4 h-4" />
+                                      </button>
+                                      <span className="w-9 text-center text-xs font-black text-white">
+                                        {subtitleBrightness}%
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setSubtitleBrightness((s) => Math.min(100, s + 10))
+                                        }
+                                        className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/10 text-white cursor-pointer"
+                                        title="زیادکردن"
+                                      >
+                                        <ChevronUp className="w-4 h-4" />
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  <div className="mt-3 space-y-1">
+                                    <span className="block px-1 text-[10px] font-bold text-zinc-400 kurdish-text">
+                                      پاشبنەما
+                                    </span>
+                                    <div className="grid grid-cols-2 gap-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => setSubtitleBackground("solid")}
+                                        className={`px-2 py-2 rounded-xl text-[10px] font-black kurdish-text transition-all cursor-pointer ${
+                                          subtitleBackground === "solid"
+                                            ? "bg-brand-primary text-white"
+                                            : "bg-white/5 hover:bg-white/10 text-zinc-300"
+                                        }`}
+                                      >
+                                        داڕێژ
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setSubtitleBackground("glass")}
+                                        className={`px-2 py-2 rounded-xl text-[10px] font-black kurdish-text transition-all cursor-pointer ${
+                                          subtitleBackground === "glass"
+                                            ? "bg-brand-primary text-white"
+                                            : "bg-white/5 hover:bg-white/10 text-zinc-300"
+                                        }`}
+                                      >
+                                        شووشە
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              </>
+                            )}
+                          </div>
                         <button
                           disabled={isTranslating}
                           onClick={() =>
@@ -9054,7 +9793,7 @@ export default function App() {
                               targetLang,
                             )
                           }
-                          className="flex items-center gap-2 px-3 py-1.5 bg-brand-primary/10 border border-brand-primary/20 rounded-lg text-brand-primary font-black text-[10px] hover:bg-brand-primary/20 transition-all shadow-sm"
+                            className="flex items-center gap-2 px-3 py-1.5 bg-brand-primary/10 border border-brand-primary/20 rounded-lg text-brand-primary font-black text-[10px] hover:bg-brand-primary/20 transition-all shadow-sm"
                         >
                           <Sparkles className="w-3 h-3" />
                           <span className="kurdish-text">وەرگێڕان (AI)</span>
