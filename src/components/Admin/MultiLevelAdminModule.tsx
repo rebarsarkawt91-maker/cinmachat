@@ -64,11 +64,51 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [newRole, setNewRole] = useState<"deputy_manager" | "staff">("staff");
+  const [showCreatePass, setShowCreatePass] = useState(false);
 
   // Edit/Reset password inputs
   const [targetUser, setTargetUser] = useState("");
   const [editPassword, setEditPassword] = useState("");
   const [showPass, setShowPass] = useState(false);
+
+  // Role hierarchy (mirrors the server-side ROLE_LEVEL guard): HIGHER level =
+  // MORE privilege. The UI only ever offers actions the backend will accept.
+  const currentUserName = String(currentUser?.username || "").toLowerCase();
+  const currentRole = String(currentUser?.role || "").toLowerCase();
+  const currentLevel =
+    currentUserName === "admin" || currentUserName === "dekan@123" || currentRole === "owner"
+      ? 4
+      : currentRole === "super_admin"
+        ? 3
+        : currentRole === "deputy_manager"
+          ? 2
+          : 1;
+  const isPrivileged = currentLevel >= 3; // owner / super_admin
+  const levelOf = (admin: AdminUser) => {
+    const name = String(admin.username || "").toLowerCase();
+    if (name === "admin" || name === "dekan@123" || admin.role === "owner") return 4;
+    if (admin.role === "super_admin") return 3;
+    if (admin.role === "deputy_manager") return 2;
+    return 1;
+  };
+  const canDeleteAdmin = (admin: AdminUser) => {
+    if (admin.isOwner) return false;
+    if (String(admin.username || "").toLowerCase() === currentUserName) return false;
+    return levelOf(admin) < currentLevel;
+  };
+  const canChangePasswordOf = (admin: AdminUser) => {
+    if (String(admin.username || "").toLowerCase() === currentUserName) return true;
+    if (admin.isOwner) return false;
+    return levelOf(admin) < currentLevel;
+  };
+
+  // If the current admin is not privileged, never let a deputy-manager role be
+  // selected (they may only create staff accounts).
+  useEffect(() => {
+    if (!isPrivileged && newRole === "deputy_manager") {
+      setNewRole("staff");
+    }
+  }, [isPrivileged, newRole]);
 
   const fetchModule17Data = async () => {
     if (!isOwner) return;
@@ -103,6 +143,8 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
     }
     setError("");
     setSuccessMsg("");
+    // Enforce the hierarchy locally: non-privileged admins may only create staff
+    const roleToCreate = isPrivileged ? newRole : "staff";
     try {
       const res = await fetch(`/api/admin/users?adminName=${encodeURIComponent(currentUser.username)}`, {
         method: "POST",
@@ -110,8 +152,8 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
         body: JSON.stringify({
           username: newUsername,
           password: newPassword,
-          isSuper: newRole === "deputy_manager",
-          role: newRole
+          isSuper: roleToCreate === "deputy_manager",
+          role: roleToCreate
         })
       });
       const data = await res.json();
@@ -381,7 +423,7 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
                         <td className="p-4 text-center">
                           {admin.isOwner ? (
                             <span className="text-[10px] text-gray-600 kurdish-text select-none">پاراێزراوە</span>
-                          ) : (
+                          ) : canDeleteAdmin(admin) ? (
                             <button
                               onClick={() => handleDeleteAdmin(admin.username)}
                               className="p-2 bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white rounded-xl transition-all"
@@ -389,6 +431,10 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>
+                          ) : (
+                            <span className="text-[10px] text-gray-600 kurdish-text select-none">
+                              بەبێ دەسەڵات
+                            </span>
                           )}
                         </td>
                       </tr>
@@ -420,13 +466,25 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-bold text-gray-400 kurdish-text">وشەی تێپەڕ (Password)</label>
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-bold text-gray-400 kurdish-text">وشەی تێپەڕ (Password)</label>
+                    <button
+                      type="button"
+                      onClick={() => setShowCreatePass(!showCreatePass)}
+                      className="text-gray-500 hover:text-white transition-colors"
+                      title={showCreatePass ? "شاردنەوەی وشەی تێپەڕ" : "پیشاندانی وشەی تێپەڕ"}
+                    >
+                      {showCreatePass ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
                   <input
-                    type="password"
+                    type={showCreatePass ? "text" : "password"}
                     required
+                    minLength={6}
+                    maxLength={128}
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
-                    placeholder="هەر وشەیەکی بەهێز"
+                    placeholder="هەر وشەیەکی بەهێز (لەکەمتر ٦ هێما)"
                     className="w-full bg-black/40 border border-white/5 rounded-xl px-4 py-3 text-xs text-white kurdish-text outline-none focus:border-amber-500/50 transition-all font-mono"
                   />
                 </div>
@@ -442,9 +500,11 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
                   <option value="staff" className="bg-[#0c0d12] text-white">
                     کارمەندی بەڕێوەبەر (Staff) - تەنها پۆستکردن و دانانی لینک (Post & Links Only)
                   </option>
-                  <option value="deputy_manager" className="bg-[#0c0d12] text-white">
-                    جێگری بەڕێوەبەر (Deputy Manager) - دەسەڵاتی گشتی و بەڕێوەبردنی ئەندامان
-                  </option>
+                  {isPrivileged && (
+                    <option value="deputy_manager" className="bg-[#0c0d12] text-white">
+                      جێگری بەڕێوەبەر (Deputy Manager) - دەسەڵاتی گشتی و بەڕێوەبردنی ئەندامان
+                    </option>
+                  )}
                 </select>
                 <p className="text-[10px] text-gray-500 kurdish-text mt-1 leading-relaxed">
                   * تێبینی: کارمەندی ئاسایی نابێت بتوانێت بنکەدراوە پاک بکاتەوە، یان یوزەری تر و ئەدمینی تر پسڕێتەوە یان دەستکاری بکات.
@@ -482,7 +542,7 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
                   className="w-full bg-black/40 border border-white/5 rounded-xl px-4 py-3 text-xs text-white kurdish-text outline-none focus:border-amber-500/50 transition-all font-mono"
                 >
                   <option value="" disabled className="text-gray-500">لێرەوە دیاری بکە</option>
-                  {admins.map(a => (
+                  {admins.filter(canChangePasswordOf).map(a => (
                     <option key={a.username} value={a.username} className="text-black bg-white">
                       {a.username} {a.username === currentUser.username ? "(من)" : ""}
                     </option>
@@ -504,6 +564,8 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
                 <input
                   type={showPass ? "text" : "password"}
                   required
+                  minLength={6}
+                  maxLength={128}
                   value={editPassword}
                   onChange={(e) => setEditPassword(e.target.value)}
                   placeholder="لەکەمتر نەبێ لە ٦ هێما"

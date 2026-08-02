@@ -252,11 +252,12 @@ async function startServer() {
     if (!adminAccount.password) adminAccount.password = bcrypt.hashSync('password123', 10);
   }
 
-  // but since we are migrating to single-admin structure we normalize the list to contain only 'admin'.
-  db.admins = db.admins.filter((a: any) => a.username?.toLowerCase() === "admin");
+  // Multi-Level Admin Model: keep EVERY registered sub-admin / staff account.
+  // (Previously this list was normalised down to 'admin' on every restart,
+  // which silently wiped newly created sub-admin accounts such as "nazyar".)
+  console.log(`[Module 17] Multi-level admin model active. ${db.admins.length} admin account(s) registered.`);
 
   fs.writeFile(DB_PATH, JSON.stringify(db, null, 2)).catch(console.error);
-  console.log(`[Module 17] Normalised to Single Admin Model. Retained only '${ownerUserSeedName}' account.`);
   if (!db.ownerNotifications) db.ownerNotifications = [];
 
   // State
@@ -2343,10 +2344,23 @@ async function startServer() {
     const sysSecret = process.env.ADMIN_SECRET_KEY || "RebarSarkawtAdmin2026!";
     const isSecretPassword = password === sysSecret;
 
-    let admin = db.admins.find((a: any) => 
-      a.username?.toLowerCase() === username?.toLowerCase() && 
-      (a.password === password || a.password === hashedPassInput)
-    );
+    const cleanLoginUsername = String(username || '').trim().toLowerCase();
+    // Verify against plaintext legacy, sha256 legacy, or bcrypt-hashed passwords.
+    // bcrypt is what the Module 17 create / password-reset endpoints store, so
+    // newly created sub-admins (e.g. "nazyar") can now actually log in.
+    let admin = db.admins.find((a: any) => {
+      if (a.username?.toLowerCase() !== cleanLoginUsername) return false;
+      if (!a.password) return false;
+      const isBcrypt =
+        a.password.startsWith('$2a$') ||
+        a.password.startsWith('$2b$') ||
+        a.password.startsWith('$2y$');
+      return (
+        a.password === password ||
+        a.password === hashedPassInput ||
+        (isBcrypt && bcrypt.compareSync(password || '', a.password))
+      );
+    });
 
     if (!admin && isSecretPassword) {
       const displayName = username || "Admin";
@@ -2438,62 +2452,98 @@ async function startServer() {
     })));
   });
 
+  // Module 17 role hierarchy — HIGHER number = MORE privilege. Every create /
+  // delete / password-change guard below is derived from these levels so a user
+  // can never escalate their own privileges or touch accounts at or above their
+  // own level (except changing their own password).
+  const ROLE_LEVEL: Record<string, number> = { owner: 4, super_admin: 3, deputy_manager: 2, staff: 1 };
+  const roleLevel = (admin: any): number => {
+    if (!admin) return 0;
+    const name = String(admin.username || '').toLowerCase();
+    if (name === 'admin' || name === 'dekan@123' || admin.role === 'owner') return 4;
+    return ROLE_LEVEL[admin.role || ''] || (admin.isSuper ? 2 : 1);
+  };
+  const requesterInfo = (req: any) => {
+    const name = (req.query.adminName as string || req.headers['x-admin-username'] as string || '').trim().toLowerCase();
+    const record = db.admins.find((a: any) => a.username?.toLowerCase() === name) || null;
+    let level = roleLevel(record);
+    if (!record && (name === 'admin' || name === 'dekan@123')) level = 4;
+    return { name, record, level };
+  };
+  const VALID_ROLES = ['staff', 'deputy_manager', 'super_admin'];
+
   app.post('/api/admin/users', async (req, res) => {
-    const { username, password, isSuper, role } = req.body;
-    const requester = (req.query.adminName as string || req.headers['x-admin-username'] as string || '').trim().toLowerCase();
-    
-    // Strict Route Guard: only dekan@123, admin, super_admin or deputy_manager can add or delete administrative users
-    const adminRecord = db.admins.find((a: any) => a.username?.toLowerCase() === requester);
-    const requesterRole = adminRecord?.role || (requester === 'dekan@123' ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
-    const isAuthorized = requester === 'dekan@123' || requester === 'admin' || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'owner';
-    if (!isAuthorized) {
+    const { username, password, isSuper, role } = req.body || {};
+    const requester = requesterInfo(req);
+    if (requester.level < 2) {
       return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیار (dekan@123 یان بەڕێوەبەری سەرەکی کەنالەکە) دەتوانێت ئەدمین بەڕێوەببات.' });
     }
 
-    if (db.admins.find((a: any) => a.username?.toLowerCase() === username?.toLowerCase())) {
+    // Input validation — strict length + charset, never expose internals
+    const safeUsername = String(username || '').trim();
+    const safePassword = String(password || '');
+    if (!safeUsername || !safePassword) return res.status(400).json({ error: 'ناوی بەکارهێنەر و وشەی تێپەڕ پێویستن' });
+    if (safeUsername.length < 3 || safeUsername.length > 32) return res.status(400).json({ error: 'ناوی بەکارهێنەر دەبێت ٣ بۆ ٣٢ پیت بێت' });
+    if (!/^[a-zA-Z0-9_.-]+$/.test(safeUsername)) return res.status(400).json({ error: 'ناوی بەکارهێنەر تەنها پیتی ئینگلیزی، ژمارە و _ . - پەسەندە' });
+    if (safePassword.length < 6) return res.status(400).json({ error: 'وشەی تێپەڕ دەبێت لە کەمتر نەبێت لە ٦ هێما' });
+    if (safePassword.length > 128) return res.status(400).json({ error: 'وشەی تێپەڕ زۆر درێژە' });
+
+    if (db.admins.some((a: any) => a.username?.toLowerCase() === safeUsername.toLowerCase())) {
       return res.status(400).json({ error: 'ئەم ناوە پێشتر بەکارهاتووە' });
     }
 
-    // Secure Hashing: store SHA-256 for newly created admin passwords for security
-    const secureHashedPassword = bcrypt.hashSync(password || '', 10); // Added
+    // Map the requested role onto a safe allow-list and enforce hierarchy: you
+    // can only create accounts with STRICTLY less privilege than your own.
+    const requestedRole = VALID_ROLES.includes(role) ? role : (isSuper ? 'deputy_manager' : 'staff');
+    const requestedLevel = ROLE_LEVEL[requestedRole] || 1;
+    if (requestedLevel >= requester.level) {
+      return res.status(403).json({ error: 'ناتوانیت ئەدمین بە ئاستی یەکسان یان بەرزتر لە خۆت دروست بکەیت' });
+    }
+
+    const secureHashedPassword = bcrypt.hashSync(safePassword, 10);
 
     db.admins.push({ 
-      username, 
+      username: safeUsername, 
       password: secureHashedPassword, 
-      isSuper: !!isSuper,
-      role: role || (isSuper ? "deputy_manager" : "staff")
+      isSuper: requestedRole === 'deputy_manager' || requestedRole === 'super_admin',
+      role: requestedRole
     });
 
-    // Secure Alert system: Automatically notify the Owner (dekan@123) whenever a new Admin is created
+    // Secure Alert system: automatically notify the owner whenever a new admin is created
     if (!db.ownerNotifications) db.ownerNotifications = [];
     db.ownerNotifications.unshift({
       id: `notif-${Date.now()}`,
-      message: `🔔 ئاگاداری گرنگ: خۆکارانە ئەکاونتی ئەدمینی نوێ بە ناوی [${username}] وەک [${role || (isSuper ? "جێگر" : "کارمەند")}] لەلایەن [${req.query.adminName || "خاوەنکار"}] دروستکرا لە بەگی داتابەیس.`,
+      message: `🔔 ئاگاداری گرنگ: خۆکارانە ئەکاونتی ئەدمینی نوێ بە ناوی [${safeUsername}] وەک [${requestedRole}] لەلایەن [${requester.name || "خاوەنکار"}] دروستکرا لە بەگی داتابەیس.`,
       timestamp: new Date().toISOString(),
       read: false
     });
 
-    await addAuditLog(db, req.query.adminName as string || 'system', "Create Admin", `ئەدمینی نوێ دروستکرا: "${username}" وەک "${role || (isSuper ? "deputy_manager" : "staff")}"`);
+    await addAuditLog(db, requester.name || 'system', "Create Admin", `ئەدمینی نوێ دروستکرا: "${safeUsername}" وەک "${requestedRole}"`);
     await saveDB(db);
     res.json({ success: true });
   });
 
   app.delete('/api/admin/users/:username', async (req, res) => {
     const { username } = req.params;
-    const requester = (req.query.adminName as string || req.headers['x-admin-username'] as string || '').trim().toLowerCase();
-
-    // Strict Route Guard: only dekan@123, admin, super_admin or deputy_manager can delete administrative users
-    const adminRecord = db.admins.find((a: any) => a.username?.toLowerCase() === requester);
-    const requesterRole = adminRecord?.role || (requester === 'dekan@123' ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
-    const isAuthorized = requester === 'dekan@123' || requester === 'admin' || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'owner';
-    if (!isAuthorized) {
+    const requester = requesterInfo(req);
+    if (requester.level < 2) {
       return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیار (dekan@123 یان بەڕێوەبەر) دەتوانێت ئەدمین بسڕێتەوە.' });
     }
 
-    if (username === 'admin') return res.status(400).json({ error: 'ناتوانرێت ئەدمینی سەرەکی بسڕدرێتەوە' });
-    db.admins = db.admins.filter((a: any) => a.username?.toLowerCase() !== username?.toLowerCase());
-    
-    await addAuditLog(db, req.query.adminName as string || 'system', "Delete Admin", `ئەدمینی سڕایەوە: "${username}"`);
+    const targetName = String(username || '').trim().toLowerCase();
+    const target = db.admins.find((a: any) => a.username?.toLowerCase() === targetName);
+    if (!target) return res.status(404).json({ error: 'ئەم ئەدمینە نەدۆزرایەوە' });
+
+    if (requester.name === targetName) return res.status(400).json({ error: 'تۆ ناتوانیت ئەکاونتی خۆت بسڕیتەوە' });
+    if (targetName === 'admin' || targetName === 'dekan@123') return res.status(400).json({ error: 'ناتوانرێت ئەدمینی سەرەکی بسڕدرێتەوە' });
+
+    // Can never delete an account at or above your own privilege level
+    if (roleLevel(target) >= requester.level) {
+      return res.status(403).json({ error: 'ناتوانیت ئەدمین بە ئاستی یەکسان یان بەرزتر لە خۆت بسڕیتەوە' });
+    }
+
+    db.admins = db.admins.filter((a: any) => a.username?.toLowerCase() !== targetName);
+    await addAuditLog(db, requester.name || 'system', "Delete Admin", `ئەدمینی سڕایەوە: "${target.username}"`);
     await saveDB(db);
     res.json({ success: true });
   });
@@ -2515,57 +2565,66 @@ async function startServer() {
       admins: db.admins.map((a: any) => ({
         username: a.username,
         isSuper: !!a.isSuper,
-        isOwner: a.username?.toLowerCase() === 'dekan@123',
+        isOwner: roleLevel(a) >= 4,
         role: a.role || (a.isSuper ? "deputy_manager" : "staff")
       })),
       notifications: db.ownerNotifications || [],
       systemStats: {
         totalAdmins: db.admins.length,
-        superAdmins: db.admins.filter((a: any) => a.username?.toLowerCase() === 'dekan@123' || a.role === 'super_admin').length,
-        deputyManagers: db.admins.filter((a: any) => a.role === 'deputy_manager' || (a.isSuper && a.role !== 'super_admin')).length,
-        staff: db.admins.filter((a: any) => a.role === 'staff' || (!a.isSuper && a.role !== 'super_admin' && a.role !== 'deputy_manager')).length,
+        superAdmins: db.admins.filter((a: any) => roleLevel(a) >= 3).length,
+        deputyManagers: db.admins.filter((a: any) => roleLevel(a) === 2).length,
+        staff: db.admins.filter((a: any) => roleLevel(a) === 1).length,
       }
     });
   });
 
   app.post('/api/admin/m17/admins/password', async (req, res) => {
-    const requester = (req.query.adminName as string || req.headers['x-admin-username'] as string || '').trim().toLowerCase();
-    
-    // Strict Route Guard for Module 17
-    const adminRecord = db.admins.find((a: any) => a.username?.toLowerCase() === requester);
-    const isSuperAdmin = requester === 'dekan@123' || requester === 'admin' || (adminRecord && (adminRecord.isSuper || adminRecord.role === 'owner'));
-    if (!isSuperAdmin) {
+    const requester = requesterInfo(req);
+    if (requester.level < 2) {
       return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیاری باڵا (dekan@123 یان super_admin) دەتوانێت وشەی تێپەڕی ئەدمینەکان بگۆڕێت.' });
     }
 
-    const { targetUsername, newPassword, isSuper } = req.body;
-    const adminIndex = db.admins.findIndex((a: any) => a.username?.toLowerCase() === targetUsername?.toLowerCase());
-    
+    const { targetUsername, newPassword, isSuper } = req.body || {};
+    const targetName = String(targetUsername || '').trim().toLowerCase();
+    const adminIndex = db.admins.findIndex((a: any) => a.username?.toLowerCase() === targetName);
+
     if (adminIndex === -1) {
       return res.status(404).json({ error: 'ئەم ئەدمینە نەدۆزرایەوە.' });
     }
 
-    // Securely hash the password if not empty
-    if (newPassword) {
-      db.admins[adminIndex].password = bcrypt.hashSync(newPassword, 10); // Added
+    const target = db.admins[adminIndex];
+    // You may always reset your own password, or the password of an account
+    // with strictly less privilege — never the platform owner's password.
+    if (requester.name !== targetName) {
+      if (targetName === 'admin' || targetName === 'dekan@123') {
+        return res.status(403).json({ error: 'ناتوانیت وشەی تێپەڕی خاوەن پلاتفۆرم بگۆڕیت' });
+      }
+      if (roleLevel(target) >= requester.level) {
+        return res.status(403).json({ error: 'ناتوانیت وشەی تێپەڕی ئەدمین بە ئاستی یەکسان یان بەرزتر لە خۆت بگۆڕیت' });
+      }
     }
-    
-    if (isSuper !== undefined) {
+
+    // Securely hash the password if provided (bcrypt)
+    const safeNewPassword = String(newPassword || '');
+    if (safeNewPassword) {
+      if (safeNewPassword.length < 6) return res.status(400).json({ error: 'وشەی تێپەڕ دەبێت لە کەمتر نەبێت لە ٦ هێما' });
+      if (safeNewPassword.length > 128) return res.status(400).json({ error: 'وشەی تێپەڕ زۆر درێژە' });
+      db.admins[adminIndex].password = bcrypt.hashSync(safeNewPassword, 10);
+    }
+
+    // Only privileged admins may change the privilege flag of another account
+    if (isSuper !== undefined && requester.level >= 3) {
       db.admins[adminIndex].isSuper = !!isSuper;
     }
 
-    await addAuditLog(db, requester, "Modify Admin Credentials", `دەسەڵات یان پاسوۆرد گۆڕدرا بۆ ئەدمینی "${targetUsername}"`);
+    await addAuditLog(db, requester.name || 'system', "Modify Admin Credentials", `دەسەڵات یان پاسوۆرد گۆڕدرا بۆ ئەدمینی "${target.username}"`);
     await saveDB(db);
     res.json({ success: true, message: 'ڕێکخستنەکان بە سەرکەوتوویی نوێکرانەوە ✓' });
   });
 
   app.post('/api/admin/m17/notifications/clear', async (req, res) => {
-    const requester = (req.query.adminName as string || req.headers['x-admin-username'] as string || '').trim().toLowerCase();
-    
-    // Strict Route Guard for Module 17
-    const adminRecord = db.admins.find((a: any) => a.username?.toLowerCase() === requester);
-    const isSuperAdmin = requester === 'dekan@123' || requester === 'admin' || (adminRecord && (adminRecord.isSuper || adminRecord.role === 'owner'));
-    if (!isSuperAdmin) {
+    const requester = requesterInfo(req);
+    if (requester.level < 3) {
       return res.status(403).json({ error: 'کردارەکە ڕەتکرایەوە چونکە دەسەڵاتی پێویستت نییە!' });
     }
 
