@@ -79,6 +79,9 @@ const INITIAL_DB = {
   },
   deletedIds: [] as string[],
   bannedIps: [] as string[],
+  // Unblock request queue: filled by blocked users via the public
+  // /api/unblock-request endpoint, managed by admins in Security Shield.
+  unblockRequests: [] as any[],
   // Super Admin (Owner) IP/device whitelist: ip -> last seen ISO timestamp.
   // Whitelisted IPs receive a 1-minute temporary block instead of a permanent
   // ban, and are auto-unblocked after exactly 1 minute (see evaluateOwnerBlock).
@@ -199,6 +202,7 @@ async function startServer() {
   if (!db.users) db.users = [];
   if (!db.tagOverrides) db.tagOverrides = {};
   if (!db.bannedIps) db.bannedIps = [];
+  if (!db.unblockRequests) db.unblockRequests = [];
   if (!db.ownerWhitelist) db.ownerWhitelist = {};
   if (!db.bannedIpTimestamps) db.bannedIpTimestamps = {};
   if (!db.youtubeChannelUrl) db.youtubeChannelUrl = "https://www.youtube.com/";
@@ -613,7 +617,7 @@ async function startServer() {
   // Owner-whitelisted IPs/devices get a 1-minute temporary block instead of a
   // permanent ban and are auto-unblocked by evaluateOwnerBlock once it expires.
   app.use((req, res, next) => {
-    if (req.url === '/api/check-ban') {
+    if (req.url === '/api/check-ban' || req.url === '/api/unblock-request') {
       return next();
     }
     if (req.url.startsWith('/api/')) {
@@ -645,7 +649,7 @@ async function startServer() {
   app.use((req, res, next) => {
     if (db.emergencyLock) {
       const isApiCall = req.url.startsWith('/api/');
-      const isAdminCall = req.url.startsWith('/api/admin/') || req.url === '/api/admin/login' || req.url === '/api/check-ban';
+      const isAdminCall = req.url.startsWith('/api/admin/') || req.url === '/api/admin/login' || req.url === '/api/check-ban' || req.url === '/api/unblock-request';
       const isStaticAsset = req.url.includes('.') && !isApiCall;
 
       if (isApiCall && !isAdminCall && !isStaticAsset) {
@@ -685,6 +689,53 @@ async function startServer() {
     res.json({ banned: !!isBanned, ip: cleanIp, emergencyLock: !!db.emergencyLock });
   });
 
+  // Public unblock-request endpoint (no auth — reachable by blocked users so
+  // they can request their IP/device to be unblocked). A light per-IP rate
+  // limit prevents bots from flooding the admin queue.
+  const unblockRequestRate: Record<string, { attempts: number; firstAt: number }> = {};
+  app.post('/api/unblock-request', async (req, res) => {
+    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || "Unknown";
+    const cleanIp = String(clientIp).trim();
+    const now = Date.now();
+
+    // Max 3 requests per IP per 10 minutes
+    const existing = unblockRequestRate[cleanIp];
+    if (existing && now - existing.firstAt < 10 * 60 * 1000) {
+      if (existing.attempts >= 3) {
+        return res.status(429).json({ success: false, error: 'زۆر داواکاری نێردراوە لەم ئامێرەوە. تکایە دواتر هەوڵبدەوە.' });
+      }
+      existing.attempts += 1;
+    } else {
+      unblockRequestRate[cleanIp] = { attempts: 1, firstAt: now };
+    }
+
+    const { name, phone } = req.body || {};
+    const cleanName = typeof name === 'string' ? name.trim().slice(0, 60) : '';
+    const cleanPhone = typeof phone === 'string' ? phone.trim().replace(/\s+/g, '') : '';
+
+    if (!cleanName) {
+      return res.status(400).json({ success: false, error: 'تکایە ناوی خۆت بنووسە.' });
+    }
+    if (!/^\+?\d{6,15}$/.test(cleanPhone)) {
+      return res.status(400).json({ success: false, error: 'تکایە ژمارەی مۆبایلی دروست بنووسە.' });
+    }
+
+    if (!db.unblockRequests) db.unblockRequests = [];
+    db.unblockRequests.unshift({
+      id: `unblock_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      name: cleanName,
+      phone: cleanPhone,
+      ip: cleanIp,
+      timestamp: new Date().toISOString()
+    });
+    if (db.unblockRequests.length > 200) db.unblockRequests = db.unblockRequests.slice(0, 200);
+
+    await addAuditLog(db, "USER_UNBLOCK_REQUEST", "New Unblock Request", `داواکاری لابردنی بلۆک لە ${cleanName} (${cleanPhone}) ئایپی: ${cleanIp}`);
+    await saveDB(db);
+    console.log(`[Unblock Request] ${cleanName} (${cleanPhone}) from ${cleanIp}`);
+    res.json({ success: true });
+  });
+
   // Banned IPs administration endpoints
   app.get('/api/admin/banned-ips', (req, res) => {
     res.json(db.bannedIps || []);
@@ -716,6 +767,34 @@ async function startServer() {
     await saveDB(db);
     console.log(`[Unban IP] Admin unbanned IP: ${cleanIp}`);
     res.json({ success: true, bannedIps: db.bannedIps });
+  });
+
+  // Unblock-request management endpoints (view, single delete, clear all)
+  app.get('/api/admin/unblock-requests', (req, res) => {
+    res.json(db.unblockRequests || []);
+  });
+
+  app.delete('/api/admin/unblock-request/:id', async (req, res) => {
+    const { id } = req.params;
+    const { adminName } = req.body || {};
+    if (!id) return res.status(400).json({ error: 'Request ID required' });
+    if (!db.unblockRequests) db.unblockRequests = [];
+    const target = db.unblockRequests.find((r: any) => r.id === id);
+    db.unblockRequests = db.unblockRequests.filter((r: any) => r.id !== id);
+    await addAuditLog(db, adminName, "Delete Unblock Request", target
+      ? `داواکاری لابردنی بلۆک سڕایەوە: ${target.name} (${target.phone})`
+      : `داواکاری لابردنی بلۆک سڕایەوە (ID: ${id})`);
+    await saveDB(db);
+    res.json({ success: true, unblockRequests: db.unblockRequests });
+  });
+
+  app.post('/api/admin/clear-unblock-requests', async (req, res) => {
+    const { adminName } = req.body || {};
+    const count = (db.unblockRequests || []).length;
+    db.unblockRequests = [];
+    await addAuditLog(db, adminName, "Clear Unblock Requests", `هەموو داواکارییەکانی لابردنی بلۆک سڕانەوە (${count})`);
+    await saveDB(db);
+    res.json({ success: true });
   });
 
   // Firewall Logs Tracking (Point 2: Firewall Logs & Point 3: Auto-Ban count)

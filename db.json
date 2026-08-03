@@ -388,5 +388,7 @@
   "invitations": [],
   "manualMovies": [],
   "vipRequests": [],
-  "appSnapshots": []
+  "appSnapshots": [],
+  "ownerWhitelist": {},
+  "bannedIpTimestamps": {}
 }

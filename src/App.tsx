@@ -5908,6 +5908,11 @@ export default function App() {
   const [unblockAt, setUnblockAt] = useState<number | null>(null);
   const [nowTick, setNowTick] = useState(Date.now());
   const [emergencyLocked, setEmergencyLocked] = useState(false);
+  // Unblock-request form state shown on the block screen
+  const [unblockName, setUnblockName] = useState("");
+  const [unblockPhone, setUnblockPhone] = useState("");
+  const [unblockSending, setUnblockSending] = useState(false);
+  const [unblockFeedback, setUnblockFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
 
   // Main Modal Player customized states
   const [isIframePlaying, setIsIframePlaying] = useState(true);
@@ -7818,6 +7823,44 @@ export default function App() {
     return () => clearInterval(banInterval);
   }, [checkBanStatus]);
 
+  // Submit an unblock request from the block screen (name + mobile)
+  const submitUnblockRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!unblockName.trim()) {
+      setUnblockFeedback({ ok: false, msg: "تکایە ناوی خۆت بنووسە." });
+      return;
+    }
+    if (!/^\+?\d{6,15}$/.test(unblockPhone.trim().replace(/\s+/g, ""))) {
+      setUnblockFeedback({ ok: false, msg: "تکایە ژمارەی مۆبایلی دروست بنووسە (لەگەڵ کۆدی وڵات)." });
+      return;
+    }
+    setUnblockSending(true);
+    setUnblockFeedback(null);
+    try {
+      const res = await fetch("/api/unblock-request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: unblockName.trim(), phone: unblockPhone.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setUnblockFeedback({
+          ok: true,
+          msg: "داواکارییەکەت نێردرا! بەڕێوەبەرایەتی پێداچوونەوەی تێدا دەکات و پەیوەندیت پێوە دەکات."
+        });
+        setUnblockName("");
+        setUnblockPhone("");
+      } else {
+        setUnblockFeedback({ ok: false, msg: data?.error || "ناردنی داواکاری سەرکەوتوو نەبوو. تکایە دووبارە هەوڵبدەوە." });
+      }
+    } catch (err) {
+      console.warn("Unable to submit unblock request:", err);
+      setUnblockFeedback({ ok: false, msg: "کێشەی پەیوەندی ڕوویدا. تکایە دووبارە هەوڵبدەوە." });
+    } finally {
+      setUnblockSending(false);
+    }
+  };
+
   // Live countdown for the Owner's temporary 1-minute exemption. When the
   // remaining time hits 0 the server has already auto-unblocked the IP/device,
   // so re-check immediately to restore full access without a manual reload.
@@ -8470,6 +8513,48 @@ export default function App() {
             تێپەڕ ڕێگری لێکراوە لە CinemaChat. ئەم ڕێوشوێنە ئەمنییەتە جێبەجێ
             کراوە بۆ پاراستن لە هێرشی هاکەران و بۆتە ئۆتۆماتیکییەکان.
           </p>
+          {/* Unblock request form: name + mobile, submitted to the server */}
+          <form
+            onSubmit={submitUnblockRequest}
+            className="space-y-3 p-4 bg-white/5 border border-white/10 rounded-2xl"
+          >
+            <p className="text-xs font-bold text-gray-300 kurdish-text">
+              داواکردنی لابردنی بلۆک
+            </p>
+            <input
+              type="text"
+              value={unblockName}
+              onChange={(e) => setUnblockName(e.target.value)}
+              placeholder="ناوی تۆ"
+              maxLength={60}
+              className="w-full px-4 py-2.5 bg-black/40 border border-white/10 focus:border-brand-primary/50 rounded-xl text-sm text-white kurdish-text outline-none placeholder:text-gray-500"
+            />
+            <input
+              type="tel"
+              value={unblockPhone}
+              onChange={(e) => setUnblockPhone(e.target.value)}
+              placeholder="ژمارەی مۆبایل (وەک 964770xxxxxxx)"
+              inputMode="tel"
+              className="w-full px-4 py-2.5 bg-black/40 border border-white/10 focus:border-brand-primary/50 rounded-xl text-sm text-white font-mono outline-none placeholder:text-gray-500"
+              dir="ltr"
+            />
+            <button
+              type="submit"
+              disabled={unblockSending}
+              className="w-full px-5 py-3 bg-brand-primary hover:opacity-90 disabled:opacity-50 transition-opacity rounded-2xl text-xs font-black text-black kurdish-text active:scale-[0.98]"
+            >
+              {unblockSending ? "ئامادەکردن..." : "ناردنی داواکاری"}
+            </button>
+            {unblockFeedback && (
+              <p
+                className={`text-[11px] font-bold kurdish-text leading-relaxed ${
+                  unblockFeedback.ok ? "text-emerald-400" : "text-red-400"
+                }`}
+              >
+                {unblockFeedback.msg}
+              </p>
+            )}
+          </form>
           {/* Direct support unblock via WhatsApp (official logo) */}
           <a
             href="https://wa.me/9647701966649?text=بەڕێز%20پشتگیری%2C%20من%20بە%20هەڵە%20بلۆک%20کراوم%20لە%20CinemaChat%20تکایە%20یارمەتیم%20بدە%20بۆ%20کردنەوە."
