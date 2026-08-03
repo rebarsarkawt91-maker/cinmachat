@@ -8558,13 +8558,13 @@ export default function App() {
                       setSocialTab(socialTab === "party" ? "movies" : "party");
                       window.scrollTo({ top: 0, behavior: "smooth" });
                     }}
-                    className={`flex items-center gap-2 px-3.5 py-2.5 rounded-xl transition-all active:scale-95 text-[10px] font-black uppercase tracking-widest kurdish-text cursor-pointer border ${
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-all active:scale-95 text-[9px] font-black uppercase tracking-widest kurdish-text cursor-pointer border ${
                       socialTab === "party"
                         ? "bg-indigo-600 border-indigo-500 text-white shadow-lg shadow-indigo-600/20"
                         : "bg-white/5 border-white/10 text-gray-400 hover:bg-white/10"
                     }`}
                   >
-                    <UsersIcon className="w-4 h-4 text-indigo-400" />
+                    <UsersIcon className="w-3 h-3 text-indigo-400" />
                     ژووری هاوڕێیان (Parties)
                   </button>
                   <button
@@ -8572,9 +8572,9 @@ export default function App() {
                       setModalMode("login");
                       setShowSocialModal(true);
                     }}
-                    className="flex items-center gap-2 px-4 py-2.5 bg-white/5 border border-white/10 rounded-xl hover:bg-white/10 transition-all text-gray-400 active:scale-95 text-[10px] font-black uppercase tracking-widest kurdish-text"
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg hover:bg-white/10 transition-all text-gray-400 active:scale-95 text-[9px] font-black uppercase tracking-widest kurdish-text"
                   >
-                    <User className="w-4 h-4" />
+                    <User className="w-3 h-3" />
                     چوونە ژوورەوە
                   </button>
                   <button
@@ -8582,9 +8582,9 @@ export default function App() {
                       setModalMode("signup");
                       setShowSocialModal(true);
                     }}
-                    className="flex items-center gap-2 px-4 py-2.5 bg-brand-primary border border-brand-primary/20 rounded-xl hover:bg-red-700 transition-all text-white active:scale-95 text-[10px] font-black uppercase tracking-widest kurdish-text shadow-lg shadow-red-600/20"
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-primary border border-brand-primary/20 rounded-lg hover:bg-red-700 transition-all text-white active:scale-95 text-[9px] font-black uppercase tracking-widest kurdish-text shadow-md shadow-red-600/20"
                   >
-                    <UserPlus className="w-4 h-4" />
+                    <UserPlus className="w-3 h-3" />
                     خۆتۆمارکردن
                   </button>
                 </div>
@@ -8626,14 +8626,14 @@ export default function App() {
                       setSocialTab("party");
                       window.scrollTo({ top: 0, behavior: "smooth" });
                     }}
-                    className={`flex items-center gap-2 p-2 md:p-3 rounded-xl transition-all active:scale-95 ${
+                    className={`flex items-center gap-1.5 p-1.5 md:p-2 rounded-lg transition-all active:scale-95 ${
                       socialTab === "party"
                         ? "bg-brand-primary text-white"
                         : "bg-white/5 border border-white/10 text-gray-400"
                     }`}
                   >
-                    <UsersIcon className="w-5 h-5 md:w-6 md:h-6" />
-                    <span className="hidden lg:block text-[10px] font-black uppercase tracking-widest">
+                    <UsersIcon className="w-4 h-4 md:w-5 md:h-5" />
+                    <span className="hidden lg:block text-[9px] font-black uppercase tracking-widest">
                       Parties
                     </span>
                   </button>
@@ -8643,14 +8643,14 @@ export default function App() {
                       setSocialTab("broadcast");
                       window.scrollTo({ top: 0, behavior: "smooth" });
                     }}
-                    className={`flex items-center gap-2 p-2 md:p-3 rounded-xl transition-all active:scale-95 ${
+                    className={`flex items-center gap-1.5 p-1.5 md:p-2 rounded-lg transition-all active:scale-95 ${
                       socialTab === "broadcast"
                         ? "bg-purple-600 text-white"
                         : "bg-purple-950/25 border border-purple-500/20 text-purple-300 hover:text-purple-100"
                     }`}
                   >
-                    <Tv className="w-5 h-5 md:w-6 md:h-6" />
-                    <span className="hidden lg:block text-[10px] font-black uppercase tracking-widest kurdish-text">
+                    <Tv className="w-4 h-4 md:w-5 md:h-5" />
+                    <span className="hidden lg:block text-[9px] font-black uppercase tracking-widest kurdish-text">
                       پەخشی فەرمی 📺
                     </span>
                   </button>
@@ -8659,23 +8659,23 @@ export default function App() {
                     onClick={() => {
                       setShowDirectMessagesModal(true);
                     }}
-                    className={`flex items-center gap-2 p-2 md:p-3 rounded-xl transition-all active:scale-95 ${
+                    className={`flex items-center gap-1.5 p-1.5 md:p-2 rounded-lg transition-all active:scale-95 ${
                       showDirectMessagesModal
                         ? "bg-teal-500/25 text-teal-400 border border-teal-500/30"
                         : "bg-white/5 border border-white/10 text-gray-400 hover:text-white"
                     }`}
                   >
-                    <MessageSquare className="w-5 h-5 md:w-6 md:h-6" />
-                    <span className="hidden lg:block text-[10px] font-black uppercase tracking-widest kurdish-text">
+                    <MessageSquare className="w-4 h-4 md:w-5 md:h-5" />
+                    <span className="hidden lg:block text-[9px] font-black uppercase tracking-widest kurdish-text">
                       پەیامەکان (DMs)
                     </span>
                   </button>
 
                   <button
                     onClick={fbLogout}
-                    className="p-2 md:p-3 bg-red-600/10 border border-red-600/20 rounded-xl text-red-500 hover:bg-red-600/20 transition-all active:scale-95"
+                    className="p-1.5 md:p-2 bg-red-600/10 border border-red-600/20 rounded-lg text-red-500 hover:bg-red-600/20 transition-all active:scale-95"
                   >
-                    <LogOut className="w-5 h-5 md:w-6 md:h-6" />
+                    <LogOut className="w-4 h-4 md:w-5 md:h-5" />
                   </button>
                 </div>
               )}
@@ -8683,10 +8683,10 @@ export default function App() {
 
             <button
               onClick={handleAdminClick}
-              className="flex items-center gap-2 p-2 md:p-3 bg-white/5 border border-white/10 rounded-xl hover:bg-brand-primary/10 transition-all text-gray-400 hover:text-brand-primary active:scale-95"
+              className="flex items-center gap-1 p-1 md:p-1.5 bg-white/5 border border-white/10 rounded-lg hover:bg-brand-primary/10 transition-all text-gray-400 hover:text-brand-primary active:scale-95"
             >
-              <Settings className="w-5 h-5 md:w-6 md:h-6" />
-              <span className="hidden lg:block text-[10px] font-black uppercase tracking-widest text-inherit">
+              <Settings className="w-3 h-3 md:w-3.5 md:h-3.5" />
+              <span className="hidden lg:block text-[8px] font-black uppercase tracking-widest text-inherit">
                 Admin
               </span>
             </button>
@@ -8698,9 +8698,9 @@ export default function App() {
               }
               target="_blank"
               rel="noreferrer"
-              className="hidden md:flex items-center gap-2 px-6 py-3 bg-brand-primary rounded-xl font-black text-xs hover:bg-red-700 transition-all shadow-lg shadow-red-600/20 active:scale-95"
+              className="hidden md:flex items-center gap-1.5 px-3 py-1.5 bg-brand-primary rounded-lg font-black text-[9px] hover:bg-red-700 transition-all shadow-md shadow-red-600/20 active:scale-95"
             >
-              <MessageCircle className="w-4 h-4" />
+              <MessageCircle className="w-3 h-3" />
               <span className="kurdish-text">داواکردنی فیلم</span>
             </a>
           </div>
