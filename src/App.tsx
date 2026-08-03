@@ -213,6 +213,13 @@ const realSetDoc = setDoc;
 
 // Global API Fetch Helper
 const RENDER_API_BASE = 'https://cinemachat-server.onrender.com';
+const CUSTOM_DOMAIN_API_BASE = 'https://www.cinamachat.com';
+
+const shouldPreferCustomDomainApi = (): boolean => {
+  if (typeof window === "undefined") return false;
+  const host = window.location.hostname.toLowerCase();
+  return host.endsWith('.web.app') || host.endsWith('.firebaseapp.com');
+};
 
 async function fetchApi(
   path: string,
@@ -226,7 +233,10 @@ async function fetchApi(
   // Use same-origin path (Firebase 307 → Render) as the primary route.
   // For non-GET requests, use text/plain Content-Type to avoid CORS preflight
   // after the 307 redirect (text/plain is a "simple" content-type).
-  const targetPath = useDirectFallback ? `${RENDER_API_BASE}${path}` : path;
+  const preferCustomDomain = shouldPreferCustomDomainApi();
+  const targetPath = useDirectFallback
+    ? `${RENDER_API_BASE}${path}`
+    : (preferCustomDomain ? `${CUSTOM_DOMAIN_API_BASE}${path}` : path);
 
   if (!customHeaders.has("Accept")) {
     customHeaders.set("Accept", "application/json");
@@ -435,15 +445,21 @@ async function fetchApi(
         console.warn(`[fetchApi] Same-origin also failed for ${path}:`, sameOriginErr);
       }
     } else {
-      console.warn(`[fetchApi] Same-origin failed for ${path}, trying direct Render URL...`);
-      try {
-        const directRes = await fetch(`${RENDER_API_BASE}${path}`, {
-          ...options,
-          headers: customHeaders,
-        });
-        return directRes;
-      } catch (directErr) {
-        console.warn(`[fetchApi] Direct Render URL also failed for ${path}:`, directErr);
+      const fallbackTargets = shouldPreferCustomDomainApi()
+        ? [`${CUSTOM_DOMAIN_API_BASE}${path}`, `${RENDER_API_BASE}${path}`]
+        : [`${RENDER_API_BASE}${path}`, `${CUSTOM_DOMAIN_API_BASE}${path}`];
+
+      console.warn(`[fetchApi] Primary request failed for ${path}, trying fallback targets...`);
+      for (const target of fallbackTargets) {
+        try {
+          const fallbackRes = await fetch(target, {
+            ...options,
+            headers: customHeaders,
+          });
+          return fallbackRes;
+        } catch (fallbackErr) {
+          console.warn(`[fetchApi] Fallback failed for ${target}:`, fallbackErr);
+        }
       }
     }
     // Final fallback — differentiate between network/connectivity failures
