@@ -44,6 +44,9 @@ interface UnblockRequest {
   ip: string;
   device?: string;
   blockedAt?: string;
+  status?: string;
+  resolvedBy?: string;
+  resolvedAt?: string;
   timestamp: string;
 }
 
@@ -60,6 +63,7 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
   const [bannedKeywords, setBannedKeywords] = useState<string[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [unblockRequests, setUnblockRequests] = useState<UnblockRequest[]>([]);
+  const [unblockArchive, setUnblockArchive] = useState<UnblockRequest[]>([]);
   
   // Inputs
   const [manualIpToBan, setManualIpToBan] = useState("");
@@ -102,6 +106,11 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
       const ubqRes = await fetch("/api/admin/unblock-requests", { headers: adminHeaders });
       const ubqData = await ubqRes.json();
       if (Array.isArray(ubqData)) setUnblockRequests(ubqData);
+
+      // Load unblock request archive history (resolved/deleted/cleared)
+      const ubqArchRes = await fetch("/api/admin/unblock-requests/archive", { headers: adminHeaders });
+      const ubqArchData = await ubqArchRes.json();
+      if (Array.isArray(ubqArchData)) setUnblockArchive(ubqArchData);
 
     } catch (err) {
       console.error("Error loading security module data:", err);
@@ -793,6 +802,49 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
                   ))}
                 </div>
               )}
+
+              {/* Permanent archive history (resolved / deleted / cleared) */}
+              <div className="pt-4 border-t border-white/10 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <h4 className="text-sm font-bold text-white kurdish-text flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-brand-primary" />
+                    ئەرشیفی مێژووی داواکارییەکان ({unblockArchive.length})
+                  </h4>
+                </div>
+                {unblockArchive.length === 0 ? (
+                  <p className="text-xs text-gray-500 kurdish-text">هیچ داواکارییەکی ئەرشیفکراو نییە لەم کاتەدا.</p>
+                ) : (
+                  <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
+                    {unblockArchive.map((arch) => (
+                      <div key={arch.id} className="p-4 rounded-2xl bg-black/30 border border-white/5 flex flex-col sm:flex-row justify-between gap-3">
+                        <div className="space-y-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-sm font-black text-white kurdish-text truncate">{arch.name}</span>
+                            <span className={`px-2 py-0.5 rounded-md text-[10px] font-black kurdish-text ${
+                              arch.status === "resolved"
+                                ? "bg-green-500/15 text-green-400"
+                                : arch.status === "archived"
+                                ? "bg-yellow-500/15 text-yellow-400"
+                                : "bg-red-500/15 text-red-400"
+                            }`}>
+                              {arch.status === "resolved" ? "کراوەتەوە" : arch.status === "archived" ? "سڕاوە (Clear)" : "سڕاوە"}
+                            </span>
+                          </div>
+                          <p className="text-xs text-gray-300 flex items-center gap-1.5 flex-wrap">
+                            <span className="font-mono" dir="ltr">{arch.phone}</span>
+                            <span className="text-gray-600">•</span>
+                            <span className="font-mono" dir="ltr">{arch.ip}</span>
+                          </p>
+                          <span className="text-[11px] text-gray-500 flex items-center gap-1.5">
+                            <User className="w-3 h-3 text-brand-primary" />
+                            لەلایەن: {arch.resolvedBy || "Admin"} — {formatDate(arch.resolvedAt || arch.timestamp)}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </motion.div>
