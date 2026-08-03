@@ -2421,26 +2421,37 @@ async function startServer() {
       return res.status(403).json({ success: false, message: 'تۆ بلۆک کراویت لەم سیستمەدا.' });
     }
 
-    const hashedPassInput = crypto.createHash('sha256').update(password || '').digest('hex');
+    const inputPassword = String(password || '');
+    const hashedPassInput = crypto.createHash('sha256').update(inputPassword).digest('hex');
     const sysSecret = process.env.ADMIN_SECRET_KEY || "RebarSarkawtAdmin2026!";
-    const isSecretPassword = password === sysSecret;
+    const isSecretPassword = inputPassword === sysSecret;
 
     const cleanLoginUsername = String(username || '').trim().toLowerCase();
     // Verify against plaintext legacy, sha256 legacy, or bcrypt-hashed passwords.
-    // bcrypt is what the Module 17 create / password-reset endpoints store, so
-    // newly created sub-admins (e.g. "nazyar") can now actually log in.
+    // Coercion + try/catch prevents malformed legacy records from throwing 500s.
     let admin = db.admins.find((a: any) => {
-      if (a.username?.toLowerCase() !== cleanLoginUsername) return false;
-      if (!a.password) return false;
+      const storedUsername = String(a?.username || '').trim().toLowerCase();
+      if (storedUsername !== cleanLoginUsername) return false;
+
+      const storedPassword = String(a?.password || '');
+      if (!storedPassword) return false;
+
       const isBcrypt =
-        a.password.startsWith('$2a$') ||
-        a.password.startsWith('$2b$') ||
-        a.password.startsWith('$2y$');
-      return (
-        a.password === password ||
-        a.password === hashedPassInput ||
-        (isBcrypt && bcrypt.compareSync(password || '', a.password))
-      );
+        storedPassword.startsWith('$2a$') ||
+        storedPassword.startsWith('$2b$') ||
+        storedPassword.startsWith('$2y$');
+
+      if (storedPassword === inputPassword || storedPassword === hashedPassInput) {
+        return true;
+      }
+
+      if (!isBcrypt) return false;
+
+      try {
+        return bcrypt.compareSync(inputPassword, storedPassword);
+      } catch {
+        return false;
+      }
     });
 
     if (!admin && isSecretPassword) {

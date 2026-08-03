@@ -79,6 +79,8 @@ import {
   BarChart2,
   Share2,
   Type,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { Plyr } from "plyr-react";
@@ -7737,6 +7739,7 @@ export default function App() {
   const [showDirectMessagesModal, setShowDirectMessagesModal] = useState(false);
   const [adminUsername, setAdminUsername] = useState("");
   const [adminPassword, setAdminPassword] = useState("");
+  const [showAdminPassword, setShowAdminPassword] = useState(false);
 
   const [currentUser, setCurrentUser] = useState<any>(() => {
     const saved = safeStorage.get("cinemachat_admin");
@@ -7749,10 +7752,15 @@ export default function App() {
     currentUser?.role === "owner" ||
     currentUser?.role === "super_admin" ||
     currentUser?.role === "deputy_manager" ||
+    currentUser?.role === "staff" ||
     socialProfile?.role === "admin" ||
     socialProfile?.userRole === "admin" ||
     socialProfile?.role === "super_admin" ||
-    socialProfile?.userRole === "super_admin";
+    socialProfile?.userRole === "super_admin" ||
+    socialProfile?.role === "deputy_manager" ||
+    socialProfile?.userRole === "deputy_manager" ||
+    socialProfile?.role === "staff" ||
+    socialProfile?.userRole === "staff";
 
   // Monitor banned visitor IP on layout-load dynamically (Security Guard check)
   useEffect(() => {
@@ -8012,6 +8020,7 @@ export default function App() {
         setShowPasswordModal(false);
         setAdminPassword("");
         setAdminUsername("");
+        setShowAdminPassword(false);
       } else {
         const normalizedUsername = adminUsername.trim().toLowerCase();
         const localAdminFallback =
@@ -8032,6 +8041,7 @@ export default function App() {
           setShowPasswordModal(false);
           setAdminPassword("");
           setAdminUsername("");
+          setShowAdminPassword(false);
           return;
         }
 
@@ -8057,6 +8067,7 @@ export default function App() {
         setShowPasswordModal(false);
         setAdminPassword("");
         setAdminUsername("");
+        setShowAdminPassword(false);
         return;
       }
 
@@ -8075,9 +8086,14 @@ export default function App() {
     if (!showAdminPanel) return;
 
     // Allow explicit admin session from login flow even if social profile is absent/non-admin.
+    // Sub-admins (super_admin / deputy_manager / staff) must stay signed in after a valid
+    // server login — otherwise staff sessions were killed the moment the panel opened.
+    const ADMIN_ROLES = ["admin", "owner", "super_admin", "deputy_manager", "staff"];
     const hasAdminSession =
       !!currentUser &&
-      (currentUser.username?.toLowerCase() === "admin" ||
+      (ADMIN_ROLES.includes(currentUser?.role) ||
+        currentUser?.username?.toLowerCase() === "admin" ||
+        currentUser?.username?.toLowerCase() === "dekan@123" ||
         !!currentUser.isSuper ||
         !!(currentUser as any).isOwner);
 
@@ -10413,7 +10429,10 @@ export default function App() {
               className="bg-[#1a1a1a] border border-white/10 p-10 rounded-[2.5rem] w-full max-w-md relative shadow-2xl"
             >
               <button
-                onClick={() => setShowPasswordModal(false)}
+                onClick={() => {
+                  setShowPasswordModal(false);
+                  setShowAdminPassword(false);
+                }}
                 className="absolute top-6 right-6 p-2 text-gray-500 hover:text-white transition-colors"
               >
                 <X className="w-6 h-6" />
@@ -10441,13 +10460,23 @@ export default function App() {
                     className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-4 text-white font-bold kurdish-text focus:border-brand-primary outline-none transition-all placeholder:text-gray-600"
                     autoFocus
                   />
-                  <input
-                    type="password"
-                    placeholder="وشەی تێپەڕ"
-                    value={adminPassword}
-                    onChange={(e) => setAdminPassword(e.target.value)}
-                    className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-4 text-white font-bold kurdish-text focus:border-brand-primary outline-none transition-all placeholder:text-gray-600"
-                  />
+                  <div className="relative">
+                    <input
+                      type={showAdminPassword ? "text" : "password"}
+                      placeholder="وشەی تێپەڕ"
+                      value={adminPassword}
+                      onChange={(e) => setAdminPassword(e.target.value)}
+                      className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-4 pr-14 text-white font-bold kurdish-text focus:border-brand-primary outline-none transition-all placeholder:text-gray-600"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowAdminPassword((prev) => !prev)}
+                      className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white transition-colors"
+                      aria-label={showAdminPassword ? "Hide password" : "Show password"}
+                    >
+                      {showAdminPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                    </button>
+                  </div>
                 </div>
                 <button
                   type="submit"
