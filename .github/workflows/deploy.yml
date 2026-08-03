@@ -3,28 +3,33 @@ name: Deploy to Firebase Hosting
 on:
   push:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      
+      - uses: actions/checkout@v4
+
       - name: Setup Node
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: '18'
-      
+          node-version: '20'
+          cache: 'npm'
+
+      # npm install (instead of npm ci) to avoid the npm optional-dependencies
+      # bug (npm/cli#4828) that skips @tailwindcss/oxide native bindings on CI,
+      # which caused the build to fail with "Cannot find native binding".
       - name: Install dependencies
-        run: npm ci
-      
+        run: npm install
+
       - name: Build
         run: npm run build
-      
+
       - name: Deploy to Firebase Hosting
         uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: '${{ secrets.GITHUB_TOKEN }}'
-          firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}'
+          firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_GEN_LANG_CLIENT_0240212572 }}'
           channelId: live
           projectId: gen-lang-client-0240212572
