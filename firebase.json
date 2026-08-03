@@ -12,12 +12,12 @@
     "redirects": [
       {
         "source": "/api",
-        "destination": "https://cinemachat-server.onrender.com/api",
+        "destination": "https://www.cinamachat.com/api",
         "type": 307
       },
       {
         "source": "/api/:path*",
-        "destination": "https://cinemachat-server.onrender.com/api/:path*",
+        "destination": "https://www.cinamachat.com/api/:path*",
         "type": 307
       }
     ],
