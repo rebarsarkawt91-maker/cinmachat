@@ -43,7 +43,6 @@ import {
   Trophy,
   LayoutDashboard,
   Upload,
-  UserPlus,
   FileVideo,
   Video,
   Youtube,
@@ -8555,37 +8554,13 @@ export default function App() {
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => {
-                      setSocialTab(socialTab === "party" ? "movies" : "party");
-                      window.scrollTo({ top: 0, behavior: "smooth" });
-                    }}
-                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-all active:scale-95 text-[9px] font-black uppercase tracking-widest kurdish-text cursor-pointer border ${
-                      socialTab === "party"
-                        ? "bg-indigo-600 border-indigo-500 text-white shadow-lg shadow-indigo-600/20"
-                        : "bg-white/5 border-white/10 text-gray-400 hover:bg-white/10"
-                    }`}
-                  >
-                    <UsersIcon className="w-3 h-3 text-indigo-400" />
-                    ژووری هاوڕێیان (Parties)
-                  </button>
-                  <button
-                    onClick={() => {
                       setModalMode("login");
-                      setShowSocialModal(true);
-                    }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg hover:bg-white/10 transition-all text-gray-400 active:scale-95 text-[9px] font-black uppercase tracking-widest kurdish-text"
-                  >
-                    <User className="w-3 h-3" />
-                    چوونە ژوورەوە
-                  </button>
-                  <button
-                    onClick={() => {
-                      setModalMode("signup");
                       setShowSocialModal(true);
                     }}
                     className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-primary border border-brand-primary/20 rounded-lg hover:bg-red-700 transition-all text-white active:scale-95 text-[9px] font-black uppercase tracking-widest kurdish-text shadow-md shadow-red-600/20"
                   >
-                    <UserPlus className="w-3 h-3" />
-                    خۆتۆمارکردن
+                    <User className="w-3 h-3" />
+                    چوونە ژوورەوە / خۆتۆمارکردن
                   </button>
                 </div>
               ) : (
@@ -8619,23 +8594,6 @@ export default function App() {
                         ناسنامەی من
                       </span>
                     </div>
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      setSocialTab("party");
-                      window.scrollTo({ top: 0, behavior: "smooth" });
-                    }}
-                    className={`flex items-center gap-1.5 p-1.5 md:p-2 rounded-lg transition-all active:scale-95 ${
-                      socialTab === "party"
-                        ? "bg-brand-primary text-white"
-                        : "bg-white/5 border border-white/10 text-gray-400"
-                    }`}
-                  >
-                    <UsersIcon className="w-4 h-4 md:w-5 md:h-5" />
-                    <span className="hidden lg:block text-[9px] font-black uppercase tracking-widest">
-                      Parties
-                    </span>
                   </button>
 
                   <button
@@ -8690,19 +8648,6 @@ export default function App() {
                 Admin
               </span>
             </button>
-
-            <a
-              href={
-                import.meta.env.VITE_WHATSAPP_GROUP_LINK ||
-                `https://wa.me/${import.meta.env.VITE_WHATSAPP_NUMBER}` // WhatsApp group/number link
-              }
-              target="_blank"
-              rel="noreferrer"
-              className="hidden md:flex items-center gap-1.5 px-3 py-1.5 bg-brand-primary rounded-lg font-black text-[9px] hover:bg-red-700 transition-all shadow-md shadow-red-600/20 active:scale-95"
-            >
-              <MessageCircle className="w-3 h-3" />
-              <span className="kurdish-text">داواکردنی فیلم</span>
-            </a>
           </div>
         </div>
       </header>
