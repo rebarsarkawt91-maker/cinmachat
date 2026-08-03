@@ -5903,6 +5903,7 @@ export default function App() {
   const [activeServerUrl, setActiveServerUrl] = useState<string | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
   const [bannedFromSystem, setBannedFromSystem] = useState(false);
+  const [blockedAt, setBlockedAt] = useState<Date | null>(null);
   const [emergencyLocked, setEmergencyLocked] = useState(false);
 
   // Main Modal Player customized states
@@ -7785,6 +7786,7 @@ export default function App() {
         const data = await res.json();
         if (data) {
           if (data.banned) {
+            setBlockedAt(new Date());
             setBannedFromSystem(true);
           }
           if (data.emergencyLock && !currentUser) {
@@ -8383,6 +8385,10 @@ export default function App() {
   }, [selectedMovie]);
 
   if (bannedFromSystem) {
+    const blockTime = blockedAt || new Date();
+    const pad2 = (n: number) => String(n).padStart(2, "0");
+    const blockDate = `${blockTime.getFullYear()}-${pad2(blockTime.getMonth() + 1)}-${pad2(blockTime.getDate())}`;
+    const blockClock = `${pad2(blockTime.getHours())}:${pad2(blockTime.getMinutes())}:${pad2(blockTime.getSeconds())}`;
     return (
       <div
         className="min-h-screen bg-black flex flex-col items-center justify-center p-6 text-center"
@@ -8399,13 +8405,41 @@ export default function App() {
           <h1 className="text-3xl font-black kurdish-text text-white">
             تۆ بلۆک کراویت
           </h1>
+          {/* Exact block timestamp */}
+          <div className="flex items-center justify-center gap-2 px-4 py-2.5 bg-white/5 border border-white/10 rounded-2xl">
+            <span className="text-[10px] font-black text-red-400 uppercase tracking-widest kurdish-text">
+              کاتی بلۆککردن:
+            </span>
+            <span className="text-sm font-mono text-white" dir="ltr">
+              {blockDate} — {blockClock}
+            </span>
+          </div>
+          {/* Reason explanation */}
           <p className="text-gray-400 kurdish-text text-sm leading-relaxed">
-            ئەم ئامێرە/ئایپیە بلۆک کراوە لە CinemaChat بەهۆی سەرپێچیکردنی
-            مەرجەکان. گەر پێتوایە هەڵەیەک هەیە تکایە پەیوەندی بە بەشی پشتگیریەوە
-            بکە.
+            ئەم ئامێرە/ئایپیە بەهۆی چەندین هەوڵی هەڵەی ناوی بەکارهێنەر و وشەی
+            تێپەڕ ڕێگری لێکراوە لە CinemaChat. ئەم ڕێوشوێنە ئەمنییەتە جێبەجێ
+            کراوە بۆ پاراستن لە هێرشی هاکەران و بۆتە ئۆتۆماتیکییەکان.
           </p>
+          {/* Direct support unblock via WhatsApp (official logo) */}
+          <a
+            href="https://wa.me/9647701966649?text=بەڕێز%20پشتگیری%2C%20من%20بە%20هەڵە%20بلۆک%20کراوم%20لە%20CinemaChat%20تکایە%20یارمەتیم%20بدە%20بۆ%20کردنەوە."
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center justify-center gap-2.5 px-5 py-3.5 bg-[#25D366] hover:bg-[#1fb959] transition-colors rounded-2xl shadow-lg shadow-[#25D366]/25 active:scale-[0.98]"
+          >
+            <svg
+              viewBox="0 0 32 32"
+              fill="currentColor"
+              className="w-6 h-6 text-white"
+              aria-hidden="true"
+            >
+              <path d="M16.02 2.34c-7.55 0-13.68 6.12-13.68 13.66 0 2.41.63 4.76 1.83 6.84L2.35 29.7l6.95-1.82a13.67 13.67 0 0 0 6.72 1.72h.01c7.54 0 13.67-6.12 13.67-13.66 0-3.65-1.42-7.08-4-9.66a13.58 13.58 0 0 0-9.68-3.94zm7.94 19.61c-.33.93-1.93 1.78-2.66 1.83-.72.06-1.34.28-4.52-.94-3.83-1.47-6.26-5.29-6.45-5.53-.19-.24-1.54-2.05-1.54-3.91s.98-2.77 1.32-3.15c.34-.38.75-.47 1-.47.25 0 .5 0 .72.01.23.01.54-.09.85.65.32.77 1.09 2.66 1.19 2.85.1.19.16.42.03.68-.13.26-.19.42-.38.65-.19.23-.4.51-.58.69-.19.19-.39.39-.17.77.23.38 1 1.65 2.15 2.67 1.48 1.32 2.73 1.73 3.11 1.92.39.19.61.16.83-.1.23-.26.95-1.1 1.2-1.49.26-.38.52-.32.87-.19.35.13 2.23 1.05 2.62 1.24.38.19.64.29.74.45.09.16.09.94-.24 1.87z" />
+            </svg>
+            <span className="text-sm font-black text-white kurdish-text">
+              پەیوەندی بە پشتگیری بکە لە ڕێگەی واتساپ (داواکاری کردنەوە)
+            </span>
+          </a>
         </motion.div>
-        <WhatsAppFloatButton href={floatingWhatsAppUrl} />
       </div>
     );
   }
