@@ -12,6 +12,7 @@ import bcrypt from 'bcryptjs';
 import net from 'node:net';
 import { rateLimiter, sanitizationMiddleware, createAdminGuard, logFailedAttempt } from './security';
 import { generateSubtitle } from './features/subtitles/subtitleGenerator.js';
+import * as XLSX from 'xlsx';
 
 // Sanitize URLs to decode HTML entities (e.g. &#x2F; → /) and convert YouTube watch links to embed links
 function sanitizeUrl(url: string): string {
@@ -726,6 +727,8 @@ async function startServer() {
       name: cleanName,
       phone: cleanPhone,
       ip: cleanIp,
+      device: (req.headers['user-agent'] as string || '').slice(0, 150),
+      blockedAt: (db.bannedIpTimestamps && db.bannedIpTimestamps[cleanIp]) || new Date().toISOString(),
       timestamp: new Date().toISOString()
     });
     if (db.unblockRequests.length > 200) db.unblockRequests = db.unblockRequests.slice(0, 200);
@@ -795,6 +798,73 @@ async function startServer() {
     await addAuditLog(db, adminName, "Clear Unblock Requests", `هەموو داواکارییەکانی لابردنی بلۆک سڕانەوە (${count})`);
     await saveDB(db);
     res.json({ success: true });
+  });
+
+  // Resolve an unblock request: instantly unban the requester's IP/device AND
+  // remove the request from the queue in a single admin action.
+  app.post('/api/admin/resolve-unblock-request', async (req, res) => {
+    const { id, adminName } = req.body || {};
+    if (!id) return res.status(400).json({ error: 'Request ID required' });
+    if (!db.unblockRequests) db.unblockRequests = [];
+    const target = db.unblockRequests.find((r: any) => r.id === id);
+    if (!target) return res.status(404).json({ error: 'Unblock request not found' });
+
+    // Unban the requester's IP/device
+    const requesterIp = String(target.ip || '').trim();
+    if (requesterIp && db.bannedIps && db.bannedIps.includes(requesterIp)) {
+      db.bannedIps = db.bannedIps.filter((item: string) => String(item).trim() !== requesterIp);
+      clearBanTime(requesterIp);
+    }
+    // Remove the request from the queue
+    db.unblockRequests = db.unblockRequests.filter((r: any) => r.id !== id);
+
+    await addAuditLog(db, adminName, "Resolve Unblock Request",
+      requesterIp
+        ? `داواکاری لابردنی بلۆکی پەسەندکرا و بلۆکی ${requesterIp} لابرا بۆ ${target.name} (${target.phone})`
+        : `داواکاری لابردنی بلۆک لابرا: ${target.name} (${target.phone})`);
+    await saveDB(db);
+    console.log(`[Unblock Request] Resolved by ${adminName}: ${target.name} (${target.phone}) ip=${requesterIp}`);
+    res.json({ success: true, bannedIps: db.bannedIps, unblockRequests: db.unblockRequests });
+  });
+
+  // Export helpers for Section 11 (Security Shield) reports
+  const buildExportWorkbook = (rows: Record<string, any>[], sheetName: string, columnWidths: number[]) => {
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws['!cols'] = columnWidths.map((wch) => ({ wch }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, sheetName);
+    return wb;
+  };
+
+  const sendXlsx = (res: any, wb: any, filename: string) => {
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buf);
+  };
+
+  app.get('/api/admin/export/blocked-users/xlsx', (req, res) => {
+    const rows = (db.bannedIps || []).map((ip: string, idx: number) => ({
+      '#': idx + 1,
+      'IP ئایپی بلۆککراو': ip,
+      'کاتی بلۆک (Blocked At)': (db.bannedIpTimestamps && db.bannedIpTimestamps[ip])
+        ? new Date(db.bannedIpTimestamps[ip]).toLocaleString('ku-IQ') : 'نەزانراو (Unknown)',
+      'جۆری بلۆک': (db.ownerWhitelist && db.ownerWhitelist[ip]) ? 'کاتی بۆ ئەدمین (Owner temp)' : 'بلۆکی تەواو (Permanent)'
+    }));
+    sendXlsx(res, buildExportWorkbook(rows, 'Blocked Users', [6, 20, 30, 28]), 'blocked-users.xlsx');
+  });
+
+  app.get('/api/admin/export/unblock-requests/xlsx', (req, res) => {
+    const rows = (db.unblockRequests || []).map((r: any, idx: number) => ({
+      '#': idx + 1,
+      'ناو (Name)': r.name || '',
+      'ژمارەی مۆبایل (Phone)': r.phone || '',
+      'IP ئایپی': r.ip || '',
+      'کاتی بلۆک (Blocked At)': r.blockedAt ? new Date(r.blockedAt).toLocaleString('ku-IQ') : 'نەزانراو',
+      'کاتی داواکاری (Requested At)': r.timestamp ? new Date(r.timestamp).toLocaleString('ku-IQ') : 'نەزانراو',
+      'ئامێر/بەشێوە (Device)': r.device || ''
+    }));
+    sendXlsx(res, buildExportWorkbook(rows, 'Unblock Requests', [6, 18, 18, 18, 28, 28, 45]), 'unblock-requests.xlsx');
   });
 
   // Firewall Logs Tracking (Point 2: Firewall Logs & Point 3: Auto-Ban count)
