@@ -8663,18 +8663,15 @@ export default function App() {
               )}
             </div>
 
-            {(socialProfile?.role === "admin" || // Admin button for authorized users
-              socialProfile?.role === "super_admin") && (
-              <button
-                onClick={handleAdminClick}
-                className="flex items-center gap-2 p-2 md:p-3 bg-white/5 border border-white/10 rounded-xl hover:bg-brand-primary/10 transition-all text-gray-400 hover:text-brand-primary active:scale-95"
-              >
-                <Settings className="w-5 h-5 md:w-6 md:h-6" />
-                <span className="hidden lg:block text-[10px] font-black uppercase tracking-widest text-inherit">
-                  Admin
-                </span>
-              </button>
-            )}
+            <button
+              onClick={handleAdminClick}
+              className="flex items-center gap-2 p-2 md:p-3 bg-white/5 border border-white/10 rounded-xl hover:bg-brand-primary/10 transition-all text-gray-400 hover:text-brand-primary active:scale-95"
+            >
+              <Settings className="w-5 h-5 md:w-6 md:h-6" />
+              <span className="hidden lg:block text-[10px] font-black uppercase tracking-widest text-inherit">
+                Admin
+              </span>
+            </button>
 
             <a
               href={
