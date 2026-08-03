@@ -128,19 +128,39 @@ async function loadDB() {
         console.log(`[DB] Automatically deduplicated ${initialCount - uniqueMovies.length} movies during load.`);
         db.manualMovies = uniqueMovies;
         // Persist the clean version
-        await fs.writeFile(DB_PATH, JSON.stringify(db, null, 2));
+        await saveDB(db);
       }
     }
     
     return db;
-  } catch (e) {
-    await fs.writeFile(DB_PATH, JSON.stringify(INITIAL_DB, null, 2));
-    return INITIAL_DB;
+  } catch (e: any) {
+    // Preserve the corrupt file as a backup before replacing it, so no history
+    // is silently lost, then write a clean database to recover from the parse error.
+    console.error('[DB] Failed to parse db.json, restoring a clean database:', e?.message || e);
+    try {
+      const corrupt = await fs.readFile(DB_PATH, 'utf-8');
+      const backupPath = `${DB_PATH}.corrupt-${Date.now()}`;
+      await fs.writeFile(backupPath, corrupt);
+      console.warn(`[DB] Corrupt db.json backed up to: ${backupPath}`);
+    } catch { /* no readable file to back up */ }
+    const freshDB = {
+      ...INITIAL_DB,
+      unblockRequests: [] as any[],
+      unblockArchive: [] as any[]
+    };
+    await saveDB(freshDB);
+    return freshDB;
   }
 }
 
+// Serialized DB writer: queues writes so two concurrent saveDB() calls can never
+// interleave/truncate db.json mid-write (which would leave malformed JSON and
+// crash or hang the next loadDB parse).
+let dbWriteChain: Promise<void> = Promise.resolve();
 async function saveDB(db: any) {
-  await fs.writeFile(DB_PATH, JSON.stringify(db, null, 2));
+  const snapshot = JSON.stringify(db, null, 2);
+  dbWriteChain = dbWriteChain.then(() => fs.writeFile(DB_PATH, snapshot));
+  await dbWriteChain;
 }
 
 // Helper for fetch with timeout
@@ -739,8 +759,15 @@ async function startServer() {
     });
     if (db.unblockRequests.length > 200) db.unblockRequests = db.unblockRequests.slice(0, 200);
 
-    await addAuditLog(db, "USER_UNBLOCK_REQUEST", "New Unblock Request", `داواکاری لابردنی بلۆک لە ${cleanName} (${cleanPhone}) ئایپی: ${cleanIp}`);
-    await saveDB(db);
+    // Persist safely: if the write fails, respond with 500 instead of leaving
+    // the client's request hanging (unhandled rejection).
+    try {
+      await addAuditLog(db, "USER_UNBLOCK_REQUEST", "New Unblock Request", `داواکاری لابردنی بلۆک لە ${cleanName} (${cleanPhone}) ئایپی: ${cleanIp}`);
+      await saveDB(db);
+    } catch (err) {
+      console.error('[Unblock Request] Failed to persist unblock request:', err);
+      return res.status(500).json({ success: false, error: 'هەڵەی ناوخۆیی ڕوویدا لە تۆمارکردنی داواکاری. تکایە دواتر هەوڵبدەوە.' });
+    }
     console.log(`[Unblock Request] ${cleanName} (${cleanPhone}) from ${cleanIp}`);
     res.json({ success: true });
   });
