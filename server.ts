@@ -2427,71 +2427,81 @@ async function startServer() {
     const isSecretPassword = inputPassword === sysSecret;
 
     const cleanLoginUsername = String(username || '').trim().toLowerCase();
-    // Verify against plaintext legacy, sha256 legacy, or bcrypt-hashed passwords.
-    // Coercion + try/catch prevents malformed legacy records from throwing 500s.
-    let admin = db.admins.find((a: any) => {
-      const storedUsername = String(a?.username || '').trim().toLowerCase();
-      if (storedUsername !== cleanLoginUsername) return false;
+    // Owner usernames — the ONLY identities allowed to fall back to the master
+    // secret key. Never grant sub-admin/staff usernames the master bypass.
+    const OWNER_USERNAMES = ['admin', 'dekan@123'];
 
-      const storedPassword = String(a?.password || '');
+    // verifyStoredPassword authenticates a password against a SINGLE account's
+    // OWN stored credential only (legacy plaintext, legacy sha256, or bcrypt).
+    // This is deliberately strict: once an admin record exists, only its own
+    // unique password can unlock it — the Owner's master secret key must never
+    // authenticate or elevate another account, otherwise every sub-admin would
+    // effectively log in with the Owner's password (or fail with their own).
+    const verifyStoredPassword = (storedPassword: string): boolean => {
       if (!storedPassword) return false;
+      if (storedPassword === inputPassword || storedPassword === hashedPassInput) return true;
 
       const isBcrypt =
         storedPassword.startsWith('$2a$') ||
         storedPassword.startsWith('$2b$') ||
         storedPassword.startsWith('$2y$');
-
-      if (storedPassword === inputPassword || storedPassword === hashedPassInput) {
-        return true;
-      }
-
       if (!isBcrypt) return false;
 
       try {
         return bcrypt.compareSync(inputPassword, storedPassword);
       } catch {
+        // Malformed/legacy hash — never a silent login; treat as mismatch.
         return false;
       }
-    });
+    };
 
-    if (!admin && isSecretPassword) {
-      const displayName = username || "Admin";
-      admin = { username: displayName, isSuper: true, role: "super_admin" };
-      const hasAdmin = db.admins.some((a: any) => a.username?.toLowerCase() === displayName.toLowerCase());
-      if (!hasAdmin) {
-        db.admins.push({
-          username: displayName,
-          password: crypto.randomBytes(8).toString('hex'),
-          isSuper: true,
-          role: "super_admin"
-        });
-      }
+    // Step 1 — authenticate against the account's OWN stored password.
+    let admin = db.admins.find((a: any) => String(a?.username || '').trim().toLowerCase() === cleanLoginUsername);
+
+    if (admin && !verifyStoredPassword(String(admin.password || ''))) {
+      // Wrong password for an existing account — reject. Do NOT fall through to
+      // the secret-key path: existing accounts can only ever use their own key.
+      admin = null;
+    }
+
+    // Step 2 — Owner-only master-secret fallback for the platform owner when no
+    // account record exists yet. Never persists a fake record with an unknown
+    // password, and never applies to sub-admin/staff usernames.
+    if (!admin && isSecretPassword && OWNER_USERNAMES.includes(cleanLoginUsername)) {
+      admin = { username: cleanLoginUsername, isSuper: true, isOwner: true, role: 'owner' };
     }
 
     if (admin) {
       failedLoginCounts[cleanIp] = 0;
-      await addAuditLog(db, username, "Login Successful", `دەستپێکردنی دانیشتن لە ڕێگەی ئایپی ${cleanIp}`);
+      await addAuditLog(db, admin.username, "Login Successful", `دەستپێکردنی دانیشتن لە ڕێگەی ئایپی ${cleanIp}`);
       await saveDB(db);
-      
-      let responseRole = isSecretPassword 
-        ? "super_admin" 
-        : (admin.username?.toLowerCase() === "dekan@123" 
-           ? "super_admin" 
-           : (admin.role || (admin.isSuper ? "deputy_manager" : "staff")));
 
-      const isSuperAdmin = responseRole === "ROLE_SUPER_ADMIN" || responseRole === "super_admin";
+      // The assigned role is ALWAYS derived from the account itself. An owner
+      // account resolves to "owner" regardless of stored drift; a sub-admin
+      // keeps exactly the role that was assigned to it at creation time — the
+      // secret key can no longer silently upgrade a staff/deputy account.
+      const ownerName = String(admin.username || '').toLowerCase();
+      let responseRole = admin.role || (admin.isSuper ? "deputy_manager" : "staff");
+      if (ownerName === "admin" || ownerName === "dekan@123") {
+        responseRole = "owner";
+      }
+
+      const isSuperAdmin = responseRole === "ROLE_SUPER_ADMIN" || responseRole === "super_admin" || responseRole === "owner";
+      const isOwner = ownerName === "admin" || ownerName === "dekan@123" || responseRole === "owner";
 
       res.json({ 
         success: true, 
         user: { 
           username: admin.username, 
-          isSuper: admin.isSuper || isSuperAdmin || responseRole === "deputy_manager", 
+          isSuper: admin.isSuper || isSuperAdmin, 
+          isOwner,
           role: responseRole,
           ROLE_SUPER_ADMIN: isSuperAdmin
         },
         admin: { 
           username: admin.username, 
-          isSuper: admin.isSuper || isSuperAdmin || responseRole === "deputy_manager", 
+          isSuper: admin.isSuper || isSuperAdmin, 
+          isOwner,
           role: responseRole,
           ROLE_SUPER_ADMIN: isSuperAdmin
         }

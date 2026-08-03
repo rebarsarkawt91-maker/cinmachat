@@ -6,6 +6,24 @@
       "isSuper": true,
       "isOwner": true,
       "role": "owner"
+    },
+    {
+      "username": "staff1",
+      "password": "$2b$10$FIOGbGi3fnNA/j7fXhlzs.PY3gwkDTHNQXWMMjHSRULLskhCvA3xK",
+      "isSuper": false,
+      "role": "staff"
+    },
+    {
+      "username": "deputy1",
+      "password": "$2b$10$RKB32dvRos4408uzICxCCuH8wRKWhhZLn4ZTw3GzqI0i1bTHx9M36",
+      "isSuper": true,
+      "role": "deputy_manager"
+    },
+    {
+      "username": "naza",
+      "password": "$2b$10$Ypg/aB8KUvjLt2KMMKlSP.l5wHKpAP1uyEijmHPEVxROCvd3Vp0Ku",
+      "isSuper": true,
+      "role": "deputy_manager"
     }
   ],
   "users": [],
@@ -98,6 +116,118 @@
   "emergencyLock": false,
   "securityAuditLogs": [
     {
+      "id": "log-hixy9a7",
+      "admin": "naza",
+      "action": "Login Successful",
+      "details": "دەستپێکردنی دانیشتن لە ڕێگەی ئایپی 127.0.0.1",
+      "timestamp": "2026-08-03T00:43:35.589Z"
+    },
+    {
+      "id": "log-x85etgm",
+      "admin": "naza",
+      "action": "Login Successful",
+      "details": "دەستپێکردنی دانیشتن لە ڕێگەی ئایپی 127.0.0.1",
+      "timestamp": "2026-08-03T00:38:59.587Z"
+    },
+    {
+      "id": "log-dyyv6xn",
+      "admin": "admin",
+      "action": "Create Admin",
+      "details": "ئەدمینی نوێ دروستکرا: \"naza\" وەک \"deputy_manager\"",
+      "timestamp": "2026-08-03T00:38:52.933Z"
+    },
+    {
+      "id": "log-bwdg2hp",
+      "admin": "admin",
+      "action": "Delete Admin",
+      "details": "ئەدمینی سڕایەوە: \"naza\"",
+      "timestamp": "2026-08-03T00:38:47.120Z"
+    },
+    {
+      "id": "log-rs5meyw",
+      "admin": "naza",
+      "action": "Login Successful",
+      "details": "دەستپێکردنی دانیشتن لە ڕێگەی ئایپی 127.0.0.1",
+      "timestamp": "2026-08-03T00:38:41.179Z"
+    },
+    {
+      "id": "log-30e6tb6",
+      "admin": "admin",
+      "action": "Create Admin",
+      "details": "ئەدمینی نوێ دروستکرا: \"naza\" وەک \"deputy_manager\"",
+      "timestamp": "2026-08-03T00:38:40.821Z"
+    },
+    {
+      "id": "log-lu5uz6c",
+      "admin": "admin",
+      "action": "Delete Admin",
+      "details": "ئەدمینی سڕایەوە: \"naza\"",
+      "timestamp": "2026-08-03T00:38:40.418Z"
+    },
+    {
+      "id": "log-tv3dh0o",
+      "admin": "naza",
+      "action": "Login Successful",
+      "details": "دەستپێکردنی دانیشتن لە ڕێگەی ئایپی 127.0.0.1",
+      "timestamp": "2026-08-03T00:37:30.757Z"
+    },
+    {
+      "id": "log-cy7qx7m",
+      "admin": "naza",
+      "action": "Login Successful",
+      "details": "دەستپێکردنی دانیشتن لە ڕێگەی ئایپی 127.0.0.1",
+      "timestamp": "2026-08-03T00:37:06.320Z"
+    },
+    {
+      "id": "log-f2wqrfg",
+      "admin": "admin",
+      "action": "Create Admin",
+      "details": "ئەدمینی نوێ دروستکرا: \"naza\" وەک \"staff\"",
+      "timestamp": "2026-08-03T00:37:06.013Z"
+    },
+    {
+      "id": "log-06fjgf9",
+      "admin": "admin",
+      "action": "Login Successful",
+      "details": "دەستپێکردنی دانیشتن لە ڕێگەی ئایپی 127.0.0.1",
+      "timestamp": "2026-08-03T00:37:05.615Z"
+    },
+    {
+      "id": "log-dm5d79m",
+      "admin": "deputy1",
+      "action": "Login Successful",
+      "details": "دەستپێکردنی دانیشتن لە ڕێگەی ئایپی 127.0.0.1",
+      "timestamp": "2026-08-02T23:49:46.328Z"
+    },
+    {
+      "id": "log-6xjbl6i",
+      "admin": "admin",
+      "action": "Create Admin",
+      "details": "ئەدمینی نوێ دروستکرا: \"deputy1\" وەک \"deputy_manager\"",
+      "timestamp": "2026-08-02T23:49:45.761Z"
+    },
+    {
+      "id": "log-zupoj67",
+      "admin": "staff1",
+      "action": "Login Successful",
+      "details": "دەستپێکردنی دانیشتن لە ڕێگەی ئایپی 127.0.0.1",
+      "timestamp": "2026-08-02T23:49:45.085Z"
+    },
+    {
+      "id": "log-w9ikx07",
+      "admin": "admin",
+      "action": "Create Admin",
+      "details": "ئەدمینی نوێ دروستکرا: \"staff1\" وەک \"staff\"",
+      "timestamp": "2026-08-02T23:49:44.327Z"
+    },
+    {
+      "id": "log-c69sozx",
+      "admin": "admin",
+      "action": "Login Successful",
+      "details": "دەستپێکردنی دانیشتن لە ڕێگەی ئایپی 127.0.0.1",
+      "timestamp": "2026-08-02T23:49:43.463Z"
+    },
+    {
       "id": "log-bo89m6l",
       "admin": "admin",
       "action": "Login Successful",
@@ -134,6 +264,13 @@
     }
   ],
   "systemErrorLogs": [
+    {
+      "id": "err-c0t783r",
+      "source": "GET /api/admin/users",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-03T00:38:23.209Z"
+    },
     {
       "id": "err-9oxw6r7",
       "source": "GET /api/admin/hero",
@@ -215,7 +352,41 @@
   "intrusionAttempts": [],
   "vipTickets": [],
   "vipVideos": [],
-  "ownerNotifications": [],
+  "ownerNotifications": [
+    {
+      "id": "notif-1785717532933",
+      "message": "🔔 ئاگاداری گرنگ: خۆکارانە ئەکاونتی ئەدمینی نوێ بە ناوی [naza] وەک [deputy_manager] لەلایەن [admin] دروستکرا لە بەگی داتابەیس.",
+      "timestamp": "2026-08-03T00:38:52.933Z",
+      "read": false
+    },
+    {
+      "id": "notif-1785717520821",
+      "message": "🔔 ئاگاداری گرنگ: خۆکارانە ئەکاونتی ئەدمینی نوێ بە ناوی [naza] وەک [deputy_manager] لەلایەن [admin] دروستکرا لە بەگی داتابەیس.",
+      "timestamp": "2026-08-03T00:38:40.821Z",
+      "read": false
+    },
+    {
+      "id": "notif-1785717426013",
+      "message": "🔔 ئاگاداری گرنگ: خۆکارانە ئەکاونتی ئەدمینی نوێ بە ناوی [naza] وەک [staff] لەلایەن [admin] دروستکرا لە بەگی داتابەیس.",
+      "timestamp": "2026-08-03T00:37:06.013Z",
+      "read": false
+    },
+    {
+      "id": "notif-1785714585761",
+      "message": "🔔 ئاگاداری گرنگ: خۆکارانە ئەکاونتی ئەدمینی نوێ بە ناوی [deputy1] وەک [deputy_manager] لەلایەن [admin] دروستکرا لە بەگی داتابەیس.",
+      "timestamp": "2026-08-02T23:49:45.761Z",
+      "read": false
+    },
+    {
+      "id": "notif-1785714584327",
+      "message": "🔔 ئاگاداری گرنگ: خۆکارانە ئەکاونتی ئەدمینی نوێ بە ناوی [staff1] وەک [staff] لەلایەن [admin] دروستکرا لە بەگی داتابەیس.",
+      "timestamp": "2026-08-02T23:49:44.327Z",
+      "read": false
+    }
+  ],
   "directMessages": [],
-  "invitations": []
+  "invitations": [],
+  "manualMovies": [],
+  "vipRequests": [],
+  "appSnapshots": []
 }

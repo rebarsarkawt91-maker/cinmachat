@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { motion } from "motion/react";
-import { Shield, Lock, User, AlertCircle, CheckCircle } from "lucide-react";
+import { Shield, Lock, User, AlertCircle, CheckCircle, Eye, EyeOff } from "lucide-react";
 
 interface LoginProps {
   onLoginSuccess: (user: { username: string; isSuper: boolean; isOwner: boolean }) => void;
@@ -9,6 +9,7 @@ interface LoginProps {
 export const Login = ({ onLoginSuccess }: LoginProps) => {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
@@ -178,13 +179,21 @@ export const Login = ({ onLoginSuccess }: LoginProps) => {
                 <Lock className="w-4 h-4" />
               </span>
               <input
-                type="password"
+                type={showPassword ? "text" : "password"}
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••"
-                className="w-full bg-black/40 border border-white/5 rounded-2xl pr-11 pl-4 py-3.5 text-xs text-white outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/30 transition-all font-mono"
+                className="w-full bg-black/40 border border-white/5 rounded-2xl pr-11 pl-11 py-3.5 text-xs text-white outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/30 transition-all font-mono"
               />
+              <button
+                type="button"
+                onClick={() => setShowPassword((prev) => !prev)}
+                className="absolute inset-y-0 left-4 flex items-center text-gray-500 hover:text-white transition-colors"
+                aria-label={showPassword ? "شاردنەوەی وشەی تێپەڕ" : "پیشاندانی وشەی تێپەڕ"}
+              >
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
             </div>
           </div>
 

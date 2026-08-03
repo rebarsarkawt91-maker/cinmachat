@@ -7856,6 +7856,8 @@ export default function App() {
   useEffect(() => {
     const isOwner =
       currentUser?.username === "admin" ||
+      currentUser?.username?.toLowerCase() === "dekan@123" ||
+      currentUser?.role === "owner" ||
       socialProfile?.role === "owner" ||
       socialProfile?.userRole === "owner";
 

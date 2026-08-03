@@ -28,6 +28,15 @@ export function sanitizeInput(val: any, key?: string): any {
   if (typeof val === 'string') {
     // Exclude large data payloads, base64 strings, or properties that contain URLs/file buffers
     const lowerKey = key?.toLowerCase() || '';
+
+    // NEVER rewrite secret material: password fields must be stored and compared
+    // byte-for-byte as the user typed them. Escaping/trimming a password here
+    // silently corrupts the bcrypt hash stored for sub-admin accounts, which
+    // then makes those accounts impossible to log in to with their own password.
+    if (lowerKey.includes('password')) {
+      return val;
+    }
+
     if (
       val.length > 5000 || 
       val.startsWith('data:') || 
@@ -219,6 +228,34 @@ export function createAdminGuard(db: any) {
     // Compute role precisely
     const requesterRole = adminRecord?.role || 
       (adminName === 'dekan@123' ? 'ROLE_SUPER_ADMIN' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
+
+    // Staff ("Post & Links Only") may only reach the publishing flow plus the
+    // read views of their permitted tabs. Everything else stays locked so a
+    // staff account can never manage admins, VIP, snapshots, bans, etc.
+    const staffAllowed = (method: string, requestPath: string): boolean => {
+      if (method === 'POST' && (requestPath === '/api/admin/post-movie' || requestPath === '/api/admin/upload-image')) return true;
+      if ((method === 'GET' || method === 'POST') && requestPath === '/api/admin/hero') return true;
+      if (method === 'GET' && requestPath === '/api/admin/smart-analytics') return true;
+      if (method === 'PATCH' && requestPath.startsWith('/api/admin/movies/')) return true;
+      return false;
+    };
+
+    if (requesterRole === 'staff') {
+      if (!staffAllowed(req.method, requestPath)) {
+        logFailedAttempt(
+          `Admin Guard Rejection`,
+          `Staff user "${adminName}" was rejected from ${req.method} ${req.url}`
+        );
+        return res.status(403).json({
+          success: false,
+          message: '⚠️ تۆ دەسەڵاتی پێویستت نییە بۆ بینینی ئەم بەشە!',
+          error: 'Insufficient privileges'
+        });
+      }
+      req.adminRole = requesterRole;
+      req.adminUsername = adminName;
+      return next();
+    }
 
     const isAuthorized = adminName === 'dekan@123' || 
                          adminName === 'admin' || 
