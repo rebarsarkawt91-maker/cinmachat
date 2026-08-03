@@ -5904,6 +5904,9 @@ export default function App() {
   const [copiedLink, setCopiedLink] = useState(false);
   const [bannedFromSystem, setBannedFromSystem] = useState(false);
   const [blockedAt, setBlockedAt] = useState<Date | null>(null);
+  const [ownerExempt, setOwnerExempt] = useState(false);
+  const [unblockAt, setUnblockAt] = useState<number | null>(null);
+  const [nowTick, setNowTick] = useState(Date.now());
   const [emergencyLocked, setEmergencyLocked] = useState(false);
 
   // Main Modal Player customized states
@@ -7778,32 +7781,59 @@ export default function App() {
     socialProfile?.role === "staff" ||
     socialProfile?.userRole === "staff";
 
-  // Monitor banned visitor IP on layout-load dynamically (Security Guard check)
-  useEffect(() => {
-    const checkIpBan = async () => {
-      try {
-        const res = await fetch("/api/check-ban");
-        const data = await res.json();
-        if (data) {
-          if (data.banned) {
-            setBlockedAt(new Date());
-            setBannedFromSystem(true);
-          }
-          if (data.emergencyLock && !currentUser) {
-            setEmergencyLocked(true);
-          } else {
-            setEmergencyLocked(false);
-          }
+  // Monitor banned visitor IP on layout-load dynamically (Security Guard check).
+  // Owner-whitelisted IPs/devices get a live countdown + auto-restore: the
+  // server auto-unblocks after 1 minute and returns ownerExempt/unblockAt so
+  // the UI can show the exact remaining time and refresh the moment it ends.
+  const checkBanStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/check-ban");
+      const data = await res.json();
+      if (data) {
+        if (data.banned) {
+          setBlockedAt((prev) => prev ?? new Date());
+          setOwnerExempt(!!data.ownerExempt);
+          setUnblockAt(data.unblockAt ? new Date(data.unblockAt).getTime() : null);
+          setBannedFromSystem(true);
+        } else {
+          setBannedFromSystem(false);
+          setOwnerExempt(false);
+          setUnblockAt(null);
         }
-      } catch (err) {
-        console.warn("Unable to check ban status:", err);
+        if (data.emergencyLock && !currentUser) {
+          setEmergencyLocked(true);
+        } else {
+          setEmergencyLocked(false);
+        }
+      }
+    } catch (err) {
+      console.warn("Unable to check ban status:", err);
+    }
+  }, [currentUser]);
+
+  useEffect(() => {
+    checkBanStatus();
+    // Re-verify periodically to enforce instantly
+    const banInterval = setInterval(checkBanStatus, 20000);
+    return () => clearInterval(banInterval);
+  }, [checkBanStatus]);
+
+  // Live countdown for the Owner's temporary 1-minute exemption. When the
+  // remaining time hits 0 the server has already auto-unblocked the IP/device,
+  // so re-check immediately to restore full access without a manual reload.
+  useEffect(() => {
+    if (!(bannedFromSystem && ownerExempt && unblockAt)) return;
+    const tick = () => {
+      setNowTick(Date.now());
+      if (Date.now() >= unblockAt) {
+        setOwnerExempt(false);
+        checkBanStatus();
       }
     };
-    checkIpBan();
-    // Re-verify periodically to enforce instantly
-    const banInterval = setInterval(checkIpBan, 20000);
-    return () => clearInterval(banInterval);
-  }, [currentUser]);
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [bannedFromSystem, ownerExempt, unblockAt, checkBanStatus]);
 
   const [systemPasswordInput, setSystemPasswordInput] = useState("");
 
@@ -8389,6 +8419,11 @@ export default function App() {
     const pad2 = (n: number) => String(n).padStart(2, "0");
     const blockDate = `${blockTime.getFullYear()}-${pad2(blockTime.getMonth() + 1)}-${pad2(blockTime.getDate())}`;
     const blockClock = `${pad2(blockTime.getHours())}:${pad2(blockTime.getMinutes())}:${pad2(blockTime.getSeconds())}`;
+    const remainingSec = ownerExempt && unblockAt
+      ? Math.max(0, Math.ceil((unblockAt - nowTick) / 1000))
+      : 0;
+    const cdMinutes = pad2(Math.floor(remainingSec / 60));
+    const cdSeconds = pad2(remainingSec % 60);
     return (
       <div
         className="min-h-screen bg-black flex flex-col items-center justify-center p-6 text-center"
@@ -8414,6 +8449,21 @@ export default function App() {
               {blockDate} — {blockClock}
             </span>
           </div>
+          {/* Owner 1-minute exemption: live auto-unblock countdown */}
+          {ownerExempt && unblockAt ? (
+            <div className="flex items-center justify-center gap-2.5 px-5 py-4 bg-emerald-950/30 border border-emerald-500/30 rounded-2xl">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="text-xs font-black text-emerald-300 uppercase tracking-widest kurdish-text">
+                کاتە ماوەکە:
+              </span>
+              <span
+                className="text-2xl font-black font-mono text-emerald-300 tabular-nums"
+                dir="ltr"
+              >
+                {cdMinutes}:{cdSeconds}
+              </span>
+            </div>
+          ) : null}
           {/* Reason explanation */}
           <p className="text-gray-400 kurdish-text text-sm leading-relaxed">
             ئەم ئامێرە/ئایپیە بەهۆی چەندین هەوڵی هەڵەی ناوی بەکارهێنەر و وشەی
