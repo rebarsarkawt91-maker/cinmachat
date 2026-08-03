@@ -819,6 +819,22 @@ function formatTime(seconds: number): string {
   return `${h > 0 ? `${h}:` : ""}${h > 0 ? String(m).padStart(2, "0") : String(m)}:${String(sec).padStart(2, "0")}`;
 }
 
+// Target languages for the AI-subtitle translation feature. The user picks one
+// from the player's subtitle menu; the source text is the movie's existing
+// subtitle file when available, otherwise Whisper transcription of the audio.
+const SUBTITLE_TARGET_LANGS = [
+  { code: "ku", label: "کوردی" },
+  { code: "en", label: "English" },
+  { code: "ar", label: "العربية" },
+  { code: "fa", label: "فارسی" },
+  { code: "tr", label: "Türkçe" },
+  { code: "es", label: "Español" },
+  { code: "fr", label: "Français" },
+  { code: "de", label: "Deutsch" },
+  { code: "ru", label: "Русский" },
+  { code: "zh", label: "中文" },
+];
+
 const CategoryDropdown = ({ value, onChange, categories }: any) => (
   <select
     value={value}
@@ -5982,6 +5998,10 @@ export default function App() {
   const [aiSubtitleMessage, setAiSubtitleMessage] = useState("");
   const [currentAiSubtitle, setCurrentAiSubtitle] = useState<string | null>(null);
   const [aiSubtitleGenerating, setAiSubtitleGenerating] = useState(false);
+  const [aiSubtitleLang, setAiSubtitleLang] = useState("ku");
+  // Language of the currently loaded AI cues, so re-selecting "ai" mode only
+  // re-translates when the movie or the selected language actually changed.
+  const [aiSubtitleLangLoaded, setAiSubtitleLangLoaded] = useState("");
   const ytCurrentTimeRef = useRef(0);
   const localClockRef = useRef(0);
   // True while the modal is showing a YouTube source. The infoDelivery filter
@@ -6071,22 +6091,12 @@ export default function App() {
     ytCurrentTimeRef.current = 0;
     setCurrentAiSubtitle(null);
     setAiSubtitleCues([]);
-    const url = selectedMovie?.subtitleUrl;
-    if (url) {
-      setAiSubtitleStatus("loading");
-      fetch(url)
-        .then((r) => {
-          if (!r.ok) throw new Error(`HTTP ${r.status}`);
-          return r.text();
-        })
-        .then((text) => {
-          setAiSubtitleCues(parseSubtitleText(text));
-          setAiSubtitleStatus("ready");
-        })
-        .catch(() => setAiSubtitleStatus("error"));
-    } else {
-      setAiSubtitleStatus("idle");
-    }
+    setAiSubtitleStatus("idle");
+    setAiSubtitleMessage("");
+    setAiSubtitleLangLoaded("");
+    setAiSubtitleGenerating(false);
+    // If the movie has an existing subtitle file, auto-translate it (fast path)
+    // the moment the user opens AI mode — see selectSubtitleMode.
   }, [selectedMovie?.id, activeServerUrl]);
 
   // Ticker: advance the local clock and pick the active AI subtitle cue.
@@ -6119,6 +6129,16 @@ export default function App() {
       // Avoid double subtitles: keep the provider's native CC off while the
       // parent-side AI overlay is active.
       if (showIframeSubtitles) toggleIframeSubtitles();
+      // Fast path: this movie already has a subtitle file — translate it instead
+      // of running Whisper. Only re-translate if cues aren't loaded yet or the
+      // target language changed.
+      if (
+        selectedMovie?.subtitleUrl &&
+        (aiSubtitleStatus !== "ready" || aiSubtitleLangLoaded !== aiSubtitleLang) &&
+        !aiSubtitleGenerating
+      ) {
+        void handleGenerateAiSubtitles();
+      }
     }
     setPlayerMenu(null);
   };
@@ -6130,10 +6150,19 @@ export default function App() {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 600000);
     try {
+      // Prefer the movie's existing subtitle file as the translation source:
+      // the server translates it with Gemini directly (no audio download, no
+      // Whisper). Only fall back to Whisper transcription of the audio when the
+      // movie has NO subtitle file attached.
+      const useExistingSubtitle = !!selectedMovie?.subtitleUrl;
       const res = await fetch("/api/subtitle/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: getMovieSourceUrl(selectedMovie), lang: "ku" }),
+        body: JSON.stringify(
+          useExistingSubtitle
+            ? { subtitleUrl: selectedMovie.subtitleUrl, lang: aiSubtitleLang }
+            : { url: getMovieSourceUrl(selectedMovie), lang: aiSubtitleLang },
+        ),
         signal: controller.signal,
       });
       const data = await res.json().catch(() => ({}));
@@ -6142,6 +6171,7 @@ export default function App() {
       if (cues.length === 0) throw new Error("No subtitles were generated");
       setAiSubtitleCues(cues);
       setAiSubtitleStatus("ready");
+      setAiSubtitleLangLoaded(aiSubtitleLang);
     } catch (err: any) {
       setAiSubtitleStatus("error");
       setAiSubtitleMessage(
@@ -9561,8 +9591,36 @@ export default function App() {
                                 </button>
 
                                 {/* AI subtitle status / generate flow */}
-                                {subtitleMode === "ai" &&
-                                  (aiSubtitleStatus === "loading" ? (
+                                {subtitleMode === "ai" && (
+                                  <>
+                                    {/* Target language for the AI translation */}
+                                    <div className="mt-2 space-y-1">
+                                      <div className="px-1 text-[9px] font-bold text-zinc-400 kurdish-text">
+                                        زمانی وەرگێڕان
+                                      </div>
+                                      <select
+                                        value={aiSubtitleLang}
+                                        onChange={(e) => {
+                                          setAiSubtitleLang(e.target.value);
+                                          // Re-translate immediately when the
+                                          // language changes and cues are loaded.
+                                          if (
+                                            aiSubtitleStatus === "ready" &&
+                                            aiSubtitleLangLoaded !== e.target.value
+                                          ) {
+                                            void handleGenerateAiSubtitles();
+                                          }
+                                        }}
+                                        className="w-full bg-black/40 border border-white/10 rounded-xl px-2 py-1.5 text-[10px] font-bold text-white kurdish-text outline-none focus:border-brand-primary cursor-pointer"
+                                      >
+                                        {SUBTITLE_TARGET_LANGS.map((l) => (
+                                          <option key={l.code} value={l.code} className="bg-[#0a0a0c] text-white">
+                                            {l.label}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                  {aiSubtitleStatus === "loading" ? (
                                     <div className="mt-2 px-3 py-1.5 text-[10px] font-bold text-zinc-400 kurdish-text">
                                       بارکردنی سەبتایتڵ...
                                     </div>
@@ -9612,7 +9670,9 @@ export default function App() {
                                         </button>
                                       </div>
                                     </div>
-                                  ))}
+                                  )}
+                                  </>
+                                )}
 
                                 <div className="mt-2 flex items-center justify-between gap-2 px-1">
                                   <span className="text-[10px] font-bold text-zinc-400 kurdish-text">

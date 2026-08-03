@@ -11,7 +11,7 @@ import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import net from 'node:net';
 import { rateLimiter, sanitizationMiddleware, createAdminGuard, logFailedAttempt } from './security';
-import { generateSubtitle } from './features/subtitles/subtitleGenerator.js';
+import { generateSubtitle, translateSrtViaGemini } from './features/subtitles/subtitleGenerator.js';
 import * as XLSX from 'xlsx';
 
 // Sanitize URLs to decode HTML entities (e.g. &#x2F; → /) and convert YouTube watch links to embed links
@@ -3739,7 +3739,66 @@ async function startServer() {
   // YouTube / streaming-source URLs require yt-dlp to be installed on the server;
   // direct .mp4/.webm file URLs are downloaded with a plain HTTP fetch instead.
   app.post('/api/subtitle/generate', async (req, res) => {
-    const { url, lang } = req.body || {};
+    const { url, subtitleUrl, lang } = req.body || {};
+
+    // Fast path: the movie already has a subtitle file attached (movie.subtitleUrl).
+    // Fetch that file and translate it with Gemini directly — no audio download, no
+    // ffmpeg, no Whisper transcription. This is much faster and is used whenever the
+    // caller provides a subtitleUrl. Whisper is only a fallback for movies WITHOUT
+    // an existing subtitle file (see below).
+    if (typeof subtitleUrl === 'string' && subtitleUrl.trim()) {
+      const subtitleSource = sanitizeUrl(subtitleUrl);
+      if (!/^https?:\/\//i.test(subtitleSource)) {
+        return res.status(400).json({ error: 'subtitleUrl must be a valid http(s) URL' });
+      }
+      const targetLangSub =
+        typeof lang === 'string' && /^[a-z]{2,3}$/i.test(lang) ? lang.toLowerCase() : 'en';
+      const startedSub = Date.now();
+      const stepLogSub = (msg: string) =>
+        console.log(`[${new Date().toISOString()}] [subtitle-api] ${msg}`);
+
+      try {
+        stepLogSub(`translating existing subtitle file ${subtitleSource.slice(0, 120)} (lang=${targetLangSub})`);
+        const controller = new AbortController();
+        const dlTimer = setTimeout(() => controller.abort(), 60000);
+        let resp;
+        try {
+          resp = await fetch(subtitleSource, { signal: controller.signal });
+        } catch (e: any) {
+          throw new Error(
+            `Subtitle download failed: ${e?.name === 'AbortError' ? 'timed out after 60s' : e?.message}`,
+          );
+        } finally {
+          clearTimeout(dlTimer);
+        }
+        if (!resp.ok) throw new Error(`Subtitle download failed: HTTP ${resp.status}`);
+        const rawText = await resp.text();
+        if (rawText.length > 10 * 1024 * 1024) throw new Error('Subtitle file is too large (> 10 MB)');
+        const cleanText = rawText.replace(/^\uFEFF/, '').trim();
+        if (!cleanText) throw new Error('Subtitle file is empty');
+
+        // Strip WebVTT-only header lines so the remaining cue blocks follow the
+        // same SRT-style shape for both formats (Gemini keeps that structure, and
+        // the client parser matches on the timing lines either way).
+        const normalized = cleanText.startsWith('WEBVTT')
+          ? cleanText
+              .replace(/^WEBVTT\s*(\n|$)/, '')
+              .replace(/\nNOTE[^\n]*(\n|$)/g, '\n')
+              .trim()
+          : cleanText;
+
+        const srtText = await translateSrtViaGemini(normalized, targetLangSub);
+        stepLogSub(
+          `translated ${srtText.length} chars in ${((Date.now() - startedSub) / 1000).toFixed(1)}s`,
+        );
+        res.json({ success: true, srt: srtText, lang: targetLangSub, source: 'subtitle-file' });
+      } catch (err: any) {
+        console.error(`[${new Date().toISOString()}] [subtitle-api] subtitle-file ERROR:`, err?.message || err);
+        res.status(500).json({ error: err?.message || 'Subtitle translation failed' });
+      }
+      return;
+    }
+
     if (!url || typeof url !== 'string') {
       return res.status(400).json({ error: 'Missing or invalid "url" in request body' });
     }

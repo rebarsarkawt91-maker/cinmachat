@@ -138,16 +138,20 @@ async function runWhisper(wavFilePath, outputDir) {
   return { srtText, detectedLanguage: result.language || "unknown" };
 }
 
-// Step 3: translate the whole SRT at once, telling Gemini to keep every line
-// number and timestamp identical so the subtitles never go out of sync.
+// Step 3: translate the whole subtitle file at once, telling Gemini to keep the
+// file structure (cue numbers, identifiers, timestamps) identical so the
+// subtitles never go out of sync. Works for both SRT and WebVTT input, and
+// returns the file in the exact same format it was given.
 async function translateSrtViaGemini(srtText, targetLang) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY is not set; cannot translate subtitles");
 
   const prompt =
-    `Translate ONLY the subtitle cue text lines in the SRT below into the language code ` +
-    `"${targetLang}". Keep every line number and timestamp EXACTLY the same. ` +
-    `Return the complete SRT.\n\n${srtText}`;
+    `Translate ONLY the spoken-dialogue text lines in the subtitle file below into ` +
+    `the language code "${targetLang}". The file may be SRT or WebVTT. Keep the ` +
+    `file's structure and every cue number, cue identifier and timestamp EXACTLY ` +
+    `the same. Return the complete file in the exact same format, adding or ` +
+    `removing no lines.\n\n${srtText}`;
 
   // Keys that are restricted in the Google AI Studio / Cloud console to a
   // specific site origin (HTTP referrer) get blocked from non-browser callers.
@@ -258,7 +262,7 @@ async function generateSubtitlesForFolder(folderPath, outputLang = "en") {
   return { total: videos.length, succeeded, failed };
 }
 
-module.exports = { generateSubtitle, generateSubtitlesForFolder };
+module.exports = { generateSubtitle, generateSubtitlesForFolder, translateSrtViaGemini };
 
 // ---------------------------------------------------------------------------
 // Example usage (uncomment to try):
