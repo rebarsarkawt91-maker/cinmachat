@@ -80,6 +80,15 @@ const INITIAL_DB = {
   },
   deletedIds: [] as string[],
   bannedIps: [] as string[],
+  // Auto-banned browser/device fingerprints (X-Device-Id header / body deviceId).
+  // These are the PRIMARY target of the auto-ban system: each blocked device is
+  // isolated, so a failed-login storm on ONE mobile device can never block the
+  // whole site or other devices that share the same public IP (mobile NAT).
+  bannedDevices: [] as string[],
+  // Ban start times per device so temporary (owner-exempt) blocks can be measured.
+  bannedDeviceTimestamps: {} as Record<string, string>,
+  // Extra context for each banned device (ip, user-agent, reason, requester).
+  bannedDevicesInfo: {} as Record<string, any>,
   // Unblock request queue: filled by blocked users via the public
   // /api/unblock-request endpoint, managed by admins in Security Shield.
   unblockRequests: [] as any[],
@@ -231,6 +240,9 @@ async function startServer() {
   if (!db.unblockArchive) db.unblockArchive = [];
   if (!db.ownerWhitelist) db.ownerWhitelist = {};
   if (!db.bannedIpTimestamps) db.bannedIpTimestamps = {};
+  if (!db.bannedDevices) db.bannedDevices = [];
+  if (!db.bannedDeviceTimestamps) db.bannedDeviceTimestamps = {};
+  if (!db.bannedDevicesInfo) db.bannedDevicesInfo = {};
   if (!db.youtubeChannelUrl) db.youtubeChannelUrl = "https://www.youtube.com/";
   if (!db.youtubeUrl) db.youtubeUrl = "https://www.youtube.com/";
   if (!db.tiktokUrl) db.tiktokUrl = "https://www.tiktok.com/";
@@ -312,26 +324,71 @@ async function startServer() {
 
   const normalizeIpKey = (ip: string): string => String(ip || '').trim();
 
-  // Whitelist the Owner's IP/device after a verified Owner login so any future
+  // Normalize a browser/device fingerprint (X-Device-Id) header. Only the raw
+  // characters that make a valid identifier survive, and length is capped so a
+  // hostile client can never flood the DB with arbitrarily large values.
+  const normalizeDeviceKey = (deviceId: string): string =>
+    String(deviceId || '').trim().replace(/[^\w.:@-]/g, '').slice(0, 128);
+
+  // Resolve the caller's identity from a request:
+  //   deviceId — the unique browser/device fingerprint sent by the client.
+  //   ip       — the client's public IP (shared on mobile NAT networks).
+  //   key      — the identity used for auto-ban counting: the device fingerprint
+  //              whenever it is present, otherwise the IP (non-browser clients).
+  // Preferring the device fingerprint is what isolates a single misbehaving
+  // device instead of blocking the whole platform / every user behind the IP.
+  const getClientIdentity = (req: any): { deviceId: string; ip: string; key: string } => {
+    const headerDevice = normalizeDeviceKey(req.headers && req.headers['x-device-id']);
+    const bodyDevice = normalizeDeviceKey(req.body && req.body.deviceId);
+    const deviceId = headerDevice || bodyDevice;
+    const clientIp =
+      (req.headers && req.headers['x-forwarded-for'] as string)?.split(',')[0] ||
+      req.socket?.remoteAddress ||
+      req.ip ||
+      "Unknown";
+    const ip = String(clientIp).trim();
+    return { deviceId, ip, key: deviceId || ip };
+  };
+
+  // Whitelist the Owner's IP after a verified Owner login so any future
   // accidental block becomes a temporary 1-minute exemption, not a permanent ban.
   const whitelistOwnerIp = (ip: string) => {
     const key = normalizeIpKey(ip);
     if (!key) return;
     if (!db.ownerWhitelist) db.ownerWhitelist = {};
     db.ownerWhitelist[key] = new Date().toISOString();
-    console.log(`[Owner Whitelist] Owner IP/device added: ${key}`);
+    console.log(`[Owner Whitelist] Owner IP added: ${key}`);
   };
 
-  const isOwnerWhitelisted = (ip: string): boolean => {
-    const key = normalizeIpKey(ip);
-    return !!(db.ownerWhitelist && key && db.ownerWhitelist[key]);
+  // Same owner-exemption whitelist for the Owner's device fingerprint. Both are
+  // stored in the same map (keys are distinct enough: UUIDs vs IPs).
+  const whitelistOwnerDevice = (deviceId: string) => {
+    const key = normalizeDeviceKey(deviceId);
+    if (!key) return;
+    if (!db.ownerWhitelist) db.ownerWhitelist = {};
+    db.ownerWhitelist[key] = new Date().toISOString();
+    console.log(`[Owner Whitelist] Owner device added: ${key}`);
   };
 
+  const isOwnerWhitelisted = (key: string): boolean => {
+    const clean = String(key || '').trim();
+    return !!(db.ownerWhitelist && clean && db.ownerWhitelist[clean]);
+  };
+
+  // Exact IP match only — a substring match previously let a banned IP such as
+  // "1.2.3.4" also block "1.2.3.40" or "101.2.3.4" (over-blocking whole ranges).
   const isIpBanned = (ip: string): boolean => {
     const cleanIp = normalizeIpKey(ip);
     return !!(db.bannedIps && db.bannedIps.some((item: string) => {
-      const cleanItem = String(item).trim();
-      return cleanItem === cleanIp || cleanIp.includes(cleanItem);
+      return String(item).trim() === cleanIp;
+    }));
+  };
+
+  const isDeviceBanned = (deviceId: string): boolean => {
+    const key = normalizeDeviceKey(deviceId);
+    if (!key) return false;
+    return !!(db.bannedDevices && db.bannedDevices.some((item: string) => {
+      return String(item).trim() === key;
     }));
   };
 
@@ -351,31 +408,62 @@ async function startServer() {
     }
   };
 
-  // Resolve the owner-exemption state for a blocked IP/device.
+  // Record a device auto-ban. `info` carries extra context (ip, user-agent,
+  // reason, requester name/phone) so the admin dashboard can identify the device.
+  const recordBanDevice = (deviceId: string, info?: any) => {
+    const key = normalizeDeviceKey(deviceId);
+    if (!key) return;
+    if (!db.bannedDevices) db.bannedDevices = [];
+    if (!db.bannedDevices.includes(key)) db.bannedDevices.push(key);
+    if (!db.bannedDeviceTimestamps) db.bannedDeviceTimestamps = {};
+    if (!db.bannedDeviceTimestamps[key]) {
+      db.bannedDeviceTimestamps[key] = new Date().toISOString();
+    }
+    if (info) {
+      if (!db.bannedDevicesInfo) db.bannedDevicesInfo = {};
+      db.bannedDevicesInfo[key] = { ...info, bannedAt: db.bannedDeviceTimestamps[key] };
+    }
+  };
+
+  const clearBanDevice = (deviceId: string) => {
+    const key = normalizeDeviceKey(deviceId);
+    if (!key) return;
+    if (db.bannedDevices) db.bannedDevices = db.bannedDevices.filter((item: string) => String(item).trim() !== key);
+    if (db.bannedDeviceTimestamps) delete db.bannedDeviceTimestamps[key];
+    if (db.bannedDevicesInfo) delete db.bannedDevicesInfo[key];
+  };
+
+  // Resolve the owner-exemption state for a blocked IP/device key.
   // Returns:
   //   { exempt: false }            -> normal permanent block (non-owner)
   //   { exempt: true, remainingMs, unblockAt } -> owner temp block still active
   // When the 1-minute window has elapsed this REMOVES the ban (auto-unblock)
   // and returns { exempt: true, remainingMs: 0 } so callers pass the request.
-  const evaluateOwnerBlock = (ip: string): { exempt: boolean; remainingMs: number; unblockAt: number | null } => {
-    if (!isOwnerWhitelisted(ip)) {
+  const evaluateOwnerBlock = (key: string, isDevice: boolean): { exempt: boolean; remainingMs: number; unblockAt: number | null } => {
+    const cleanKey = String(key || '').trim();
+    if (!cleanKey || !isOwnerWhitelisted(cleanKey)) {
       return { exempt: false, remainingMs: 0, unblockAt: null };
     }
-    const key = normalizeIpKey(ip);
-    const banIso = db.bannedIpTimestamps && db.bannedIpTimestamps[key];
+    const banIso = isDevice
+      ? db.bannedDeviceTimestamps && db.bannedDeviceTimestamps[cleanKey]
+      : db.bannedIpTimestamps && db.bannedIpTimestamps[cleanKey];
     const banTime = banIso ? new Date(banIso).getTime() : Date.now();
     const unblockAt = banTime + OWNER_BLOCK_EXEMPTION_MS;
     const remainingMs = Math.max(0, unblockAt - Date.now());
 
     if (remainingMs <= 0) {
       // Window elapsed -> auto-unblock this owner IP/device immediately.
-      if (db.bannedIps) {
-        db.bannedIps = db.bannedIps.filter((item: string) => String(item).trim() !== key);
+      if (isDevice) {
+        clearBanDevice(cleanKey);
+      } else {
+        if (db.bannedIps) {
+          db.bannedIps = db.bannedIps.filter((item: string) => String(item).trim() !== cleanKey);
+        }
+        clearBanTime(cleanKey);
       }
-      clearBanTime(key);
-      db.ownerWhitelist[key] = new Date().toISOString(); // keep whitelisted for the future
+      db.ownerWhitelist[cleanKey] = new Date().toISOString(); // keep whitelisted for the future
       saveDB(db).catch(console.error);
-      console.log(`[Owner Whitelist] Auto-unblocked owner IP/device after ${OWNER_BLOCK_EXEMPTION_MS / 1000}s: ${key}`);
+      console.log(`[Owner Whitelist] Auto-unblocked owner ${isDevice ? 'device' : 'IP'} after ${OWNER_BLOCK_EXEMPTION_MS / 1000}s: ${cleanKey}`);
       return { exempt: true, remainingMs: 0, unblockAt };
     }
 
@@ -438,12 +526,13 @@ async function startServer() {
     }
   }
 
-  async function addIntrusionAttempt(dbAny: any, ip: string, path: string, payload: string, type: string) {
+  async function addIntrusionAttempt(dbAny: any, ip: string, path: string, payload: string, type: string, deviceId?: string) {
     if (!dbAny.intrusionAttempts) dbAny.intrusionAttempts = [];
     const loc = getIpLocation(ip);
     dbAny.intrusionAttempts.unshift({
       id: 'int-' + Math.random().toString(36).substring(2, 9),
       ip,
+      deviceId: deviceId || '',
       location: loc,
       path,
       payload,
@@ -536,7 +625,7 @@ async function startServer() {
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'X-Admin-Username'], // Added X-Admin-Username
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'X-Admin-Username', 'X-Device-Id'], // Added X-Admin-Username, X-Device-Id
   }));
   // --- END CORS CONFIGURATION ---
 
@@ -579,9 +668,9 @@ async function startServer() {
   // Global Intrusion/Hack Attempt Tracker Middleware
   app.use(async (req, res, next) => {
     if (req.url.startsWith('/api/')) {
-      const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || "Unknown";
-      const cleanIp = clientIp.trim();
-      
+      const identity = getClientIdentity(req);
+      const cleanIp = identity.ip;
+
       // Look for common patterns
       const suspectPatterns = [
         /union\s+select/i,
@@ -616,19 +705,33 @@ async function startServer() {
       }
 
       if (matchedPattern) {
-        console.warn(`[SECURITY WARNING] Threat detected from IP: ${cleanIp}. Matched: ${matchedPattern}`);
-        await addIntrusionAttempt(db, cleanIp, req.url, matchedPattern, "SQL Injection / XSS Probe");
+        console.warn(`[SECURITY WARNING] Threat detected from IP: ${cleanIp} device: ${identity.deviceId || 'unknown'}. Matched: ${matchedPattern}`);
+        await addIntrusionAttempt(db, cleanIp, req.url, matchedPattern, "SQL Injection / XSS Probe", identity.deviceId);
         
-        // Count total threat records for this IP
-        const ipThreatCount = db.intrusionAttempts.filter((att: any) => att.ip === cleanIp).length;
-        if (ipThreatCount >= 3) {
-          if (!db.bannedIps) db.bannedIps = [];
-          if (!db.bannedIps.includes(cleanIp)) {
-            db.bannedIps.push(cleanIp);
-            recordBanTime(cleanIp);
-            await addAuditLog(db, "SYSTEM_AUTO_SHIELD", "Auto IP Block (Intrusion)", `بلۆککردنی خۆکاری ئایپی ${cleanIp} بەهۆی زیاتر لە ٣ هەوڵی هێرشبردن.`);
-            await saveDB(db);
+        // Count total threat records for this identity (device fingerprint when
+        // present, else IP). Auto-banning the DEVICE isolates the offender —
+        // never the whole site / other users behind a shared mobile IP.
+        const threatKey = identity.key;
+        const threatCount = db.intrusionAttempts.filter((att: any) => {
+          const attKey = String(att.deviceId || '').trim() || String(att.ip || '').trim();
+          return attKey === threatKey;
+        }).length;
+        if (threatCount >= 3) {
+          if (identity.deviceId) {
+            recordBanDevice(identity.deviceId, {
+              ip: cleanIp,
+              device: (req.headers['user-agent'] as string || '').slice(0, 150),
+              reason: 'Intrusion / XSS attempt'
+            });
+          } else {
+            if (!db.bannedIps) db.bannedIps = [];
+            if (!db.bannedIps.includes(cleanIp)) {
+              db.bannedIps.push(cleanIp);
+              recordBanTime(cleanIp);
+            }
           }
+          await addAuditLog(db, "SYSTEM_AUTO_SHIELD", "Auto Device/IP Block (Intrusion)", `بلۆککردنی خۆکاری ${identity.deviceId ? `ئامێری ${identity.deviceId}` : `ئایپی ${cleanIp}`} بەهۆی زیاتر لە ٣ هەوڵی هێرشبردن.`);
+          await saveDB(db);
           return res.status(403).json({ error: "سیستەمی قەڵغانی ئاسایش ڕێگری لێکردیت بەهۆی گۆڕانکاری گوماناوی لکێندراو" });
         }
         
@@ -639,32 +742,55 @@ async function startServer() {
     next();
   });
 
-  // IP Ban Guard Middleware (Point 2: Rejects banned visitor IPs with 403 Forbidden)
-  // Owner-whitelisted IPs/devices get a 1-minute temporary block instead of a
-  // permanent ban and are auto-unblocked by evaluateOwnerBlock once it expires.
+  // IP/Device Ban Guard Middleware (Point 2: Rejects banned visitor IPs/devices
+  // with 403 Forbidden). A blocked DEVICE fingerprint only blocks that device;
+  // a blocked IP only blocks that exact IP. Auto-bans target devices, admin
+  // bans may target IPs. Owner-whitelisted identities get a 1-minute temporary
+  // block instead of a permanent ban and are auto-unblocked by
+  // evaluateOwnerBlock once it expires.
   app.use((req, res, next) => {
     if (req.url === '/api/check-ban' || req.url === '/api/unblock-request') {
       return next();
     }
     if (req.url.startsWith('/api/')) {
-      const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || "Unknown";
-      const cleanIp = clientIp.trim();
-      const isBanned = isIpBanned(cleanIp);
-      if (isBanned && !req.url.startsWith('/api/admin/unban-ip')) {
-        const exemption = evaluateOwnerBlock(cleanIp);
-        if (exemption.exempt && exemption.remainingMs > 0) {
-          console.warn(`[Owner Whitelist] Owner IP temp-blocked (${Math.ceil(exemption.remainingMs / 1000)}s left): ${cleanIp} to ${req.url}`);
-          return res.status(403).json({
-            banned: true,
-            ownerExempt: true,
-            unblockAt: new Date(exemption.unblockAt || Date.now()).toISOString(),
-            error: 'تۆ بلۆک کراویت (بۆ خاوەنی سیستەم — دەکرێتەوە بە خۆکاری دوای ١ خولەک)'
-          });
+      const identity = getClientIdentity(req);
+      const deviceBanned = identity.deviceId ? isDeviceBanned(identity.deviceId) : false;
+      const ipBanned = isIpBanned(identity.ip);
+      const isBanned = deviceBanned || ipBanned;
+      const isAdminUnban = req.url.startsWith('/api/admin/unban-ip') || req.url.startsWith('/api/admin/unban-device');
+      if (isBanned && !isAdminUnban) {
+        // Owner-whitelisted identity gets a 1-minute temporary block.
+        if (deviceBanned && identity.deviceId) {
+          const exemption = evaluateOwnerBlock(identity.deviceId, true);
+          if (exemption.exempt) {
+            if (exemption.remainingMs > 0) {
+              console.warn(`[Owner Whitelist] Owner device temp-blocked (${Math.ceil(exemption.remainingMs / 1000)}s left): ${identity.deviceId} to ${req.url}`);
+              return res.status(403).json({
+                banned: true,
+                ownerExempt: true,
+                unblockAt: new Date(exemption.unblockAt || Date.now()).toISOString(),
+                error: 'تۆ بلۆک کراویت (بۆ خاوەنی سیستەم — دەکرێتەوە بە خۆکاری دوای ١ خولەک)'
+              });
+            }
+            return next(); // Auto-unblocked owner device — allow the request.
+          }
         }
-        if (exemption.exempt) {
-          return next(); // Auto-unblocked owner IP/device — allow the request.
+        if (ipBanned) {
+          const exemption = evaluateOwnerBlock(identity.ip, false);
+          if (exemption.exempt) {
+            if (exemption.remainingMs > 0) {
+              console.warn(`[Owner Whitelist] Owner IP temp-blocked (${Math.ceil(exemption.remainingMs / 1000)}s left): ${identity.ip} to ${req.url}`);
+              return res.status(403).json({
+                banned: true,
+                ownerExempt: true,
+                unblockAt: new Date(exemption.unblockAt || Date.now()).toISOString(),
+                error: 'تۆ بلۆک کراویت (بۆ خاوەنی سیستەم — دەکرێتەوە بە خۆکاری دوای ١ خولەک)'
+              });
+            }
+            return next(); // Auto-unblocked owner IP/device — allow the request.
+          }
         }
-        console.warn(`[IP Blocked] Blocked request from banned IP: ${cleanIp} to ${req.url}`);
+        console.warn(`[Blocked] Blocked request from banned ${deviceBanned ? `device: ${identity.deviceId}` : `IP: ${identity.ip}`} to ${req.url}`);
         return res.status(403).json({ banned: true, error: 'تۆ بلۆک کراویت' });
       }
     }
@@ -690,29 +816,51 @@ async function startServer() {
 
   // Check-ban status endpoint
   app.get('/api/check-ban', (req, res) => {
-    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || "Unknown";
-    const cleanIp = clientIp.trim();
-    const isBanned = isIpBanned(cleanIp);
+    const identity = getClientIdentity(req);
+    const deviceBanned = identity.deviceId ? isDeviceBanned(identity.deviceId) : false;
+    const ipBanned = isIpBanned(identity.ip);
+    const isBanned = deviceBanned || ipBanned;
     if (isBanned) {
-      // Owner-whitelisted IP/device: return the live exemption window so the
+      // Owner-whitelisted device: return the live exemption window so the
       // client can render a countdown; evaluateOwnerBlock auto-unblocks at 0.
-      const exemption = evaluateOwnerBlock(cleanIp);
-      if (exemption.exempt && exemption.remainingMs > 0) {
-        return res.json({
-          banned: true,
-          ip: cleanIp,
-          emergencyLock: !!db.emergencyLock,
-          ownerExempt: true,
-          remainingMs: exemption.remainingMs,
-          unblockAt: new Date(exemption.unblockAt || Date.now()).toISOString()
-        });
+      if (deviceBanned && identity.deviceId) {
+        const exemption = evaluateOwnerBlock(identity.deviceId, true);
+        if (exemption.exempt && exemption.remainingMs > 0) {
+          return res.json({
+            banned: true,
+            ip: identity.ip,
+            deviceId: identity.deviceId,
+            emergencyLock: !!db.emergencyLock,
+            ownerExempt: true,
+            remainingMs: exemption.remainingMs,
+            unblockAt: new Date(exemption.unblockAt || Date.now()).toISOString()
+          });
+        }
+        if (exemption.exempt) {
+          // Auto-unblocked just now — report the owner device as no longer banned.
+          return res.json({ banned: false, ip: identity.ip, deviceId: identity.deviceId, emergencyLock: !!db.emergencyLock });
+        }
       }
-      if (exemption.exempt) {
-        // Auto-unblocked just now — report the owner as no longer banned.
-        return res.json({ banned: false, ip: cleanIp, emergencyLock: !!db.emergencyLock });
+      // Owner-whitelisted IP: same temporary-block countdown.
+      if (ipBanned) {
+        const exemption = evaluateOwnerBlock(identity.ip, false);
+        if (exemption.exempt && exemption.remainingMs > 0) {
+          return res.json({
+            banned: true,
+            ip: identity.ip,
+            deviceId: identity.deviceId,
+            emergencyLock: !!db.emergencyLock,
+            ownerExempt: true,
+            remainingMs: exemption.remainingMs,
+            unblockAt: new Date(exemption.unblockAt || Date.now()).toISOString()
+          });
+        }
+        if (exemption.exempt) {
+          return res.json({ banned: false, ip: identity.ip, deviceId: identity.deviceId, emergencyLock: !!db.emergencyLock });
+        }
       }
     }
-    res.json({ banned: !!isBanned, ip: cleanIp, emergencyLock: !!db.emergencyLock });
+    res.json({ banned: !!isBanned, ip: identity.ip, deviceId: identity.deviceId, emergencyLock: !!db.emergencyLock });
   });
 
   // Public unblock-request endpoint (no auth — reachable by blocked users so
@@ -720,19 +868,21 @@ async function startServer() {
   // limit prevents bots from flooding the admin queue.
   const unblockRequestRate: Record<string, { attempts: number; firstAt: number }> = {};
   app.post('/api/unblock-request', async (req, res) => {
-    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || "Unknown";
-    const cleanIp = String(clientIp).trim();
+    const identity = getClientIdentity(req);
+    const cleanIp = identity.ip;
+    const cleanDeviceId = identity.deviceId;
     const now = Date.now();
 
-    // Max 3 requests per IP per 10 minutes
-    const existing = unblockRequestRate[cleanIp];
+    // Max 3 requests per identity (device fingerprint, else IP) per 10 minutes.
+    const rateKey = identity.key;
+    const existing = unblockRequestRate[rateKey];
     if (existing && now - existing.firstAt < 10 * 60 * 1000) {
       if (existing.attempts >= 3) {
         return res.status(429).json({ success: false, error: 'زۆر داواکاری نێردراوە لەم ئامێرەوە. تکایە دواتر هەوڵبدەوە.' });
       }
       existing.attempts += 1;
     } else {
-      unblockRequestRate[cleanIp] = { attempts: 1, firstAt: now };
+      unblockRequestRate[rateKey] = { attempts: 1, firstAt: now };
     }
 
     const { name, phone } = req.body || {};
@@ -752,8 +902,11 @@ async function startServer() {
       name: cleanName,
       phone: cleanPhone,
       ip: cleanIp,
+      deviceId: cleanDeviceId,
       device: (req.headers['user-agent'] as string || '').slice(0, 150),
-      blockedAt: (db.bannedIpTimestamps && db.bannedIpTimestamps[cleanIp]) || new Date().toISOString(),
+      blockedAt: cleanDeviceId && db.bannedDeviceTimestamps && db.bannedDeviceTimestamps[cleanDeviceId]
+        ? db.bannedDeviceTimestamps[cleanDeviceId]
+        : ((db.bannedIpTimestamps && db.bannedIpTimestamps[cleanIp]) || new Date().toISOString()),
       status: 'pending',
       timestamp: new Date().toISOString()
     });
@@ -762,13 +915,13 @@ async function startServer() {
     // Persist safely: if the write fails, respond with 500 instead of leaving
     // the client's request hanging (unhandled rejection).
     try {
-      await addAuditLog(db, "USER_UNBLOCK_REQUEST", "New Unblock Request", `داواکاری لابردنی بلۆک لە ${cleanName} (${cleanPhone}) ئایپی: ${cleanIp}`);
+      await addAuditLog(db, "USER_UNBLOCK_REQUEST", "New Unblock Request", `داواکاری لابردنی بلۆک لە ${cleanName} (${cleanPhone}) ئایپی: ${cleanIp}${cleanDeviceId ? ` ئامێر: ${cleanDeviceId}` : ''}`);
       await saveDB(db);
     } catch (err) {
       console.error('[Unblock Request] Failed to persist unblock request:', err);
       return res.status(500).json({ success: false, error: 'هەڵەی ناوخۆیی ڕوویدا لە تۆمارکردنی داواکاری. تکایە دواتر هەوڵبدەوە.' });
     }
-    console.log(`[Unblock Request] ${cleanName} (${cleanPhone}) from ${cleanIp}`);
+    console.log(`[Unblock Request] ${cleanName} (${cleanPhone}) from ${cleanIp} device=${cleanDeviceId || 'unknown'}`);
     res.json({ success: true });
   });
 
@@ -803,6 +956,29 @@ async function startServer() {
     await saveDB(db);
     console.log(`[Unban IP] Admin unbanned IP: ${cleanIp}`);
     res.json({ success: true, bannedIps: db.bannedIps });
+  });
+
+  // Banned-devices administration endpoints. Auto-bans target the device
+  // fingerprint (X-Device-Id), so admins unban devices here — while the
+  // manual approval flow (resolve-unblock-request) unblocks both at once.
+  app.get('/api/admin/banned-devices', (req, res) => {
+    const list = (db.bannedDevices || []).map((deviceId: string) => ({
+      deviceId,
+      bannedAt: (db.bannedDeviceTimestamps && db.bannedDeviceTimestamps[deviceId]) || null,
+      info: (db.bannedDevicesInfo && db.bannedDevicesInfo[deviceId]) || null,
+    }));
+    res.json(list);
+  });
+
+  app.post('/api/admin/unban-device', async (req, res) => {
+    const { deviceId, adminName } = req.body || {};
+    const key = normalizeDeviceKey(deviceId);
+    if (!key) return res.status(400).json({ error: 'Device ID required' });
+    clearBanDevice(key);
+    await addAuditLog(db, adminName, "Unban Device", `بلۆکی ئامێر لادرا: ${key}`);
+    await saveDB(db);
+    console.log(`[Unban Device] Admin unbanned device: ${key}`);
+    res.json({ success: true, bannedDevices: db.bannedDevices });
   });
 
   // Unblock-request management endpoints (view, single delete, clear all)
@@ -848,7 +1024,11 @@ async function startServer() {
     const target = db.unblockRequests.find((r: any) => r.id === id);
     if (!target) return res.status(404).json({ error: 'Unblock request not found' });
 
-    // Unban the requester's IP/device
+    // Unban the requester's device fingerprint (the primary auto-ban target) and
+    // IP (for manually IP-banned requests). Only the exact device/IP is lifted —
+    // other devices and users are never affected.
+    const requesterDevice = String(target.deviceId || '').trim();
+    if (requesterDevice) clearBanDevice(requesterDevice);
     const requesterIp = String(target.ip || '').trim();
     if (requesterIp && db.bannedIps && db.bannedIps.includes(requesterIp)) {
       db.bannedIps = db.bannedIps.filter((item: string) => String(item).trim() !== requesterIp);
@@ -865,12 +1045,14 @@ async function startServer() {
     });
 
     await addAuditLog(db, adminName, "Resolve Unblock Request",
-      requesterIp
-        ? `داواکاری لابردنی بلۆکی پەسەندکرا و بلۆکی ${requesterIp} لابرا بۆ ${target.name} (${target.phone})`
-        : `داواکاری لابردنی بلۆک لابرا: ${target.name} (${target.phone})`);
+      requesterDevice
+        ? `داواکاری لابردنی بلۆکی پەسەندکرا و بلۆکی ئامێر/ئایپی (${requesterDevice}${requesterIp ? ` / ${requesterIp}` : ''}) لابرا بۆ ${target.name} (${target.phone})`
+        : requesterIp
+          ? `داواکاری لابردنی بلۆکی پەسەندکرا و بلۆکی ${requesterIp} لابرا بۆ ${target.name} (${target.phone})`
+          : `داواکاری لابردنی بلۆک لابرا: ${target.name} (${target.phone})`);
     await saveDB(db);
-    console.log(`[Unblock Request] Resolved by ${adminName}: ${target.name} (${target.phone}) ip=${requesterIp}`);
-    res.json({ success: true, bannedIps: db.bannedIps, unblockRequests: db.unblockRequests });
+    console.log(`[Unblock Request] Resolved by ${adminName}: ${target.name} (${target.phone}) ip=${requesterIp} device=${requesterDevice || 'unknown'}`);
+    res.json({ success: true, bannedIps: db.bannedIps, bannedDevices: db.bannedDevices, unblockRequests: db.unblockRequests });
   });
 
   // Archive history: resolved/deleted/cleared unblock requests (permanent audit trail)
@@ -1003,6 +1185,9 @@ async function startServer() {
       if (backupData.manualMovies) db.manualMovies = backupData.manualMovies;
       if (backupData.categories) db.categories = backupData.categories;
       if (backupData.bannedIps) db.bannedIps = backupData.bannedIps;
+      if (backupData.bannedDevices) db.bannedDevices = backupData.bannedDevices;
+      if (backupData.bannedDeviceTimestamps) db.bannedDeviceTimestamps = backupData.bannedDeviceTimestamps;
+      if (backupData.bannedDevicesInfo) db.bannedDevicesInfo = backupData.bannedDevicesInfo;
       if (backupData.bannedKeywords) db.bannedKeywords = backupData.bannedKeywords;
       if (backupData.heroConfig) db.heroConfig = backupData.heroConfig;
       if (backupData.securityAuditLogs) db.securityAuditLogs = backupData.securityAuditLogs;
@@ -2727,26 +2912,48 @@ async function startServer() {
 
   app.post('/api/admin/login', async (req, res) => {
     const { username, password } = req.body;
-    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || "Unknown";
-    const cleanIp = clientIp.trim();
+    const identity = getClientIdentity(req);
+    const cleanIp = identity.ip;
+    const cleanDeviceId = identity.deviceId;
 
-    // Perform check first: is IP already banned? Owner-whitelisted IPs get the
-    // 1-minute temporary-block exemption instead of a permanent rejection.
-    const isBanned = isIpBanned(cleanIp);
+    // Perform check first: is this device/IP already banned? Owner-whitelisted
+    // identities get the 1-minute temporary-block exemption instead of a
+    // permanent rejection. Auto-bans target the device fingerprint, so one
+    // blocked device never blocks the whole site / other users on the same IP.
+    const deviceBanned = cleanDeviceId ? isDeviceBanned(cleanDeviceId) : false;
+    const ipBanned = isIpBanned(cleanIp);
+    const isBanned = deviceBanned || ipBanned;
     if (isBanned) {
-      const exemption = evaluateOwnerBlock(cleanIp);
-      if (exemption.exempt) {
-        if (exemption.remainingMs > 0) {
-          return res.status(403).json({
-            success: false,
-            ownerExempt: true,
-            unblockAt: new Date(exemption.unblockAt || Date.now()).toISOString(),
-            message: 'ئەم ئایپیە کاتییە بلۆک کراوە بۆ خاوەنی سیستەم — دەکرێتەوە بە خۆکاری دوای ١ خولەک.'
-          });
+      if (deviceBanned) {
+        const exemption = evaluateOwnerBlock(cleanDeviceId, true);
+        if (exemption.exempt) {
+          if (exemption.remainingMs > 0) {
+            return res.status(403).json({
+              success: false,
+              ownerExempt: true,
+              unblockAt: new Date(exemption.unblockAt || Date.now()).toISOString(),
+              message: 'ئەم ئامێرە کاتییە بلۆک کراوە بۆ خاوەنی سیستەم — دەکرێتەوە بە خۆکاری دوای ١ خولەک.'
+            });
+          }
+          // Auto-unblocked already — fall through and allow the login attempt.
+        } else {
+          return res.status(403).json({ success: false, message: 'تۆ بلۆک کراویت لەم سیستمەدا.' });
         }
-        // Auto-unblocked already — fall through and allow the login attempt.
       } else {
-        return res.status(403).json({ success: false, message: 'تۆ بلۆک کراویت لەم سیستمەدا.' });
+        const exemption = evaluateOwnerBlock(cleanIp, false);
+        if (exemption.exempt) {
+          if (exemption.remainingMs > 0) {
+            return res.status(403).json({
+              success: false,
+              ownerExempt: true,
+              unblockAt: new Date(exemption.unblockAt || Date.now()).toISOString(),
+              message: 'ئەم ئایپیە کاتییە بلۆک کراوە بۆ خاوەنی سیستەم — دەکرێتەوە بە خۆکاری دوای ١ خولەک.'
+            });
+          }
+          // Auto-unblocked already — fall through and allow the login attempt.
+        } else {
+          return res.status(403).json({ success: false, message: 'تۆ بلۆک کراویت لەم سیستمەدا.' });
+        }
       }
     }
 
@@ -2801,7 +3008,7 @@ async function startServer() {
     }
 
     if (admin) {
-      failedLoginCounts[cleanIp] = 0;
+      failedLoginCounts[identity.key] = 0;
 
       // Whitelist the Owner's IP/device after a verified Owner login so any
       // accidental future block (bad creds testing, security rules) is only a
@@ -2809,6 +3016,7 @@ async function startServer() {
       const ownerName = String(admin.username || '').toLowerCase();
       if (ownerName === "admin" || ownerName === "dekan@123") {
         whitelistOwnerIp(cleanIp);
+        if (cleanDeviceId) whitelistOwnerDevice(cleanDeviceId);
       }
 
       await addAuditLog(db, admin.username, "Login Successful", `دەستپێکردنی دانیشتن لە ڕێگەی ئایپی ${cleanIp}`);
@@ -2861,20 +3069,34 @@ async function startServer() {
         db.failedLoginAttempts = db.failedLoginAttempts.slice(0, 500);
       }
 
-      failedLoginCounts[cleanIp] = (failedLoginCounts[cleanIp] || 0) + 1;
+      failedLoginCounts[identity.key] = (failedLoginCounts[identity.key] || 0) + 1;
       
       let bannedStatus = false;
       let ownerTempBan = false;
-      if (failedLoginCounts[cleanIp] >= 5) {
-        if (!db.bannedIps) db.bannedIps = [];
-        if (!db.bannedIps.includes(cleanIp)) {
-          db.bannedIps.push(cleanIp);
-          recordBanTime(cleanIp);
+      if (failedLoginCounts[identity.key] >= 5) {
+        // Auto-ban the DEVICE fingerprint when the browser sent one (isolating
+        // that single device, never the shared IP / whole site). Only clients
+        // that send NO device id (curl, scripts, legacy) fall back to an IP ban.
+        if (cleanDeviceId) {
+          recordBanDevice(cleanDeviceId, {
+            ip: cleanIp,
+            device: (req.headers['user-agent'] as string || '').slice(0, 150),
+            reason: '5 failed admin login attempts'
+          });
           bannedStatus = true;
-          // Whitelisted owner IPs/devices only get a 1-minute temporary block
-          // and auto-unblock afterwards; normal IPs stay permanently banned.
-          ownerTempBan = isOwnerWhitelisted(cleanIp);
-          await addAuditLog(db, "SYSTEM_AUTO_BAN", "Auto IP Ban", `بلۆکی ئۆتۆماتیکیی ئایپی ${cleanIp} بەهۆی ٥ هەوڵی شکستخواردووی چوونەژوورەوە.`);
+          ownerTempBan = isOwnerWhitelisted(cleanDeviceId);
+          await addAuditLog(db, "SYSTEM_AUTO_BAN", "Auto Device Ban", `بلۆکی ئۆتۆماتیکیی ئامێر ${cleanDeviceId} بەهۆی ٥ هەوڵی شکستخواردووی چوونەژوورەوە (IP: ${cleanIp}).`);
+        } else {
+          if (!db.bannedIps) db.bannedIps = [];
+          if (!db.bannedIps.includes(cleanIp)) {
+            db.bannedIps.push(cleanIp);
+            recordBanTime(cleanIp);
+            bannedStatus = true;
+            // Whitelisted owner IPs only get a 1-minute temporary block and
+            // auto-unblock afterwards; normal IPs stay permanently banned.
+            ownerTempBan = isOwnerWhitelisted(cleanIp);
+            await addAuditLog(db, "SYSTEM_AUTO_BAN", "Auto IP Ban", `بلۆکی ئۆتۆماتیکیی ئایپی ${cleanIp} بەهۆی ٥ هەوڵی شکستخواردووی چوونەژوورەوە.`);
+          }
         }
       }
       

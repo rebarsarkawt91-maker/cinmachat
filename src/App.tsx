@@ -211,8 +211,7 @@ const realGetDoc = getDoc;
 const realSetDoc = setDoc;
 
 // Global API Fetch Helper
-const RENDER_API_BASE = 'https://cinemachat-server.onrender.com';
-const CUSTOM_DOMAIN_API_BASE = 'https://www.cinamachat.com';
+const API_BASE = 'https://www.cinamachat.com';
 
 const shouldPreferCustomDomainApi = (): boolean => {
   if (typeof window === "undefined") return false;
@@ -229,13 +228,19 @@ async function fetchApi(
   const method = (options?.method || "GET").toUpperCase();
   const customHeaders = new Headers(options?.headers || {});
 
+  // Attach the unique device fingerprint so the server can enforce per-device
+  // auto-bans instead of blocking shared public IPs (which would take down the
+  // whole site for every user on the same mobile-network IP).
+  if (!customHeaders.has("X-Device-Id")) {
+    customHeaders.set("X-Device-Id", getDeviceId());
+  }
+
   // Use same-origin path (Firebase 307 → Render) as the primary route.
   // For non-GET requests, use text/plain Content-Type to avoid CORS preflight
   // after the 307 redirect (text/plain is a "simple" content-type).
   const preferCustomDomain = shouldPreferCustomDomainApi();
-  const targetPath = useDirectFallback
-    ? `${RENDER_API_BASE}${path}`
-    : (preferCustomDomain ? `${CUSTOM_DOMAIN_API_BASE}${path}` : path);
+  const targetPath =
+    useDirectFallback || preferCustomDomain ? `${API_BASE}${path}` : path;
 
   if (!customHeaders.has("Accept")) {
     customHeaders.set("Accept", "application/json");
@@ -444,21 +449,16 @@ async function fetchApi(
         console.warn(`[fetchApi] Same-origin also failed for ${path}:`, sameOriginErr);
       }
     } else {
-      const fallbackTargets = shouldPreferCustomDomainApi()
-        ? [`${CUSTOM_DOMAIN_API_BASE}${path}`, `${RENDER_API_BASE}${path}`]
-        : [`${RENDER_API_BASE}${path}`, `${CUSTOM_DOMAIN_API_BASE}${path}`];
-
-      console.warn(`[fetchApi] Primary request failed for ${path}, trying fallback targets...`);
-      for (const target of fallbackTargets) {
-        try {
-          const fallbackRes = await fetch(target, {
-            ...options,
-            headers: customHeaders,
-          });
-          return fallbackRes;
-        } catch (fallbackErr) {
-          console.warn(`[fetchApi] Fallback failed for ${target}:`, fallbackErr);
-        }
+      const fallbackTarget = `${API_BASE}${path}`;
+      console.warn(`[fetchApi] Primary request failed for ${path}, trying direct fallback...`);
+      try {
+        const fallbackRes = await fetch(fallbackTarget, {
+          ...options,
+          headers: customHeaders,
+        });
+        return fallbackRes;
+      } catch (fallbackErr) {
+        console.warn(`[fetchApi] Fallback failed for ${fallbackTarget}:`, fallbackErr);
       }
     }
     // Final fallback — differentiate between network/connectivity failures
@@ -680,6 +680,28 @@ const safeStorage = {
       console.warn(`[SafeStorage] Blocked removing key: ${key}`);
     }
   },
+};
+
+// Unique browser/device fingerprint (persistent UUID) sent as the X-Device-Id
+// header on every /api request. The server's auto-ban system targets THIS id,
+// so a password-failure block isolates one device instead of the whole site /
+// every device sharing the same public IP (mobile NAT networks).
+const DEVICE_ID_LOCAL_KEY = "cinemachat_device_id";
+
+const getDeviceId = (): string => {
+  let id = safeStorage.get(DEVICE_ID_LOCAL_KEY);
+  if (!id) {
+    try {
+      id =
+        typeof crypto !== "undefined" && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `dev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+    } catch {
+      id = `dev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+    }
+    safeStorage.set(DEVICE_ID_LOCAL_KEY, id);
+  }
+  return id;
 };
 
 const HERO_VIDEO_LOCAL_KEY = "cinemachat_hero_video_url";
@@ -6157,7 +6179,10 @@ export default function App() {
       const useExistingSubtitle = !!selectedMovie?.subtitleUrl;
       const res = await fetch("/api/subtitle/generate", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Device-Id": getDeviceId(),
+        },
         body: JSON.stringify(
           useExistingSubtitle
             ? { subtitleUrl: selectedMovie.subtitleUrl, lang: aiSubtitleLang }
@@ -7822,7 +7847,9 @@ export default function App() {
   // the UI can show the exact remaining time and refresh the moment it ends.
   const checkBanStatus = useCallback(async () => {
     try {
-      const res = await fetch("/api/check-ban");
+      const res = await fetch("/api/check-ban", {
+        headers: { "X-Device-Id": getDeviceId() },
+      });
       const data = await res.json();
       if (data) {
         if (data.banned) {
@@ -7869,8 +7896,15 @@ export default function App() {
     try {
       const res = await fetch("/api/unblock-request", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: unblockName.trim(), phone: unblockPhone.trim() }),
+        headers: {
+          "Content-Type": "application/json",
+          "X-Device-Id": getDeviceId(),
+        },
+        body: JSON.stringify({
+          name: unblockName.trim(),
+          phone: unblockPhone.trim(),
+          deviceId: getDeviceId(),
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
@@ -8132,6 +8166,7 @@ export default function App() {
         body: JSON.stringify({
           username: adminUsername,
           password: adminPassword,
+          deviceId: getDeviceId(),
         }),
       });
       const data = await res.json();
