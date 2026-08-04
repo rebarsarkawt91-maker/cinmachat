@@ -50,10 +50,6 @@ export function getYTId(url: string): string | null {
   const trimmed = url.trim();
   if (!trimmed) return null;
 
-  // YouTube watch?v=VIDEO_ID
-  const watch = trimmed.match(/[?&]v=([^#&?\s]{11})/i);
-  if (watch?.[1]) return watch[1];
-
   // youtu.be/VIDEO_ID
   const short = trimmed.match(/youtu\.be\/([^#&?\s]{11})/i);
   if (short?.[1]) return short[1];
@@ -65,6 +61,14 @@ export function getYTId(url: string): string | null {
   // /v/VIDEO_ID or /u/VIDEO_ID
   const legacy = trimmed.match(/\/(?:v|u)\/([^#&?\s]{11})/i);
   if (legacy?.[1]) return legacy[1];
+
+  // youtube.com/shorts/VIDEO_ID
+  const shorts = trimmed.match(/youtube\.com\/shorts\/([^#&?\s]{11})/i);
+  if (shorts?.[1]) return shorts[1];
+
+  // watch?v=VIDEO_ID
+  const watch = trimmed.match(/[?&]v=([^#&?\s]{11})/i);
+  if (watch?.[1]) return watch[1];
 
   return null;
 }

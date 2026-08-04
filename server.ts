@@ -20,8 +20,19 @@ import * as XLSX from 'xlsx';
 // downloads the first available caption track, and returns the raw text.
 // ---------------------------------------------------------------------------
 function extractYoutubeVideoId(url: string): string | null {
-  const m = url.match(/[?&]v=([^&]+)/) || url.match(/youtu\.be\/([^?&]+)/);
-  return m ? m[1] : null;
+  const trimmed = url.trim();
+  const patterns = [
+    /youtu\.be\/([^#&?\s]{11})/i,
+    /embed\/([^#&?\s]{11})/i,
+    /\/v\/([^#&?\s]{11})/i,
+    /youtube\.com\/shorts\/([^#&?\s]{11})/i,
+    /[?&]v=([^#&?\s]{11})/i,
+  ];
+  for (const p of patterns) {
+    const m = trimmed.match(p);
+    if (m?.[1]) return m[1];
+  }
+  return null;
 }
 
 async function fetchYoutubeCaptionsPure(videoId: string): Promise<string> {
@@ -124,7 +135,7 @@ function sanitizeUrl(url: string): string {
     .trim();
 
   // Convert YouTube watch links to embed links
-  const ytWatchRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
+  const ytWatchRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?|shorts)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
   const ytMatch = cleanUrl.match(ytWatchRegex);
   if (ytMatch && ytMatch[1]) {
     return `https://www.youtube.com/embed/${ytMatch[1]}`;
@@ -3826,7 +3837,7 @@ async function startServer() {
       }
 
       // 3. Extraction Logic (YouTube, Vimeo & Direct links)
-      const ytRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
+      const ytRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/|v\/|u\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
       const vimeoRegex = /(?:https?:\/\/)?(?:www\.)?(?:vimeo\.com\/)([0-9]+)/;
       const directRegex = /(https?:\/\/[^\s]+\.(mp4|mkv|mov|avi))/i;
       

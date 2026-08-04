@@ -5748,7 +5748,7 @@ const RoomSection: React.FC<{
 
         if (selectedUrl && active) {
           let videoId = "";
-          const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+          const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=|shorts\/)([^#\&\?]*).*/;
           const match = selectedUrl.match(regExp);
           if (match && match[2].length === 11) {
             videoId = match[2];
