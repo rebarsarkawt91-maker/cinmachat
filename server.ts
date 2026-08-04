@@ -126,6 +126,12 @@ function normalizeSubtitleText(rawText: string): string {
 async function fetchYoutubeCaptionsViaYtDlp(videoUrl: string, workDir: string, lang = 'en') {
   const fsSync = await import('node:fs');
   const outputTemplate = path.join(workDir, 'yt-sub.%(ext)s');
+  const ytDlpRunners: Array<{ cmd: string; prefixArgs: string[]; label: string }> = [
+    { cmd: 'yt-dlp', prefixArgs: [], label: 'yt-dlp' },
+    { cmd: 'python3', prefixArgs: ['-m', 'yt_dlp'], label: 'python3 -m yt_dlp' },
+    { cmd: 'python', prefixArgs: ['-m', 'yt_dlp'], label: 'python -m yt_dlp' },
+    { cmd: 'py', prefixArgs: ['-m', 'yt_dlp'], label: 'py -m yt_dlp' },
+  ];
   const attempts = [
     { mode: 'manual', args: ['--write-subs'] },
     { mode: 'auto', args: ['--write-auto-subs'] },
@@ -140,55 +146,70 @@ async function fetchYoutubeCaptionsViaYtDlp(videoUrl: string, workDir: string, l
   };
 
   const logs: string[] = [];
+  const missingRunnerLabels = new Set<string>();
   for (const attempt of attempts) {
-    clearSubtitleFiles();
-    try {
-      const { stdout, stderr } = await execFileText(
-        'yt-dlp',
-        [
-          ...attempt.args,
-          '--sub-lang',
-          lang,
-          '--sub-format',
-          'vtt',
-          '--skip-download',
-          '--output',
-          outputTemplate,
-          videoUrl,
-        ],
-        { cwd: workDir, timeoutMs: 180000 },
-      );
-      logs.push(`[${attempt.mode}] stdout=${stdout.trim() || '<empty>'}`);
-      logs.push(`[${attempt.mode}] stderr=${stderr.trim() || '<empty>'}`);
+    let attemptRan = false;
+    for (const runner of ytDlpRunners) {
+      clearSubtitleFiles();
+      try {
+        const { stdout, stderr } = await execFileText(
+          runner.cmd,
+          [
+            ...runner.prefixArgs,
+            ...attempt.args,
+            '--sub-lang',
+            lang,
+            '--sub-format',
+            'vtt',
+            '--skip-download',
+            '--output',
+            outputTemplate,
+            videoUrl,
+          ],
+          { cwd: workDir, timeoutMs: 180000 },
+        );
+        attemptRan = true;
+        logs.push(`[${attempt.mode}][${runner.label}] stdout=${stdout.trim() || '<empty>'}`);
+        logs.push(`[${attempt.mode}][${runner.label}] stderr=${stderr.trim() || '<empty>'}`);
 
-      const subtitleFile = fsSync
-        .readdirSync(workDir)
-        .find((fileName) => /^yt-sub\..+\.(vtt|srt)$/i.test(fileName));
-      if (!subtitleFile) {
-        continue;
-      }
+        const subtitleFile = fsSync
+          .readdirSync(workDir)
+          .find((fileName) => /^yt-sub\..+\.(vtt|srt)$/i.test(fileName));
+        if (!subtitleFile) {
+          break;
+        }
 
-      const subtitleText = fsSync.readFileSync(path.join(workDir, subtitleFile), 'utf-8');
-      if (!subtitleText.trim()) {
-        continue;
-      }
+        const subtitleText = fsSync.readFileSync(path.join(workDir, subtitleFile), 'utf-8');
+        if (!subtitleText.trim()) {
+          break;
+        }
 
-      return {
-        mode: attempt.mode,
-        subtitleFile,
-        subtitleText,
-        stdout,
-        stderr,
-      };
-    } catch (error: any) {
-      const cause = error?.cause;
-      if (cause?.code === 'ENOENT') {
-        throw new Error('yt-dlp not found on PATH');
+        return {
+          mode: attempt.mode,
+          subtitleFile,
+          subtitleText,
+          stdout,
+          stderr,
+        };
+      } catch (error: any) {
+        const cause = error?.cause;
+        if (cause?.code === 'ENOENT' || error?.code === 'ENOENT') {
+          missingRunnerLabels.add(runner.label);
+          logs.push(`[${attempt.mode}][${runner.label}] missing executable`);
+          continue;
+        }
+        logs.push(`[${attempt.mode}][${runner.label}] stdout=${error?.stdout?.trim() || '<empty>'}`);
+        logs.push(`[${attempt.mode}][${runner.label}] stderr=${error?.stderr?.trim() || '<empty>'}`);
+        logs.push(`[${attempt.mode}][${runner.label}] error=${error?.message || error}`);
       }
-      logs.push(`[${attempt.mode}] stdout=${error?.stdout?.trim() || '<empty>'}`);
-      logs.push(`[${attempt.mode}] stderr=${error?.stderr?.trim() || '<empty>'}`);
-      logs.push(`[${attempt.mode}] error=${error?.message || error}`);
     }
+    if (!attemptRan) {
+      logs.push(`[${attempt.mode}] no yt-dlp runner was executable`);
+    }
+  }
+
+  if (missingRunnerLabels.size === ytDlpRunners.length) {
+    throw new Error(`yt-dlp executable not found. Tried: ${ytDlpRunners.map((r) => r.label).join(', ')}`);
   }
 
   throw new Error(`yt-dlp could not fetch subtitles. ${logs.join(' | ')}`);
@@ -4289,12 +4310,40 @@ let videoDownloaded = false;
         }
         stepLog(`fetching YouTube captions for video ${videoId} via yt-dlp`);
         try {
+          if (targetLang !== 'en') {
+            try {
+              const directTarget = await fetchYoutubeCaptionsViaYtDlp(sourceUrl, workDir, targetLang);
+              const normalizedTarget = normalizeSubtitleText(directTarget.subtitleText);
+              if (normalizedTarget) {
+                stepLog(
+                  `returned direct YouTube captions in target lang via yt-dlp (${directTarget.mode}, ${normalizedTarget.length} chars)`,
+                );
+                res.json({
+                  success: true,
+                  srt: normalizedTarget,
+                  lang: targetLang,
+                  source: `youtube-captions-${directTarget.mode}-direct-${targetLang}`,
+                });
+                return;
+              }
+            } catch (directTargetErr: any) {
+              stepLog(`direct target-lang caption fetch failed (${targetLang}): ${directTargetErr?.message || directTargetErr}`);
+            }
+          }
+
           const ytDlpResult = await fetchYoutubeCaptionsViaYtDlp(sourceUrl, workDir, 'en');
           const normalized = normalizeSubtitleText(ytDlpResult.subtitleText);
           if (!normalized) throw new Error('yt-dlp fetched a subtitle file but it was empty');
-          const translatedSrt = targetLang === 'en' ? normalized : await translateSrtViaGemini(normalized, targetLang);
-          stepLog(`translated YouTube captions via yt-dlp (${ytDlpResult.mode}, ${translatedSrt.length} chars)`);
-          res.json({ success: true, srt: translatedSrt, lang: targetLang, source: `youtube-captions-${ytDlpResult.mode}` });
+
+          if (targetLang === 'en') {
+            stepLog(`returned English YouTube captions via yt-dlp (${ytDlpResult.mode}, ${normalized.length} chars)`);
+            res.json({ success: true, srt: normalized, lang: targetLang, source: `youtube-captions-${ytDlpResult.mode}-en` });
+            return;
+          }
+
+          const translatedSrt = await translateSrtViaGemini(normalized, targetLang);
+          stepLog(`translated YouTube captions via yt-dlp + Gemini (${ytDlpResult.mode}, ${translatedSrt.length} chars)`);
+          res.json({ success: true, srt: translatedSrt, lang: targetLang, source: `youtube-captions-${ytDlpResult.mode}-gemini` });
           return;
         } catch (ytDlpErr: any) {
           stepLog(`yt-dlp caption fetch failed: ${ytDlpErr?.message || ytDlpErr}`);
