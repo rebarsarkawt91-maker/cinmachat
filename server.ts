@@ -14,12 +14,100 @@ import { rateLimiter, sanitizationMiddleware, createAdminGuard, logFailedAttempt
 import { generateSubtitle, translateSrtViaGemini } from './features/subtitles/subtitleGenerator.js';
 import * as XLSX from 'xlsx';
 
-let fetchYoutubeCaptions: ((videoId: string) => Promise<{ text: string }>) | null = null;
-try {
-  const mod = require('youtube-captions');
-  fetchYoutubeCaptions = mod.fetchYoutubeCaptions;
-} catch {
-  // youtube-captions not available — fallback to yt-dlp only
+// ---------------------------------------------------------------------------
+// Pure Node.js YouTube caption fetcher — no yt-dlp, no external npm packages.
+// Extracts the video ID, fetches the YouTube page to locate caption tracks,
+// downloads the first available caption track, and returns the raw text.
+// ---------------------------------------------------------------------------
+function extractYoutubeVideoId(url: string): string | null {
+  const m = url.match(/[?&]v=([^&]+)/) || url.match(/youtu\.be\/([^?&]+)/);
+  return m ? m[1] : null;
+}
+
+async function fetchYoutubeCaptionsPure(videoId: string): Promise<string> {
+  const https = await import('node:https');
+  const url = await import('node:url');
+
+  const pageUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  const html = await new Promise<string>((resolve, reject) => {
+    const req = https.get(pageUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => resolve(data));
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => { req.destroy(); reject(new Error('YouTube page fetch timed out')); });
+  });
+
+  // Locate ytInitialPlayerResponse JSON in the page HTML.
+  const match = html.match(/ytInitialPlayerResponse\s*=\s*({.+?})\s*;/);
+  if (!match) throw new Error('Could not locate ytInitialPlayerResponse in YouTube page');
+
+  let playerResponse: any;
+  try {
+    playerResponse = JSON.parse(match[1]);
+  } catch {
+    throw new Error('Failed to parse ytInitialPlayerResponse JSON');
+  }
+
+  // Navigate to caption tracks: playerResponse.captions.playerCaptionsTracklistRenderer.captionTracks
+  const tracks: Array<{ baseUrl: string; langCode: string; name: string }> =
+    playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+
+  if (tracks.length === 0) throw new Error('No caption tracks found for this YouTube video');
+
+  // Prefer English captions; fall back to the first available track.
+  const preferredTrack = tracks.find((t) => t.langCode === 'en') || tracks[0];
+  const baseUrl = preferredTrack.baseUrl;
+
+  // Fetch the caption track (XML or SRT format).
+  const captionText = await new Promise<string>((resolve, reject) => {
+    const req = https.get(baseUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => resolve(data));
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => { req.destroy(); reject(new Error('Caption track fetch timed out')); });
+  });
+
+  return captionText;
+}
+
+// Convert YouTube caption XML to SRT format.
+function youtubeCaptionXmlToSrt(xml: string): string {
+  // YouTube caption XML uses <text> elements with start and duration attributes.
+  const entries: string[] = [];
+  const textRegex = /<text[^>]*\sstart="([^"]+)"[^>]*\sduration="([^"]+)"[^>]*>([\s\S]*?)<\/text>/g;
+  let match;
+  let index = 1;
+  while ((match = textRegex.exec(xml)) !== null) {
+    const startSec = parseFloat(match[1]);
+    const durationSec = parseFloat(match[2]);
+    const endSec = startSec + durationSec;
+    const text = match[3]
+      .replace(/<[^>]+>/g, '')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .trim();
+    if (!text) continue;
+    const startFmt = formatSrtTime(startSec);
+    const endFmt = formatSrtTime(endSec);
+    entries.push(`${index}\n${startFmt} --> ${endFmt}\n${text}\n`);
+    index++;
+  }
+  return entries.join('\n');
+}
+
+function formatSrtTime(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  const ms = Math.round((seconds % 1) * 1000);
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
 }
 
 // Sanitize URLs to decode HTML entities (e.g. &#x2F; → /) and convert YouTube watch links to embed links
@@ -4039,53 +4127,15 @@ async function startServer() {
       return res.status(400).json({ error: 'Source must be a valid http(s) URL' });
     }
 
-    const { execFile, spawnSync } = await import('child_process');
-    const osMod = await import('os');
-    const fsMod = await import('fs');
-    const workDir = fsMod.mkdtempSync(path.join(osMod.tmpdir(), 'cinemachat-sub-api-'));
-    const videoPath = path.join(workDir, 'source.mp4');
-    const started = Date.now();
-    const stepLog = (msg: string) =>
-      console.log(`[${new Date().toISOString()}] [subtitle-api] ${msg}`);
+const osMod = await import('os');
+const fsMod = await import('fs');
+const workDir = fsMod.mkdtempSync(path.join(osMod.tmpdir(), 'cinemachat-sub-api-'));
+const videoPath = path.join(workDir, 'source.mp4');
+const started = Date.now();
+const stepLog = (msg: string) =>
+  console.log(`[${new Date().toISOString()}] [subtitle-api] ${msg}`);
 
-    // Run a child process asynchronously with a hard timeout. The event loop is
-    // never blocked, and a stuck process is killed (with its child tree) and the
-    // request gets a clear error instead of hanging forever.
-    const runCmd = (cmd: string, args: string[], timeoutMs: number, onStderr?: (line: string) => void) =>
-      new Promise<void>((resolve, reject) => {
-        const child = execFile(
-          cmd,
-          args,
-          { maxBuffer: 64 * 1024 * 1024, encoding: 'utf-8' },
-          (err, _stdout, stderr) => {
-            if (err) {
-              const reason = err.killed
-                ? `timed out after ${Math.round(timeoutMs / 1000)}s`
-                : (stderr || err.message || 'unknown error').toString().slice(0, 1000);
-              reject(new Error(`${cmd} ${reason}`));
-            } else {
-              resolve();
-            }
-          },
-        );
-        child.stderr?.on('data', (d: Buffer) => {
-          // yt-dlp prints its progress with \r unless --newline is given; split
-          // on both so every progress line is surfaced independently.
-          for (const raw of String(d).split(/\r\n|\r|\n/)) {
-            const line = raw.trim();
-            if (line) onStderr?.(line);
-          }
-        });
-        const timer = setTimeout(() => {
-          if (process.platform === 'win32') {
-            spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
-          } else {
-            try { process.kill(child.pid, 'SIGKILL'); } catch { /* gone */ }
-          }
-          reject(new Error(`${cmd} timed out after ${Math.round(timeoutMs / 1000)}s`));
-        }, timeoutMs);
-        child.on('exit', () => clearTimeout(timer));
-      });
+let videoDownloaded = false;
 
     const downloadTimeout = Number(process.env.SUBTITLE_DOWNLOAD_TIMEOUT) || 900000; // 15 min
     // Only fetch the first N seconds of the video by default. Transcribing a
@@ -4116,81 +4166,26 @@ async function startServer() {
         videoDownloaded = true;
         stepLog(`downloaded ${(buf.length / 1048576).toFixed(1)} MB`);
       } else {
-        let videoDownloaded = false;
-        let hasYtDlp = false;
-        try {
-          hasYtDlp = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['yt-dlp']).status === 0;
-        } catch {
-          hasYtDlp = false;
+        // Non-direct-video URL: try to fetch captions directly from YouTube
+        // using pure Node.js (no yt-dlp, no external npm packages).
+        const videoId = extractYoutubeVideoId(sourceUrl);
+        if (!videoId) {
+          return res.status(400).json({ error: 'Unsupported URL — only direct video files and YouTube links are supported' });
         }
-
-        if (hasYtDlp) {
-          stepLog(`downloading ${sourceUrl.slice(0, 80)} via yt-dlp (max ${maxDurationSec}s of audio)`);
-          const ytArgs = [
-            '-f', 'mp4[height<=720]/mp4/best',
-            '--no-playlist',
-            '--newline', '--progress',
-            '--retries', '3',
-            '--fragment-retries', '3',
-            '-o', videoPath,
-          ];
-          if (maxDurationSec > 0) {
-            const mm = Math.floor(maxDurationSec / 60);
-            const ss = String(maxDurationSec % 60).padStart(2, '0');
-            ytArgs.push('--download-sections', `*0:00-${mm}:${ss}`);
-          }
-          ytArgs.push(sourceUrl);
-          let lastYtLog = 0;
-          const runYtDlp = () =>
-            runCmd('yt-dlp', ytArgs, downloadTimeout, (line) => {
-              const now = Date.now();
-              const isError = /error|failed|warn/i.test(line);
-              if (isError || now - lastYtLog > 5000) {
-                lastYtLog = now;
-                stepLog(`yt-dlp: ${line.slice(0, 200)}`);
-              }
-            });
-          const ytAttempts = 3;
-          for (let attempt = 1; attempt <= ytAttempts; attempt++) {
-            try {
-              await runYtDlp();
-              break;
-            } catch (e: any) {
-              if (attempt === ytAttempts) throw e;
-              stepLog(`yt-dlp attempt ${attempt}/${ytAttempts} failed (${e?.message || e}); retrying in 2s...`);
-              await new Promise((r) => setTimeout(r, 2000));
-            }
-          }
-          stepLog('yt-dlp download complete');
-          videoDownloaded = true;
-        } else if (fetchYoutubeCaptions && /youtube\.com|youtu\.be/i.test(sourceUrl)) {
-          // Fallback: fetch YouTube captions directly when yt-dlp is unavailable
-          const ytMatch = sourceUrl.match(/[?&]v=([^&]+)/) || sourceUrl.match(/youtu\.be\/([^?&]+)/);
-          const videoId = ytMatch ? ytMatch[1] : null;
-          if (!videoId) {
-            return res.status(400).json({ error: 'Could not extract YouTube video ID from URL' });
-          }
-          stepLog(`fetching YouTube captions directly for video ${videoId} (yt-dlp not installed)`);
-          try {
-            const captions = await fetchYoutubeCaptions(videoId);
-            if (!captions || !captions.text) {
-              return res.status(400).json({ error: 'No captions available for this YouTube video and yt-dlp is not installed' });
-            }
-            const srtText = await translateSrtViaGemini(captions.text, targetLang);
-            stepLog(`translated YouTube captions (${srtText.length} chars)`);
-            res.json({ success: true, srt: srtText, lang: targetLang, source: 'youtube-captions' });
-            return;
-          } catch (captionErr: any) {
-            stepLog(`youtube-captions fallback failed: ${captionErr?.message || captionErr}`);
-            return res.status(400).json({
-              error:
-                'yt-dlp is not installed on the server and fetching YouTube captions failed. Install yt-dlp (pip install yt-dlp) or ensure the video has captions available.',
-            });
-          }
-        } else {
+        stepLog(`fetching YouTube captions directly for video ${videoId} (pure Node.js)`);
+        try {
+          const captionXml = await fetchYoutubeCaptionsPure(videoId);
+          const srtText = youtubeCaptionXmlToSrt(captionXml);
+          if (!srtText.trim()) throw new Error('Captions fetched but empty');
+          const translatedSrt = await translateSrtViaGemini(srtText, targetLang);
+          stepLog(`translated YouTube captions (${translatedSrt.length} chars)`);
+          res.json({ success: true, srt: translatedSrt, lang: targetLang, source: 'youtube-captions' });
+          return;
+        } catch (captionErr: any) {
+          stepLog(`YouTube caption fetch failed: ${captionErr?.message || captionErr}`);
           return res.status(400).json({
             error:
-              'yt-dlp is not installed on the server. Install it (pip install yt-dlp) to generate subtitles from YouTube / streaming sources.',
+              'Could not fetch YouTube captions. The video may not have captions available, or YouTube blocked the request. Try again later or use a direct video file URL.',
           });
         }
       }
