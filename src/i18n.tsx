@@ -18,23 +18,23 @@ export type LangCode = "ckb" | "kmr" | "en" | "ar" | "tr" | "fa" | "zh" | "hi" |
 
 export interface LanguageDef {
   code: LangCode;
-  label: string; // native name shown in the dropdown
+  label: string; // English name shown in the dropdown
   short: string; // compact code shown on the header button
   rtl?: boolean; // render this label right-to-left
 }
 
 export const SUPPORTED_LANGUAGES: LanguageDef[] = [
-  { code: "ckb", label: "کوردی (سۆرانی)", short: "KU" },
-  { code: "kmr", label: "Kurdî (Kurmancî)", short: "KM" },
+  { code: "ckb", label: "Kurdish (Sorani)", short: "KU" },
+  { code: "kmr", label: "Kurdish (Kurmancî)", short: "KM" },
   { code: "en", label: "English", short: "EN" },
-  { code: "ar", label: "العربية", short: "AR", rtl: true },
-  { code: "tr", label: "Türkçe", short: "TR" },
-  { code: "fa", label: "فارسی", short: "FA", rtl: true },
-  { code: "zh", label: "中文", short: "ZH" },
-  { code: "hi", label: "हिन्दी", short: "HI" },
-  { code: "ne", label: "नेपाली", short: "NE" },
-  { code: "de", label: "Deutsch", short: "DE" },
-  { code: "sv", label: "Svenska", short: "SV" },
+  { code: "ar", label: "Arabic", short: "AR", rtl: true },
+  { code: "tr", label: "Turkish", short: "TR" },
+  { code: "fa", label: "Persian", short: "FA", rtl: true },
+  { code: "zh", label: "Chinese", short: "ZH" },
+  { code: "hi", label: "Hindi", short: "HI" },
+  { code: "ne", label: "Nepali", short: "NE" },
+  { code: "de", label: "German", short: "DE" },
+  { code: "sv", label: "Swedish", short: "SV" },
 ];
 
 const DEFAULT_LANG: LangCode = "ckb";
@@ -301,7 +301,7 @@ export function LanguageSelector() {
       {open && (
         <div
           role="listbox"
-          className="absolute right-0 top-full mt-2 w-36 sm:w-40 max-w-[calc(100vw-1rem)] origin-top-right bg-zinc-900/95 backdrop-blur-md border border-white/10 rounded-xl shadow-2xl z-[120] max-h-64 sm:max-h-72 overflow-y-auto overscroll-contain py-1"
+          className="absolute right-0 top-full mt-2 w-40 origin-top-right bg-zinc-900/95 backdrop-blur-md border border-white/10 rounded-xl shadow-2xl z-[120] max-h-60 overflow-y-auto overscroll-contain py-1"
         >
           {SUPPORTED_LANGUAGES.map((l) => (
             <button
