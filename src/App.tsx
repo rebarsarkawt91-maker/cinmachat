@@ -88,6 +88,7 @@ import "plyr-react/plyr.css";
 import { GoogleGenAI } from "@google/genai";
 import ImmersiveShieldedPlayer from "./components/Player/ImmersiveShieldedPlayer";
 import { api } from "./services/api";
+import { LanguageSelector, useI18n } from "./i18n";
 import {
   subscribeGenres,
   addGenre,
@@ -5880,6 +5881,7 @@ const RoomSection: React.FC<{
 };
 
 export default function App() {
+  const { t: tr } = useI18n();
 
   const [activeTab, setActiveTab] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -8765,7 +8767,7 @@ export default function App() {
                 CinamaChat
               </h1>
               <span className="text-[8px] font-black uppercase tracking-[0.4em] text-brand-primary -mt-1">
-                Official Platform
+                {tr("officialPlatform")}
               </span>
             </div>
           </div>
@@ -8775,11 +8777,11 @@ export default function App() {
               <div className="flex items-center gap-1.5">
                 <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></div>
                 <span className="text-[9px] font-black uppercase tracking-widest text-green-500">
-                  Secure Connection
+                  {tr("secureConnection")}
                 </span>
               </div>
               <span className="text-[7px] text-gray-500 font-bold uppercase tracking-widest mt-0.5 italic">
-                Authorized Only
+                {tr("authorizedOnly")}
               </span>
               </div> {/* Secure Connection Indicator */}
             {/* Social Protocol Buttons */}
@@ -8794,7 +8796,7 @@ export default function App() {
                     className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-primary border border-brand-primary/20 rounded-lg hover:bg-red-700 transition-all text-white active:scale-95 text-[9px] font-black uppercase tracking-widest kurdish-text shadow-md shadow-red-600/20"
                   >
                     <User className="w-3 h-3" />
-                    چوونە ژوورەوە / خۆتۆمارکردن
+                    {tr("loginRegister")}
                   </button>
                 </div>
               ) : (
@@ -8825,7 +8827,7 @@ export default function App() {
                     {/* Tooltip */}
                     <div className="absolute -bottom-10 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-zinc-900 border border-white/10 rounded-lg opacity-0 group-hover/idbtn:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50">
                       <span className="text-[10px] font-black text-white kurdish-text">
-                        ناسنامەی من
+                        {tr("myId")}
                       </span>
                     </div>
                   </button>
@@ -8843,7 +8845,7 @@ export default function App() {
                   >
                     <Tv className="w-4 h-4 md:w-5 md:h-5" />
                     <span className="hidden lg:block text-[9px] font-black uppercase tracking-widest kurdish-text">
-                      پەخشی فەرمی 📺
+                      {tr("broadcast")}
                     </span>
                   </button>
 
@@ -8859,7 +8861,7 @@ export default function App() {
                   >
                     <MessageSquare className="w-4 h-4 md:w-5 md:h-5" />
                     <span className="hidden lg:block text-[9px] font-black uppercase tracking-widest kurdish-text">
-                      پەیامەکان (DMs)
+                      {tr("dms")}
                     </span>
                   </button>
 
@@ -8873,13 +8875,16 @@ export default function App() {
               )}
             </div>
 
+            {/* Compact language selector (top header, right side) */}
+            <LanguageSelector />
+
             <button
               onClick={handleAdminClick}
               className="flex items-center gap-1 p-1 md:p-1.5 bg-white/5 border border-white/10 rounded-lg hover:bg-brand-primary/10 transition-all text-gray-400 hover:text-brand-primary active:scale-95"
             >
               <Settings className="w-3 h-3 md:w-3.5 md:h-3.5" />
               <span className="hidden lg:block text-[8px] font-black uppercase tracking-widest text-inherit">
-                Admin
+                {tr("admin")}
               </span>
             </button>
           </div>
@@ -8910,7 +8915,7 @@ export default function App() {
                     }}
                   >
                     <span className="text-[10px] font-black uppercase text-brand-primary">
-                      NEW:
+                      {tr("newTag")}
                     </span>
                     <span className="text-xs font-bold kurdish-text">
                       {m.title}
@@ -9077,13 +9082,13 @@ export default function App() {
             {/* Search Bar Section */}
             <div className="max-w-7xl mx-auto px-8 mt-16 mb-8 text-center">
               <h2 className="text-3xl font-black kurdish-text mb-8">
-                گەڕان و فلتەرکردن
+                {tr("searchFilter")}
               </h2>
               <div className="relative group max-w-2xl mx-auto">
                 <Search className="absolute right-6 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500 group-focus-within:text-brand-primary" />
                 <input
                   type="text"
-                  placeholder="گەڕان بۆ فیلم یان زنجیرە..."
+                  placeholder={tr("searchPlaceholder")}
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="w-full bg-white/5 border border-white/10 rounded-2xl py-4 pr-14 pl-6 kurdish-text focus:outline-none focus:border-brand-primary focus:bg-white/10 transition-all"
