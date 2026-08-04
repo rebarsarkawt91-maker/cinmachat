@@ -301,7 +301,7 @@ export function LanguageSelector() {
       {open && (
         <div
           role="listbox"
-          className="absolute right-0 top-full mt-2 w-44 bg-zinc-900/95 backdrop-blur-md border border-white/10 rounded-xl shadow-2xl z-[120] max-h-72 overflow-y-auto py-1"
+          className="absolute right-0 top-full mt-2 w-36 sm:w-40 max-w-[calc(100vw-1rem)] origin-top-right bg-zinc-900/95 backdrop-blur-md border border-white/10 rounded-xl shadow-2xl z-[120] max-h-64 sm:max-h-72 overflow-y-auto overscroll-contain py-1"
         >
           {SUPPORTED_LANGUAGES.map((l) => (
             <button
@@ -314,7 +314,7 @@ export function LanguageSelector() {
                 setOpen(false);
               }}
               dir={l.rtl ? "rtl" : "ltr"}
-              className={`w-full text-left px-3 py-2 text-[11px] font-semibold transition-colors flex items-center justify-between ${
+              className={`w-full text-left px-2.5 py-1.5 sm:px-3 sm:py-2 text-[10px] sm:text-[11px] font-semibold transition-colors flex items-center justify-between ${
                 l.code === lang
                   ? "text-brand-primary bg-brand-primary/10"
                   : "text-gray-300 hover:bg-white/5 hover:text-white"
