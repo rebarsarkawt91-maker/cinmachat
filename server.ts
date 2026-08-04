@@ -3747,7 +3747,7 @@ async function startServer() {
     if (!req.body) {
       return res.status(400).json({ success: false, error: "Body is empty — check Content-Type header (use application/json or text/plain)" });
     }
-    const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, quality, tags, category, rating, year, type } = req.body;
+    const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, mainTrailerUrl, streamingSourceUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, quality, tags, category, rating, year, type } = req.body;
     
     // VALIDATION: Detailed error reporting as requested
     if (!title) return res.status(400).json({ success: false, error: "ناونیشان پێویستە (Title is required)" });
@@ -3777,9 +3777,11 @@ async function startServer() {
       description: description || "",
       image: finalPoster,
       posterUrl: finalPoster,
-      embedUrl: ytEmbedUrl || activeVideoSource, // Direct link/iframe strategy
+      embedUrl: ytEmbedUrl || activeVideoSource,
       videoUrl: activeVideoSource,
       trailerUrl: trailerEmbedUrl,
+      mainTrailerUrl: mainTrailerUrl || "",
+      streamingSourceUrl: streamingSourceUrl || "",
       streamingUrl: activeVideoSource,
       vidmolyUrl: vidmolyUrl || "",
       streamwishUrl: streamwishUrl || "",
@@ -3790,7 +3792,7 @@ async function startServer() {
       date: new Date().toISOString(),
       isNetflixOriginal: title?.toLowerCase().includes('netflix'),
       tags: Array.isArray(tags) ? tags : [category || "هەمووی"],
-      category: category || "هەمووی", // Ensure category is set
+      category: category || "هەمووی",
       rating: rating || "",
       year: year || "",
       type: type || "movie",

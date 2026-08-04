@@ -962,6 +962,8 @@ const ContentModule = ({
     streamwishUrl: "",
     fileLrunUrl: "",
     trailerUrl: "",
+    mainTrailerUrl: "",
+    streamingSourceUrl: "",
     quality: "HD",
     tags: "",
     subtitleUrl: "",
@@ -1276,6 +1278,8 @@ const ContentModule = ({
     // Ensure at least one link is provided, verify they are strings and not empty
     const links = {
       trailer: transformLink(formData.trailerUrl?.trim() || ""),
+      mainTrailer: transformLink(formData.mainTrailerUrl?.trim() || ""),
+      streamingSource: transformLink(formData.streamingSourceUrl?.trim() || ""),
       hdtoday: transformLink(formData.hdtodayUrl?.trim() || ""),
       youtube: transformLink(formData.youtubeMovieUrl?.trim() || ""),
       other: transformLink(formData.otherVideoUrl?.trim() || ""),
@@ -1310,6 +1314,8 @@ const ContentModule = ({
       links.youtube ||
       links.other ||
       links.trailer ||
+      links.mainTrailer ||
+      links.streamingSource ||
       links.vidsrc ||
       links.vidmoly ||
       links.streamwish ||
@@ -1336,6 +1342,8 @@ const ContentModule = ({
       streamingUrl: anyLink || "",
       // Include all links
       trailerUrl: links.trailer,
+      mainTrailerUrl: links.mainTrailer,
+      streamingSourceUrl: links.streamingSource,
       hdtodayUrl: links.hdtoday,
       youtubeMovieUrl: links.youtube,
       otherVideoUrl: links.other,
@@ -1380,6 +1388,8 @@ const ContentModule = ({
         streamwishUrl: "",
         fileLrunUrl: "",
         trailerUrl: "",
+        mainTrailerUrl: "",
+        streamingSourceUrl: "",
         quality: "HD",
         tags: "",
         subtitleUrl: "",
@@ -1681,6 +1691,66 @@ const ContentModule = ({
               <button
                 onClick={handlePublish}
                 className="px-4 py-3 bg-red-600 hover:bg-red-700 text-white rounded-2xl text-xs font-bold"
+              >
+                بڵاوکردنەوە
+              </button>
+            </div>
+          </div>
+
+          <div className="p-8 bg-zinc-900/50 border border-white/10 rounded-[2.5rem] space-y-4">
+            <label className="text-xs font-black text-red-400 kurdish-text uppercase tracking-widest flex items-center gap-2 mb-2">
+              <Play className="w-4 h-4" />
+              ترایلەری سەرەکی
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                placeholder="لینکی ترایلەری سەرەکی..."
+                value={formData.mainTrailerUrl}
+                onChange={(e) =>
+                  setFormData({ ...formData, mainTrailerUrl: e.target.value })
+                }
+                className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-6 py-3 text-white kurdish-text outline-none focus:border-red-400 transition-all text-xs"
+              />
+              <CategoryDropdown
+                value={formData.category}
+                onChange={(v: string) =>
+                  setFormData({ ...formData, category: v })
+                }
+              />
+              <button
+                onClick={handlePublish}
+                className="px-4 py-3 bg-red-500 hover:bg-red-600 text-white rounded-2xl text-xs font-bold"
+              >
+                بڵاوکردنەوە
+              </button>
+            </div>
+          </div>
+
+          <div className="p-8 bg-zinc-900/50 border border-white/10 rounded-[2.5rem] space-y-4">
+            <label className="text-xs font-black text-blue-300 kurdish-text uppercase tracking-widest flex items-center gap-2 mb-2">
+              <Globe className="w-4 h-4" />
+              سەرچاوەی Streaming
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                placeholder="لینکی سەرچاوەی streaming..."
+                value={formData.streamingSourceUrl}
+                onChange={(e) =>
+                  setFormData({ ...formData, streamingSourceUrl: e.target.value })
+                }
+                className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-6 py-3 text-white kurdish-text outline-none focus:border-blue-400 transition-all text-xs"
+              />
+              <CategoryDropdown
+                value={formData.category}
+                onChange={(v: string) =>
+                  setFormData({ ...formData, category: v })
+                }
+              />
+              <button
+                onClick={handlePublish}
+                className="px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl text-xs font-bold"
               >
                 بڵاوکردنەوە
               </button>
@@ -11165,8 +11235,11 @@ export default function App() {
                                 };
 
                                 setLastAddedMovie(null); // Clear last added movie
-                                const trailerId = movie.trailerUrl
-                                  ? extractYouTubeId(movie.trailerUrl)
+const trailerId = movie.trailerUrl
+                                   ? extractYouTubeId(movie.trailerUrl)
+                                   : null;
+                                const mainTrailerId = movie.mainTrailerUrl
+                                  ? extractYouTubeId(movie.mainTrailerUrl)
                                   : null;
                                 const ytId = extractYouTubeId(
                                   movie.streamingUrl || movie.videoUrl,
@@ -11197,6 +11270,12 @@ export default function App() {
                                   trailerUrl: trailerId
                                     ? `https://www.youtube.com/embed/${trailerId}`
                                     : sanitizeUrl(movie.trailerUrl),
+                                  mainTrailerUrl: mainTrailerId
+                                    ? `https://www.youtube.com/embed/${mainTrailerId}`
+                                    : sanitizeUrl(movie.mainTrailerUrl),
+                                  streamingSourceUrl: sanitizeUrl(
+                                    movie.streamingSourceUrl,
+                                  ),
                                   external_link: sanitizeUrl(
                                     movie.streamingUrl ||
                                       movie.external_link ||
