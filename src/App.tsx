@@ -846,16 +846,62 @@ function formatTime(seconds: number): string {
 // from the player's subtitle menu; the source text is the movie's existing
 // subtitle file when available, otherwise Whisper transcription of the audio.
 const SUBTITLE_TARGET_LANGS = [
-  { code: "ku", label: "کوردی" },
+  { code: "ku", label: "Kurdish (Sorani)" },
   { code: "en", label: "English" },
-  { code: "ar", label: "العربية" },
-  { code: "fa", label: "فارسی" },
-  { code: "tr", label: "Türkçe" },
-  { code: "es", label: "Español" },
-  { code: "fr", label: "Français" },
-  { code: "de", label: "Deutsch" },
-  { code: "ru", label: "Русский" },
-  { code: "zh", label: "中文" },
+  { code: "ar", label: "Arabic" },
+  { code: "fa", label: "Persian" },
+  { code: "tr", label: "Turkish" },
+  { code: "es", label: "Spanish" },
+  { code: "fr", label: "French" },
+  { code: "de", label: "German" },
+  { code: "ru", label: "Russian" },
+  { code: "zh", label: "Chinese" },
+  { code: "hi", label: "Hindi" },
+  { code: "pt", label: "Portuguese" },
+  { code: "it", label: "Italian" },
+  { code: "ja", label: "Japanese" },
+  { code: "ko", label: "Korean" },
+  { code: "th", label: "Thai" },
+  { code: "vi", label: "Vietnamese" },
+  { code: "id", label: "Indonesian" },
+  { code: "ms", label: "Malay" },
+  { code: "pl", label: "Polish" },
+  { code: "nl", label: "Dutch" },
+  { code: "uk", label: "Ukrainian" },
+  { code: "bn", label: "Bengali" },
+  { code: "ta", label: "Tamil" },
+  { code: "te", label: "Telugu" },
+  { code: "ml", label: "Malayalam" },
+  { code: "kn", label: "Kannada" },
+  { code: "mr", label: "Marathi" },
+  { code: "gu", label: "Gujarati" },
+  { code: "pa", label: "Punjabi" },
+  { code: "ur", label: "Urdu" },
+  { code: "el", label: "Greek" },
+  { code: "he", label: "Hebrew" },
+  { code: "sw", label: "Swahili" },
+  { code: "am", label: "Amharic" },
+  { code: "hy", label: "Armenian" },
+  { code: "ka", label: "Georgian" },
+  { code: "az", label: "Azerbaijani" },
+  { code: "kk", label: "Kazakh" },
+  { code: "uz", label: "Uzbek" },
+  { code: "tg", label: "Tajik" },
+  { code: "ky", label: "Kyrgyz" },
+  { code: "mn", label: "Mongolian" },
+  { code: "lo", label: "Lao" },
+  { code: "km", label: "Khmer" },
+  { code: "my", label: "Burmese" },
+  { code: "si", label: "Sinhala" },
+  { code: "ne", label: "Nepali" },
+  { code: "so", label: "Somali" },
+  { code: "ha", label: "Hausa" },
+  { code: "yo", label: "Yoruba" },
+  { code: "ig", label: "Igbo" },
+  { code: "ff", label: "Fula" },
+  { code: "sd", label: "Sindhi" },
+  { code: "ps", label: "Pashto" },
+  { code: "kmr", label: "Kurdish (Kurmancî)" },
 ];
 
 const CategoryDropdown = ({ value, onChange, categories }: any) => (
@@ -6010,6 +6056,33 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [showPlayer, activeServerUrl, isIframeMuted]);
 
+  // Track which movies have already had auto Kurdish subtitles generated,
+  // so we don't re-trigger on every re-render or Firestore sync.
+  const autoSubbedRef = useRef<Set<string>>(new Set());
+
+  // Auto-generate Kurdish subtitles when a new video link is selected.
+  // If the movie has English (or source) subtitles, translate them to
+  // Kurdish (Sorani). Otherwise, run Whisper + Gemini on the video audio.
+  useEffect(() => {
+    if (!selectedMovie) return;
+    const movieKey = selectedMovie.id || selectedMovie.embedUrl || selectedMovie.videoUrl || "";
+    if (!movieKey || autoSubbedRef.current.has(movieKey)) return;
+
+    const hasSubtitles = !!selectedMovie.subtitleUrl;
+    const hasVideoUrl = !!getMovieSourceUrl(selectedMovie);
+    if (!hasSubtitles && !hasVideoUrl) return;
+
+    autoSubbedRef.current.add(movieKey);
+    setAiSubtitleLang("ku");
+    setSubtitleMode("ai");
+    // Small delay so the state update from setSubtitleMode settles before
+    // the generate call reads the updated subtitleMode.
+    const timer = window.setTimeout(() => {
+      void handleGenerateAiSubtitles();
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [selectedMovie?.id, selectedMovie?.subtitleUrl, selectedMovie?.videoUrl, selectedMovie?.embedUrl]);
+
   // ---- AI-translated subtitles (parent-side overlay) ----
   // The embed players (YouTube/hdtoday) are cross-origin iframes, so translated
   // subtitles cannot be injected as native <track> elements. Instead we render a
@@ -9435,28 +9508,24 @@ export default function App() {
                         </div> // Plyr Player for direct video files
                       )}
 
-                      {/* AI-Translated Subtitle Overlay (parent-side, time-synced) */}
-                      {subtitleMode === "ai" && currentAiSubtitle && (
-                        <div
-                          className="absolute inset-x-0 z-[45] pointer-events-none select-none px-4 md:px-10 flex justify-center"
-                          style={{ bottom: `calc(64px + ${Math.max(0, Math.min(14, subtitlePosition))}%)` }}
-                        >
-                          <div
-                            className={`max-w-[85%] text-center font-bold kurdish-text leading-snug rounded-lg px-3 py-1.5 transition-colors duration-200 ${
-                              subtitleBackground === "glass"
-                                ? "bg-white/10 backdrop-blur-md border border-white/15"
-                                : "bg-black/70"
-                            }`}
-                            style={{
-                              fontSize: `${subtitleFontSize}px`,
-                              color: `rgba(255,255,255,${Math.max(0.35, subtitleBrightness / 100)})`,
-                              textShadow: "0 2px 6px rgba(0,0,0,0.95)",
-                            }}
-                          >
-                            {currentAiSubtitle}
-                          </div>
-                        </div>
-                      )}
+{/* AI-Translated Subtitle Overlay (parent-side, time-synced) */}
+                       {subtitleMode === "ai" && currentAiSubtitle && (
+                         <div
+                           className="absolute inset-x-0 z-[45] pointer-events-none select-none px-2 md:px-10 flex justify-center"
+                           style={{ bottom: `calc(64px + ${Math.max(0, Math.min(14, subtitlePosition))}%)` }}
+                         >
+                           <div
+                             className="max-w-[90%] md:max-w-[85%] text-center font-bold kurdish-text leading-snug rounded-lg px-3 py-1.5 transition-colors duration-200 overflow-hidden text-ellipsis break-words"
+                             style={{
+                               fontSize: `${subtitleFontSize}px`,
+                               color: `rgba(255,255,255,${Math.max(0.35, subtitleBrightness / 100)})`,
+                               textShadow: "0 2px 6px rgba(0,0,0,0.95)",
+                             }}
+                           >
+                             {currentAiSubtitle}
+                           </div>
+                         </div>
+                       )}
 
                       {/* SyncRoom Overlay Integration */}
                       {activeSyncGroup && (
