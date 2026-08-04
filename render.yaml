@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: cinemachat-server
+    env: node
+    buildCommand: npm install && pip install yt-dlp
+    startCommand: node dist/server.cjs
+    envVars:
+      - key: NODE_ENV
+        value: production

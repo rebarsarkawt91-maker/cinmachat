@@ -14,6 +14,14 @@ import { rateLimiter, sanitizationMiddleware, createAdminGuard, logFailedAttempt
 import { generateSubtitle, translateSrtViaGemini } from './features/subtitles/subtitleGenerator.js';
 import * as XLSX from 'xlsx';
 
+let fetchYoutubeCaptions: ((videoId: string) => Promise<{ text: string }>) | null = null;
+try {
+  const mod = require('youtube-captions');
+  fetchYoutubeCaptions = mod.fetchYoutubeCaptions;
+} catch {
+  // youtube-captions not available — fallback to yt-dlp only
+}
+
 // Sanitize URLs to decode HTML entities (e.g. &#x2F; → /) and convert YouTube watch links to embed links
 function sanitizeUrl(url: string): string {
   if (!url || typeof url !== 'string') return '';
@@ -4105,66 +4113,89 @@ async function startServer() {
         if (!resp.ok) throw new Error(`Download failed: HTTP ${resp.status}`);
         const buf = Buffer.from(await resp.arrayBuffer());
         fsMod.writeFileSync(videoPath, buf);
+        videoDownloaded = true;
         stepLog(`downloaded ${(buf.length / 1048576).toFixed(1)} MB`);
       } else {
+        let videoDownloaded = false;
         let hasYtDlp = false;
         try {
           hasYtDlp = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['yt-dlp']).status === 0;
         } catch {
           hasYtDlp = false;
         }
-        if (!hasYtDlp) {
+
+        if (hasYtDlp) {
+          stepLog(`downloading ${sourceUrl.slice(0, 80)} via yt-dlp (max ${maxDurationSec}s of audio)`);
+          const ytArgs = [
+            '-f', 'mp4[height<=720]/mp4/best',
+            '--no-playlist',
+            '--newline', '--progress',
+            '--retries', '3',
+            '--fragment-retries', '3',
+            '-o', videoPath,
+          ];
+          if (maxDurationSec > 0) {
+            const mm = Math.floor(maxDurationSec / 60);
+            const ss = String(maxDurationSec % 60).padStart(2, '0');
+            ytArgs.push('--download-sections', `*0:00-${mm}:${ss}`);
+          }
+          ytArgs.push(sourceUrl);
+          let lastYtLog = 0;
+          const runYtDlp = () =>
+            runCmd('yt-dlp', ytArgs, downloadTimeout, (line) => {
+              const now = Date.now();
+              const isError = /error|failed|warn/i.test(line);
+              if (isError || now - lastYtLog > 5000) {
+                lastYtLog = now;
+                stepLog(`yt-dlp: ${line.slice(0, 200)}`);
+              }
+            });
+          const ytAttempts = 3;
+          for (let attempt = 1; attempt <= ytAttempts; attempt++) {
+            try {
+              await runYtDlp();
+              break;
+            } catch (e: any) {
+              if (attempt === ytAttempts) throw e;
+              stepLog(`yt-dlp attempt ${attempt}/${ytAttempts} failed (${e?.message || e}); retrying in 2s...`);
+              await new Promise((r) => setTimeout(r, 2000));
+            }
+          }
+          stepLog('yt-dlp download complete');
+          videoDownloaded = true;
+        } else if (fetchYoutubeCaptions && /youtube\.com|youtu\.be/i.test(sourceUrl)) {
+          // Fallback: fetch YouTube captions directly when yt-dlp is unavailable
+          const ytMatch = sourceUrl.match(/[?&]v=([^&]+)/) || sourceUrl.match(/youtu\.be\/([^?&]+)/);
+          const videoId = ytMatch ? ytMatch[1] : null;
+          if (!videoId) {
+            return res.status(400).json({ error: 'Could not extract YouTube video ID from URL' });
+          }
+          stepLog(`fetching YouTube captions directly for video ${videoId} (yt-dlp not installed)`);
+          try {
+            const captions = await fetchYoutubeCaptions(videoId);
+            if (!captions || !captions.text) {
+              return res.status(400).json({ error: 'No captions available for this YouTube video and yt-dlp is not installed' });
+            }
+            const srtText = await translateSrtViaGemini(captions.text, targetLang);
+            stepLog(`translated YouTube captions (${srtText.length} chars)`);
+            res.json({ success: true, srt: srtText, lang: targetLang, source: 'youtube-captions' });
+            return;
+          } catch (captionErr: any) {
+            stepLog(`youtube-captions fallback failed: ${captionErr?.message || captionErr}`);
+            return res.status(400).json({
+              error:
+                'yt-dlp is not installed on the server and fetching YouTube captions failed. Install yt-dlp (pip install yt-dlp) or ensure the video has captions available.',
+            });
+          }
+        } else {
           return res.status(400).json({
             error:
               'yt-dlp is not installed on the server. Install it (pip install yt-dlp) to generate subtitles from YouTube / streaming sources.',
           });
         }
-        stepLog(`downloading ${sourceUrl.slice(0, 80)} via yt-dlp (max ${maxDurationSec}s of audio)`);
-        const ytArgs = [
-          '-f', 'mp4[height<=720]/mp4/best',
-          '--no-playlist',
-          '--newline', '--progress',
-          '--retries', '3',
-          '--fragment-retries', '3',
-          '-o', videoPath,
-        ];
-        if (maxDurationSec > 0) {
-          const mm = Math.floor(maxDurationSec / 60);
-          const ss = String(maxDurationSec % 60).padStart(2, '0');
-          ytArgs.push('--download-sections', `*0:00-${mm}:${ss}`);
-        }
-        ytArgs.push(sourceUrl);
-        // --download-sections hands the fetching to ffmpeg, so yt-dlp prints no
-        // "[download] x%" lines — the "frame=... speed=Nx time=..." ffmpeg lines
-        // ARE the download progress. Log those (throttled to 1/5s) plus any
-        // error/status lines so the user can see it's moving.
-        let lastYtLog = 0;
-        const runYtDlp = () =>
-          runCmd('yt-dlp', ytArgs, downloadTimeout, (line) => {
-            const now = Date.now();
-            const isError = /error|failed|warn/i.test(line);
-            if (isError || now - lastYtLog > 5000) {
-              lastYtLog = now;
-              stepLog(`yt-dlp: ${line.slice(0, 200)}`);
-            }
-          });
-        // YouTube streaming can throw transient TLS / connection-reset errors
-        // mid-download; retry the whole download a few times before giving up.
-        const ytAttempts = 3;
-        for (let attempt = 1; attempt <= ytAttempts; attempt++) {
-          try {
-            await runYtDlp();
-            break;
-          } catch (e: any) {
-            if (attempt === ytAttempts) throw e;
-            stepLog(`yt-dlp attempt ${attempt}/${ytAttempts} failed (${e?.message || e}); retrying in 2s...`);
-            await new Promise((r) => setTimeout(r, 2000));
-          }
-        }
-        stepLog('yt-dlp download complete');
       }
 
-      if (!fsMod.existsSync(videoPath) || fsMod.statSync(videoPath).size < 1024) {
+      if (!videoDownloaded && (!fsMod.existsSync(videoPath) || fsMod.statSync(videoPath).size < 1024)) {
         throw new Error('Downloaded video is empty');
       }
 

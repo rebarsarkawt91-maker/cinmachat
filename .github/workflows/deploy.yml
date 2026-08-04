@@ -23,6 +23,11 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      # Install yt-dlp so the subtitle API can download YouTube videos
+      # and fetch captions when the server runs on Render.
+      - name: Install yt-dlp
+        run: pip install yt-dlp
+
       # Inline the real production configuration. The repo's .env is gitignored
       # and absent on CI, so without this the built bundle falls back to empty
       # env values (hidden WhatsApp CTAs, wrong Firestore database, no Agora).
