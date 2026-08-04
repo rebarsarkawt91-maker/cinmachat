@@ -7,7 +7,6 @@ import { fileURLToPath } from 'url';
 import { Readable } from 'node:stream';
 import fs from 'node:fs/promises';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import net from 'node:net';
@@ -36,82 +35,6 @@ function extractYoutubeVideoId(url: string): string | null {
   return null;
 }
 
-async function fetchYoutubeCaptionsPure(videoId: string): Promise<string> {
-  const https = await import('node:https');
-  const url = await import('node:url');
-
-  const pageUrl = `https://www.youtube.com/watch?v=${videoId}`;
-  const html = await new Promise<string>((resolve, reject) => {
-    const req = https.get(pageUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
-      let data = '';
-      res.on('data', (chunk) => { data += chunk; });
-      res.on('end', () => resolve(data));
-    });
-    req.on('error', reject);
-    req.setTimeout(15000, () => { req.destroy(); reject(new Error('YouTube page fetch timed out')); });
-  });
-
-  // Locate ytInitialPlayerResponse JSON in the page HTML.
-  const match = html.match(/ytInitialPlayerResponse\s*=\s*({.+?})\s*;/);
-  if (!match) throw new Error('Could not locate ytInitialPlayerResponse in YouTube page');
-
-  let playerResponse: any;
-  try {
-    playerResponse = JSON.parse(match[1]);
-  } catch {
-    throw new Error('Failed to parse ytInitialPlayerResponse JSON');
-  }
-
-  // Navigate to caption tracks: playerResponse.captions.playerCaptionsTracklistRenderer.captionTracks
-  const tracks: Array<{ baseUrl: string; langCode: string; name: string }> =
-    playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
-
-  if (tracks.length === 0) throw new Error('No caption tracks found for this YouTube video');
-
-  // Prefer English captions; fall back to the first available track.
-  const preferredTrack = tracks.find((t) => t.langCode === 'en') || tracks[0];
-  const baseUrl = preferredTrack.baseUrl;
-
-  // Fetch the caption track (XML or SRT format).
-  const captionText = await new Promise<string>((resolve, reject) => {
-    const req = https.get(baseUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
-      let data = '';
-      res.on('data', (chunk) => { data += chunk; });
-      res.on('end', () => resolve(data));
-    });
-    req.on('error', reject);
-    req.setTimeout(15000, () => { req.destroy(); reject(new Error('Caption track fetch timed out')); });
-  });
-
-  return captionText;
-}
-
-function execFileText(cmd: string, args: string[], options: { cwd?: string; timeoutMs?: number } = {}) {
-  return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-    execFile(
-      cmd,
-      args,
-      {
-        cwd: options.cwd,
-        encoding: 'utf-8',
-        maxBuffer: 32 * 1024 * 1024,
-        timeout: options.timeoutMs || 120000,
-      },
-      (error, stdout, stderr) => {
-        if (error) {
-          const wrapped = new Error(stderr || stdout || error.message);
-          (wrapped as any).cause = error;
-          (wrapped as any).stdout = stdout;
-          (wrapped as any).stderr = stderr;
-          reject(wrapped);
-          return;
-        }
-        resolve({ stdout, stderr });
-      },
-    );
-  });
-}
-
 function normalizeSubtitleText(rawText: string): string {
   const cleanText = rawText.replace(/^\uFEFF/, '').trim();
   if (!cleanText) return '';
@@ -123,96 +46,328 @@ function normalizeSubtitleText(rawText: string): string {
     : cleanText;
 }
 
-async function fetchYoutubeCaptionsViaYtDlp(videoUrl: string, workDir: string, lang = 'en') {
-  const fsSync = await import('node:fs');
-  const outputTemplate = path.join(workDir, 'yt-sub.%(ext)s');
-  const ytDlpRunners: Array<{ cmd: string; prefixArgs: string[]; label: string }> = [
-    { cmd: 'yt-dlp', prefixArgs: [], label: 'yt-dlp' },
-    { cmd: 'python3', prefixArgs: ['-m', 'yt_dlp'], label: 'python3 -m yt_dlp' },
-    { cmd: 'python', prefixArgs: ['-m', 'yt_dlp'], label: 'python -m yt_dlp' },
-    { cmd: 'py', prefixArgs: ['-m', 'yt_dlp'], label: 'py -m yt_dlp' },
-  ];
-  const attempts = [
-    { mode: 'manual', args: ['--write-subs'] },
-    { mode: 'auto', args: ['--write-auto-subs'] },
-  ];
+type YouTubeCaptionTrack = {
+  baseUrl?: string;
+  languageCode?: string;
+  langCode?: string;
+  kind?: string;
+  isTranslatable?: boolean;
+};
 
-  const clearSubtitleFiles = () => {
-    for (const fileName of fsSync.readdirSync(workDir)) {
-      if (/^yt-sub\..+\.(vtt|srt)$/i.test(fileName)) {
-        fsSync.unlinkSync(path.join(workDir, fileName));
+const YT_HTTP_HEADERS: Record<string, string> = {
+  'User-Agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
+  'Accept-Language': 'en-US,en;q=0.9',
+};
+
+async function fetchTextWithTimeout(url: string, timeoutMs = 20000, init: RequestInit = {}): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        ...YT_HTTP_HEADERS,
+        ...(init.headers || {}),
+      },
+    });
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`);
+    }
+    return await resp.text();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchJsonWithTimeout<T = any>(url: string, timeoutMs = 20000, init: RequestInit = {}): Promise<T> {
+  const text = await fetchTextWithTimeout(url, timeoutMs, init);
+  return JSON.parse(text) as T;
+}
+
+function extractPlayerResponseFromHtml(html: string): any | null {
+  const match = html.match(/ytInitialPlayerResponse\s*=\s*({.+?})\s*;/s);
+  if (!match) return null;
+  try {
+    return JSON.parse(match[1]);
+  } catch {
+    return null;
+  }
+}
+
+function extractInnertubeKeyFromHtml(html: string): string | null {
+  const match = html.match(/"INNERTUBE_API_KEY":"([^"]+)"/);
+  return match?.[1] || null;
+}
+
+function getCaptionTracksFromPlayerResponse(playerResponse: any): YouTubeCaptionTrack[] {
+  return playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+}
+
+function getTrackLang(track: YouTubeCaptionTrack): string {
+  return (track.languageCode || track.langCode || '').toLowerCase();
+}
+
+function buildGenericTimedtextCandidates(videoId: string, lang: string): string[] {
+  const candidates: string[] = [];
+  const add = (url: string) => {
+    if (!candidates.includes(url)) candidates.push(url);
+  };
+
+  for (const host of ['https://www.youtube.com/api/timedtext', 'https://video.google.com/timedtext']) {
+    const base = `${host}?v=${encodeURIComponent(videoId)}&lang=${encodeURIComponent(lang)}`;
+    add(`${base}&fmt=vtt`);
+    add(`${base}&kind=asr&fmt=vtt`);
+    add(`${base}`);
+  }
+  return candidates;
+}
+
+function buildTrackTimedtextCandidates(track: YouTubeCaptionTrack, videoId: string, targetLang: string): string[] {
+  const candidates: string[] = [];
+  const add = (url: string) => {
+    if (!candidates.includes(url)) candidates.push(url);
+  };
+
+  if (!track.baseUrl) return candidates;
+
+  try {
+    const raw = new URL(track.baseUrl);
+    add(raw.toString());
+
+    const withFmt = new URL(raw.toString());
+    withFmt.searchParams.set('fmt', 'vtt');
+    add(withFmt.toString());
+
+    const sanitized = new URL(raw.toString());
+    const volatileParams = [
+      'ip', 'ipbits', 'expire', 'ei', 'signature', 'sig', 'sparams', 'lsparams', 'xospf', 'xowf', 'xoaf', 'exp', 'opi',
+    ];
+    for (const p of volatileParams) sanitized.searchParams.delete(p);
+    sanitized.searchParams.set('v', videoId);
+    sanitized.searchParams.set('fmt', 'vtt');
+    add(sanitized.toString());
+
+    const videoGoogle = new URL(sanitized.toString());
+    videoGoogle.host = 'video.google.com';
+    add(videoGoogle.toString());
+
+    const trackLang = getTrackLang(track);
+    if (targetLang && targetLang !== trackLang && (track.isTranslatable ?? true)) {
+      const translated = new URL(videoGoogle.toString());
+      translated.searchParams.set('tlang', targetLang);
+      add(translated.toString());
+    }
+  } catch {
+    // ignore malformed track URLs
+  }
+
+  return candidates;
+}
+
+function isLikelyCaptionPayload(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  return (
+    t.startsWith('WEBVTT') ||
+    t.startsWith('<transcript') ||
+    /<text\s+start=/i.test(t) ||
+    /\d{2}:\d{2}:\d{2}[\.,]\d{3}\s+-->/.test(t)
+  );
+}
+
+function captionPayloadToSrt(raw: string): string {
+  const clean = raw.replace(/^\uFEFF/, '').trim();
+  if (!clean) return '';
+  if (clean.startsWith('WEBVTT')) {
+    return normalizeSubtitleText(clean);
+  }
+  if (clean.startsWith('<transcript') || /<text\s+start=/i.test(clean)) {
+    return normalizeSubtitleText(youtubeCaptionXmlToSrt(clean));
+  }
+  return normalizeSubtitleText(clean);
+}
+
+async function fetchYouTubeCaptionTracks(videoId: string): Promise<YouTubeCaptionTrack[]> {
+  const pageUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  const html = await fetchTextWithTimeout(pageUrl);
+
+  const playerResponse = extractPlayerResponseFromHtml(html);
+  const pageTracks = getCaptionTracksFromPlayerResponse(playerResponse);
+  if (pageTracks.length) return pageTracks;
+
+  const innertubeKey = extractInnertubeKeyFromHtml(html);
+  if (!innertubeKey) return [];
+
+  const body = {
+    context: {
+      client: {
+        clientName: 'WEB',
+        clientVersion: '2.20240709.01.00',
+        hl: 'en',
+        gl: 'US',
+      },
+    },
+    videoId,
+  };
+
+  const playerJson = await fetchTextWithTimeout(
+    `https://www.youtube.com/youtubei/v1/player?key=${encodeURIComponent(innertubeKey)}`,
+    20000,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  );
+
+  try {
+    const playerData = JSON.parse(playerJson);
+    return getCaptionTracksFromPlayerResponse(playerData);
+  } catch {
+    return [];
+  }
+}
+
+type InvidiousCaption = {
+  label?: string;
+  languageCode?: string;
+  url?: string;
+  autoGenerated?: boolean;
+};
+
+const INVIDIOUS_INSTANCES = [
+  'https://yewtu.be',
+  'https://inv.nadeko.net',
+  'https://invidious.jing.rocks',
+  'https://invidious.privacyredirect.com',
+];
+
+function pickBestInvidiousCaption(captions: InvidiousCaption[], targetLang: string): InvidiousCaption | null {
+  if (!captions.length) return null;
+  const lang = (targetLang || 'en').toLowerCase();
+  const exact = captions.find((c) => (c.languageCode || '').toLowerCase() === lang);
+  if (exact) return exact;
+  const autoExact = captions.find((c) => (c.languageCode || '').toLowerCase() === lang && c.autoGenerated);
+  if (autoExact) return autoExact;
+  const english = captions.find((c) => (c.languageCode || '').toLowerCase() === 'en');
+  if (english) return english;
+  return captions[0] || null;
+}
+
+async function fetchCaptionsViaInvidious(
+  videoId: string,
+  targetLang: string,
+): Promise<{ srt: string; source: string; fetchUrl: string } | null> {
+  for (const instance of INVIDIOUS_INSTANCES) {
+    try {
+      const listUrl = `${instance}/api/v1/captions/${encodeURIComponent(videoId)}`;
+      const rawList = await fetchJsonWithTimeout<any>(listUrl, 12000);
+      const captions: InvidiousCaption[] = Array.isArray(rawList)
+        ? rawList
+        : Array.isArray(rawList?.captions)
+          ? rawList.captions
+          : [];
+      if (!Array.isArray(captions) || captions.length === 0) {
+        continue;
       }
+
+      const picked = pickBestInvidiousCaption(captions, targetLang);
+      if (!picked?.url) {
+        continue;
+      }
+
+      const captionUrl = picked.url.startsWith('http') ? picked.url : `${instance}${picked.url}`;
+      const raw = await fetchTextWithTimeout(captionUrl, 15000);
+      if (!isLikelyCaptionPayload(raw)) {
+        continue;
+      }
+
+      const srt = captionPayloadToSrt(raw);
+      if (!srt) {
+        continue;
+      }
+
+      return {
+        srt,
+        source: `invidious-${picked.languageCode || 'unknown'}`,
+        fetchUrl: captionUrl,
+      };
+    } catch {
+      // try the next instance
+    }
+  }
+
+  return null;
+}
+
+async function fetchYouTubeCaptionsFromWeb(
+  videoId: string,
+  targetLang: string,
+): Promise<{ srt: string; source: string; fetchUrl: string }> {
+  const lang = (targetLang || 'en').toLowerCase();
+  const tracks = await fetchYouTubeCaptionTracks(videoId);
+  const errors: string[] = [];
+
+  const candidates: Array<{ url: string; source: string }> = [];
+  const pushCandidate = (url: string, source: string) => {
+    if (!candidates.some((c) => c.url === url)) {
+      candidates.push({ url, source });
     }
   };
 
-  const logs: string[] = [];
-  const missingRunnerLabels = new Set<string>();
-  for (const attempt of attempts) {
-    let attemptRan = false;
-    for (const runner of ytDlpRunners) {
-      clearSubtitleFiles();
-      try {
-        const { stdout, stderr } = await execFileText(
-          runner.cmd,
-          [
-            ...runner.prefixArgs,
-            ...attempt.args,
-            '--sub-lang',
-            lang,
-            '--sub-format',
-            'vtt',
-            '--skip-download',
-            '--output',
-            outputTemplate,
-            videoUrl,
-          ],
-          { cwd: workDir, timeoutMs: 180000 },
-        );
-        attemptRan = true;
-        logs.push(`[${attempt.mode}][${runner.label}] stdout=${stdout.trim() || '<empty>'}`);
-        logs.push(`[${attempt.mode}][${runner.label}] stderr=${stderr.trim() || '<empty>'}`);
+  for (const u of buildGenericTimedtextCandidates(videoId, lang)) {
+    pushCandidate(u, `generic-${lang}`);
+  }
 
-        const subtitleFile = fsSync
-          .readdirSync(workDir)
-          .find((fileName) => /^yt-sub\..+\.(vtt|srt)$/i.test(fileName));
-        if (!subtitleFile) {
-          break;
-        }
+  for (const track of tracks) {
+    for (const u of buildTrackTimedtextCandidates(track, videoId, lang)) {
+      const trackLang = getTrackLang(track) || 'unknown';
+      pushCandidate(u, `track-${trackLang}${track.kind === 'asr' ? '-asr' : ''}`);
+    }
+  }
 
-        const subtitleText = fsSync.readFileSync(path.join(workDir, subtitleFile), 'utf-8');
-        if (!subtitleText.trim()) {
-          break;
-        }
-
-        return {
-          mode: attempt.mode,
-          subtitleFile,
-          subtitleText,
-          stdout,
-          stderr,
-        };
-      } catch (error: any) {
-        const cause = error?.cause;
-        if (cause?.code === 'ENOENT' || error?.code === 'ENOENT') {
-          missingRunnerLabels.add(runner.label);
-          logs.push(`[${attempt.mode}][${runner.label}] missing executable`);
-          continue;
-        }
-        logs.push(`[${attempt.mode}][${runner.label}] stdout=${error?.stdout?.trim() || '<empty>'}`);
-        logs.push(`[${attempt.mode}][${runner.label}] stderr=${error?.stderr?.trim() || '<empty>'}`);
-        logs.push(`[${attempt.mode}][${runner.label}] error=${error?.message || error}`);
+  if (lang !== 'en') {
+    for (const u of buildGenericTimedtextCandidates(videoId, 'en')) {
+      pushCandidate(u, 'generic-en-fallback');
+    }
+    for (const track of tracks) {
+      for (const u of buildTrackTimedtextCandidates(track, videoId, 'en')) {
+        const trackLang = getTrackLang(track) || 'unknown';
+        pushCandidate(u, `track-en-fallback-${trackLang}`);
       }
     }
-    if (!attemptRan) {
-      logs.push(`[${attempt.mode}] no yt-dlp runner was executable`);
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const raw = await fetchTextWithTimeout(candidate.url, 15000);
+      if (!isLikelyCaptionPayload(raw)) {
+        errors.push(`${candidate.source}: non-caption payload (${raw.length} chars)`);
+        continue;
+      }
+      const srt = captionPayloadToSrt(raw);
+      if (!srt) {
+        errors.push(`${candidate.source}: empty after normalize`);
+        continue;
+      }
+      return {
+        srt,
+        source: candidate.source,
+        fetchUrl: candidate.url,
+      };
+    } catch (err: any) {
+      errors.push(`${candidate.source}: ${err?.message || err}`);
     }
   }
 
-  if (missingRunnerLabels.size === ytDlpRunners.length) {
-    throw new Error(`yt-dlp executable not found. Tried: ${ytDlpRunners.map((r) => r.label).join(', ')}`);
+  const invidiousResult = await fetchCaptionsViaInvidious(videoId, lang);
+  if (invidiousResult) {
+    return invidiousResult;
   }
 
-  throw new Error(`yt-dlp could not fetch subtitles. ${logs.join(' | ')}`);
+  throw new Error(`Web caption extractors failed. ${errors.join(' | ')}`);
 }
 
 // Convert YouTube caption XML to SRT format.
@@ -4197,7 +4352,8 @@ async function startServer() {
 
   // Generates SRT subtitles for a movie source on the server (ffmpeg + Whisper +
   // optional Gemini translation). Used by the player's "درستکردنی وەرگێڕان" button.
-  // YouTube / streaming-source URLs require yt-dlp to be installed on the server;
+  // YouTube / streaming-source URLs use pure web caption extraction (timedtext +
+  // player-response track discovery) without yt-dlp.
   // direct .mp4/.webm file URLs are downloaded with a plain HTTP fetch instead.
   app.post('/api/subtitle/generate', async (req, res) => {
     const { url, subtitleUrl, lang } = req.body || {};
@@ -4300,69 +4456,50 @@ let videoDownloaded = false;
         videoDownloaded = true;
         stepLog(`downloaded ${(buf.length / 1048576).toFixed(1)} MB`);
       } else {
-        // Non-direct-video URL: first try yt-dlp (manual captions, then
-        // auto-generated captions), because YouTube's timedtext URLs can return
-        // an empty 200 response even when captions exist. Fall back to the old
-        // pure-Node fetch only if yt-dlp fails.
+        // Non-direct-video URL: bypass yt-dlp completely and fetch captions
+        // from YouTube timedtext endpoints / web player track metadata.
         const videoId = extractYoutubeVideoId(sourceUrl);
         if (!videoId) {
           return res.status(400).json({ error: 'Unsupported URL — only direct video files and YouTube links are supported' });
         }
-        stepLog(`fetching YouTube captions for video ${videoId} via yt-dlp`);
+        stepLog(`fetching YouTube captions for video ${videoId} via timedtext/web extractors`);
         try {
+          const webCaptionResult = await fetchYouTubeCaptionsFromWeb(videoId, targetLang);
+          stepLog(
+            `returned YouTube captions via web extractor (${webCaptionResult.source}, ${webCaptionResult.srt.length} chars)`,
+          );
+          res.json({
+            success: true,
+            srt: webCaptionResult.srt,
+            lang: targetLang,
+            source: `youtube-captions-web-${webCaptionResult.source}`,
+          });
+          return;
+        } catch (webErr: any) {
+          stepLog(`timedtext/web caption fetch failed: ${webErr?.message || webErr}`);
           if (targetLang !== 'en') {
+            stepLog(`trying English caption fallback + Gemini translation for video ${videoId}`);
             try {
-              const directTarget = await fetchYoutubeCaptionsViaYtDlp(sourceUrl, workDir, targetLang);
-              const normalizedTarget = normalizeSubtitleText(directTarget.subtitleText);
-              if (normalizedTarget) {
-                stepLog(
-                  `returned direct YouTube captions in target lang via yt-dlp (${directTarget.mode}, ${normalizedTarget.length} chars)`,
-                );
-                res.json({
-                  success: true,
-                  srt: normalizedTarget,
-                  lang: targetLang,
-                  source: `youtube-captions-${directTarget.mode}-direct-${targetLang}`,
-                });
-                return;
-              }
-            } catch (directTargetErr: any) {
-              stepLog(`direct target-lang caption fetch failed (${targetLang}): ${directTargetErr?.message || directTargetErr}`);
+              const enCaptionResult = await fetchYouTubeCaptionsFromWeb(videoId, 'en');
+              const translatedSrt = await translateSrtViaGemini(enCaptionResult.srt, targetLang);
+              stepLog(
+                `translated fallback English captions via Gemini (${translatedSrt.length} chars, source=${enCaptionResult.source})`,
+              );
+              res.json({
+                success: true,
+                srt: translatedSrt,
+                lang: targetLang,
+                source: `youtube-captions-web-en-gemini-${enCaptionResult.source}`,
+              });
+              return;
+            } catch (geminiFallbackErr: any) {
+              stepLog(`English+Gemini fallback failed: ${geminiFallbackErr?.message || geminiFallbackErr}`);
             }
           }
 
-          const ytDlpResult = await fetchYoutubeCaptionsViaYtDlp(sourceUrl, workDir, 'en');
-          const normalized = normalizeSubtitleText(ytDlpResult.subtitleText);
-          if (!normalized) throw new Error('yt-dlp fetched a subtitle file but it was empty');
-
-          if (targetLang === 'en') {
-            stepLog(`returned English YouTube captions via yt-dlp (${ytDlpResult.mode}, ${normalized.length} chars)`);
-            res.json({ success: true, srt: normalized, lang: targetLang, source: `youtube-captions-${ytDlpResult.mode}-en` });
-            return;
-          }
-
-          const translatedSrt = await translateSrtViaGemini(normalized, targetLang);
-          stepLog(`translated YouTube captions via yt-dlp + Gemini (${ytDlpResult.mode}, ${translatedSrt.length} chars)`);
-          res.json({ success: true, srt: translatedSrt, lang: targetLang, source: `youtube-captions-${ytDlpResult.mode}-gemini` });
-          return;
-        } catch (ytDlpErr: any) {
-          stepLog(`yt-dlp caption fetch failed: ${ytDlpErr?.message || ytDlpErr}`);
-          stepLog(`falling back to pure Node.js caption fetch for video ${videoId}`);
-          try {
-            const captionXml = await fetchYoutubeCaptionsPure(videoId);
-            const normalized = normalizeSubtitleText(youtubeCaptionXmlToSrt(captionXml));
-            if (!normalized) throw new Error('Captions fetched but empty');
-            const translatedSrt = targetLang === 'en' ? normalized : await translateSrtViaGemini(normalized, targetLang);
-            stepLog(`translated YouTube captions via pure Node fallback (${translatedSrt.length} chars)`);
-            res.json({ success: true, srt: translatedSrt, lang: targetLang, source: 'youtube-captions-pure' });
-            return;
-          } catch (captionErr: any) {
-            stepLog(`YouTube caption fetch failed: ${captionErr?.message || captionErr}`);
-            return res.status(400).json({
-              error:
-                'Could not fetch YouTube captions. yt-dlp and the direct timedtext fallback both failed for this video.',
-            });
-          }
+          return res.status(400).json({
+            error: 'Could not fetch YouTube captions. Web timedtext extractors and fallbacks failed for this video.',
+          });
         }
       }
 
