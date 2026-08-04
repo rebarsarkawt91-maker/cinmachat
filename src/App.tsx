@@ -4892,6 +4892,7 @@ const HeroSection: React.FC<{
   setShowVipModal: React.Dispatch<React.SetStateAction<boolean>>;
   activeAudioSource?: "hero" | "room";
   isMoviePlayerOpen?: boolean;
+  onOpenTranslatePlayer?: () => void;
 }> = ({
   activeFeaturedMovie,
   countdown,
@@ -4904,6 +4905,7 @@ const HeroSection: React.FC<{
   setShowVipModal,
   activeAudioSource = "hero",
   isMoviePlayerOpen = false,
+  onOpenTranslatePlayer,
 }) => {
   const [isPlaying, setIsPlaying] = useState(true);
   const isMuted = isHeroMuted;
@@ -5124,6 +5126,12 @@ const HeroSection: React.FC<{
     } else {
       disableCaptions(playerRef.current);
     }
+  };
+
+  const handleOpenTranslateGesture = (event: React.SyntheticEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onOpenTranslatePlayer?.();
   };
 
   // Play/Pause toggle: called inside the click gesture so the player command is
@@ -5529,6 +5537,21 @@ const HeroSection: React.FC<{
             )}
           </button>
 
+          <button
+            onPointerDown={handleOpenTranslateGesture}
+            onMouseDown={handleOpenTranslateGesture}
+            onTouchStart={handleOpenTranslateGesture}
+            onClick={handleOpenTranslateGesture}
+            className="pointer-events-auto flex items-center gap-2 p-2 md:p-3 bg-black/50 hover:bg-brand-primary/20 border border-white/10 hover:border-brand-primary/35 rounded-xl md:rounded-2xl text-white hover:text-brand-primary backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/translate"
+            title="کردنەوەی ڤیدیۆ بە وەرگێڕانی AI"
+            id="hero-translate-btn"
+          >
+            <Languages className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/translate:scale-110" />
+            <span className="hidden md:inline text-[10px] font-black kurdish-text whitespace-nowrap">
+              وەرگێڕان
+            </span>
+          </button>
+
           {/* VIP Button */}
           <button
             onClick={() => setShowVipModal(true)}
@@ -5711,6 +5734,17 @@ const HeroSection: React.FC<{
               <span className="text-[10px] md:text-xs font-black text-brand-primary uppercase tracking-[0.6em] font-mono">
                 CINEMACHAT SHOW
               </span>
+              <button
+                type="button"
+                onPointerDown={handleOpenTranslateGesture}
+                onMouseDown={handleOpenTranslateGesture}
+                onTouchStart={handleOpenTranslateGesture}
+                onClick={handleOpenTranslateGesture}
+                className="mt-4 pointer-events-auto inline-flex items-center gap-2 px-4 py-2 rounded-2xl bg-brand-primary hover:bg-red-700 text-white text-xs md:text-sm font-black kurdish-text shadow-xl shadow-red-600/20 transition-all active:scale-95"
+              >
+                <Languages className="w-4 h-4" />
+                وەرگێڕانی ڕاستەوخۆی AI
+              </button>
             </div>
 
             <div className="w-12 h-1 bg-brand-primary mt-4 rounded-full shadow-[0_0_15px_rgba(239,68,68,0.5)]" />
@@ -5726,7 +5760,7 @@ const HeroSection: React.FC<{
             initial={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.4, ease: "easeOut" }}
-            className="absolute inset-0 bg-black flex items-center justify-center"
+            className="absolute inset-0 bg-black flex items-center justify-center pointer-events-none"
             style={{ zIndex: 300 }}
           >
             <div className="w-10 h-10 rounded-full border-2 border-t-brand-primary border-white/10 animate-spin" />
@@ -6134,6 +6168,10 @@ export default function App() {
   // If the movie has English (or source) subtitles, translate them to
   // Kurdish (Sorani). Otherwise, run Whisper + Gemini on the video audio.
   useEffect(() => {
+    if (!selectedMovie) {
+      autoSubbedRef.current.clear();
+      return;
+    }
     if (!selectedMovie) return;
     const movieKey = selectedMovie.id || selectedMovie.embedUrl || selectedMovie.videoUrl || "";
     if (!movieKey || autoSubbedRef.current.has(movieKey)) return;
@@ -6313,6 +6351,7 @@ export default function App() {
   const handleGenerateAiSubtitles = async () => {
     if (!selectedMovie) return;
     setAiSubtitleGenerating(true);
+    setAiSubtitleStatus("loading");
     setAiSubtitleMessage("");
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 600000);
@@ -6786,6 +6825,15 @@ export default function App() {
       setIsHeroMuted(true);
     }
   }, [showPlayer]);
+
+  const openHeroTranslatePlayer = () => {
+    if (!activeFeaturedMovie) return;
+    setAiSubtitleLang("ku");
+    setSubtitleMode("ai");
+    setSelectedMovie(activeFeaturedMovie);
+    setActiveServerUrl(getMovieSourceUrl(activeFeaturedMovie));
+    setShowPlayer(true);
+  };
 
   useEffect(() => {
     if (activeSyncGroup) {
@@ -9103,6 +9151,7 @@ export default function App() {
                 setShowVipModal={setShowVipModal}
                 activeAudioSource={activeAudioSource}
                 isMoviePlayerOpen={!!selectedMovie && showPlayer}
+                onOpenTranslatePlayer={openHeroTranslatePlayer}
               />
             )}
 

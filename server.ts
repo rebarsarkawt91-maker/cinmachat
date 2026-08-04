@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 import { Readable } from 'node:stream';
 import fs from 'node:fs/promises';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import net from 'node:net';
@@ -83,6 +84,114 @@ async function fetchYoutubeCaptionsPure(videoId: string): Promise<string> {
   });
 
   return captionText;
+}
+
+function execFileText(cmd: string, args: string[], options: { cwd?: string; timeoutMs?: number } = {}) {
+  return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    execFile(
+      cmd,
+      args,
+      {
+        cwd: options.cwd,
+        encoding: 'utf-8',
+        maxBuffer: 32 * 1024 * 1024,
+        timeout: options.timeoutMs || 120000,
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          const wrapped = new Error(stderr || stdout || error.message);
+          (wrapped as any).cause = error;
+          (wrapped as any).stdout = stdout;
+          (wrapped as any).stderr = stderr;
+          reject(wrapped);
+          return;
+        }
+        resolve({ stdout, stderr });
+      },
+    );
+  });
+}
+
+function normalizeSubtitleText(rawText: string): string {
+  const cleanText = rawText.replace(/^\uFEFF/, '').trim();
+  if (!cleanText) return '';
+  return cleanText.startsWith('WEBVTT')
+    ? cleanText
+        .replace(/^WEBVTT\s*(\n|$)/, '')
+        .replace(/\nNOTE[^\n]*(\n|$)/g, '\n')
+        .trim()
+    : cleanText;
+}
+
+async function fetchYoutubeCaptionsViaYtDlp(videoUrl: string, workDir: string, lang = 'en') {
+  const fsSync = await import('node:fs');
+  const outputTemplate = path.join(workDir, 'yt-sub.%(ext)s');
+  const attempts = [
+    { mode: 'manual', args: ['--write-subs'] },
+    { mode: 'auto', args: ['--write-auto-subs'] },
+  ];
+
+  const clearSubtitleFiles = () => {
+    for (const fileName of fsSync.readdirSync(workDir)) {
+      if (/^yt-sub\..+\.(vtt|srt)$/i.test(fileName)) {
+        fsSync.unlinkSync(path.join(workDir, fileName));
+      }
+    }
+  };
+
+  const logs: string[] = [];
+  for (const attempt of attempts) {
+    clearSubtitleFiles();
+    try {
+      const { stdout, stderr } = await execFileText(
+        'yt-dlp',
+        [
+          ...attempt.args,
+          '--sub-lang',
+          lang,
+          '--sub-format',
+          'vtt',
+          '--skip-download',
+          '--output',
+          outputTemplate,
+          videoUrl,
+        ],
+        { cwd: workDir, timeoutMs: 180000 },
+      );
+      logs.push(`[${attempt.mode}] stdout=${stdout.trim() || '<empty>'}`);
+      logs.push(`[${attempt.mode}] stderr=${stderr.trim() || '<empty>'}`);
+
+      const subtitleFile = fsSync
+        .readdirSync(workDir)
+        .find((fileName) => /^yt-sub\..+\.(vtt|srt)$/i.test(fileName));
+      if (!subtitleFile) {
+        continue;
+      }
+
+      const subtitleText = fsSync.readFileSync(path.join(workDir, subtitleFile), 'utf-8');
+      if (!subtitleText.trim()) {
+        continue;
+      }
+
+      return {
+        mode: attempt.mode,
+        subtitleFile,
+        subtitleText,
+        stdout,
+        stderr,
+      };
+    } catch (error: any) {
+      const cause = error?.cause;
+      if (cause?.code === 'ENOENT') {
+        throw new Error('yt-dlp not found on PATH');
+      }
+      logs.push(`[${attempt.mode}] stdout=${error?.stdout?.trim() || '<empty>'}`);
+      logs.push(`[${attempt.mode}] stderr=${error?.stderr?.trim() || '<empty>'}`);
+      logs.push(`[${attempt.mode}] error=${error?.message || error}`);
+    }
+  }
+
+  throw new Error(`yt-dlp could not fetch subtitles. ${logs.join(' | ')}`);
 }
 
 // Convert YouTube caption XML to SRT format.
@@ -4107,16 +4216,7 @@ async function startServer() {
         if (rawText.length > 10 * 1024 * 1024) throw new Error('Subtitle file is too large (> 10 MB)');
         const cleanText = rawText.replace(/^\uFEFF/, '').trim();
         if (!cleanText) throw new Error('Subtitle file is empty');
-
-        // Strip WebVTT-only header lines so the remaining cue blocks follow the
-        // same SRT-style shape for both formats (Gemini keeps that structure, and
-        // the client parser matches on the timing lines either way).
-        const normalized = cleanText.startsWith('WEBVTT')
-          ? cleanText
-              .replace(/^WEBVTT\s*(\n|$)/, '')
-              .replace(/\nNOTE[^\n]*(\n|$)/g, '\n')
-              .trim()
-          : cleanText;
+        const normalized = normalizeSubtitleText(cleanText);
 
         const srtText = await translateSrtViaGemini(normalized, targetLangSub);
         stepLogSub(
@@ -4179,27 +4279,41 @@ let videoDownloaded = false;
         videoDownloaded = true;
         stepLog(`downloaded ${(buf.length / 1048576).toFixed(1)} MB`);
       } else {
-        // Non-direct-video URL: try to fetch captions directly from YouTube
-        // using pure Node.js (no yt-dlp, no external npm packages).
+        // Non-direct-video URL: first try yt-dlp (manual captions, then
+        // auto-generated captions), because YouTube's timedtext URLs can return
+        // an empty 200 response even when captions exist. Fall back to the old
+        // pure-Node fetch only if yt-dlp fails.
         const videoId = extractYoutubeVideoId(sourceUrl);
         if (!videoId) {
           return res.status(400).json({ error: 'Unsupported URL — only direct video files and YouTube links are supported' });
         }
-        stepLog(`fetching YouTube captions directly for video ${videoId} (pure Node.js)`);
+        stepLog(`fetching YouTube captions for video ${videoId} via yt-dlp`);
         try {
-          const captionXml = await fetchYoutubeCaptionsPure(videoId);
-          const srtText = youtubeCaptionXmlToSrt(captionXml);
-          if (!srtText.trim()) throw new Error('Captions fetched but empty');
-          const translatedSrt = await translateSrtViaGemini(srtText, targetLang);
-          stepLog(`translated YouTube captions (${translatedSrt.length} chars)`);
-          res.json({ success: true, srt: translatedSrt, lang: targetLang, source: 'youtube-captions' });
+          const ytDlpResult = await fetchYoutubeCaptionsViaYtDlp(sourceUrl, workDir, 'en');
+          const normalized = normalizeSubtitleText(ytDlpResult.subtitleText);
+          if (!normalized) throw new Error('yt-dlp fetched a subtitle file but it was empty');
+          const translatedSrt = targetLang === 'en' ? normalized : await translateSrtViaGemini(normalized, targetLang);
+          stepLog(`translated YouTube captions via yt-dlp (${ytDlpResult.mode}, ${translatedSrt.length} chars)`);
+          res.json({ success: true, srt: translatedSrt, lang: targetLang, source: `youtube-captions-${ytDlpResult.mode}` });
           return;
-        } catch (captionErr: any) {
-          stepLog(`YouTube caption fetch failed: ${captionErr?.message || captionErr}`);
-          return res.status(400).json({
-            error:
-              'Could not fetch YouTube captions. The video may not have captions available, or YouTube blocked the request. Try again later or use a direct video file URL.',
-          });
+        } catch (ytDlpErr: any) {
+          stepLog(`yt-dlp caption fetch failed: ${ytDlpErr?.message || ytDlpErr}`);
+          stepLog(`falling back to pure Node.js caption fetch for video ${videoId}`);
+          try {
+            const captionXml = await fetchYoutubeCaptionsPure(videoId);
+            const normalized = normalizeSubtitleText(youtubeCaptionXmlToSrt(captionXml));
+            if (!normalized) throw new Error('Captions fetched but empty');
+            const translatedSrt = targetLang === 'en' ? normalized : await translateSrtViaGemini(normalized, targetLang);
+            stepLog(`translated YouTube captions via pure Node fallback (${translatedSrt.length} chars)`);
+            res.json({ success: true, srt: translatedSrt, lang: targetLang, source: 'youtube-captions-pure' });
+            return;
+          } catch (captionErr: any) {
+            stepLog(`YouTube caption fetch failed: ${captionErr?.message || captionErr}`);
+            return res.status(400).json({
+              error:
+                'Could not fetch YouTube captions. yt-dlp and the direct timedtext fallback both failed for this video.',
+            });
+          }
         }
       }
 

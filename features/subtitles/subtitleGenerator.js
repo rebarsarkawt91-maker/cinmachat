@@ -18,12 +18,23 @@ const path = require("path");
 
 const VIDEO_EXTENSIONS = [".mp4", ".mkv", ".avi"];
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-flash-latest";
+const GEMINI_MAX_SUBTITLE_CHARS = Number(process.env.SUBTITLE_GEMINI_MAX_CHARS) || 6000;
 
 // Per-step timeouts (ms). Tune via env if needed.
 const TIMEOUTS = {
   ffmpeg: Number(process.env.SUBTITLE_FFMPEG_TIMEOUT) || 120000,
   whisper: Number(process.env.SUBTITLE_WHISPER_TIMEOUT) || 600000,
-  gemini: Number(process.env.SUBTITLE_GEMINI_TIMEOUT) || 90000,
+  gemini: Number(process.env.SUBTITLE_GEMINI_TIMEOUT) || 180000,
+};
+
+const subtitleRuntime = {
+  execFile,
+  execFileSync,
+  spawnSync,
+  fs,
+  fetch: (...args) => fetch(...args),
+  now: () => Date.now(),
+  makeTempDirBase: () => path.join(os.tmpdir(), "cinemachat-sub-"),
 };
 
 // Simple timestamped progress logger shared by every step.
@@ -35,7 +46,7 @@ function log(msg) {
 function killProcessTree(pid) {
   try {
     if (process.platform === "win32") {
-      spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
+      subtitleRuntime.spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
     } else {
       process.kill(pid, "SIGKILL");
     }
@@ -48,7 +59,7 @@ function killProcessTree(pid) {
 // rejects with a clear message that says WHICH command and step timed out.
 function execFileAsync(cmd, args, { timeoutMs = 120000, env } = {}) {
   return new Promise((resolve, reject) => {
-    const child = execFile(
+    const child = subtitleRuntime.execFile(
       cmd,
       args,
       { maxBuffer: 64 * 1024 * 1024, encoding: "utf-8", env: env || process.env },
@@ -81,16 +92,16 @@ function execFileAsync(cmd, args, { timeoutMs = 120000, env } = {}) {
 // text can crash on Windows cp1252 consoles (non-ASCII chars) even when whisper
 // is perfectly installed.
 function checkTools() {
-  try { execFileSync("ffmpeg", ["-version"], { stdio: "ignore" }); }
+  try { subtitleRuntime.execFileSync("ffmpeg", ["-version"], { stdio: "ignore" }); }
   catch { throw new Error("ffmpeg not found on PATH. Install from https://ffmpeg.org/"); }
   const finder = process.platform === "win32" ? "where" : "which";
-  try { execFileSync(finder, ["whisper"], { stdio: "ignore" }); }
+  try { subtitleRuntime.execFileSync(finder, ["whisper"], { stdio: "ignore" }); }
   catch { throw new Error("whisper CLI not found on PATH. Install with: pip install openai-whisper"); }
 }
 
 // Throwaway folder for intermediate files.
 function makeTempDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "cinemachat-sub-"));
+  return subtitleRuntime.fs.mkdtempSync(subtitleRuntime.makeTempDirBase());
 }
 
 // Step 1: pull a clean mono 16 kHz WAV out of the video (best format for Whisper).
@@ -103,7 +114,7 @@ async function extractAudio(videoFilePath, wavFilePath) {
   );
   // A tiny WAV usually means the video has no real audio track.
   let size = 0;
-  try { size = fs.statSync(wavFilePath).size; } catch { throw new Error(`No audio created for ${videoFilePath}`); }
+  try { size = subtitleRuntime.fs.statSync(wavFilePath).size; } catch { throw new Error(`No audio created for ${videoFilePath}`); }
   if (size < 1024) throw new Error(`Extracted audio is empty for ${videoFilePath}`);
   log(`  audio extracted: ${(size / 1024).toFixed(0)} KB`);
 }
@@ -126,13 +137,13 @@ async function runWhisper(wavFilePath, outputDir) {
     },
   );
   // Find the outputs by scanning the folder rather than guessing the language code.
-  const files = fs.readdirSync(outputDir);
+  const files = subtitleRuntime.fs.readdirSync(outputDir);
   const srtFile = files.find((f) => f.endsWith(".srt"));
   const jsonFile = files.find((f) => f.endsWith(".json"));
   if (!srtFile || !jsonFile) throw new Error("whisper did not produce SRT/JSON output");
 
-  const srtText = fs.readFileSync(path.join(outputDir, srtFile), "utf-8");
-  const result = JSON.parse(fs.readFileSync(path.join(outputDir, jsonFile), "utf-8"));
+  const srtText = subtitleRuntime.fs.readFileSync(path.join(outputDir, srtFile), "utf-8");
+  const result = JSON.parse(subtitleRuntime.fs.readFileSync(path.join(outputDir, jsonFile), "utf-8"));
   if (!srtText.trim()) throw new Error("whisper produced empty transcription (no speech found)");
   log(`  transcription done: detected language = ${result.language || "unknown"}, ${srtText.trim().split("\n").length} lines`);
   return { srtText, detectedLanguage: result.language || "unknown" };
@@ -146,58 +157,87 @@ async function translateSrtViaGemini(srtText, targetLang) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY is not set; cannot translate subtitles");
 
-  const prompt =
-    `Translate ONLY the spoken-dialogue text lines in the subtitle file below into ` +
-    `the language code "${targetLang}". The file may be SRT or WebVTT. Keep the ` +
-    `file's structure and every cue number, cue identifier and timestamp EXACTLY ` +
-    `the same. Return the complete file in the exact same format, adding or ` +
-    `removing no lines.\n\n${srtText}`;
+  const translateChunk = async (subtitleChunk) => {
+    const prompt =
+      `Translate ONLY the spoken-dialogue text lines in the subtitle file below into ` +
+      `the language code "${targetLang}". The file may be SRT or WebVTT. Keep the ` +
+      `file's structure and every cue number, cue identifier and timestamp EXACTLY ` +
+      `the same. Return the complete file in the exact same format, adding or ` +
+      `removing no lines.\n\n${subtitleChunk}`;
 
-  // Keys that are restricted in the Google AI Studio / Cloud console to a
-  // specific site origin (HTTP referrer) get blocked from non-browser callers.
-  // When GEMINI_REFERER is set (e.g. to your app's origin), send it so the
-  // request is accepted from this backend script as well.
-  const headers = { "Content-Type": "application/json" };
-  if (process.env.GEMINI_REFERER) headers["Referer"] = process.env.GEMINI_REFERER;
+    const headers = { "Content-Type": "application/json" };
+    if (process.env.GEMINI_REFERER) headers["Referer"] = process.env.GEMINI_REFERER;
 
-  log(`step 3/3: translating ${srtText.trim().split("\n").length} lines to "${targetLang}" with Gemini (${GEMINI_MODEL})`);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUTS.gemini);
-  let response;
-  try {
-    response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.1 } }),
-        signal: controller.signal,
-      },
-    );
-  } catch (e) {
-    if (controller.signal.aborted) {
-      throw new Error(`Gemini API timed out after ${Math.round(TIMEOUTS.gemini / 1000)}s`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUTS.gemini);
+    let response;
+    try {
+      response = await subtitleRuntime.fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.1 } }),
+          signal: controller.signal,
+        },
+      );
+    } catch (e) {
+      if (controller.signal.aborted) {
+        throw new Error(`Gemini API timed out after ${Math.round(TIMEOUTS.gemini / 1000)}s`);
+      }
+      throw new Error(`Gemini request failed: ${e.message}`);
+    } finally {
+      clearTimeout(timer);
     }
-    throw new Error(`Gemini request failed: ${e.message}`);
-  } finally {
-    clearTimeout(timer);
-  }
-  if (!response.ok) throw new Error(`Gemini API error ${response.status}: ${await response.text()}`);
+    if (!response.ok) throw new Error(`Gemini API error ${response.status}: ${await response.text()}`);
 
-  const data = await response.json();
-  const translated = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("")?.trim();
-  if (!translated) throw new Error("Gemini returned an empty translation");
-  return translated;
+    const data = await response.json();
+    const translated = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("");
+    if (!translated || !translated.trim()) throw new Error("Gemini returned an empty translation");
+    return translated;
+  };
+
+  const splitIntoChunks = (subtitleText) => {
+    if (subtitleText.length <= GEMINI_MAX_SUBTITLE_CHARS) return [subtitleText];
+    const blocks = subtitleText.split(/\n\s*\n/).filter((block) => block.trim());
+    const chunks = [];
+    let currentChunk = "";
+    for (const block of blocks) {
+      const candidate = currentChunk ? `${currentChunk}\n\n${block}` : block;
+      if (currentChunk && candidate.length > GEMINI_MAX_SUBTITLE_CHARS) {
+        chunks.push(currentChunk);
+        currentChunk = block;
+      } else {
+        currentChunk = candidate;
+      }
+    }
+    if (currentChunk) chunks.push(currentChunk);
+    return chunks;
+  };
+
+  const chunks = splitIntoChunks(srtText);
+  if (chunks.length > 1) {
+    log(`step 3/3: translating ${srtText.trim().split("\n").length} lines in ${chunks.length} Gemini chunks to "${targetLang}" (${GEMINI_MODEL})`);
+    const translatedChunks = [];
+    for (let i = 0; i < chunks.length; i++) {
+      log(`  Gemini chunk ${i + 1}/${chunks.length} (${chunks[i].length} chars)`);
+      translatedChunks.push((await translateChunk(chunks[i])).replace(/\n+$/g, ""));
+    }
+    const trailingNewline = /\n$/.test(srtText) ? "\n" : "";
+    return `${translatedChunks.join("\n\n")}${trailingNewline}`;
+  }
+  log(`step 3/3: translating ${srtText.trim().split("\n").length} lines to "${targetLang}" with Gemini (${GEMINI_MODEL})`);
+  return translateChunk(srtText);
 }
 
 // Transcribe ONE video file and save the final .srt next to it.
 async function generateSubtitle(videoFilePath, outputLang = "en") {
   const videoPath = path.resolve(videoFilePath);
-  if (!fs.existsSync(videoPath)) throw new Error(`Video not found: ${videoPath}`);
+  if (!subtitleRuntime.fs.existsSync(videoPath)) throw new Error(`Video not found: ${videoPath}`);
 
   checkTools();
   const tempDir = makeTempDir();
-  const started = Date.now();
+  const started = subtitleRuntime.now();
   try {
     // Step 1: extract a clean WAV.
     const wavPath = path.join(tempDir, "audio.wav");
@@ -219,13 +259,13 @@ async function generateSubtitle(videoFilePath, outputLang = "en") {
       path.dirname(videoPath),
       path.basename(videoPath, path.extname(videoPath)) + ".srt",
     );
-    fs.writeFileSync(srtPath, finalSrt, "utf-8");
+    subtitleRuntime.fs.writeFileSync(srtPath, finalSrt, "utf-8");
 
-    log(`done in ${((Date.now() - started) / 1000).toFixed(1)}s -> ${srtPath} (detected: ${detectedLanguage})`);
+    log(`done in ${((subtitleRuntime.now() - started) / 1000).toFixed(1)}s -> ${srtPath} (detected: ${detectedLanguage})`);
     return srtPath;
   } finally {
     // Always clean up the temp folder, even when an error is thrown.
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    subtitleRuntime.fs.rmSync(tempDir, { recursive: true, force: true });
   }
 }
 
@@ -233,9 +273,9 @@ async function generateSubtitle(videoFilePath, outputLang = "en") {
 // one bad video, and skips videos that already have a matching .srt file.
 async function generateSubtitlesForFolder(folderPath, outputLang = "en") {
   const folder = path.resolve(folderPath);
-  if (!fs.existsSync(folder)) throw new Error(`Folder not found: ${folder}`);
+  if (!subtitleRuntime.fs.existsSync(folder)) throw new Error(`Folder not found: ${folder}`);
 
-  const videos = fs
+  const videos = subtitleRuntime.fs
     .readdirSync(folder)
     .filter((f) => VIDEO_EXTENSIONS.includes(path.extname(f).toLowerCase()))
     .sort();
@@ -246,7 +286,7 @@ async function generateSubtitlesForFolder(folderPath, outputLang = "en") {
     log(`Processing ${i + 1} of ${videos.length}: ${fileName}`);
 
     const srtPath = path.join(folder, path.basename(fileName, path.extname(fileName)) + ".srt");
-    if (fs.existsSync(srtPath)) { log(`Skipping ${fileName}: .srt already exists`); continue; }
+  if (subtitleRuntime.fs.existsSync(srtPath)) { log(`Skipping ${fileName}: .srt already exists`); continue; }
 
     try {
       await generateSubtitle(path.join(folder, fileName), outputLang);
@@ -262,7 +302,27 @@ async function generateSubtitlesForFolder(folderPath, outputLang = "en") {
   return { total: videos.length, succeeded, failed };
 }
 
-module.exports = { generateSubtitle, generateSubtitlesForFolder, translateSrtViaGemini };
+function __setSubtitleTestHooks(overrides = {}) {
+  Object.assign(subtitleRuntime, overrides);
+}
+
+function __resetSubtitleTestHooks() {
+  subtitleRuntime.execFile = execFile;
+  subtitleRuntime.execFileSync = execFileSync;
+  subtitleRuntime.spawnSync = spawnSync;
+  subtitleRuntime.fs = fs;
+  subtitleRuntime.fetch = (...args) => fetch(...args);
+  subtitleRuntime.now = () => Date.now();
+  subtitleRuntime.makeTempDirBase = () => path.join(os.tmpdir(), "cinemachat-sub-");
+}
+
+module.exports = {
+  generateSubtitle,
+  generateSubtitlesForFolder,
+  translateSrtViaGemini,
+  __setSubtitleTestHooks,
+  __resetSubtitleTestHooks,
+};
 
 // ---------------------------------------------------------------------------
 // Example usage (uncomment to try):
