@@ -13,6 +13,11 @@ export interface Movie {
   isNetflixOriginal?: boolean;
   isTrending?: boolean;
   views?: number;
+  duration?: string;
+  likes?: number;
+  likedBy?: string[];
+  liveViewers?: number;
+  isLive?: boolean;
   date: string;
   type?: 'movie' | 'tv' | 'video' | 'photo';
   videoUrl?: string;

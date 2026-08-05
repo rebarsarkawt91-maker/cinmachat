@@ -395,5 +395,6 @@
   "unblockArchive": [],
   "bannedDevices": [],
   "bannedDeviceTimestamps": {},
-  "bannedDevicesInfo": {}
+  "bannedDevicesInfo": {},
+  "favorites": {}
 }

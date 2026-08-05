@@ -32,6 +32,8 @@ import {
   Send,
   Menu,
   Heart,
+  ThumbsUp,
+  Bookmark,
   Instagram,
   Facebook,
   CheckCircle2,
@@ -168,6 +170,7 @@ import { BroadcastRoom } from "./components/Social/BroadcastRoom";
 import { BroadcastPreviewCard } from "./components/Social/BroadcastPreviewCard";
 import { DirectMessagesModal } from "./components/Social/DirectMessagesModal";
 import { WhatsAppFloatButton } from "./components/Social/WhatsAppFloatButton";
+import { MovieCard } from "./components/Movie/MovieCard";
 import UserActivityMonitor from "./components/Admin/UserActivityMonitor";
 
 import { 
@@ -190,6 +193,8 @@ import {
   addDoc,
   serverTimestamp,
   arrayUnion,
+  arrayRemove,
+  runTransaction,
   ref, 
   uploadBytes, 
   getDownloadURL,
@@ -989,6 +994,7 @@ const ContentModule = ({
     subtitleUrl: "",
     rating: "",
     year: "",
+    duration: "",
     type: "movie",
     whatsappLink: "",
     externalMovieLink: "",
@@ -1415,6 +1421,7 @@ const ContentModule = ({
         subtitleUrl: "",
         rating: "",
         year: "",
+        duration: "",
         type: "movie",
         whatsappLink: "",
         externalMovieLink: "",
@@ -1491,11 +1498,14 @@ const ContentModule = ({
         streamwishUrl: "",
         fileLrunUrl: "",
         trailerUrl: "",
+        mainTrailerUrl: "",
+        streamingSourceUrl: "",
         quality: "HD",
         tags: "",
         subtitleUrl: "",
         rating: "",
         year: "",
+        duration: "",
         type: "movie",
         whatsappLink: "",
         externalMovieLink: "",
@@ -2090,6 +2100,20 @@ const ContentModule = ({
                 value={formData.year}
                 onChange={(e) =>
                   setFormData({ ...formData, year: e.target.value })
+                }
+                className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-white kurdish-text outline-none focus:border-brand-primary transition-all"
+              />
+            </div>
+            <div className="p-8 bg-white/5 border border-white/10 rounded-[2.5rem] space-y-4">
+              <label className="text-xs font-black text-gray-500 kurdish-text uppercase tracking-widest">
+                ماوەی فیلم
+              </label>
+              <input
+                type="text"
+                placeholder="نموونە: 2h 9min"
+                value={formData.duration}
+                onChange={(e) =>
+                  setFormData({ ...formData, duration: e.target.value })
                 }
                 className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-white kurdish-text outline-none focus:border-brand-primary transition-all"
               />
@@ -4985,7 +5009,7 @@ const HeroSection: React.FC<{
       }
     };
     updateViewers();
-    const interval = setInterval(updateViewers, 10000);
+    const interval = setInterval(updateViewers, 15000);
     return () => {
       cancelled = true;
       clearInterval(interval);
@@ -6058,6 +6082,14 @@ export default function App() {
   const [movies, setMovies] = useState<Movie[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
+  // Movie-card enhancements: favorites, likes, and live-viewer metrics.
+  // favorites/liked are per-user (Firestore users/{uid}, localStorage for guests);
+  // likes/liveViewers maps are server-computed and refreshed by polling.
+  const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
+  const [likedIds, setLikedIds] = useState<Set<string>>(new Set());
+  const [likesMap, setLikesMap] = useState<Record<string, number>>({});
+  const [liveViewersMap, setLiveViewersMap] = useState<Record<string, number>>({});
+
   // Tombstone guard for deleted movies. Keeps a deleted movie out of the UI
   // instantly (optimistic removal) AND stops the 60s /api/movies poll or the
   // Firestore fallback from resurrecting it while the server delete is in
@@ -6847,6 +6879,222 @@ export default function App() {
   } = useSocialAuth();
   const [showSocialModal, setShowSocialModal] = useState(false);
   const [modalMode, setModalMode] = useState<"login" | "signup">("signup");
+
+  // ============ Favorites / Likes / Live-metrics (movie card enhancements) ============
+  // The Firebase uid drives persistence; guests use localStorage instead.
+  const fbUid = fbUser?.uid || "";
+
+  // Hydrate the signed-in user's favorites + liked movies in real time from
+  // Firestore (users/{uid}). Guests fall back to localStorage.
+  useEffect(() => {
+    if (!fbUid) {
+      try {
+        const raw = localStorage.getItem("cinemachat_guest_favorites");
+        if (raw) setFavoriteIds(new Set(JSON.parse(raw)));
+        const rawLiked = localStorage.getItem("cinemachat_guest_liked");
+        if (rawLiked) setLikedIds(new Set(JSON.parse(rawLiked)));
+      } catch (e) { /* ignore malformed storage */ }
+      return;
+    }
+    const userRef = doc(realDb, "users", fbUid);
+    const unsub = onSnapshot(
+      userRef,
+      (snap) => {
+        const data = snap.data();
+        if (Array.isArray(data?.favorites)) setFavoriteIds(new Set(data.favorites));
+        if (Array.isArray(data?.likedMovies)) setLikedIds(new Set(data.likedMovies));
+      },
+      async () => {
+        // Firestore unavailable — hydrate from the backend mirror instead.
+        try {
+          const ids = await api.getFavorites(fbUid);
+          if (ids.length) setFavoriteIds(new Set(ids));
+        } catch (e) { /* ignore */ }
+      },
+    );
+    return unsub;
+  }, [fbUid]);
+
+  // Keep the current catalog ids in a ref so the live poll can target every
+  // visible movie (Firestore ones included) without restarting on each change.
+  const moviesIdsRef = useRef<string[]>([]);
+  useEffect(() => {
+    moviesIdsRef.current = movies
+      .map((m) => m.id)
+      .filter((id): id is string => typeof id === "string");
+  }, [movies]);
+
+  // Poll the server for live-viewer counts so every card reflects real-time
+  // activity without reloading the whole catalog. Uses the bulk stats endpoint
+  // keyed by the visible movie ids so Firestore movies (absent from the server
+  // cache) also get accurate "watching now" counts. Live counts are replaced on
+  // success so a movie that drops to zero loses its badge instead of keeping a
+  // stale number.
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const stats = await api.getLiveStats(moviesIdsRef.current);
+        if (cancelled || !stats || typeof stats !== "object") return;
+        const viewers: Record<string, number> = {};
+        const likes: Record<string, number> = {};
+        for (const [id, s] of Object.entries(stats)) {
+          const entry = s as { liveViewers?: number; likes?: number };
+          if (typeof entry?.liveViewers === "number" && entry.liveViewers > 0) {
+            viewers[id] = entry.liveViewers;
+          }
+          if (typeof entry?.likes === "number" && entry.likes > 0) {
+            likes[id] = entry.likes;
+          }
+        }
+        // Only touch state when a value actually changed so the 30s poll never
+        // forces a full re-render of the whole app on an unchanged tick.
+        setLiveViewersMap((prev) => {
+          if (Object.keys(prev).length !== Object.keys(viewers).length) return viewers;
+          for (const k in viewers) if (prev[k] !== viewers[k]) return viewers;
+          return prev;
+        });
+        setLikesMap((prev) => {
+          const next = { ...prev, ...likes };
+          if (Object.keys(next).length !== Object.keys(prev).length) return next;
+          for (const k in next) if (prev[k] !== next[k]) return next;
+          return prev;
+        });
+      } catch (e) { /* server down — keep last known values */ }
+    };
+    refresh();
+    const iv = setInterval(refresh, 30000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, []);
+
+  // Heartbeat while a movie is open so the backend counts us as a live viewer
+  // of that movie and returns its current concurrent count.
+  useEffect(() => {
+    if (!showPlayer || !selectedMovie?.id) return;
+    const movieId = selectedMovie.id;
+    const session = getDeviceId();
+    const ping = async () => {
+      const res = await api.sendMovieView(movieId, session);
+      if (res?.ok && typeof res.viewers === "number") {
+        setLiveViewersMap((prev) =>
+          prev[movieId] === res.viewers ? prev : { ...prev, [movieId]: res.viewers },
+        );
+      }
+    };
+    ping();
+    const iv = setInterval(ping, 20000);
+    return () => clearInterval(iv);
+  }, [showPlayer, selectedMovie?.id]);
+
+  // Toggle a movie in the user's favorites (Firestore + backend mirror; for
+  // guests, localStorage only).
+  const handleToggleFavorite = useCallback(
+    (movie: Movie) => {
+      const id = movie.id;
+      const next = new Set(favoriteIds);
+      const isFav = next.has(id);
+      if (isFav) next.delete(id);
+      else next.add(id);
+      setFavoriteIds(next);
+
+      if (fbUid) {
+        const userRef = doc(realDb, "users", fbUid);
+        if (isFav) {
+          updateDoc(userRef, { favorites: arrayRemove(id) }).catch(() => {});
+          api.removeFavorite(id, fbUid);
+        } else {
+          updateDoc(userRef, { favorites: arrayUnion(id) }).catch(() => {});
+          api.addFavorite(id, fbUid);
+        }
+      } else {
+        try {
+          localStorage.setItem("cinemachat_guest_favorites", JSON.stringify([...next]));
+        } catch (e) { /* ignore */ }
+      }
+    },
+    [favoriteIds, fbUid],
+  );
+
+  // Toggle a like on a movie: updates the user's liked list (Firestore + backend
+  // mirror) and the movie's live like count (Firestore transaction).
+  const handleToggleLike = useCallback(
+    (movie: Movie) => {
+      const id = movie.id;
+      const next = new Set(likedIds);
+      const isLiked = next.has(id);
+      if (isLiked) next.delete(id);
+      else next.add(id);
+      setLikedIds(next);
+
+      // Optimistic count update so the badge responds instantly.
+      setLikesMap((prev) => {
+        const cur = prev[id] ?? (Number(movie.likes) || 0);
+        return { ...prev, [id]: Math.max(0, cur + (isLiked ? -1 : 1)) };
+      });
+
+      if (fbUid) {
+        const userRef = doc(realDb, "users", fbUid);
+        if (isLiked) {
+          updateDoc(userRef, { likedMovies: arrayRemove(id) }).catch(() => {});
+        } else {
+          updateDoc(userRef, { likedMovies: arrayUnion(id) }).catch(() => {});
+        }
+        // Rules merge the update onto the existing movie doc (which carries
+        // id/title/image), so a `likes`-only update passes isValidMovie().
+        runTransaction(realDb, async (tx) => {
+          const movieRef = doc(realDb, "movies", id);
+          const snap = await tx.get(movieRef);
+          const current = Number(snap.data()?.likes) || 0;
+          tx.update(movieRef, { likes: Math.max(0, current + (isLiked ? -1 : 1)) });
+        }).catch(() => {});
+        api.toggleLike(id, fbUid);
+      } else {
+        try {
+          localStorage.setItem("cinemachat_guest_liked", JSON.stringify([...next]));
+        } catch (e) { /* ignore */ }
+      }
+    },
+    [likedIds, fbUid],
+  );
+
+  // Resolve the current like count for a movie (live map overrides the doc).
+  const getMovieLikes = useCallback(
+    (movie: Movie): number => likesMap[movie.id] ?? (Number(movie.likes) || 0),
+    [likesMap],
+  );
+
+  // Resolve current live viewers for a movie.
+  const getMovieLiveViewers = useCallback(
+    (movie: Movie): number => liveViewersMap[movie.id] ?? (Number(movie.liveViewers) || 0),
+    [liveViewersMap],
+  );
+
+  // The movie with the most concurrent viewers earns the "TOP LIVE" highlight.
+  const topLiveId = useMemo(() => {
+    let topId = "";
+    let top = 0;
+    for (const [id, n] of Object.entries(liveViewersMap)) {
+      if (n >= 2 && n > top) {
+        top = n;
+        topId = id;
+      }
+    }
+    return topId;
+  }, [liveViewersMap]);
+
+  // Favorite movies (from the catalog) for the dedicated "My Favorites" row.
+  const favoriteMovies = useMemo(() => {
+    if (favoriteIds.size === 0) return [];
+    return movies.filter((m) => favoriteIds.has(m.id)).slice(0, 12);
+  }, [movies, favoriteIds]);
+
+  // Open a movie in the detail/player modal from any card.
+  const openMovie = useCallback((movie: Movie) => {
+    setSelectedMovie(movie);
+    setActiveServerUrl(getMovieSourceUrl(movie));
+    setShowPlayer(true);
+  }, []);
+
   const [activeSyncGroup, setActiveSyncGroup] = useState<SyncGroup | null>(
     null,
   );
@@ -7308,7 +7556,7 @@ export default function App() {
       }
     };
     fetchRooms();
-    const interval = setInterval(fetchRooms, 3000);
+    const interval = setInterval(fetchRooms, 15000);
     return () => clearInterval(interval);
   }, []);
 
@@ -8567,11 +8815,17 @@ export default function App() {
     );
   };
 
+  // Guard so the 60s refresh poll can never overlap with an in-flight fetch
+  // (which would double Firestore reads and force duplicate grid re-renders).
+  const moviesFetchInFlightRef = useRef(false);
+
   // Fetch the durable Firestore movie catalog, enriched (never replaced) by the
   // server list. The server's /api/movies may return a partial payload (e.g.
   // only the hero-promo placeholder), so server data is used strictly as extra
   // entries and can never shrink the grid. Firestore is the source of truth.
   const fetchMovies = async () => {
+    if (moviesFetchInFlightRef.current) return;
+    moviesFetchInFlightRef.current = true;
     let loadingReleased = false;
     const releaseLoading = () => {
       if (loadingReleased) return;
@@ -8632,6 +8886,7 @@ export default function App() {
       }
     } finally {
       releaseLoading();
+      moviesFetchInFlightRef.current = false;
     }
   };
 
@@ -8707,7 +8962,10 @@ export default function App() {
 
   useEffect(() => {
     fetchMovies();
-    const interval = setInterval(fetchMovies, 60000); // Poll every 60 seconds for movie updates
+    // Firestore onSnapshot already streams real-time movie updates, so this
+    // refresh only exists as a slow periodic resync + server merge. 2 minutes
+    // keeps the grid light instead of forcing a full re-render every minute.
+    const interval = setInterval(fetchMovies, 120000);
     return () => clearInterval(interval);
   }, []);
 
@@ -9213,34 +9471,63 @@ export default function App() {
                   </h3>
                   <div className="flex gap-4 overflow-x-auto no-scrollbar pb-8 pr-8">
                     {trendingMovies.map((movie, tidx) => (
-                      <motion.div
-                        whileHover={{ scale: 1.05 }}
+                      <div
                         key={`trending-${movie.id}-${tidx}`}
-                        className="flex-shrink-0 w-[160px] md:w-[220px] aspect-[2/3] rounded-xl overflow-hidden cursor-pointer relative group border border-white/5"
-                        onClick={() => {
-                          setSelectedMovie(movie);
-                          setActiveServerUrl(getMovieSourceUrl(movie));
-                          setShowPlayer(true);
-                        }}
+                        className="flex-shrink-0 w-[160px] md:w-[220px]"
                       >
-                        <img
-                          src={movie.image || undefined}
-                          onError={(e) => {
-                            const target = e.target as HTMLImageElement;
-                            target.src =
-                              "https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800";
-                          }}
-                          className="w-full h-full object-cover"
-                          alt={movie.title}
+                        <MovieCard
+                          movie={movie}
+                          liveViewers={getMovieLiveViewers(movie)}
+                          isTopLive={topLiveId === movie.id}
+                          isFavorite={favoriteIds.has(movie.id)}
+                          isLiked={likedIds.has(movie.id)}
+                          likes={getMovieLikes(movie)}
+                          onOpen={openMovie}
+                          onToggleFavorite={handleToggleFavorite}
+                          onToggleLike={handleToggleLike}
                         />
-                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                          <Play className="w-12 h-12 text-white fill-current" />
-                        </div>
-                      </motion.div>
+                      </div>
                     ))}
                   </div>
                 </section>
               </SafeRender>
+
+              {/* My Favorites Section — dedicated persistent row of the current
+                  user's favorite movies (Firestore-backed for signed-in users,
+                  localStorage for guests). */}
+              {favoriteMovies.length > 0 && (
+                <SafeRender fallbackName="Favorites Row">
+                  <section className="pl-8">
+                    <h3 className="text-2xl font-black mb-6 kurdish-text text-white flex items-center gap-3">
+                      <Heart className="w-6 h-6 text-brand-primary fill-current" />
+                      فیلمە دڵخوازەکانم
+                      <span className="text-sm font-bold text-gray-500">
+                        ({favoriteMovies.length})
+                      </span>
+                    </h3>
+                    <div className="flex gap-4 overflow-x-auto no-scrollbar pb-8 pr-8">
+                      {favoriteMovies.map((movie) => (
+                        <div
+                          key={`fav-${movie.id}`}
+                          className="flex-shrink-0 w-[160px] md:w-[220px]"
+                        >
+                          <MovieCard
+                            movie={movie}
+                            liveViewers={getMovieLiveViewers(movie)}
+                            isTopLive={topLiveId === movie.id}
+                            isFavorite={favoriteIds.has(movie.id)}
+                            isLiked={likedIds.has(movie.id)}
+                            likes={getMovieLikes(movie)}
+                            onOpen={openMovie}
+                            onToggleFavorite={handleToggleFavorite}
+                            onToggleLike={handleToggleLike}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                </SafeRender>
+              )}
 
               {/* Unified Stream Automation: Bottom Room (Live Global Sync & VIP side-by-side) */}
               {activeFeaturedMovie && ( // Only render if there's a featured movie
@@ -9339,84 +9626,19 @@ export default function App() {
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-6 md:gap-8 items-start content-start">
                 {paginatedMovies.flatMap((movie, idx) => {
                   const movieCard = (
-                    <div
+                    <MovieCard
                       key={movie.id}
-                      className="group relative cursor-pointer min-w-0"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setSelectedMovie(movie);
-                          setActiveServerUrl(getMovieSourceUrl(movie));
-                          setShowPlayer(true);
-                        }}
-                      >
-                        <div className="aspect-[2/3] rounded-2xl overflow-hidden border border-white/10 group-hover:border-brand-primary transition-all relative shadow-2xl group-hover:-translate-y-2 duration-300">
-                          <img
-                            src={movie.image || undefined}
-                            loading="lazy"
-                            referrerPolicy="no-referrer"
-                            onError={(e) => {
-                              const target = e.target as HTMLImageElement;
-                              target.src =
-                                "https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800";
-                            }}
-                            className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
-                            alt={movie.title}
-                          /> {/* Movie Poster */}
-
-                          {/* Point 11: Netflix Badge */}
-                          {movie.isNetflixOriginal && (
-                            <div className="absolute top-2 left-2 w-5 h-8 bg-brand-primary flex items-center justify-center font-black text-sm italic rounded shadow-lg z-10">
-                              N
-                            </div>
-                          )} {/* Netflix Original Badge */}
-
-                          {/* Point 55: Quality Badge */}
-                          <div className="absolute top-2 right-2 px-2 py-0.5 bg-black/60 backdrop-blur-md rounded text-[10px] font-black text-white border border-white/10 z-10 flex items-center gap-1">
-                            {getMovieSourceUrl(movie) && (
-                              <Play className="w-2 h-2 fill-current text-brand-primary" />
-                            )}
-                            {movie.quality}
-                          </div> {/* Quality Badge */}
-
-                          <div className="absolute inset-0 bg-black/60 flex flex-col justify-center items-center p-4 opacity-0 group-hover:opacity-100 transition-opacity">
-                            {getMovieSourceUrl(movie) ? (
-                              <div className="flex flex-col items-center gap-4">
-                                <div className="w-16 h-16 bg-brand-primary text-white rounded-full flex items-center justify-center shadow-2xl hover:scale-110 transition-transform">
-                                  <Play className="w-8 h-8 fill-current" />
-                                </div>
-                                <button className="bg-brand-primary text-white py-3 px-6 rounded-xl text-sm font-black kurdish-text shadow-xl hover:bg-red-700 transition-colors flex items-center gap-2">
-                                  <Play className="w-4 h-4 fill-current" />
-                                  <span>ئێستا سەیری بکە</span>
-                                </button>
-                              </div>
-                            ) : (
-                              <div className="bg-brand-primary text-white py-3 px-6 rounded-xl text-sm font-black kurdish-text shadow-lg transform translate-y-4 group-hover:translate-y-0 transition-transform">
-                                زانیاری فیلم
-                              </div>
-                            )}
-                          </div> {/* Play/Info Overlay */}
-                        </div>
-                        <div className="mt-3">
-                          <h3 className="font-bold kurdish-text text-sm group-hover:text-brand-primary transition-colors line-clamp-1">
-                            {movie.title}
-                          </h3>
-                          <div className="flex items-center justify-between mt-1">
-                            <span className="text-[9px] text-gray-500 font-bold uppercase tracking-widest">
-                              {movie.date ? String(movie.date).split("T")[0] : ""}
-                            </span>
-                            {movie.isTrending && (
-                              <div className="flex items-center gap-1 text-orange-500">
-                                <Flame className="w-3 h-3" />
-                                <span className="text-[8px] font-black uppercase">
-                                  Trending
-                                </span>
-                              </div>
-                            )}
-                          </div> {/* Movie Title and Details */}
-                        </div>
-                      </div>
-                    );
+                      movie={movie}
+                      liveViewers={getMovieLiveViewers(movie)}
+                      isTopLive={topLiveId === movie.id}
+                      isFavorite={favoriteIds.has(movie.id)}
+                      isLiked={likedIds.has(movie.id)}
+                      likes={getMovieLikes(movie)}
+                      onOpen={openMovie}
+                      onToggleFavorite={handleToggleFavorite}
+                      onToggleLike={handleToggleLike}
+                    />
+                  );
 
                     if (idx === 5 && config.ads.banner.image) {
                       return [
@@ -10306,6 +10528,67 @@ export default function App() {
                             {selectedMovie.year}
                           </span>
                         )}
+                        {selectedMovie.duration && (
+                          <span className="flex items-center gap-1 px-3 py-1 bg-purple-500/10 border border-purple-500/20 rounded-full text-[10px] font-black text-purple-400">
+                            <Clock className="w-3 h-3" />
+                            {selectedMovie.duration}
+                          </span>
+                        )}
+                        {getMovieLiveViewers(selectedMovie) > 0 && (
+                          <span className="flex items-center gap-1.5 px-3 py-1 bg-red-500/10 border border-red-500/20 rounded-full text-red-400 font-bold text-[10px]">
+                            <span className="relative flex h-1.5 w-1.5">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+                              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-red-400" />
+                            </span>
+                            <Users className="w-3 h-3" />
+                            <span className="tabular-nums">
+                              {getMovieLiveViewers(selectedMovie)}
+                            </span>
+                            <span className="hidden md:inline">watching now</span>
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleToggleLike(selectedMovie);
+                          }}
+                          aria-label={likedIds.has(selectedMovie.id) ? "Unlike" : "Like"}
+                          className={`flex items-center gap-1.5 px-3 py-1 rounded-full border text-[10px] font-black transition-colors ${
+                            likedIds.has(selectedMovie.id)
+                              ? "bg-brand-primary/15 border-brand-primary/40 text-brand-primary"
+                              : "bg-white/5 border-white/10 text-gray-400 hover:border-brand-primary hover:text-brand-primary"
+                          }`}
+                        >
+                          <ThumbsUp
+                            className={`w-3 h-3 ${likedIds.has(selectedMovie.id) ? "fill-current" : ""}`}
+                          />
+                          {getMovieLikes(selectedMovie)}
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleToggleFavorite(selectedMovie);
+                          }}
+                          aria-label={
+                            favoriteIds.has(selectedMovie.id)
+                              ? "Remove from favorites"
+                              : "Add to favorites"
+                          }
+                          className={`flex items-center gap-1.5 px-3 py-1 rounded-full border text-[10px] font-black transition-colors ${
+                            favoriteIds.has(selectedMovie.id)
+                              ? "bg-brand-primary border-brand-primary text-white"
+                              : "bg-white/5 border-white/10 text-gray-400 hover:border-brand-primary hover:text-brand-primary"
+                          }`}
+                        >
+                          <Bookmark
+                            className={`w-3 h-3 ${favoriteIds.has(selectedMovie.id) ? "fill-current" : ""}`}
+                          />
+                          {favoriteIds.has(selectedMovie.id)
+                            ? "دڵخواز"
+                            : "دڵخواز بکە"}
+                        </button>
                       </div>
                       {(selectedMovie.whatsappLink ||
                         import.meta.env.VITE_WHATSAPP_NUMBER) && (
@@ -10847,15 +11130,52 @@ export default function App() {
                               }}
                               className="flex-shrink-0 w-24 md:w-32 group/item cursor-pointer"
                             >
-                              <div className="aspect-[2/3] rounded-xl overflow-hidden border border-white/5 group-hover/item:border-brand-primary transition-all">
+                              <div className="aspect-[2/3] rounded-xl overflow-hidden border border-white/5 group-hover/item:border-brand-primary transition-all relative">
                                 <img
                                   src={m.image || undefined}
+                                  loading="lazy"
+                                  decoding="async"
+                                  onError={(e) => {
+                                    const target = e.target as HTMLImageElement;
+                                    target.src =
+                                      "https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800";
+                                  }}
                                   className="w-full h-full object-cover"
                                 />
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleToggleFavorite(m);
+                                  }}
+                                  aria-label="Toggle favorite"
+                                  className={`absolute top-1 right-1 p-1 rounded-full backdrop-blur-md border transition-colors ${
+                                    favoriteIds.has(m.id)
+                                      ? "bg-brand-primary border-brand-primary text-white"
+                                      : "bg-black/60 border-white/10 text-white/80 hover:text-brand-primary"
+                                  }`}
+                                >
+                                  <Heart
+                                    className={`w-2.5 h-2.5 ${favoriteIds.has(m.id) ? "fill-current" : ""}`}
+                                  />
+                                </button>
+                                {m.rating && (
+                                  <span className="absolute bottom-1 left-1 flex items-center gap-0.5 px-1 py-0.5 bg-black/60 rounded text-[7px] font-black text-yellow-400">
+                                    <Star className="w-2 h-2 fill-current" />
+                                    {m.rating}
+                                  </span>
+                                )}
                               </div>
                               <h5 className="mt-2 text-[10px] font-bold kurdish-text truncate text-gray-400 group-hover/item:text-white transition-colors">
                                 {m.title}
                               </h5>
+                              {(m.year || m.duration) && (
+                                <p className="text-[8px] font-bold text-gray-600 truncate mt-0.5">
+                                  {m.year}
+                                  {m.year && m.duration ? " • " : ""}
+                                  {m.duration}
+                                </p>
+                              )}
                             </div>
                           ))} {/* Similar Movies List */}
                       </div>

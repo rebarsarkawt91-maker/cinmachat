@@ -155,6 +155,102 @@ export const api = {
     }
   },
 
+  // Lightweight live-metrics poll (liveViewers + likes). Uses a plain GET so the
+  // 30s card-refresh cycle never gets stuck in baseFetch's retry/backoff loop.
+  async getMoviesLive() {
+    try {
+      const res = await fetch(api.resolveApiUrl('/api/movies'), {
+        headers: { 'Accept': 'application/json' }
+      });
+      if (!res.ok) return [];
+      const data = await res.json();
+      return data.results || [];
+    } catch (error) {
+      return [];
+    }
+  },
+
+  // Bulk live metrics for arbitrary movie ids (Firestore movies included). The
+  // 30s card-refresh cycle uses this so "watching now" badges work even for
+  // movies that are absent from the server movie cache.
+  async getLiveStats(ids: string[]) {
+    try {
+      const res = await fetch(api.resolveApiUrl('/api/movies/live'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({ ids })
+      });
+      if (!res.ok) return {};
+      const data = await res.json();
+      return data.stats || {};
+    } catch (error) {
+      return {};
+    }
+  },
+
+  // Registers a per-movie heartbeat and returns the current concurrent viewer
+  // count. Best-effort: falls back to { viewers: 0 } when the backend is down.
+  async sendMovieView(movieId: string, session: string) {
+    try {
+      const res = await fetch(api.resolveApiUrl(`/api/movies/${encodeURIComponent(movieId)}/view`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({ session })
+      });
+      if (!res.ok) return { ok: false, viewers: 0, views: 0 };
+      return await res.json();
+    } catch (error) {
+      return { ok: false, viewers: 0, views: 0 };
+    }
+  },
+
+  // Toggles a per-user like on a movie. Best-effort mirror of Firestore likes.
+  async toggleLike(movieId: string, uid: string) {
+    try {
+      const res = await fetch(api.resolveApiUrl(`/api/movies/${encodeURIComponent(movieId)}/like`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({ uid })
+      });
+      if (!res.ok) return { ok: false, likes: 0, liked: false };
+      return await res.json();
+    } catch (error) {
+      return { ok: false, likes: 0, liked: false };
+    }
+  },
+
+  // --- Favorites (backend mirror; Firestore users/{uid} is the primary store) ---
+  async getFavorites(uid: string) {
+    try {
+      const res = await fetch(api.resolveApiUrl(`/api/favorites?uid=${encodeURIComponent(uid)}`), {
+        headers: { 'Accept': 'application/json' }
+      });
+      if (!res.ok) return [];
+      const data = await res.json();
+      return data.results || [];
+    } catch (error) {
+      return [];
+    }
+  },
+
+  async addFavorite(movieId: string, uid: string) {
+    try {
+      await fetch(api.resolveApiUrl(`/api/favorites/${encodeURIComponent(movieId)}`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({ uid })
+      });
+    } catch (error) { /* best-effort */ }
+  },
+
+  async removeFavorite(movieId: string, uid: string) {
+    try {
+      await fetch(api.resolveApiUrl(`/api/favorites/${encodeURIComponent(movieId)}?uid=${encodeURIComponent(uid)}`), {
+        method: 'DELETE'
+      });
+    } catch (error) { /* best-effort */ }
+  },
+
   async getStats(sessionId?: string) {
     try {
       const query = sessionId ? `?session=${encodeURIComponent(sessionId)}` : '';

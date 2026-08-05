@@ -684,6 +684,7 @@ const INITIAL_DB = {
   posterUploads: [] as any[],
   vipVideos: [] as any[],
   tagOverrides: {} as Record<string, string[]>,
+  favorites: {} as Record<string, Record<string, number>>,
   rooms: {} as Record<string, any>
 };
 
@@ -838,6 +839,7 @@ async function startServer() {
   if (!db.directMessages) db.directMessages = [];
   if (!db.appSnapshots) db.appSnapshots = [];
   if (!db.categories) db.categories = ["هەمووی", "ئاکشن", "کۆمیدی", "دراما", "ترسناک", "ئەنیمێ", "دۆکیومێنتاری"];
+  if (!db.favorites) db.favorites = {};
 
   // Initialize syncGroups if not present, ensuring global room exists
   if (!db.syncGroups) db.syncGroups = {};
@@ -1138,6 +1140,24 @@ async function startServer() {
       if (now - lastSeen > SESSION_TTL_MS) activeSessions.delete(sid);
     }
   }, 10000);
+
+  // Per-movie live viewer tracking: movieId -> sessionId -> lastSeen heartbeat.
+  // Mirrors activeSessions but scoped per movie so movie cards can show "watching
+  // now" counts. Sessions that stop pinging for longer than MOVIE_VIEWER_TTL_MS
+  // are pruned, so liveViewers reflects ACTUAL concurrent viewers.
+  const movieViewerSessions = new Map<string, Map<string, number>>();
+  const MOVIE_VIEWER_TTL_MS = 20000;
+  // Sessions already counted toward a movie's lifetime `views` (deduped once).
+  const countedViewSessions = new Set<string>();
+  setInterval(() => {
+    const now = Date.now();
+    for (const [movieId, sessions] of movieViewerSessions) {
+      for (const [sid, lastSeen] of sessions) {
+        if (now - lastSeen > MOVIE_VIEWER_TTL_MS) sessions.delete(sid);
+      }
+      if (sessions.size === 0) movieViewerSessions.delete(movieId);
+    }
+  }, 10000);
   
   // Movie Store (In-Memory Cache) - Use a copy to prevent reference sharing with DB
   let moviesCache: any[] = db.manualMovies ? [...db.manualMovies] : [];
@@ -1221,8 +1241,29 @@ async function startServer() {
   });
   app.use(sanitizationMiddleware);
 
+  // Request logger. High-frequency GET polling probes (stats, rooms, live
+  // metrics, status, config, DM refresh) are skipped so they don't bury real
+  // traffic in the terminal. Mutations and anything else are always logged.
+  const SILENT_POLL_PREFIXES = [
+    '/api/stats',
+    '/api/rooms',
+    '/api/tracker',
+    '/api/config',
+    '/api/status',
+    '/api/health',
+    '/api/movies',
+    '/api/dms/',
+  ];
+  // Read-only POST probes (bulk live metrics) are also polling noise.
+  const SILENT_POLL_EXACT_POST = new Set(['/api/movies/live']);
   app.use((req, res, next) => {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+    const path = req.url.split('?')[0];
+    const isPoll =
+      (req.method === 'GET' && SILENT_POLL_PREFIXES.some((p) => path.startsWith(p))) ||
+      (req.method === 'POST' && SILENT_POLL_EXACT_POST.has(path));
+    if (!isPoll) {
+      console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+    }
     next();
   });
 
@@ -2509,6 +2550,194 @@ async function startServer() {
       const notFound = msg.includes('yt-dlp not found');
       console.error(`[resolve-stream] ${msg}`);
       res.status(notFound ? 501 : 422).json({ ok: false, error: msg });
+    }
+  });
+
+  // --- BULK LIVE STATS (Firestore movies) ---
+  // Returns concurrent-viewer + lifetime-view + like counts for an arbitrary set
+  // of movie ids. The grid polls this every 30s so "watching now" badges and
+  // like counts also reflect Firestore movies that are not part of the server
+  // movie cache (which only holds db.manualMovies). Registered BEFORE the
+  // :movieId routes so `live` is never captured as a movie id.
+  app.post('/api/movies/live', async (req, res) => {
+    try {
+      const rawIds: unknown = (req.body as any)?.ids;
+      if (!Array.isArray(rawIds)) {
+        return res.status(400).json({ status: 'error', error: 'ids must be an array' });
+      }
+      const ids = rawIds
+        .filter((x: unknown): x is string => typeof x === 'string')
+        .map((s: string) => s.trim())
+        .filter((s: string) => s.length > 0 && s.length <= 128 && /^[a-zA-Z0-9_-]+$/.test(s))
+        .slice(0, 400);
+      const stats: Record<string, { liveViewers: number; views: number; likes: number }> = {};
+      for (const id of ids) {
+        const sessions = movieViewerSessions.get(id);
+        const movie = db.manualMovies.find((m: any) => m.id === id);
+        stats[id] = {
+          liveViewers: sessions ? sessions.size : 0,
+          views: movie ? Number(movie.views) || 0 : 0,
+          likes: movie ? Number(movie.likes) || 0 : 0,
+        };
+      }
+      res.json({ status: 'ok', stats });
+    } catch (err: any) {
+      console.error('[movies/live]', err?.message || err);
+      res.status(500).json({ status: 'error', error: 'Internal server error' });
+    }
+  });
+
+  // --- LIVE VIEWERS & VIEWS ---
+  // Registers a heartbeat for a movieId + session and bumps the movie's lifetime
+  // `views` counter once per session. Returns the current concurrent viewer
+  // count so the player can reflect "watching now" immediately.
+  app.post('/api/movies/:movieId/view', async (req, res) => {
+    try {
+      const movieId = String((req.params as any).movieId || '').trim();
+      const session = String((req.body as any)?.session || '').trim();
+      if (!movieId || movieId.length > 128 || !/^[a-zA-Z0-9_-]+$/.test(movieId)) {
+        return res.status(400).json({ ok: false, error: 'Invalid movie id' });
+      }
+      if (!session || session.length > 64) {
+        return res.status(400).json({ ok: false, error: 'Invalid session' });
+      }
+
+      const now = Date.now();
+      let sessions = movieViewerSessions.get(movieId);
+      if (!sessions) {
+        sessions = new Map<string, number>();
+        movieViewerSessions.set(movieId, sessions);
+      }
+      sessions.set(session, now);
+      // Prune stale sessions so the count never includes dead tabs
+      for (const [sid, lastSeen] of sessions) {
+        if (now - lastSeen > MOVIE_VIEWER_TTL_MS) sessions.delete(sid);
+      }
+
+      // Lifetime view count: count each session once, persist to the DB + cache.
+      const viewKey = `${movieId}:${session}`;
+      let views = 0;
+      const movie = db.manualMovies.find((m: any) => m.id === movieId);
+      if (!countedViewSessions.has(viewKey)) {
+        countedViewSessions.add(viewKey);
+        if (movie) {
+          movie.views = (Number(movie.views) || 0) + 1;
+          views = movie.views;
+          await saveDB(db);
+          setMoviesCache(prev =>
+            prev.map((m: any) =>
+              m.id === movieId ? { ...m, views: movie.views } : m
+            )
+          );
+        }
+      } else if (movie?.views) {
+        views = Number(movie.views) || 0;
+      }
+
+      res.json({ ok: true, movieId, viewers: sessions.size, views });
+    } catch (err: any) {
+      console.error(`[view] ${err?.message || err}`);
+      res.status(500).json({ ok: false, error: 'Internal server error' });
+    }
+  });
+
+  // --- LIKES ---
+  // Toggles a per-user like on a movie. Persists `likes` (count) and `likedBy`
+  // (uid list) to the DB + cache so cards can render a live like count.
+  app.post('/api/movies/:movieId/like', async (req, res) => {
+    try {
+      const movieId = String((req.params as any).movieId || '').trim();
+      const uid = String((req.body as any)?.uid || '').trim();
+      if (!movieId || movieId.length > 128) {
+        return res.status(400).json({ ok: false, error: 'Invalid movie id' });
+      }
+      if (!uid || uid.length > 128) {
+        return res.status(400).json({ ok: false, error: 'Missing uid' });
+      }
+      const movie = db.manualMovies.find((m: any) => m.id === movieId);
+      if (!movie) return res.status(404).json({ ok: false, error: 'Movie not found' });
+
+      const likedBy: string[] = Array.isArray(movie.likedBy) ? movie.likedBy : [];
+      const already = likedBy.includes(uid);
+      const nextLikedBy = already
+        ? likedBy.filter((id: string) => id !== uid)
+        : [...likedBy, uid];
+      movie.likes = nextLikedBy.length;
+      movie.likedBy = nextLikedBy;
+      await saveDB(db);
+      setMoviesCache(prev =>
+        prev.map((m: any) =>
+          m.id === movieId ? { ...m, likes: movie.likes, likedBy: movie.likedBy } : m
+        )
+      );
+      res.json({ ok: true, movieId, likes: movie.likes, liked: !already });
+    } catch (err: any) {
+      console.error(`[like] ${err?.message || err}`);
+      res.status(500).json({ ok: false, error: 'Internal server error' });
+    }
+  });
+
+  // --- FAVORITES ---
+  // Per-user favorite movie ids, persisted in db.favorites (movieId -> addedAt)
+  // and mirrored onto the user record so the frontend can hydrate both stores.
+  app.get('/api/favorites', (req, res) => {
+    try {
+      const uid = typeof req.query.uid === 'string' ? req.query.uid.trim() : '';
+      if (!uid || uid.length > 128) {
+        return res.status(400).json({ status: 'error', error: 'Missing uid' });
+      }
+      const favorites = db.favorites?.[uid] || {};
+      res.json({ status: 'ok', results: Object.keys(favorites) });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', error: err?.message || 'Internal server error' });
+    }
+  });
+
+  app.post('/api/favorites/:movieId', async (req, res) => {
+    try {
+      const movieId = String((req.params as any).movieId || '').trim();
+      const uid = String((req.body as any)?.uid || '').trim();
+      if (!movieId || movieId.length > 128) {
+        return res.status(400).json({ ok: false, error: 'Invalid movie id' });
+      }
+      if (!uid || uid.length > 128) {
+        return res.status(400).json({ ok: false, error: 'Missing uid' });
+      }
+      if (!db.favorites) db.favorites = {};
+      if (!db.favorites[uid]) db.favorites[uid] = {};
+      db.favorites[uid][movieId] = Date.now();
+      const user = (db.users || []).find((u: any) => u.uid === uid);
+      if (user) {
+        user.favorites = Array.from(
+          new Set([...(Array.isArray(user.favorites) ? user.favorites : []), movieId])
+        );
+      }
+      await saveDB(db);
+      res.json({ ok: true, movieId, added: true });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'Internal server error' });
+    }
+  });
+
+  app.delete('/api/favorites/:movieId', async (req, res) => {
+    try {
+      const movieId = String((req.params as any).movieId || '').trim();
+      const uid = typeof req.query.uid === 'string' ? req.query.uid.trim() : '';
+      if (!movieId || movieId.length > 128) {
+        return res.status(400).json({ ok: false, error: 'Invalid movie id' });
+      }
+      if (!uid || uid.length > 128) {
+        return res.status(400).json({ ok: false, error: 'Missing uid' });
+      }
+      if (db.favorites?.[uid]) delete db.favorites[uid][movieId];
+      const user = (db.users || []).find((u: any) => u.uid === uid);
+      if (user && Array.isArray(user.favorites)) {
+        user.favorites = user.favorites.filter((id: string) => id !== movieId);
+      }
+      await saveDB(db);
+      res.json({ ok: true, movieId, added: false });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'Internal server error' });
     }
   });
 
@@ -4264,7 +4493,7 @@ async function startServer() {
     if (!req.body) {
       return res.status(400).json({ success: false, error: "Body is empty — check Content-Type header (use application/json or text/plain)" });
     }
-    const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, mainTrailerUrl, streamingSourceUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, quality, tags, category, rating, year, type } = req.body;
+    const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, mainTrailerUrl, streamingSourceUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, quality, tags, category, rating, year, type, duration } = req.body;
     
     // VALIDATION: Detailed error reporting as requested
     if (!title) return res.status(400).json({ success: false, error: "ناونیشان پێویستە (Title is required)" });
@@ -4312,7 +4541,11 @@ async function startServer() {
       category: category || "هەمووی",
       rating: rating || "",
       year: year || "",
+      duration: typeof duration === 'string' ? duration.trim() : "",
       type: type || "movie",
+      likes: 0,
+      likedBy: [],
+      views: 0,
       whatsappLink: 'https://chat.whatsapp.com/Cinmachat'
     };
 
@@ -4546,6 +4779,19 @@ async function startServer() {
       res.setHeader('Surrogate-Control', 'no-store');
 
       let results: any[] = [...moviesCache];
+
+      // Enrich with ephemeral live-viewer counts + normalized metric fields so
+      // cards can show "watching now" badges and like counts without a separate
+      // request. Live counts live in memory; likes/views persist in db.json.
+      results = results.map((m: any) => {
+        const sessionMap = movieViewerSessions.get(m.id);
+        return {
+          ...m,
+          liveViewers: sessionMap ? sessionMap.size : 0,
+          likes: Number(m.likes) || 0,
+          views: Number(m.views) || 0,
+        };
+      });
       
       const ytRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
       const heroUrl = db.heroConfig.heroVideoUrl;

@@ -1,5 +1,5 @@
 import { initializeApp } from "firebase/app";
-import { 
+import {
   getFirestore,
   collectionGroup,
   query,
@@ -17,6 +17,9 @@ import {
   addDoc,
   serverTimestamp,
   arrayUnion,
+  arrayRemove,
+  runTransaction,
+  increment,
   getDocFromServer
 } from "firebase/firestore";
 import { 
@@ -49,9 +52,10 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-
-const dbId = import.meta.env.VITE_FIREBASE_DATABASE_ID;
-export const db = dbId ? getFirestore(app, dbId) : getFirestore(app);
+// Always use the project's default Firestore database.
+// A stale build-time VITE_FIREBASE_DATABASE_ID can point at a deleted AI Studio
+// database and leave the app stuck on its initial loading screen.
+export const db = getFirestore(app);
 export const auth = getAuth(app);
 export const storage = getStorage(app);
 
@@ -73,6 +77,9 @@ export {
   addDoc,
   serverTimestamp,
   arrayUnion,
+  arrayRemove,
+  runTransaction,
+  increment,
   getDocFromServer,
   onAuthStateChanged,
   signInAnonymously,
