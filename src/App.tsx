@@ -87,6 +87,7 @@ import { UsersIcon } from "lucide-react";
 import "plyr-react/plyr.css";
 import { GoogleGenAI } from "@google/genai";
 import ImmersiveShieldedPlayer from "./components/Player/ImmersiveShieldedPlayer";
+import YouTubeResilientPlayer from "./components/Player/YouTubeResilientPlayer";
 import { api } from "./services/api";
 import { LanguageSelector, useI18n } from "./i18n";
 import {
@@ -780,6 +781,33 @@ function getMovieSourceUrl(movie: any): string | null {
   );
 }
 
+// Scans EVERY source field of a movie for a YouTube link. Posted movies often
+// carry several links at once (e.g. an hdtoday embed AND a youtubeMovieUrl);
+// the playable URL chosen by getMovieSourceUrl may then not be the YouTube one,
+// which would break caption translation. Subtitle fetching should therefore
+// prefer whichever source is a real YouTube video.
+function findYoutubeSource(movie: any): string | null {
+  if (!movie) return null;
+  const candidates = [
+    movie.embedUrl,
+    movie.videoUrl,
+    movie.hdtodayUrl,
+    movie.vidsrcUrl,
+    movie.vidmolyUrl,
+    movie.streamwishUrl,
+    movie.fileLrunUrl,
+    movie.youtubeMovieUrl,
+    movie.otherVideoUrl,
+    movie.streamingUrl,
+    movie.external_link,
+    movie.externalMovieLink,
+  ];
+  for (const c of candidates) {
+    if (typeof c === "string" && /youtube\.com|youtu\.be/i.test(c)) return c;
+  }
+  return null;
+}
+
 // Immersive player "quality" presets: each step zooms the embedded video in a bit
 // more (crops more of the provider's site chrome). Mirrors the requested
 // "زیاد کردن و کەمکردنی کوالێتی وێنە" control.
@@ -791,14 +819,6 @@ const IMMERSIVE_QUALITY_PRESETS = [
 ];
 
 import { getYTId as extractYouTubeId, loadYouTubeAPI } from './utils/youtube'; // Use the shared utility
-
-const buildOptimizedYouTubeEmbedUrl = (url: string) => {
-  const videoId = extractYouTubeId(url);
-  if (videoId) {
-    return `https://www.youtube.com/embed/${videoId}?autoplay=1&mute=1&controls=0&rel=0&modestbranding=1&showinfo=0&iv_load_policy=3&enablejsapi=1&disablekb=1&fs=0&playsinline=1&loop=1&playlist=${videoId}&origin=${window.location.origin}`;
-  }
-  return url;
-};
 
 // A single timed subtitle cue for the parent-side AI-subtitle overlay.
 type SubtitleCue = { start: number; end: number; text: string };
@@ -5904,7 +5924,7 @@ const RoomSection: React.FC<{
                   allow="autoplay; encrypted-media"
                   frameBorder="0"
                   tabIndex={-1}
-                  sandbox="allow-scripts allow-same-origin allow-presentation"
+                  sandbox="allow-scripts allow-same-origin allow-presentation allow-popups allow-popups-to-escape-sandbox allow-forms allow-pointer-lock allow-modals allow-downloads"
                 />
               ) : (
                 <div className="relative z-10 flex flex-col items-center gap-3">
@@ -6091,6 +6111,9 @@ export default function App() {
 
   const [lastAddedMovie, setLastAddedMovie] = useState<any>(null);
   const [activeServerUrl, setActiveServerUrl] = useState<string | null>(null);
+  // Tracks how the resilient YouTube player is rendering so the YouTube-only CSS
+  // masks are only drawn over the embed (never over the native fallback video).
+  const [youtubePlayerMode, setYoutubePlayerMode] = useState<"embed" | "direct" | "error">("embed");
   const [copiedLink, setCopiedLink] = useState(false);
   const [bannedFromSystem, setBannedFromSystem] = useState(false);
   const [blockedAt, setBlockedAt] = useState<Date | null>(null);
@@ -6361,6 +6384,15 @@ export default function App() {
       // Whisper). Only fall back to Whisper transcription of the audio when the
       // movie has NO subtitle file attached.
       const useExistingSubtitle = !!selectedMovie?.subtitleUrl;
+      // Prefer the movie's YouTube source for caption fetching: the server
+      // extracts YouTube timedtext captions. getMovieSourceUrl may return a
+      // non-YouTube embed (hdtoday/vidsrc) even when the movie also has a
+      // YouTube link, so fall back to findYoutubeSource for the caption path.
+      const primarySource = getMovieSourceUrl(selectedMovie);
+      const captionSource =
+        primarySource && /youtube\.com|youtu\.be/i.test(primarySource)
+          ? primarySource
+          : findYoutubeSource(selectedMovie) || primarySource;
       const res = await fetch("/api/subtitle/generate", {
         method: "POST",
         headers: {
@@ -6370,7 +6402,7 @@ export default function App() {
         body: JSON.stringify(
           useExistingSubtitle
             ? { subtitleUrl: selectedMovie.subtitleUrl, lang: aiSubtitleLang }
-            : { url: getMovieSourceUrl(selectedMovie), lang: aiSubtitleLang },
+            : { url: captionSource, lang: aiSubtitleLang },
         ),
         signal: controller.signal,
       });
@@ -8540,7 +8572,32 @@ export default function App() {
   // only the hero-promo placeholder), so server data is used strictly as extra
   // entries and can never shrink the grid. Firestore is the source of truth.
   const fetchMovies = async () => {
+    let loadingReleased = false;
+    const releaseLoading = () => {
+      if (loadingReleased) return;
+      loadingReleased = true;
+      setIsLoading(false);
+    };
+
     try {
+      // Release the initial spinner from the server payload first so a slow or
+      // broken Firestore connection can never block the homepage shell.
+      let serverMovies: any[] = [];
+      try {
+        const serverResults = await api.getMovies();
+        if (Array.isArray(serverResults)) {
+          serverMovies = serverResults.filter((m: any) => m && m.id !== "hero-promo");
+          if (serverMovies.length > 0) {
+            applyMovies(serverMovies);
+            setErrorMsg(null);
+          }
+        }
+      } catch (srvErr) {
+        console.warn("[Movies] Initial server bootstrap skipped:", srvErr);
+      } finally {
+        releaseLoading();
+      }
+
       const moviesRef = collection(realDb, "movies");
       const snapshot = await getDocs(
         query(moviesRef, orderBy("createdAt", "desc"), limit(200)),
@@ -8549,17 +8606,6 @@ export default function App() {
       snapshot.forEach((doc) =>
         firestoreMovies.push({ ...doc.data(), id: doc.id }),
       );
-
-      // Enrichment only: the promo placeholder is never shown in the grid.
-      let serverMovies: any[] = [];
-      try {
-        const results = await api.getMovies();
-        if (Array.isArray(results)) {
-          serverMovies = results.filter((m: any) => m && m.id !== "hero-promo");
-        }
-      } catch (srvErr) {
-        console.warn("[Movies] Server enrichment skipped:", srvErr);
-      }
 
       const merged = mergeMovieLists(firestoreMovies, serverMovies);
       if (merged.length > 0) {
@@ -8585,7 +8631,7 @@ export default function App() {
         }
       }
     } finally {
-      setIsLoading(false);
+      releaseLoading();
     }
   };
 
@@ -9525,21 +9571,12 @@ export default function App() {
                         </div> // Too Large Video Message
                       ) : activeServerUrl.includes("youtube.com") ||
                         activeServerUrl.includes("youtu.be") ? (
-                        <div className="relative w-full h-full overflow-hidden bg-black">
-                          <iframe
-                            id="room-player"
-                            src={buildOptimizedYouTubeEmbedUrl(activeServerUrl)}
-                            className="w-full h-[120%] -translate-y-[8.3%] border-none shadow-[0_0_200px_rgba(229,9,20,0.4)] pointer-events-none"
-                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                            allowFullScreen
-                            sandbox="allow-scripts allow-same-origin allow-presentation"
-                          />
-                          {/* Absolute CSS overlays to completely mask YouTube overlays (branding, controls) */}
-                          <div className="absolute top-0 left-0 right-0 h-16 bg-gradient-to-b from-black via-black/40 to-transparent pointer-events-none z-20" />
-                          <div className="absolute bottom-0 right-0 w-36 h-12 bg-black pointer-events-none z-20" />
-                          <div className="absolute top-0 right-0 w-48 h-16 bg-black pointer-events-none z-20" />
-                          <div className="absolute top-0 left-0 w-48 h-16 bg-black pointer-events-none z-20" />
-                        </div>
+                        <YouTubeResilientPlayer
+                          url={activeServerUrl}
+                          iframeId="room-player"
+                          title={`${selectedMovie?.title || "CinemaChat"} — YouTube Player`}
+                          onModeChange={(mode) => setYoutubePlayerMode(mode)}
+                        />
                       ) : activeServerUrl.includes("/embed/") ||
                         activeServerUrl.includes("hdtoday.") ||
                         activeServerUrl.includes("vidcloud") ||
@@ -9692,8 +9729,9 @@ export default function App() {
                       </div>
 
                       {/* CSS Overlay Masks to hide unwanted YouTube controls and watermarks */}
-                      {(activeServerUrl.includes("youtube.com") ||
-                        activeServerUrl.includes("youtu.be")) && ( // YouTube specific overlays
+                      {(youtubePlayerMode === "embed" &&
+                        (activeServerUrl.includes("youtube.com") ||
+                          activeServerUrl.includes("youtu.be"))) && ( // YouTube specific overlays
                         <>
                           {/* Bottom solid black block to cover native YouTube status bars / suggestions */}
                           <div className="absolute bottom-0 inset-x-0 h-16 bg-[#000000] z-40 pointer-events-auto cursor-default border-t border-white/5" />

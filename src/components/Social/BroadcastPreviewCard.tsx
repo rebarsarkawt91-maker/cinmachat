@@ -67,7 +67,7 @@ export const BroadcastPreviewCard: React.FC<BroadcastPreviewCardProps> = ({
             allow="autoplay; encrypted-media"
             frameBorder="0"
             tabIndex={-1}
-            sandbox="allow-scripts allow-same-origin allow-presentation"
+            sandbox="allow-scripts allow-same-origin allow-presentation allow-popups allow-popups-to-escape-sandbox allow-forms allow-pointer-lock allow-modals allow-downloads"
           />
         ) : (
           <div className="relative z-10 flex flex-col items-center gap-3">

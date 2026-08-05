@@ -6,12 +6,12 @@ import React, { useEffect, useRef, useState } from "react";
  *
  * Responsibilities:
  *  1) Popup / overlay blocking ("Anti-Copyright Shield"):
- *     - Strict sandbox tokens: allow-scripts + allow-same-origin + allow-presentation.
- *       Dropping allow-popups/allow-forms makes window.open(), target=_blank ads and
- *       auto-submitting ad forms from the embedded site impossible.
  *     - A MutationObserver + injected stylesheet sweep inside the embedded document
  *       (works whenever the embed is same-origin / allow-same-origin-accessible) that
  *       continuously removes popups, share-boxes, banners and promotional overlays.
+ *     - The sandbox token set is RELAXED (popups/forms allowed) so providers that
+ *       require them can still initialize their player — blocks are now removed
+ *       by the sweep instead of by refusing to let the provider run at all.
  *  2) Immersive full-frame scaling:
  *     - ResizeObserver computes a "cover" zoom based on the container aspect ratio so
  *       the video fills the whole CinemaChat player frame and the provider's site
@@ -190,9 +190,12 @@ export default function ImmersiveShieldedPlayer({
           scrolling="no"
           allow="autoplay; fullscreen; encrypted-media; picture-in-picture; accelerometer; gyroscope; clipboard-write"
           allowFullScreen
-          // Anti-Copyright Shield sandbox: blocks popups, ad forms and site chrome
-          // while keeping scripts + same-origin access for native playback.
-          sandbox="allow-scripts allow-same-origin allow-presentation"
+          // Anti-Copyright Shield sandbox: the earlier strict token set
+          // (no allow-popups/forms) made several providers refuse to initialize
+          // their player. The token set is now relaxed so any provider can run,
+          // while the MutationObserver + injected stylesheet sweep still removes
+          // popups, banners and ad overlays once the document loads.
+          sandbox="allow-scripts allow-same-origin allow-presentation allow-popups allow-popups-to-escape-sandbox allow-forms allow-pointer-lock allow-modals allow-downloads"
           onLoad={() => {
             // Best-effort first sweep right after (re)load.
             setTimeout(() => installShield(iframeRef.current!), 200);

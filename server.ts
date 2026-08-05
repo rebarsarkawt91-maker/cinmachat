@@ -6,12 +6,13 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { Readable } from 'node:stream';
 import fs from 'node:fs/promises';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import net from 'node:net';
 import { rateLimiter, sanitizationMiddleware, createAdminGuard, logFailedAttempt } from './security';
 import { generateSubtitle, translateSrtViaGemini } from './features/subtitles/subtitleGenerator.js';
+import { execFile } from 'node:child_process';
 import * as XLSX from 'xlsx';
 
 // ---------------------------------------------------------------------------
@@ -368,6 +369,191 @@ async function fetchYouTubeCaptionsFromWeb(
   }
 
   throw new Error(`Web caption extractors failed. ${errors.join(' | ')}`);
+}
+
+// ---------------------------------------------------------------------------
+// yt-dlp caption fetch. YouTube's timedtext URLs need a signature that the
+// player JS computes (attestation/botguard), which plain HTTP cannot obtain.
+// yt-dlp handles that, so it is the primary caption source; the web extractors
+// above remain as a fallback.
+// ---------------------------------------------------------------------------
+function execFileText(cmd: string, args: string[], options: { cwd?: string; timeoutMs?: number } = {}): Promise<{ stdout: string; stderr: string }> {
+  return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    execFile(
+      cmd,
+      args,
+      {
+        cwd: options.cwd,
+        timeout: options.timeoutMs ?? 120000,
+        windowsHide: true,
+        maxBuffer: 10 * 1024 * 1024,
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          (error as NodeJS.ErrnoException & { stdout?: string; stderr?: string }).stdout = stdout;
+          (error as NodeJS.ErrnoException & { stdout?: string; stderr?: string }).stderr = stderr;
+          reject(error);
+          return;
+        }
+        resolve({ stdout, stderr });
+      },
+    );
+  });
+}
+
+function findSubtitleFileInDir(dir: string, lang: string): string | null {
+  const entries = (() => {
+    try {
+      return readdirSync(dir);
+    } catch {
+      return [];
+    }
+  })();
+  const vtt = entries.find((f: string) => f.endsWith(`.${lang}.vtt`)) || entries.find((f: string) => f.endsWith(`.${lang}.en.vtt`));
+  if (vtt) return vtt;
+  const en = entries.find((f: string) => f.endsWith('.en.vtt')) || entries.find((f: string) => f.endsWith('.vtt'));
+  return en || null;
+}
+
+async function fetchYoutubeCaptionsViaYtDlp(
+  videoUrl: string,
+  workDir: string,
+  targetLang: string,
+): Promise<{ srt: string; mode: string; lang: string }> {
+  const lang = (targetLang || 'en').toLowerCase();
+  const outputBase = path.join(workDir, 'subs');
+  const attempts: Array<{ mode: string; args: string[] }> = [
+    {
+      mode: `yt-dlp-${lang}`,
+      args: [
+        '--skip-download',
+        '--write-subs',
+        '--write-auto-subs',
+        '--sub-langs', lang,
+        '--sub-format', 'vtt',
+        '--no-playlist',
+        '--quiet',
+        '--no-warnings',
+        '--js-runtimes', 'node',
+        '--output', `${outputBase}.%(ext)s`,
+        videoUrl,
+      ],
+    },
+    {
+      mode: 'yt-dlp-en',
+      args: [
+        '--skip-download',
+        '--write-subs',
+        '--write-auto-subs',
+        '--sub-langs', 'en',
+        '--sub-format', 'vtt',
+        '--no-playlist',
+        '--quiet',
+        '--no-warnings',
+        '--js-runtimes', 'node',
+        '--output', `${outputBase}.%(ext)s`,
+        videoUrl,
+      ],
+    },
+  ];
+
+  const logs: string[] = [];
+  for (const attempt of attempts) {
+    if (lang === 'en' && attempt.mode !== 'yt-dlp-en') continue;
+    try {
+      const { stdout, stderr } = await execFileText('yt-dlp', attempt.args, {
+        cwd: workDir,
+        timeoutMs: 120000,
+      });
+      const subtitleFile = findSubtitleFileInDir(workDir, lang);
+      if (!subtitleFile) {
+        logs.push(`[${attempt.mode}] no subtitle file (stdout=${(stdout || '').trim().slice(0, 120) || '<empty>'} stderr=${(stderr || '').trim().slice(0, 120) || '<empty>'})`);
+        continue;
+      }
+      const raw = readFileSync(path.join(workDir, subtitleFile), 'utf-8');
+      const normalized = normalizeSubtitleText(raw);
+      if (!normalized) {
+        logs.push(`[${attempt.mode}] subtitle file ${subtitleFile} was empty`);
+        continue;
+      }
+      const fileLang = subtitleFile.endsWith(`.${lang}.vtt`) || subtitleFile.endsWith(`.${lang}.en.vtt`) ? lang : 'en';
+      return { srt: normalized, mode: attempt.mode, lang: fileLang };
+    } catch (error: any) {
+      const cause = error?.cause;
+      if (cause?.code === 'ENOENT') {
+        throw new Error('yt-dlp not found on PATH. Rebuild the server with "pip install yt-dlp" (see render.yaml).');
+      }
+      logs.push(`[${attempt.mode}] error=${error?.message?.split('\n')[0] || error}`);
+    }
+  }
+
+  throw new Error(`yt-dlp could not fetch subtitles. ${logs.join(' | ')}`);
+}
+
+// ---------------------------------------------------------------------------
+// Direct YouTube stream resolution (yt-dlp) — powers the player's fallback so
+// posted movies still play when YouTube blocks embedding (the "Playback ID"
+// error). yt-dlp already exists on the server (used for captions) and returns a
+// progressive MP4 URL that any <video> element can stream directly without CORS.
+// Results are cached in-memory (signed URLs stay valid for hours, so a 15-minute
+// cache is safe) to avoid hammering YouTube on every player mount.
+// ---------------------------------------------------------------------------
+type DirectStreamInfo = {
+  url: string;
+  height: number | null;
+  ext: string | null;
+  formatId: string | null;
+};
+
+const ytStreamCache = new Map<string, { at: number; streams: DirectStreamInfo[] }>();
+const YT_STREAM_CACHE_TTL_MS = 15 * 60 * 1000;
+
+async function resolveYoutubeDirectStreams(videoId: string): Promise<DirectStreamInfo[]> {
+  const cached = ytStreamCache.get(videoId);
+  if (cached && Date.now() - cached.at < YT_STREAM_CACHE_TTL_MS) return cached.streams;
+
+  const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  // Prefer a progressive MP4 (plays natively in <video>); fall back to whatever
+  // yt-dlp considers the single best stream.
+  const selector = 'best[ext=mp4][height<=720]/best[ext=mp4]/best';
+  const args = [
+    '--no-playlist',
+    '--quiet',
+    '--no-warnings',
+    '--js-runtimes', 'node',
+    '-f', selector,
+    '--print', '%(url)s',
+    '--print', '%(format_id)s',
+    '--print', '%(height)s',
+    '--print', '%(ext)s',
+    watchUrl,
+  ];
+
+  const { stdout } = await execFileText('yt-dlp', args, { timeoutMs: 60000 }).catch(
+    (error: any) => {
+      // Convert "binary not installed" into a message the route can detect (501).
+      if (error?.code === 'ENOENT' || error?.cause?.code === 'ENOENT') {
+        throw new Error('yt-dlp not found on PATH. Rebuild the server with "pip install yt-dlp" (see render.yaml).');
+      }
+      throw error;
+    },
+  );
+  const lines = stdout
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (!lines[0]) throw new Error('yt-dlp returned no stream URL');
+
+  const [streamUrl, formatId, heightRaw, ext] = lines;
+  const streams: DirectStreamInfo[] = [];
+  if (streamUrl && /^https?:\/\//i.test(streamUrl)) {
+    const height = parseInt(heightRaw, 10) || null;
+    streams.push({ url: streamUrl, height, ext: ext || null, formatId: formatId || null });
+  }
+  if (streams.length === 0) throw new Error('yt-dlp returned no playable stream');
+
+  ytStreamCache.set(videoId, { at: Date.now(), streams });
+  return streams;
 }
 
 // Convert YouTube caption XML to SRT format.
@@ -2303,6 +2489,52 @@ async function startServer() {
       platform: process.platform,
       memory: process.memoryUsage().rss
     });
+  });
+
+  // --- DIRECT YOUTUBE STREAM FALLBACK ---
+  // Resolves a YouTube URL into a direct progressive-MP4 stream (via yt-dlp) so
+  // the player can bypass YouTube's embed restrictions ("Playback ID" errors).
+  // Cached server-side for YT_STREAM_CACHE_TTL_MS; SSRF-safe because only real
+  // YouTube video IDs are ever handed to yt-dlp.
+  app.post('/api/resolve-stream', async (req, res) => {
+    try {
+      const videoId = extractYoutubeVideoId(String((req.body as any)?.url || ''));
+      if (!videoId) {
+        return res.status(400).json({ ok: false, error: 'Invalid YouTube URL' });
+      }
+      const streams = await resolveYoutubeDirectStreams(videoId);
+      res.json({ ok: true, videoId, streams, expiresIn: YT_STREAM_CACHE_TTL_MS });
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      const notFound = msg.includes('yt-dlp not found');
+      console.error(`[resolve-stream] ${msg}`);
+      res.status(notFound ? 501 : 422).json({ ok: false, error: msg });
+    }
+  });
+
+  // Redirects to the freshest direct stream for a video id. Media elements fetch
+  // in no-cors mode, so no CORS is required from the client. 302 keeps playback
+  // off the Render instance while staying IP/geo neutral.
+  app.get('/api/stream/:videoId', async (req, res) => {
+    try {
+      const videoId = String((req.params as any).videoId || '').trim();
+      if (!/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
+        return res.status(400).json({ ok: false, error: 'Invalid video id' });
+      }
+      const streams = await resolveYoutubeDirectStreams(videoId);
+      if (!streams[0]?.url) {
+        return res.status(404).json({ ok: false, error: 'No stream available' });
+      }
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      res.redirect(302, streams[0].url);
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      console.error(`[stream] ${msg}`);
+      res.status(502).json({ ok: false, error: msg });
+    }
   });
 
   app.get('/api/status', (req, res) => {
@@ -4456,13 +4688,48 @@ let videoDownloaded = false;
         videoDownloaded = true;
         stepLog(`downloaded ${(buf.length / 1048576).toFixed(1)} MB`);
       } else {
-        // Non-direct-video URL: bypass yt-dlp completely and fetch captions
-        // from YouTube timedtext endpoints / web player track metadata.
+        // Non-direct-video URL: fetch YouTube captions. yt-dlp is tried first
+        // because it handles YouTube's signature/attestation bot-protection;
+        // the web timedtext extractors below are a fallback for when yt-dlp
+        // is unavailable or returns nothing.
         const videoId = extractYoutubeVideoId(sourceUrl);
         if (!videoId) {
           return res.status(400).json({ error: 'Unsupported URL — only direct video files and YouTube links are supported' });
         }
-        stepLog(`fetching YouTube captions for video ${videoId} via timedtext/web extractors`);
+        stepLog(`fetching YouTube captions for video ${videoId} via yt-dlp`);
+
+        // 1) yt-dlp (primary). Returns exact target-language captions when they
+        //    exist, otherwise English/auto captions that still need translating.
+        try {
+          const ytDlpResult = await fetchYoutubeCaptionsViaYtDlp(sourceUrl, workDir, targetLang);
+          if (ytDlpResult.lang === targetLang) {
+            stepLog(
+              `returned YouTube captions via yt-dlp (${ytDlpResult.mode}, ${ytDlpResult.srt.length} chars)`,
+            );
+            res.json({
+              success: true,
+              srt: ytDlpResult.srt,
+              lang: targetLang,
+              source: `youtube-captions-${ytDlpResult.mode}`,
+            });
+            return;
+          }
+          stepLog(`yt-dlp got ${ytDlpResult.lang} captions for target ${targetLang}; translating via Gemini`);
+          const translatedSrt = await translateSrtViaGemini(ytDlpResult.srt, targetLang);
+          stepLog(`translated yt-dlp captions via Gemini (${translatedSrt.length} chars, mode=${ytDlpResult.mode})`);
+          res.json({
+            success: true,
+            srt: translatedSrt,
+            lang: targetLang,
+            source: `youtube-captions-${ytDlpResult.mode}-gemini`,
+          });
+          return;
+        } catch (ytDlpErr: any) {
+          stepLog(`yt-dlp caption fetch failed: ${ytDlpErr?.message || ytDlpErr}`);
+          stepLog(`trying timedtext/web extractors for video ${videoId}`);
+        }
+
+        // 2) Web timedtext extractors (fallback when yt-dlp is unavailable).
         try {
           const webCaptionResult = await fetchYouTubeCaptionsFromWeb(videoId, targetLang);
           stepLog(
@@ -4498,7 +4765,7 @@ let videoDownloaded = false;
           }
 
           return res.status(400).json({
-            error: 'Could not fetch YouTube captions. Web timedtext extractors and fallbacks failed for this video.',
+            error: 'Could not fetch YouTube captions. yt-dlp, timedtext extractors and fallbacks failed for this video.',
           });
         }
       }
