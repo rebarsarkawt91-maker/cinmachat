@@ -82,6 +82,7 @@ import {
   Type,
   Eye,
   EyeOff,
+  Layers,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { Plyr } from "plyr-react";
@@ -170,7 +171,14 @@ import { BroadcastRoom } from "./components/Social/BroadcastRoom";
 import { BroadcastPreviewCard } from "./components/Social/BroadcastPreviewCard";
 import { DirectMessagesModal } from "./components/Social/DirectMessagesModal";
 import { WhatsAppFloatButton } from "./components/Social/WhatsAppFloatButton";
-import { MovieCard } from "./components/Movie/MovieCard";
+import { MovieCard, MovieCardSkeleton } from "./components/Movie/MovieCard";
+import {
+  fuzzyMatchMovie,
+  movieMatchesGenres,
+  semanticScoreMovie,
+  computeTrendingScore,
+} from "./utils/search";
+import type { SemanticSignals } from "./utils/search";
 import UserActivityMonitor from "./components/Admin/UserActivityMonitor";
 
 import { 
@@ -711,6 +719,29 @@ const getDeviceId = (): string => {
   return id;
 };
 
+// Per-tab viewer session id (sessionStorage = unique per browser tab, survives
+// reloads inside the same tab). Live-viewer counting must be keyed per TAB so
+// that one person watching the same movie in two tabs counts as two concurrent
+// viewers. localStorage is deliberately NOT used here — it is shared across
+// tabs, which would dedupe the same device into a single viewer.
+const TAB_SESSION_LOCAL_KEY = "cinemachat_tab_session";
+
+const getViewerSessionId = (): string => {
+  try {
+    let id = sessionStorage.getItem(TAB_SESSION_LOCAL_KEY);
+    if (!id) {
+      id =
+        typeof crypto !== "undefined" && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+      sessionStorage.setItem(TAB_SESSION_LOCAL_KEY, id);
+    }
+    return id;
+  } catch {
+    return `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  }
+};
+
 const HERO_VIDEO_LOCAL_KEY = "cinemachat_hero_video_url";
 
 const getCachedHeroVideoUrl = () => {
@@ -995,6 +1026,7 @@ const ContentModule = ({
     rating: "",
     year: "",
     duration: "",
+    language: "",
     type: "movie",
     whatsappLink: "",
     externalMovieLink: "",
@@ -1422,6 +1454,7 @@ const ContentModule = ({
         rating: "",
         year: "",
         duration: "",
+        language: "",
         type: "movie",
         whatsappLink: "",
         externalMovieLink: "",
@@ -1506,6 +1539,7 @@ const ContentModule = ({
         rating: "",
         year: "",
         duration: "",
+        language: "",
         type: "movie",
         whatsappLink: "",
         externalMovieLink: "",
@@ -2117,6 +2151,32 @@ const ContentModule = ({
                 }
                 className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-white kurdish-text outline-none focus:border-brand-primary transition-all"
               />
+            </div>
+            <div className="p-8 bg-white/5 border border-white/10 rounded-[2.5rem] space-y-4">
+              <label className="text-xs font-black text-gray-500 kurdish-text uppercase tracking-widest">
+                زمانی فیلم
+              </label>
+              <select
+                value={formData.language}
+                onChange={(e) =>
+                  setFormData({ ...formData, language: e.target.value })
+                }
+                className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-white kurdish-text outline-none focus:border-brand-primary transition-all"
+              >
+                <option value="">نادیار</option>
+                <option value="کوردی">کوردی</option>
+                <option value="English">English</option>
+                <option value="عەرەبی">عەرەبی</option>
+                <option value="تورکی">تورکی</option>
+                <option value="فارسی">فارسی</option>
+                <option value="هندی">هندی</option>
+                <option value="کۆری">کۆری</option>
+                <option value="ژاپۆنی">ژاپۆنی</option>
+                <option value="فەرەنسی">فەرەنسی</option>
+                <option value="ئیسپانی">ئیسپانی</option>
+                <option value="ئەڵمانی">ئەڵمانی</option>
+                <option value="دۆبلاژ">دۆبلاژ</option>
+              </select>
             </div>
           </div>
 
@@ -6079,6 +6139,7 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [showSuggestions, setShowSuggestions] = useState(false);
   const [movies, setMovies] = useState<Movie[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -6089,6 +6150,37 @@ export default function App() {
   const [likedIds, setLikedIds] = useState<Set<string>>(new Set());
   const [likesMap, setLikesMap] = useState<Record<string, number>>({});
   const [liveViewersMap, setLiveViewersMap] = useState<Record<string, number>>({});
+  // Lifetime view counts per movie (server-computed, persistent) shown as the
+  // "📈 Views" counter on every card. Refreshed by the live poll + heartbeat.
+  const [viewsMap, setViewsMap] = useState<Record<string, number>>({});
+  // Server-computed card metrics refreshed by the /api/movies/live poll.
+  const [ratingsMap, setRatingsMap] = useState<
+    Record<string, { ccRating: number; ratingCount: number }>
+  >({});
+  const [favoriteCountsMap, setFavoriteCountsMap] = useState<Record<string, number>>({});
+  const [trendingScoresMap, setTrendingScoresMap] = useState<Record<string, number>>({});
+  // Current user's own rating per movie (optimistic + server-confirmed).
+  const [userRatingsMap, setUserRatingsMap] = useState<Record<string, number>>({});
+
+  // Smart-search UI state: title/genre/AI modes, suggestion chips and history.
+  const [searchMode, setSearchMode] = useState<"title" | "genre" | "ai">("title");
+  const [selectedGenres, setSelectedGenres] = useState<string[]>([]);
+  const [aiQuery, setAiQuery] = useState("");
+  const [aiResults, setAiResults] = useState<Movie[] | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiMeta, setAiMeta] = useState<{
+    keywords: string[];
+    genres: string[];
+    titles: string[];
+  }>({ keywords: [], genres: [], titles: [] });
+  const [recentSearches, setRecentSearches] = useState<string[]>([]);
+  const [trendingSearches, setTrendingSearches] = useState<{ term: string; count: number }[]>([]);
+  const [sortBy, setSortBy] = useState<"recent" | "trending" | "live">("recent");
+
+  // Continue-watching store (movieId -> { progress, duration, updatedAt }).
+  const [continueWatchingStore, setContinueWatchingStore] = useState<
+    Record<string, { progress: number; duration: number; updatedAt: number }>
+  >({});
 
   // Tombstone guard for deleted movies. Keeps a deleted movie out of the UI
   // instantly (optimistic removal) AND stops the 60s /api/movies poll or the
@@ -6097,6 +6189,10 @@ export default function App() {
   const deletedMovieIdsRef = useRef<Set<string>>(new Set());
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
   const [showPlayer, setShowPlayer] = useState(false);
+  // Page scroll position captured the instant the movie detail/player modal
+  // opens, restored verbatim when it closes so the homepage never jumps to the
+  // top (scroll position is lost today when a movie card is clicked).
+  const savedPageScrollRef = useRef<number | null>(null);
 
   // Dynamic genres from Firestore (real-time). While the snapshot hasn't
   // arrived yet we fall back to the default catalog so the nav never flashes
@@ -6938,14 +7034,33 @@ export default function App() {
         if (cancelled || !stats || typeof stats !== "object") return;
         const viewers: Record<string, number> = {};
         const likes: Record<string, number> = {};
+        const views: Record<string, number> = {};
+        const ratings: Record<string, { ccRating: number; ratingCount: number }> = {};
+        const favorites: Record<string, number> = {};
+        const trending: Record<string, number> = {};
         for (const [id, s] of Object.entries(stats)) {
-          const entry = s as { liveViewers?: number; likes?: number };
+          const entry = s as {
+            liveViewers?: number;
+            views?: number;
+            likes?: number;
+            ccRating?: number;
+            ratingCount?: number;
+            favoriteCount?: number;
+            trendingScore?: number;
+          };
           if (typeof entry?.liveViewers === "number" && entry.liveViewers > 0) {
             viewers[id] = entry.liveViewers;
           }
-          if (typeof entry?.likes === "number" && entry.likes > 0) {
-            likes[id] = entry.likes;
+          if (typeof entry?.views === "number" && entry.views > 0) {
+            views[id] = entry.views;
           }
+          const ccRating = typeof entry?.ccRating === "number" ? entry.ccRating : 0;
+          const ratingCount = typeof entry?.ratingCount === "number" ? entry.ratingCount : 0;
+          if (ccRating > 0 || ratingCount > 0) ratings[id] = { ccRating, ratingCount };
+          const fav = typeof entry?.favoriteCount === "number" ? entry.favoriteCount : 0;
+          if (fav > 0) favorites[id] = fav;
+          const ts = typeof entry?.trendingScore === "number" ? entry.trendingScore : 0;
+          if (ts > 0) trending[id] = ts;
         }
         // Only touch state when a value actually changed so the 30s poll never
         // forces a full re-render of the whole app on an unchanged tick.
@@ -6960,24 +7075,61 @@ export default function App() {
           for (const k in next) if (prev[k] !== next[k]) return next;
           return prev;
         });
+        setViewsMap((prev) => {
+          const next = { ...prev, ...views };
+          if (Object.keys(next).length !== Object.keys(prev).length) return next;
+          for (const k in next) if (prev[k] !== next[k]) return next;
+          return prev;
+        });
+        setRatingsMap((prev) => {
+          if (Object.keys(prev).length !== Object.keys(ratings).length) return ratings;
+          for (const k in ratings) if (prev[k]?.ccRating !== ratings[k].ccRating) return ratings;
+          return prev;
+        });
+        setFavoriteCountsMap((prev) => {
+          const next = { ...prev, ...favorites };
+          if (Object.keys(next).length !== Object.keys(prev).length) return next;
+          for (const k in next) if (prev[k] !== next[k]) return next;
+          return prev;
+        });
+        setTrendingScoresMap((prev) => {
+          const next = { ...prev, ...trending };
+          if (Object.keys(next).length !== Object.keys(prev).length) return next;
+          for (const k in next) if (prev[k] !== next[k]) return next;
+          return prev;
+        });
       } catch (e) { /* server down — keep last known values */ }
     };
     refresh();
     const iv = setInterval(refresh, 30000);
     return () => { cancelled = true; clearInterval(iv); };
-  }, []);
+    // Re-poll whenever the visible catalog changes: the initial mount-time poll
+    // can race an empty catalog (Firestore movies load right after), which would
+    // otherwise leave cards without live badges until the next 30s tick.
+  }, [movies]);
 
   // Heartbeat while a movie is open so the backend counts us as a live viewer
   // of that movie and returns its current concurrent count.
   useEffect(() => {
     if (!showPlayer || !selectedMovie?.id) return;
     const movieId = selectedMovie.id;
-    const session = getDeviceId();
+    // Per-tab session drives the concurrent-viewer count (two tabs on the same
+    // movie = two live viewers); the device id stays the identity for lifetime
+    // view counting on the server so reloads never inflate total views.
+    const session = getViewerSessionId();
+    const device = getDeviceId();
     const ping = async () => {
-      const res = await api.sendMovieView(movieId, session);
+      const res = await api.sendMovieView(movieId, session, device);
       if (res?.ok && typeof res.viewers === "number") {
         setLiveViewersMap((prev) =>
           prev[movieId] === res.viewers ? prev : { ...prev, [movieId]: res.viewers },
+        );
+      }
+      // The view endpoint returns the movie's lifetime view total — fold it into
+      // viewsMap so the card counter updates instantly on open/watch.
+      if (res?.ok && typeof res.views === "number" && res.views > 0) {
+        setViewsMap((prev) =>
+          prev[movieId] === res.views ? prev : { ...prev, [movieId]: res.views },
         );
       }
     };
@@ -6996,6 +7148,12 @@ export default function App() {
       if (isFav) next.delete(id);
       else next.add(id);
       setFavoriteIds(next);
+
+      // Optimistic count update so the badge responds instantly.
+      setFavoriteCountsMap((prev) => {
+        const cur = prev[id] ?? (Number(movie.favoriteCount) || 0);
+        return { ...prev, [id]: Math.max(0, cur + (isFav ? -1 : 1)) };
+      });
 
       if (fbUid) {
         const userRef = doc(realDb, "users", fbUid);
@@ -7069,6 +7227,13 @@ export default function App() {
     [liveViewersMap],
   );
 
+  // Resolve the current lifetime view count for a movie (live map overrides the
+  // doc, so Firestore movies whose doc.views lags still show the real total).
+  const getMovieViews = useCallback(
+    (movie: Movie): number => viewsMap[movie.id] ?? (Number(movie.views) || 0),
+    [viewsMap],
+  );
+
   // The movie with the most concurrent viewers earns the "TOP LIVE" highlight.
   const topLiveId = useMemo(() => {
     let topId = "";
@@ -7089,11 +7254,368 @@ export default function App() {
   }, [movies, favoriteIds]);
 
   // Open a movie in the detail/player modal from any card.
-  const openMovie = useCallback((movie: Movie) => {
-    setSelectedMovie(movie);
-    setActiveServerUrl(getMovieSourceUrl(movie));
-    setShowPlayer(true);
+  const openMovie = useCallback(
+    (movie: Movie) => {
+      // Capture the homepage's scroll position BEFORE the modal mounts so we
+      // can restore it exactly when the modal closes.
+      if (savedPageScrollRef.current === null) {
+        savedPageScrollRef.current = window.scrollY;
+      }
+      setSelectedMovie(movie);
+      setActiveServerUrl(getMovieSourceUrl(movie));
+      setShowPlayer(true);
+      // Record an immediate continue-watching entry (local + server) so the
+      // row shows up even if the user exits before the next progress save.
+      const now = Date.now();
+      setContinueWatchingStore((prev) => ({
+        ...prev,
+        [movie.id]: { progress: 0, duration: 0, updatedAt: now },
+      }));
+      try {
+        const local = JSON.parse(localStorage.getItem("cinemachat_continue_watching") || "{}");
+        local[movie.id] = { progress: 0, duration: 0, updatedAt: now };
+        localStorage.setItem("cinemachat_continue_watching", JSON.stringify(local));
+      } catch (e) { /* ignore */ }
+      api.saveProgress(movie.id, getDeviceId(), 0, 0).catch(() => {});
+    },
+    [],
+  );
+
+  // Keep the page's scroll position stable across the movie modal lifecycle.
+  // On open: remember where the homepage was and neutralize any scroll the
+  // browser performs while the fixed overlay mounts (focus / scroll anchoring).
+  // On close: restore the exact previous position after the exit animation.
+  React.useLayoutEffect(() => {
+    if (selectedMovie) {
+      // Fallback capture for open paths that set selectedMovie directly
+      // (ticker, hero translate, similar movies, ?movieId= deep link).
+      if (savedPageScrollRef.current === null) {
+        savedPageScrollRef.current = window.scrollY;
+      }
+      const raf = requestAnimationFrame(() => {
+        if (savedPageScrollRef.current !== null) {
+          window.scrollTo(0, savedPageScrollRef.current);
+        }
+      });
+      return () => cancelAnimationFrame(raf);
+    }
+
+    // Modal closed — restore the exact pre-open scroll position once the exit
+    // animation has fully unmounted the overlay. Retries defeat lazy-image
+    // reflow / scroll anchoring that could nudge the page right after close.
+    if (savedPageScrollRef.current !== null) {
+      const saved = savedPageScrollRef.current;
+      savedPageScrollRef.current = null;
+      const restore = () => window.scrollTo(0, saved);
+      const timers = [0, 80, 250, 500].map((ms) =>
+        window.setTimeout(restore, ms),
+      );
+      return () => timers.forEach((t) => window.clearTimeout(t));
+    }
+    return undefined;
+  }, [selectedMovie]);
+
+  // Resolve server/client composite card metrics so every card — regardless of
+  // whether its Movie came from Firestore or the server — has accurate data.
+  const getMovieCCRating = useCallback(
+    (movie: Movie): number => ratingsMap[movie.id]?.ccRating ?? (Number(movie.ccRating) || 0),
+    [ratingsMap],
+  );
+  const getMovieRatingCount = useCallback(
+    (movie: Movie): number =>
+      ratingsMap[movie.id]?.ratingCount ?? (Number(movie.ratingCount) || 0),
+    [ratingsMap],
+  );
+  const getMovieFavoriteCount = useCallback(
+    (movie: Movie): number =>
+      favoriteCountsMap[movie.id] ?? (Number(movie.favoriteCount) || 0),
+    [favoriteCountsMap],
+  );
+  const getMovieTrendingScore = useCallback(
+    (movie: Movie): number => {
+      if (trendingScoresMap[movie.id]) return trendingScoresMap[movie.id];
+      return computeTrendingScore(movie, getMovieLiveViewers(movie), getMovieLikes(movie), getMovieFavoriteCount(movie));
+    },
+    [trendingScoresMap, getMovieLiveViewers, getMovieLikes, getMovieFavoriteCount],
+  );
+  const getUserRating = useCallback(
+    (movie: Movie): number => userRatingsMap[movie.id] ?? (Number(movie.userRating) || 0),
+    [userRatingsMap],
+  );
+
+  // Build a fully-resolved Movie (server metrics merged into the object) so the
+  // premium card — which reads ccRating/ratingCount/favoriteCount/trendingScore
+  // off the movie — renders accurate data for Firestore-only movies too.
+  const resolveMovie = useCallback(
+    (movie: Movie): Movie => ({
+      ...movie,
+      liveViewers: getMovieLiveViewers(movie),
+      likes: getMovieLikes(movie),
+      views: getMovieViews(movie),
+      ccRating: getMovieCCRating(movie),
+      ratingCount: getMovieRatingCount(movie),
+      favoriteCount: getMovieFavoriteCount(movie),
+      trendingScore: getMovieTrendingScore(movie),
+      userRating: getUserRating(movie),
+    }),
+    [
+      getMovieLiveViewers,
+      getMovieLikes,
+      getMovieViews,
+      getMovieCCRating,
+      getMovieRatingCount,
+      getMovieFavoriteCount,
+      getMovieTrendingScore,
+      getUserRating,
+    ],
+  );
+
+  // Identity-stable resolved movies: only movies whose metrics actually changed
+  // get a new object, so React.memo on MovieCard still skips unchanged cards.
+  const resolvedMoviesCache = useRef<Record<string, Movie>>({});
+  const resolvedMovies = useMemo(() => {
+    const out: Record<string, Movie> = {};
+    for (const m of movies) {
+      const prev = resolvedMoviesCache.current[m.id];
+      const next = resolveMovie(m);
+      if (
+        !prev ||
+        prev.liveViewers !== next.liveViewers ||
+        prev.likes !== next.likes ||
+        prev.views !== next.views ||
+        prev.ccRating !== next.ccRating ||
+        prev.ratingCount !== next.ratingCount ||
+        prev.favoriteCount !== next.favoriteCount ||
+        prev.trendingScore !== next.trendingScore ||
+        prev.userRating !== next.userRating
+      ) {
+        resolvedMoviesCache.current[m.id] = next;
+      }
+      out[m.id] = resolvedMoviesCache.current[m.id];
+    }
+    for (const id of Object.keys(resolvedMoviesCache.current)) {
+      if (!out[id]) delete resolvedMoviesCache.current[id];
+    }
+    return out;
+  }, [movies, resolveMovie]);
+
+  // Similar/related movies for the detail modal: shared tags first, ranked by
+  // trending score; falls back to the currently most-watched movies so the row
+  // is never empty (a real recommendation, not fake data).
+  const similarMovies = useMemo(() => {
+    if (!selectedMovie) return [];
+    const base = movies.filter((m) => m.id !== selectedMovie.id);
+    const shared = base.filter((m) =>
+      Array.isArray(m.tags) &&
+      Array.isArray(selectedMovie.tags) &&
+      m.tags.some((t) => selectedMovie.tags.includes(t)),
+    );
+    const pool = shared.length >= 4 ? shared : base;
+    return [...pool]
+      .sort(
+        (a, b) =>
+          getMovieTrendingScore(b) - getMovieTrendingScore(a) ||
+          getMovieLiveViewers(b) - getMovieLiveViewers(a),
+      )
+      .slice(0, 12);
+  }, [movies, selectedMovie, getMovieTrendingScore, getMovieLiveViewers]);
+
+  // Persist a user rating (0-10). Optimistic UI + server confirmation; guests
+  // keep a local mirror so their own rating survives a reload.
+  const handleRateMovie = useCallback(
+    async (movie: Movie, score: number) => {
+      const id = movie.id;
+      setUserRatingsMap((prev) => ({ ...prev, [id]: score }));
+      if (!fbUid) {
+        try {
+          const all = JSON.parse(localStorage.getItem("cinemachat_guest_ratings") || "{}");
+          all[id] = score;
+          localStorage.setItem("cinemachat_guest_ratings", JSON.stringify(all));
+        } catch (e) { /* ignore */ }
+      }
+      try {
+        const res = await api.rateMovie(id, fbUid || getDeviceId(), score);
+        if (res?.ok) {
+          setRatingsMap((prev) => ({
+            ...prev,
+            [id]: { ccRating: res.ccRating, ratingCount: res.ratingCount },
+          }));
+        }
+      } catch (e) { /* ignore */ }
+    },
+    [fbUid],
+  );
+
+  // Hydrate the guest's own ratings from localStorage on mount.
+  useEffect(() => {
+    try {
+      const all = JSON.parse(localStorage.getItem("cinemachat_guest_ratings") || "{}");
+      setUserRatingsMap(all);
+    } catch (e) { /* ignore */ }
   }, []);
+
+  // Continue-watching store: local-first, then merge the server record so the
+  // row is available offline and stays in sync across devices.
+  useEffect(() => {
+    let cancelled = false;
+    try {
+      const local = JSON.parse(localStorage.getItem("cinemachat_continue_watching") || "{}");
+      setContinueWatchingStore(local);
+    } catch (e) { /* ignore */ }
+    api
+      .getContinueWatching(getDeviceId())
+      .then((entries) => {
+        if (cancelled) return;
+        const merged: Record<string, { progress: number; duration: number; updatedAt: number }> = {};
+        for (const e of entries) {
+          if (e?.movie?.id) {
+            merged[e.movie.id] = {
+              progress: Number(e.progress) || 0,
+              duration: Number(e.duration) || 0,
+              updatedAt: Number(e.updatedAt) || 0,
+            };
+          }
+        }
+        setContinueWatchingStore((prev) => ({ ...prev, ...merged }));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  // Smart-search bootstraps: trending terms + the identity's recent history.
+  useEffect(() => {
+    api.getTrendingSearches().then(setTrendingSearches).catch(() => {});
+    api
+      .getSearchHistory(getDeviceId())
+      .then((h) => {
+        const terms = (Array.isArray(h) ? h : [])
+          .map((x: any) => String(x?.term || "").trim())
+          .filter(Boolean)
+          .slice(0, 10);
+        if (terms.length) setRecentSearches(terms);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Record a submitted search term into local history + server (feeds trending).
+  const submitSearchTerm = useCallback((term: string) => {
+    const t = term.trim();
+    if (!t) return;
+    setRecentSearches((prev) => {
+      const next = [t, ...prev.filter((x) => x !== t)].slice(0, 10);
+      try {
+        localStorage.setItem("cinemachat_recent_searches", JSON.stringify(next));
+      } catch (e) { /* ignore */ }
+      return next;
+    });
+    api.recordSearch(t, getDeviceId()).catch(() => {});
+  }, []);
+
+  // Local, instant title suggestions for the search box dropdown.
+  const localSuggestions = useMemo(() => {
+    if (searchMode !== "title") return [];
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return [];
+    return movies
+      .filter((m) => String(m.title || "").toLowerCase().includes(q))
+      .slice(0, 6)
+      .map((m) => ({ id: m.id, title: m.title, year: m.year || "" }));
+  }, [movies, searchQuery, searchMode]);
+
+  // AI semantic search: prefers the server's Gemini-ranked results, falls back
+  // to a client-side semantic ranking over the catalog when offline.
+  const runAiSearch = useCallback(async () => {
+    const q = aiQuery.trim();
+    if (!q || aiLoading) return;
+    const querySignals = (): SemanticSignals => ({
+      keywords: q
+        .split(/\s+/)
+        .map((w) => w.toLowerCase())
+        .filter((w) => w.length >= 2)
+        .slice(0, 8),
+      genres: [],
+      titles: [],
+    });
+    setAiLoading(true);
+    setAiResults(null);
+    try {
+      const res = await api.aiSearch(q);
+      setAiMeta({
+        keywords: res?.keywords || [],
+        genres: res?.genres || [],
+        titles: res?.titles || [],
+      });
+      if (Array.isArray(res?.results) && res.results.length > 0) {
+        setAiResults(res.results);
+      } else {
+        const signals = querySignals();
+        const scored = movies
+          .map((m) => ({ m, s: semanticScoreMovie(m, signals) }))
+          .filter((x) => x.s > 0)
+          .sort((a, b) => b.s - a.s);
+        setAiResults(scored.slice(0, 12).map((x) => x.m));
+      }
+      submitSearchTerm(q);
+    } catch (e) {
+      const signals = querySignals();
+      const scored = movies
+        .map((m) => ({ m, s: semanticScoreMovie(m, signals) }))
+        .filter((x) => x.s > 0)
+        .sort((a, b) => b.s - a.s);
+      setAiResults(scored.slice(0, 12).map((x) => x.m));
+      setAiMeta({ keywords: [], genres: [], titles: [] });
+      submitSearchTerm(q);
+    } finally {
+      setAiLoading(false);
+    }
+  }, [aiQuery, aiLoading, movies, submitSearchTerm]);
+
+  // While a movie is playing, periodically persist playback progress so the
+  // "Continue Watching" row reflects real resume points.
+  useEffect(() => {
+    if (!showPlayer || !selectedMovie?.id) return;
+    const movieId = selectedMovie.id;
+    const save = () => {
+      try {
+        const v = document.querySelector(
+          "#streaming-player video, .plyr__video-wrapper video",
+        ) as HTMLVideoElement | null;
+        if (!v || !v.currentTime || Number.isNaN(v.currentTime)) return;
+        const progress = Math.round(v.currentTime);
+        const duration = Math.round(v.duration || 0);
+        if (progress < 5) return;
+        const entry = { progress, duration, updatedAt: Date.now() };
+        setContinueWatchingStore((prev) => ({ ...prev, [movieId]: entry }));
+        try {
+          const local = JSON.parse(
+            localStorage.getItem("cinemachat_continue_watching") || "{}",
+          );
+          local[movieId] = entry;
+          localStorage.setItem("cinemachat_continue_watching", JSON.stringify(local));
+        } catch (e) { /* ignore */ }
+        api.saveProgress(movieId, getDeviceId(), progress, duration).catch(() => {});
+      } catch (e) { /* ignore */ }
+    };
+    const iv = setInterval(save, 15000);
+    return () => {
+      clearInterval(iv);
+      save();
+    };
+  }, [showPlayer, selectedMovie?.id]);
+
+  // Resolved continue-watching list (movies matched against the catalog).
+  const continueWatchingMovies = useMemo(() => {
+    return Object.entries(continueWatchingStore)
+      .map(([id, data]) => ({ movie: movies.find((m) => m.id === id), data }))
+      .filter(
+        (x): x is {
+          movie: Movie;
+          data: { progress: number; duration: number; updatedAt: number };
+        } => Boolean(x.movie),
+      )
+      .sort((a, b) => b.data.updatedAt - a.data.updatedAt)
+      .slice(0, 12);
+  }, [continueWatchingStore, movies]);
 
   const [activeSyncGroup, setActiveSyncGroup] = useState<SyncGroup | null>(
     null,
@@ -8972,34 +9494,76 @@ export default function App() {
   const [trendingMovies, setTrendingMovies] = useState<Movie[]>([]);
   const [netflixOriginals, setNetflixOriginals] = useState<Movie[]>([]);
 
-  // Split movies for rows
+  // Split movies for rows. Trending is ranked live by the server/client
+  // trending score (live viewers + likes + favorites + views + IMDb), so the
+  // "Trending Now" row reflects real-time activity rather than a static flag.
   useEffect(() => {
-    setTrendingMovies(movies.filter((m) => m.isTrending));
+    setTrendingMovies(
+      movies
+        .map((m) => ({ m, s: getMovieTrendingScore(m) }))
+        .sort((a, b) => b.s - a.s)
+        .slice(0, 12)
+        .map((x) => x.m),
+    );
     setNetflixOriginals(movies.filter((m) => m.isNetflixOriginal));
-  }, [movies]);
+  }, [movies, getMovieTrendingScore]);
 
+  // Smart filtering: title search uses fuzzy matching, genre mode uses
+  // multi-select genre chips, and AI mode uses the server-side semantic results.
   const filteredMovies = useMemo(() => {
-    const query = searchQuery.toLowerCase();
-    return movies.filter((movie) => {
+    if (searchMode === "ai" && aiResults) return aiResults;
+
+    const tab = activeTab;
+    let list = movies.filter((movie) => {
       const tags = Array.isArray(movie.tags)
         ? movie.tags.map((t: string) => String(t).toLowerCase())
         : [];
-      const matchesSearch =
-        String(movie.title || "").toLowerCase().includes(query) ||
-        tags.some((t: string) => t.includes(query));
-
       const matchesTab =
-        activeTab === "all" ||
-        (Array.isArray(movie.tags) && movie.tags.includes(activeTab));
-
-      return matchesSearch && matchesTab;
+        tab === "all" || (Array.isArray(movie.tags) && movie.tags.includes(tab));
+      return matchesTab;
     });
-  }, [movies, searchQuery, activeTab]);
 
+    if (searchMode === "genre") {
+      if (selectedGenres.length > 0) {
+        list = list.filter((m) => movieMatchesGenres(m, selectedGenres));
+      }
+    } else {
+      const q = searchQuery.trim().toLowerCase();
+      if (q) {
+        const scored = list
+          .map((m) => ({ m, s: fuzzyMatchMovie(m, q) }))
+          .filter((x) => x.s > 0)
+          .sort((a, b) => b.s - a.s);
+        list = scored.map((x) => x.m);
+      }
+    }
+    return list;
+  }, [movies, searchQuery, activeTab, searchMode, selectedGenres, aiResults]);
+
+  const sortedMovies = useMemo(() => {
+    const arr = [...filteredMovies];
+    if (sortBy === "trending") {
+      arr.sort((a, b) => getMovieTrendingScore(b) - getMovieTrendingScore(a));
+    } else if (sortBy === "live") {
+      arr.sort((a, b) => getMovieLiveViewers(b) - getMovieLiveViewers(a));
+    }
+    return arr;
+  }, [filteredMovies, sortBy, getMovieTrendingScore, getMovieLiveViewers]);
+
+  // The main movie grid shows the FULL sorted catalog (all movies). It renders
+  // immediately below the Search section; the trending/favorites/continue
+  // rows appear after it, so no movie cards render above the Search section.
   const paginatedMovies = useMemo(() => {
     const startIndex = (currentPage - 1) * moviesPerPage;
-    return filteredMovies.slice(startIndex, startIndex + moviesPerPage);
-  }, [filteredMovies, currentPage]);
+    return sortedMovies.slice(startIndex, startIndex + moviesPerPage);
+  }, [sortedMovies, currentPage]);
+
+  // Clamp the page when the list shrinks (search/filter changes) so the user is
+  // never left on an out-of-range page showing "no movies".
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(sortedMovies.length / moviesPerPage));
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+  }, [sortedMovies.length, currentPage]);
 
   // Navigation genre list: always starts with the special "هەمووی" (all) view,
   // followed by the genres from Firestore with live per-genre movie counts.
@@ -9460,74 +10024,9 @@ export default function App() {
             )}
 
 
-            {/* Horizontal Rows (Point 13 - Netflix Style Rows) */}
-            <div className="relative z-20 -mt-24 space-y-12 pb-12">
-              {/* Trending Now Section */}
-              <SafeRender fallbackName="Trending Row">
-                <section className="pl-8">
-                  <h3 className="text-2xl font-black mb-6 kurdish-text text-white flex items-center gap-3">
-                    <Flame className="w-6 h-6 text-orange-500" />
-                    فیلمە ترێندینگەکان
-                  </h3>
-                  <div className="flex gap-4 overflow-x-auto no-scrollbar pb-8 pr-8">
-                    {trendingMovies.map((movie, tidx) => (
-                      <div
-                        key={`trending-${movie.id}-${tidx}`}
-                        className="flex-shrink-0 w-[160px] md:w-[220px]"
-                      >
-                        <MovieCard
-                          movie={movie}
-                          liveViewers={getMovieLiveViewers(movie)}
-                          isTopLive={topLiveId === movie.id}
-                          isFavorite={favoriteIds.has(movie.id)}
-                          isLiked={likedIds.has(movie.id)}
-                          likes={getMovieLikes(movie)}
-                          onOpen={openMovie}
-                          onToggleFavorite={handleToggleFavorite}
-                          onToggleLike={handleToggleLike}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              </SafeRender>
-
-              {/* My Favorites Section — dedicated persistent row of the current
-                  user's favorite movies (Firestore-backed for signed-in users,
-                  localStorage for guests). */}
-              {favoriteMovies.length > 0 && (
-                <SafeRender fallbackName="Favorites Row">
-                  <section className="pl-8">
-                    <h3 className="text-2xl font-black mb-6 kurdish-text text-white flex items-center gap-3">
-                      <Heart className="w-6 h-6 text-brand-primary fill-current" />
-                      فیلمە دڵخوازەکانم
-                      <span className="text-sm font-bold text-gray-500">
-                        ({favoriteMovies.length})
-                      </span>
-                    </h3>
-                    <div className="flex gap-4 overflow-x-auto no-scrollbar pb-8 pr-8">
-                      {favoriteMovies.map((movie) => (
-                        <div
-                          key={`fav-${movie.id}`}
-                          className="flex-shrink-0 w-[160px] md:w-[220px]"
-                        >
-                          <MovieCard
-                            movie={movie}
-                            liveViewers={getMovieLiveViewers(movie)}
-                            isTopLive={topLiveId === movie.id}
-                            isFavorite={favoriteIds.has(movie.id)}
-                            isLiked={likedIds.has(movie.id)}
-                            likes={getMovieLikes(movie)}
-                            onOpen={openMovie}
-                            onToggleFavorite={handleToggleFavorite}
-                            onToggleLike={handleToggleLike}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </section>
-                </SafeRender>
-              )}
+            {/* Social / Broadcast / VIP sections — directly below the hero. No
+                movie lists render above the Search section. */}
+            <div className="relative z-20 pb-12">
 
               {/* Unified Stream Automation: Bottom Room (Live Global Sync & VIP side-by-side) */}
               {activeFeaturedMovie && ( // Only render if there's a featured movie
@@ -9604,20 +10103,263 @@ export default function App() {
               </div>
             </section>
 
-            {/* Search Bar Section */}
+            {/* Smart Search Section */}
             <div className="max-w-7xl mx-auto px-8 mt-16 mb-8 text-center">
-              <h2 className="text-3xl font-black kurdish-text mb-8">
+              <h2 className="text-3xl font-black kurdish-text mb-2">
                 {tr("searchFilter")}
               </h2>
-              <div className="relative group max-w-2xl mx-auto">
-                <Search className="absolute right-6 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500 group-focus-within:text-brand-primary" />
-                <input
-                  type="text"
-                  placeholder={tr("searchPlaceholder")}
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-white/5 border border-white/10 rounded-2xl py-4 pr-14 pl-6 kurdish-text focus:outline-none focus:border-brand-primary focus:bg-white/10 transition-all"
-                />
+              <p className="text-sm text-gray-500 kurdish-text mb-8">
+                بە ناو، پۆلێن یان بە وەسف بگەڕێ — پێشنیار و مێژووی ڕاستەقینە
+              </p>
+
+              {/* Search mode tabs */}
+              <div className="flex justify-center gap-2 mb-8 flex-wrap">
+                {(
+                  [
+                    { id: "title", label: "ناونیشان", icon: Search },
+                    { id: "genre", label: "پۆلێن", icon: Layers },
+                    { id: "ai", label: "گەڕانی زیرەک (AI)", icon: Sparkles },
+                  ] as const
+                ).map((mode) => (
+                  <button
+                    key={mode.id}
+                    onClick={() => {
+                      setSearchMode(mode.id);
+                      setCurrentPage(1);
+                    }}
+                    className={`flex items-center gap-2 px-5 py-2.5 rounded-xl border text-sm font-bold transition-all kurdish-text ${
+                      searchMode === mode.id
+                        ? "bg-brand-primary border-brand-primary text-white"
+                        : "bg-white/5 border-white/10 text-gray-400 hover:text-white"
+                    }`}
+                  >
+                    <mode.icon className="w-4 h-4" />
+                    {mode.label}
+                  </button>
+                ))}
+              </div>
+
+              {searchMode === "title" && (
+                <div className="max-w-2xl mx-auto">
+                  <div className="relative group">
+                    <Search className="absolute right-6 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500 group-focus-within:text-brand-primary" />
+                    <input
+                      type="text"
+                      placeholder={tr("searchPlaceholder")}
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      onFocus={() => {
+                        if (searchQuery.trim()) setShowSuggestions(true);
+                      }}
+                      onBlur={() => {
+                        setTimeout(() => setShowSuggestions(false), 150);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          submitSearchTerm(searchQuery);
+                          setShowSuggestions(false);
+                        }
+                      }}
+                      className="w-full bg-white/5 border border-white/10 rounded-2xl py-4 pr-14 pl-6 kurdish-text focus:outline-none focus:border-brand-primary focus:bg-white/10 transition-all"
+                    />
+                    {/* Live suggestions dropdown */}
+                    {showSuggestions && localSuggestions.length > 0 && (
+                      <div className="absolute top-full left-0 right-0 mt-2 bg-[#151515] border border-white/10 rounded-2xl overflow-hidden z-30 text-right shadow-2xl">
+                        {localSuggestions.map((s) => (
+                          <button
+                            key={s.id}
+                            type="button"
+                            onClick={() => {
+                              setSearchQuery(s.title);
+                              setShowSuggestions(false);
+                              submitSearchTerm(s.title);
+                            }}
+                            className="w-full flex items-center justify-between px-5 py-3 hover:bg-white/5 transition-colors"
+                          >
+                            <span className="kurdish-text font-bold text-sm text-white">
+                              {s.title}
+                            </span>
+                            {s.year && (
+                              <span className="text-[10px] text-gray-500 font-bold">
+                                {s.year}
+                              </span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Recent + trending search chips */}
+                  {(recentSearches.length > 0 || trendingSearches.length > 0) && (
+                    <div className="mt-4 flex flex-wrap justify-center gap-2">
+                      {recentSearches.map((term) => (
+                        <button
+                          key={`r-${term}`}
+                          onClick={() => {
+                            setSearchQuery(term);
+                            submitSearchTerm(term);
+                          }}
+                          className="px-3 py-1.5 rounded-full bg-white/5 border border-white/10 text-xs font-bold text-gray-300 hover:text-brand-primary hover:border-brand-primary/40 transition-all"
+                        >
+                          {term}
+                        </button>
+                      ))}
+                      {trendingSearches.map((t) => (
+                        <button
+                          key={`t-${t.term}`}
+                          onClick={() => {
+                            setSearchQuery(t.term);
+                            submitSearchTerm(t.term);
+                          }}
+                          className="px-3 py-1.5 rounded-full bg-orange-500/10 border border-orange-500/30 text-xs font-bold text-orange-400 hover:bg-orange-500/20 transition-all flex items-center gap-1"
+                        >
+                          <Flame className="w-3 h-3" />
+                          {t.term}
+                          {t.count > 0 && (
+                            <span className="text-[9px] opacity-60">{t.count}</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {searchMode === "genre" && (
+                <div className="max-w-3xl mx-auto">
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {navGenres.map((g) => {
+                      const active = selectedGenres.includes(g.tag);
+                      return (
+                        <button
+                          key={g.tag}
+                          onClick={() => {
+                            setSelectedGenres((prev) => {
+                              const next = active
+                                ? prev.filter((x) => x !== g.tag)
+                                : [...prev, g.tag];
+                              return next;
+                            });
+                            setCurrentPage(1);
+                          }}
+                          className={`px-4 py-2 rounded-xl border text-sm font-bold transition-all kurdish-text flex items-center gap-2 ${
+                            active
+                              ? "bg-brand-primary border-brand-primary text-white"
+                              : "bg-white/5 border-white/10 text-gray-400 hover:text-white"
+                          }`}
+                        >
+                          {g.name}
+                          <span className="text-[9px] opacity-60">{g.count}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {selectedGenres.length > 0 && (
+                    <button
+                      onClick={() => setSelectedGenres([])}
+                      className="mt-4 text-xs text-gray-500 hover:text-brand-primary font-bold underline underline-offset-4"
+                    >
+                      پاککردنەوەی هەموو پۆلێنەکان
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {searchMode === "ai" && (
+                <div className="max-w-2xl mx-auto">
+                  <div className="relative">
+                    <textarea
+                      rows={3}
+                      value={aiQuery}
+                      onChange={(e) => setAiQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          runAiSearch();
+                        }
+                      }}
+                      placeholder="بە وەسف بگەڕێ — نموونە: فیلمێکی خەمبار لەبارەی سەفەری کات یان فیلمێکی کۆری لەبارەی زۆمبی"
+                      className="w-full bg-white/5 border border-white/10 rounded-2xl py-4 px-6 kurdish-text focus:outline-none focus:border-brand-primary focus:bg-white/10 transition-all resize-none text-right"
+                    />
+                  </div>
+                  <button
+                    onClick={runAiSearch}
+                    disabled={aiLoading || !aiQuery.trim()}
+                    className="mt-3 px-8 py-3 bg-gradient-to-r from-purple-500 to-indigo-500 text-white rounded-2xl font-black kurdish-text text-sm hover:opacity-90 transition-all disabled:opacity-40 flex items-center justify-center gap-2 mx-auto"
+                  >
+                    {aiLoading ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Sparkles className="w-4 h-4" />
+                    )}
+                    {aiLoading ? "ئەگەڕێت..." : "AI بگەڕێ"}
+                  </button>
+                  {(aiMeta.keywords.length > 0 ||
+                    aiMeta.genres.length > 0 ||
+                    aiMeta.titles.length > 0) && (
+                    <div className="mt-4 flex flex-wrap justify-center gap-2">
+                      {aiMeta.titles.map((t) => (
+                        <span
+                          key={`t-${t}`}
+                          className="px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-[11px] font-bold text-indigo-300"
+                        >
+                          فیلم: {t}
+                        </span>
+                      ))}
+                      {aiMeta.genres.map((g) => (
+                        <span
+                          key={`g-${g}`}
+                          className="px-3 py-1 rounded-full bg-purple-500/10 border border-purple-500/30 text-[11px] font-bold text-purple-300"
+                        >
+                          پۆلێن: {g}
+                        </span>
+                      ))}
+                      {aiMeta.keywords.map((k) => (
+                        <span
+                          key={`k-${k}`}
+                          className="px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[11px] font-bold text-gray-400"
+                        >
+                          {k}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {aiResults !== null && !aiLoading && (
+                    <button
+                      onClick={() => setAiResults(null)}
+                      className="mt-4 text-xs text-gray-500 hover:text-brand-primary font-bold underline underline-offset-4"
+                    >
+                      گەڕانەکە بپاکەرەوە
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Sort control */}
+              <div className="mt-8 flex justify-center items-center gap-3">
+                <span className="text-xs font-bold text-gray-500 kurdish-text">
+                  ڕیزکردن:
+                </span>
+                {(
+                  [
+                    { id: "recent", label: "نوێترین" },
+                    { id: "trending", label: "باڵاترین ترەند" },
+                    { id: "live", label: "زۆرترین بینەری ڕاستەوخۆ" },
+                  ] as const
+                ).map((s) => (
+                  <button
+                    key={s.id}
+                    onClick={() => setSortBy(s.id)}
+                    className={`px-3 py-1.5 rounded-lg border text-xs font-bold transition-all kurdish-text ${
+                      sortBy === s.id
+                        ? "bg-brand-primary/20 border-brand-primary/40 text-brand-primary"
+                        : "bg-white/5 border-white/10 text-gray-500 hover:text-white"
+                    }`}
+                  >
+                    {s.label}
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -9628,7 +10370,7 @@ export default function App() {
                   const movieCard = (
                     <MovieCard
                       key={movie.id}
-                      movie={movie}
+                      movie={resolvedMovies[movie.id] ?? movie}
                       liveViewers={getMovieLiveViewers(movie)}
                       isTopLive={topLiveId === movie.id}
                       isFavorite={favoriteIds.has(movie.id)}
@@ -9669,7 +10411,15 @@ export default function App() {
                   })}
               </div>
 
-              {paginatedMovies.length === 0 && (
+              {isLoading && paginatedMovies.length === 0 && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-6 md:gap-8">
+                  {Array.from({ length: 12 }).map((_, i) => (
+                    <MovieCardSkeleton key={`sk-${i}`} />
+                  ))}
+                </div>
+              )}
+
+              {paginatedMovies.length === 0 && !isLoading && (
                 <div className="py-20 text-center flex flex-col items-center">
                   <Ghost className="w-16 h-16 text-gray-800 mb-4" />
                   <p className="text-gray-500 kurdish-text">
@@ -9679,7 +10429,7 @@ export default function App() {
               )}
 
               {/* Pagination Controls */}
-              {filteredMovies.length > moviesPerPage && (
+              {sortedMovies.length > moviesPerPage && (
                 <div className="mt-16 flex justify-center items-center gap-4">
                   <button
                     disabled={currentPage === 1}
@@ -9689,7 +10439,7 @@ export default function App() {
                     <ChevronRight className="w-5 h-5" />
                   </button>
                   <div className="flex gap-2">
-                    {Array(Math.ceil(filteredMovies.length / moviesPerPage))
+                    {Array(Math.ceil(sortedMovies.length / moviesPerPage))
                       .fill(0)
                       .map((_, i) => (
                         <button
@@ -9708,7 +10458,7 @@ export default function App() {
                   <button
                     disabled={
                       currentPage ===
-                      Math.ceil(filteredMovies.length / moviesPerPage)
+                      Math.ceil(sortedMovies.length / moviesPerPage)
                     }
                     onClick={() => setCurrentPage((p) => p + 1)}
                     className="p-3 bg-white/5 border border-white/10 rounded-xl disabled:opacity-30 hover:bg-white/10"
@@ -9716,6 +10466,127 @@ export default function App() {
                     <ChevronLeft className="w-5 h-5" />
                   </button>
                 </div>
+              )}
+            </div>
+
+            {/* Remaining movie sections — rendered AFTER the search + movie grid,
+                so no movie cards appear above the Search section. */}
+            <div className="relative z-20 space-y-12 pb-12">
+              {/* Trending Now Section */}
+              <SafeRender fallbackName="Trending Row">
+                <section className="pl-8">
+                  <h3 className="text-2xl font-black mb-6 kurdish-text text-white flex items-center gap-3">
+                    <Flame className="w-6 h-6 text-orange-500" />
+                    فیلمە ترێندینگەکان
+                  </h3>
+                  <div className="flex gap-4 overflow-x-auto no-scrollbar pb-8 pr-8">
+                    {trendingMovies.map((movie, tidx) => (
+                      <div
+                        key={`trending-${movie.id}-${tidx}`}
+                        className="flex-shrink-0 w-[160px] md:w-[220px]"
+                      >
+                        <MovieCard
+                          movie={resolvedMovies[movie.id] ?? movie}
+                          liveViewers={getMovieLiveViewers(movie)}
+                          isTopLive={topLiveId === movie.id}
+                          isFavorite={favoriteIds.has(movie.id)}
+                          isLiked={likedIds.has(movie.id)}
+                          likes={getMovieLikes(movie)}
+                          onOpen={openMovie}
+                          onToggleFavorite={handleToggleFavorite}
+                          onToggleLike={handleToggleLike}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              </SafeRender>
+
+              {/* My Favorites Section — dedicated persistent row of the current
+                  user's favorite movies (Firestore-backed for signed-in users,
+                  localStorage for guests). */}
+              {favoriteMovies.length > 0 && (
+                <SafeRender fallbackName="Favorites Row">
+                  <section className="pl-8">
+                    <h3 className="text-2xl font-black mb-6 kurdish-text text-white flex items-center gap-3">
+                      <Heart className="w-6 h-6 text-brand-primary fill-current" />
+                      فیلمە دڵخوازەکانم
+                      <span className="text-sm font-bold text-gray-500">
+                        ({favoriteMovies.length})
+                      </span>
+                    </h3>
+                    <div className="flex gap-4 overflow-x-auto no-scrollbar pb-8 pr-8">
+                      {favoriteMovies.map((movie) => (
+                        <div
+                          key={`fav-${movie.id}`}
+                          className="flex-shrink-0 w-[160px] md:w-[220px]"
+                        >
+                          <MovieCard
+                            movie={resolvedMovies[movie.id] ?? movie}
+                            liveViewers={getMovieLiveViewers(movie)}
+                            isTopLive={topLiveId === movie.id}
+                            isFavorite={favoriteIds.has(movie.id)}
+                            isLiked={likedIds.has(movie.id)}
+                            likes={getMovieLikes(movie)}
+                            onOpen={openMovie}
+                            onToggleFavorite={handleToggleFavorite}
+                            onToggleLike={handleToggleLike}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                </SafeRender>
+              )}
+
+              {/* Continue Watching Section — real resume points tracked by the
+                  server (per identity) merged with the local record. */}
+              {continueWatchingMovies.length > 0 && (
+                <SafeRender fallbackName="Continue Watching Row">
+                  <section className="pl-8">
+                    <h3 className="text-2xl font-black mb-6 kurdish-text text-white flex items-center gap-3">
+                      <Clock className="w-6 h-6 text-emerald-400" />
+                      بەردەوامبوون لە سەیرکردن
+                    </h3>
+                    <div className="flex gap-4 overflow-x-auto no-scrollbar pb-8 pr-8">
+                      {continueWatchingMovies.map(({ movie, data }) => {
+                        const pct =
+                          data.duration > 0
+                            ? Math.min(100, Math.round((data.progress / data.duration) * 100))
+                            : 0;
+                        return (
+                          <div key={`cw-${movie.id}`} className="flex-shrink-0 w-[160px] md:w-[220px]">
+                            <MovieCard
+                              movie={resolvedMovies[movie.id] ?? movie}
+                              liveViewers={getMovieLiveViewers(movie)}
+                              isTopLive={topLiveId === movie.id}
+                              isFavorite={favoriteIds.has(movie.id)}
+                              isLiked={likedIds.has(movie.id)}
+                              likes={getMovieLikes(movie)}
+                              onOpen={openMovie}
+                              onToggleFavorite={handleToggleFavorite}
+                              onToggleLike={handleToggleLike}
+                            />
+                            {/* Real resume progress bar */}
+                            <div className="mt-2 h-1.5 w-full bg-white/10 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-emerald-400 rounded-full"
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                            <p className="mt-1 text-[10px] font-bold text-emerald-400/80 kurdish-text">
+                              {data.progress > 0
+                                ? `${Math.floor(data.progress / 60)}:${String(
+                                    data.progress % 60,
+                                  ).padStart(2, "0")} لە ${data.duration > 0 ? Math.floor(data.duration / 60) : "?"} خولەک`
+                                : "دەستپێکردن"}
+                            </p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                </SafeRender>
               )}
             </div>
           </SafeRender>
@@ -10523,6 +11394,15 @@ export default function App() {
                             <span>{selectedMovie.rating}</span>
                           </div>
                         )}
+                        {getMovieCCRating(selectedMovie) > 0 && (
+                          <div className="flex items-center gap-1.5 px-3 py-1 bg-brand-primary/10 border border-brand-primary/30 rounded-full text-brand-primary font-bold text-[10px]">
+                            <Star className="w-3 h-3 fill-current" />
+                            <span>{getMovieCCRating(selectedMovie).toFixed(1)}</span>
+                            <span className="text-[8px] text-gray-500">
+                              ({getMovieRatingCount(selectedMovie)})
+                            </span>
+                          </div>
+                        )}
                         {selectedMovie.year && (
                           <span className="px-3 py-1 bg-blue-500/10 border border-blue-500/20 rounded-full text-[10px] font-black text-blue-400">
                             {selectedMovie.year}
@@ -10621,6 +11501,48 @@ export default function App() {
                         </span>
                       ))}
                     </div> {/* Movie Tags */}
+
+                    {/* CinemaChat interactive rating (0-10 stars) */}
+                    <div className="mb-8">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-[10px] font-black uppercase tracking-widest text-gray-500 kurdish-text">
+                          هەڵسەنگاندنی سینەما چات
+                        </span>
+                        {getUserRating(selectedMovie) > 0 && (
+                          <span className="text-[10px] font-bold text-brand-primary">
+                            (تۆ: {getUserRating(selectedMovie)}/10)
+                          </span>
+                        )}
+                        {getMovieRatingCount(selectedMovie) > 0 && (
+                          <span className="text-[10px] font-bold text-gray-500">
+                            · {getMovieRatingCount(selectedMovie)} دەنگ
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1">
+                        {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+                          <button
+                            key={n}
+                            type="button"
+                            onClick={() => handleRateMovie(selectedMovie, n)}
+                            title={`${n}/10`}
+                            className={`transition-all active:scale-75 ${
+                              getUserRating(selectedMovie) >= n
+                                ? "text-brand-primary"
+                                : "text-gray-600 hover:text-brand-primary/50"
+                            }`}
+                          >
+                            <Star
+                              className={`w-4 h-4 ${
+                                getUserRating(selectedMovie) >= n
+                                  ? "fill-current"
+                                  : ""
+                              }`}
+                            />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
 
                     <p className="text-gray-400 kurdish-text text-lg leading-relaxed mb-10 max-w-xl">
                       {translatedContent || selectedMovie.description}
@@ -11111,73 +12033,21 @@ export default function App() {
                         فیلمە هاوشێوەکان
                       </h4>
                       <div className="flex gap-4 overflow-x-auto no-scrollbar pb-4">
-                        {movies
-                          .filter(
-                            (m) =>
-                              m.id !== selectedMovie.id &&
-                              m.tags.some((t) =>
-                                selectedMovie.tags.includes(t),
-                              ),
-                          )
-                          .slice(0, 5)
-                          .map((m) => (
-                            <div
-                              key={m.id}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setSelectedMovie(m);
-                                setActiveServerUrl(getMovieSourceUrl(m));
-                              }}
-                              className="flex-shrink-0 w-24 md:w-32 group/item cursor-pointer"
-                            >
-                              <div className="aspect-[2/3] rounded-xl overflow-hidden border border-white/5 group-hover/item:border-brand-primary transition-all relative">
-                                <img
-                                  src={m.image || undefined}
-                                  loading="lazy"
-                                  decoding="async"
-                                  onError={(e) => {
-                                    const target = e.target as HTMLImageElement;
-                                    target.src =
-                                      "https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800";
-                                  }}
-                                  className="w-full h-full object-cover"
-                                />
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleToggleFavorite(m);
-                                  }}
-                                  aria-label="Toggle favorite"
-                                  className={`absolute top-1 right-1 p-1 rounded-full backdrop-blur-md border transition-colors ${
-                                    favoriteIds.has(m.id)
-                                      ? "bg-brand-primary border-brand-primary text-white"
-                                      : "bg-black/60 border-white/10 text-white/80 hover:text-brand-primary"
-                                  }`}
-                                >
-                                  <Heart
-                                    className={`w-2.5 h-2.5 ${favoriteIds.has(m.id) ? "fill-current" : ""}`}
-                                  />
-                                </button>
-                                {m.rating && (
-                                  <span className="absolute bottom-1 left-1 flex items-center gap-0.5 px-1 py-0.5 bg-black/60 rounded text-[7px] font-black text-yellow-400">
-                                    <Star className="w-2 h-2 fill-current" />
-                                    {m.rating}
-                                  </span>
-                                )}
-                              </div>
-                              <h5 className="mt-2 text-[10px] font-bold kurdish-text truncate text-gray-400 group-hover/item:text-white transition-colors">
-                                {m.title}
-                              </h5>
-                              {(m.year || m.duration) && (
-                                <p className="text-[8px] font-bold text-gray-600 truncate mt-0.5">
-                                  {m.year}
-                                  {m.year && m.duration ? " • " : ""}
-                                  {m.duration}
-                                </p>
-                              )}
-                            </div>
-                          ))} {/* Similar Movies List */}
+                        {similarMovies.map((m) => (
+                          <div key={m.id} className="flex-shrink-0 w-32 md:w-36">
+                            <MovieCard
+                              movie={resolvedMovies[m.id] ?? m}
+                              liveViewers={getMovieLiveViewers(m)}
+                              isTopLive={topLiveId === m.id}
+                              isFavorite={favoriteIds.has(m.id)}
+                              isLiked={likedIds.has(m.id)}
+                              likes={getMovieLikes(m)}
+                              onOpen={openMovie}
+                              onToggleFavorite={handleToggleFavorite}
+                              onToggleLike={handleToggleLike}
+                            />
+                          </div>
+                        ))} {/* Similar Movies List */}
                       </div>
                     </div>
                   </div>

@@ -190,12 +190,14 @@ export const api = {
 
   // Registers a per-movie heartbeat and returns the current concurrent viewer
   // count. Best-effort: falls back to { viewers: 0 } when the backend is down.
-  async sendMovieView(movieId: string, session: string) {
+  // `session` is a per-tab id (live viewers = distinct tabs), `deviceId` is the
+  // persistent device identity used by the server to dedupe lifetime views.
+  async sendMovieView(movieId: string, session: string, deviceId?: string) {
     try {
       const res = await fetch(api.resolveApiUrl(`/api/movies/${encodeURIComponent(movieId)}/view`), {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify({ session })
+        body: JSON.stringify({ session, deviceId })
       });
       if (!res.ok) return { ok: false, viewers: 0, views: 0 };
       return await res.json();
@@ -216,6 +218,170 @@ export const api = {
       return await res.json();
     } catch (error) {
       return { ok: false, likes: 0, liked: false };
+    }
+  },
+
+  // --- User ratings (CinemaChat rating) ---
+  // Submit a 0.5-10 score for a movie; returns the aggregated rating + count.
+  async rateMovie(movieId: string, uid: string, score: number) {
+    try {
+      const res = await fetch(api.resolveApiUrl(`/api/movies/${encodeURIComponent(movieId)}/rate`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({ uid, score })
+      });
+      if (!res.ok) return { ok: false, ccRating: 0, ratingCount: 0, userRating: 0 };
+      return await res.json();
+    } catch (error) {
+      return { ok: false, ccRating: 0, ratingCount: 0, userRating: 0 };
+    }
+  },
+
+  // Fetch a movie's aggregated rating + the caller's own rating.
+  async getMovieRating(movieId: string, uid: string) {
+    try {
+      const res = await fetch(api.resolveApiUrl(`/api/movies/${encodeURIComponent(movieId)}/rating?uid=${encodeURIComponent(uid)}`), {
+        headers: { 'Accept': 'application/json' }
+      });
+      if (!res.ok) return { ccRating: 0, ratingCount: 0, userRating: 0 };
+      return await res.json();
+    } catch (error) {
+      return { ccRating: 0, ratingCount: 0, userRating: 0 };
+    }
+  },
+
+  // --- Trending ---
+  // Server-computed trending ranking, sortable by trending score or live viewers.
+  async getTrending(sort: 'trending' | 'live' = 'trending', limit = 20) {
+    try {
+      const res = await fetch(api.resolveApiUrl(`/api/movies/trending?sort=${sort}&limit=${limit}`), {
+        headers: { 'Accept': 'application/json' }
+      });
+      if (!res.ok) return { results: [], topLiveId: '' };
+      return await res.json();
+    } catch (error) {
+      return { results: [], topLiveId: '' };
+    }
+  },
+
+  // --- Smart search ---
+  // Fuzzy title + multi-genre search with live suggestions.
+  async searchMovies(q: string, genres: string[] = [], limit = 50) {
+    try {
+      const params = new URLSearchParams();
+      if (q) params.set('q', q);
+      for (const g of genres) params.append('genres', g);
+      if (limit) params.set('limit', String(limit));
+      const res = await fetch(api.resolveApiUrl(`/api/search?${params.toString()}`), {
+        headers: { 'Accept': 'application/json' }
+      });
+      if (!res.ok) return { results: [], suggestions: [] };
+      return await res.json();
+    } catch (error) {
+      return { results: [], suggestions: [] };
+    }
+  },
+
+  // AI semantic search: natural-language description -> ranked movie list.
+  async aiSearch(query: string) {
+    try {
+      const res = await fetch(api.resolveApiUrl('/api/search/ai'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({ query })
+      });
+      if (!res.ok) return { results: [], ai: false, keywords: [], genres: [], titles: [] };
+      return await res.json();
+    } catch (error) {
+      return { results: [], ai: false, keywords: [], genres: [], titles: [] };
+    }
+  },
+
+  // Live title suggestions while the user types.
+  async getSearchSuggestions(q: string) {
+    try {
+      const res = await fetch(api.resolveApiUrl(`/api/search/suggestions?q=${encodeURIComponent(q)}`), {
+        headers: { 'Accept': 'application/json' }
+      });
+      if (!res.ok) return [];
+      const data = await res.json();
+      return data.results || [];
+    } catch (error) {
+      return [];
+    }
+  },
+
+  // Recent searches for the current identity.
+  async getSearchHistory(identity: string) {
+    try {
+      const res = await fetch(api.resolveApiUrl(`/api/search/history?identity=${encodeURIComponent(identity)}`), {
+        headers: { 'Accept': 'application/json' }
+      });
+      if (!res.ok) return [];
+      const data = await res.json();
+      return data.history || [];
+    } catch (error) {
+      return [];
+    }
+  },
+
+  // Record a search term (feeds history + trending searches).
+  async recordSearch(query: string, identity: string) {
+    try {
+      const res = await fetch(api.resolveApiUrl('/api/search/history'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({ query, identity })
+      });
+      if (!res.ok) return [];
+      const data = await res.json();
+      return data.history || [];
+    } catch (error) {
+      return [];
+    }
+  },
+
+  // Trending / popular search terms.
+  async getTrendingSearches() {
+    try {
+      const res = await fetch(api.resolveApiUrl('/api/search/trending'), {
+        headers: { 'Accept': 'application/json' }
+      });
+      if (!res.ok) return [];
+      const data = await res.json();
+      return data.results || [];
+    } catch (error) {
+      return [];
+    }
+  },
+
+  // --- Continue watching ---
+  // Persist playback progress per identity.
+  async saveProgress(movieId: string, identity: string, progress: number, duration: number) {
+    try {
+      const res = await fetch(api.resolveApiUrl(`/api/movies/${encodeURIComponent(movieId)}/progress`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({ identity, progress, duration })
+      });
+      if (!res.ok) return { ok: false };
+      return await res.json();
+    } catch (error) {
+      return { ok: false };
+    }
+  },
+
+  // Continue-watching list enriched with full movie objects.
+  async getContinueWatching(identity: string) {
+    try {
+      const res = await fetch(api.resolveApiUrl(`/api/movies/continue-watching?identity=${encodeURIComponent(identity)}`), {
+        headers: { 'Accept': 'application/json' }
+      });
+      if (!res.ok) return [];
+      const data = await res.json();
+      return data.results || [];
+    } catch (error) {
+      return [];
     }
   },
 

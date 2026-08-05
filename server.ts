@@ -685,6 +685,22 @@ const INITIAL_DB = {
   vipVideos: [] as any[],
   tagOverrides: {} as Record<string, string[]>,
   favorites: {} as Record<string, Record<string, number>>,
+  // Per-movie favorite count (movieId -> number of users who favorited it).
+  // Derived from `favorites` but cached so trending/enrichment stays O(1).
+  favoriteCounts: {} as Record<string, number>,
+  // Per-movie lifetime view count (movieId -> number of watch sessions).
+  // The single source of truth for every card's "📈 Views" counter. Covers
+  // movies that only exist in Firestore (not in manualMovies), seeded at boot
+  // from the movies' existing `views` field and incremented once per session.
+  viewsCounts: {} as Record<string, number>,
+  // CinemaChat user ratings: movieId -> { uid: score(1-10) }.
+  ratings: {} as Record<string, Record<string, number>>,
+  // Search history per identity (uid or device id): id -> [ { query, at } ].
+  searchHistory: {} as Record<string, any[]>,
+  // Aggregated popular search terms: term -> total count.
+  popularSearchTerms: {} as Record<string, number>,
+  // Continue-watching progress per identity: id -> { movieId: { progress, duration, updatedAt } }.
+  continueWatching: {} as Record<string, Record<string, any>>,
   rooms: {} as Record<string, any>
 };
 
@@ -840,6 +856,11 @@ async function startServer() {
   if (!db.appSnapshots) db.appSnapshots = [];
   if (!db.categories) db.categories = ["هەمووی", "ئاکشن", "کۆمیدی", "دراما", "ترسناک", "ئەنیمێ", "دۆکیومێنتاری"];
   if (!db.favorites) db.favorites = {};
+  if (!db.favoriteCounts) db.favoriteCounts = {};
+  if (!db.ratings) db.ratings = {};
+  if (!db.searchHistory) db.searchHistory = {};
+  if (!db.popularSearchTerms) db.popularSearchTerms = {};
+  if (!db.continueWatching) db.continueWatching = {};
 
   // Initialize syncGroups if not present, ensuring global room exists
   if (!db.syncGroups) db.syncGroups = {};
@@ -1146,7 +1167,9 @@ async function startServer() {
   // now" counts. Sessions that stop pinging for longer than MOVIE_VIEWER_TTL_MS
   // are pruned, so liveViewers reflects ACTUAL concurrent viewers.
   const movieViewerSessions = new Map<string, Map<string, number>>();
-  const MOVIE_VIEWER_TTL_MS = 20000;
+  // TTL is a bit larger than the 20s client heartbeat so a session can never be
+  // pruned between two consecutive pings (prune runs every 10s).
+  const MOVIE_VIEWER_TTL_MS = 25000;
   // Sessions already counted toward a movie's lifetime `views` (deduped once).
   const countedViewSessions = new Set<string>();
   setInterval(() => {
@@ -1170,6 +1193,154 @@ async function startServer() {
   function setMoviesCache(updater: (prev: any[]) => any[]) {
     moviesCache = updater(moviesCache);
   }
+
+  // ================================
+  // MOVIE METRICS HELPERS
+  // (user ratings, favorite counts, trending score)
+  // ================================
+
+  // Aggregate CinemaChat user rating for a movie: mean of all per-user scores.
+  const getMovieRating = (movieId: string): { ccRating: number; ratingCount: number } => {
+    const ratings = db.ratings?.[movieId] as Record<string, number> | undefined;
+    if (!ratings) return { ccRating: 0, ratingCount: 0 };
+    const scores: number[] = [];
+    for (const v of Object.values(ratings)) {
+      if (typeof v === 'number' && v >= 0) scores.push(v);
+    }
+    if (scores.length === 0) return { ccRating: 0, ratingCount: 0 };
+    const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+    return { ccRating: Math.round(avg * 10) / 10, ratingCount: scores.length };
+  };
+
+  // Favorite count for a movie (cached + always derivable from db.favorites).
+  const getFavoriteCount = (movieId: string): number => {
+    if (typeof db.favoriteCounts?.[movieId] === 'number') return db.favoriteCounts[movieId];
+    let count = 0;
+    for (const uid in db.favorites || {}) {
+      if (db.favorites[uid]?.[movieId]) count++;
+    }
+    return count;
+  };
+
+  // Rebuild the cached per-movie favorite counts from db.favorites. Called at
+  // boot and whenever a favorite is added/removed.
+  const rebuildFavoriteCounts = () => {
+    const counts: Record<string, number> = {};
+    for (const uid in db.favorites || {}) {
+      for (const movieId in db.favorites[uid]) {
+        counts[movieId] = (counts[movieId] || 0) + 1;
+      }
+    }
+    db.favoriteCounts = counts;
+  };
+
+  // Lifetime view count for a movie. `viewsCounts` is authoritative (it also
+  // covers Firestore-only movies), with the movie's own `views` as a fallback
+  // so pre-existing data is never lost.
+  const getViewsCount = (movieId: string): number => {
+    if (typeof db.viewsCounts?.[movieId] === 'number') {
+      return db.viewsCounts[movieId];
+    }
+    const movie = db.manualMovies.find((m: any) => m.id === movieId);
+    return movie ? Number(movie.views) || 0 : 0;
+  };
+
+  // Rebuild the cached per-movie view counts from the movies' existing `views`
+  // plus any counts already tracked server-side. Called at boot so cards show
+  // real totals immediately, even before the first new view arrives.
+  const rebuildViewsCounts = () => {
+    const counts: Record<string, number> = { ...(db.viewsCounts || {}) };
+    for (const m of db.manualMovies || []) {
+      const v = Number(m.views) || 0;
+      if (v > 0 && v > (counts[m.id] || 0)) counts[m.id] = v;
+    }
+    db.viewsCounts = counts;
+  };
+
+  // Normalize an arbitrary number into 0..1 using a soft log1p scale so huge
+  // outliers (a movie with 10k views) can never drown out every other signal.
+  const normLog = (n: number): number => {
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return Math.min(1, Math.log1p(n) / Math.log1p(1000));
+  };
+
+  // Trending score: live viewers (heaviest), likes, favorites, lifetime views,
+  // IMDb rating, and a recency boost for recently published movies. Scores are
+  // computed on demand so rankings always reflect the current live activity.
+  const computeTrendingScore = (movie: any): number => {
+    const movieId = String(movie?.id || '');
+    const live = movieViewerSessions.get(movieId)?.size || 0;
+    const likes = Number(movie?.likes) || 0;
+    const favoriteCount = getFavoriteCount(movieId);
+    const views = getViewsCount(movieId);
+    const imdb = parseFloat(String(movie?.rating || ''));
+    const imdbScore = Number.isFinite(imdb) && imdb > 0 ? imdb / 10 : 0;
+
+    const liveBoost = Math.min(1, live / 20);          // 20 concurrent viewers = max live boost
+    const likeScore = normLog(likes) * 0.8;
+    const favScore = normLog(favoriteCount) * 0.8;
+    const viewScore = normLog(views) * 0.6;
+
+    let recencyBoost = 0;
+    if (movie?.date) {
+      const ageDays = (Date.now() - new Date(movie.date).getTime()) / 86400000;
+      if (Number.isFinite(ageDays) && ageDays >= 0) recencyBoost = Math.max(0, 1 - ageDays / 60) * 0.4;
+    }
+
+    return Math.round(
+      ((liveBoost * 1.0 + likeScore * 0.9 + favScore * 0.9 + viewScore * 0.6 + imdbScore * 0.8 + recencyBoost) / 4.6) * 1000,
+    ) / 10;
+  };
+
+  // Attach every dynamic metric a card needs to one movie object.
+  const enrichMovie = (movie: any): any => {
+    const id = String(movie?.id || '');
+    const sessions = movieViewerSessions.get(id);
+    const { ccRating, ratingCount } = getMovieRating(id);
+    const trendingScore = computeTrendingScore(movie);
+    return {
+      ...movie,
+      liveViewers: sessions ? sessions.size : 0,
+      likes: Number(movie?.likes) || 0,
+      views: getViewsCount(id),
+      favoriteCount: getFavoriteCount(id),
+      ccRating,
+      ratingCount,
+      trendingScore,
+      isTrending: trendingScore >= 1,
+    };
+  };
+
+  // Detect the highest live-viewer movie so cards can render the 🔥 #1 Live
+  // badge without a client round-trip.
+  const getTopLiveMovieId = (): string => {
+    let topId = '';
+    let top = 0;
+    for (const [id, sessions] of movieViewerSessions) {
+      if (sessions.size > top) {
+        top = sessions.size;
+        topId = id;
+      }
+    }
+    return top ? topId : '';
+  };
+
+  // Sortable list of the most popular movies by live viewers or trending score.
+  const getTrendingMovies = (limit = 20, sortBy: 'trending' | 'live' = 'trending'): any[] => {
+    const results = moviesCache
+      .map((m) => enrichMovie(m))
+      .filter((m) => m.trendingScore > 0)
+      .sort((a, b) =>
+        sortBy === 'live' ? b.liveViewers - a.liveViewers : b.trendingScore - a.trendingScore,
+      )
+      .slice(0, limit);
+    return results;
+  };
+
+  // Rebuild the favorite-count cache from persisted favorites at boot.
+  try { rebuildFavoriteCounts(); } catch (e) { /* favorites may be empty */ }
+  // Rebuild the view-count cache from persisted movie data at boot.
+  try { rebuildViewsCounts(); } catch (e) { /* views may be empty */ }
 
   // Social Links updated for WhatsApp
   let socialLinks = {
@@ -1252,6 +1423,7 @@ async function startServer() {
     '/api/status',
     '/api/health',
     '/api/movies',
+    '/api/search/',
     '/api/dms/',
   ];
   // Read-only POST probes (bulk live metrics) are also polling noise.
@@ -2570,14 +2742,19 @@ async function startServer() {
         .map((s: string) => s.trim())
         .filter((s: string) => s.length > 0 && s.length <= 128 && /^[a-zA-Z0-9_-]+$/.test(s))
         .slice(0, 400);
-      const stats: Record<string, { liveViewers: number; views: number; likes: number }> = {};
+      const stats: Record<string, { liveViewers: number; views: number; likes: number; ccRating: number; ratingCount: number; favoriteCount: number; trendingScore: number }> = {};
       for (const id of ids) {
         const sessions = movieViewerSessions.get(id);
         const movie = db.manualMovies.find((m: any) => m.id === id);
+        const { ccRating, ratingCount } = getMovieRating(id);
         stats[id] = {
           liveViewers: sessions ? sessions.size : 0,
-          views: movie ? Number(movie.views) || 0 : 0,
+          views: getViewsCount(id),
           likes: movie ? Number(movie.likes) || 0 : 0,
+          ccRating,
+          ratingCount,
+          favoriteCount: getFavoriteCount(id),
+          trendingScore: movie ? computeTrendingScore(movie) : 0,
         };
       }
       res.json({ status: 'ok', stats });
@@ -2595,11 +2772,18 @@ async function startServer() {
     try {
       const movieId = String((req.params as any).movieId || '').trim();
       const session = String((req.body as any)?.session || '').trim();
+      // Device identity (persistent, same across tabs) — used ONLY to dedupe
+      // lifetime `views`. Live concurrent viewers are keyed by `session` so two
+      // tabs of the same device count as two live viewers.
+      const deviceId = String((req.body as any)?.deviceId || '').trim();
       if (!movieId || movieId.length > 128 || !/^[a-zA-Z0-9_-]+$/.test(movieId)) {
         return res.status(400).json({ ok: false, error: 'Invalid movie id' });
       }
       if (!session || session.length > 64) {
         return res.status(400).json({ ok: false, error: 'Invalid session' });
+      }
+      if (deviceId && deviceId.length > 128) {
+        return res.status(400).json({ ok: false, error: 'Invalid device id' });
       }
 
       const now = Date.now();
@@ -2614,24 +2798,28 @@ async function startServer() {
         if (now - lastSeen > MOVIE_VIEWER_TTL_MS) sessions.delete(sid);
       }
 
-      // Lifetime view count: count each session once, persist to the DB + cache.
-      const viewKey = `${movieId}:${session}`;
+      // Lifetime view count: count each session once per DEVICE, persist to the
+      // DB + cache. `viewsCounts` is the single source of truth so movies that
+      // only exist in Firestore (not in manualMovies) also accumulate real views.
+      const viewKey = `${movieId}:${deviceId || session}`;
       let views = 0;
       const movie = db.manualMovies.find((m: any) => m.id === movieId);
       if (!countedViewSessions.has(viewKey)) {
         countedViewSessions.add(viewKey);
+        views = getViewsCount(movieId) + 1;
+        db.viewsCounts = db.viewsCounts || {};
+        db.viewsCounts[movieId] = views;
         if (movie) {
-          movie.views = (Number(movie.views) || 0) + 1;
-          views = movie.views;
-          await saveDB(db);
+          movie.views = views;
           setMoviesCache(prev =>
             prev.map((m: any) =>
-              m.id === movieId ? { ...m, views: movie.views } : m
+              m.id === movieId ? { ...m, views } : m
             )
           );
         }
-      } else if (movie?.views) {
-        views = Number(movie.views) || 0;
+        await saveDB(db);
+      } else {
+        views = getViewsCount(movieId);
       }
 
       res.json({ ok: true, movieId, viewers: sessions.size, views });
@@ -2677,6 +2865,55 @@ async function startServer() {
     }
   });
 
+  // --- USER RATINGS (CinemaChat rating) ---
+  // Persists a per-user score (1-10) on a movie and returns the aggregated
+  // CinemaChat rating + how many users rated it. Ratings never overwrite the
+  // movie's IMDb `rating` field — they are stored separately and displayed
+  // alongside it on every card.
+  app.post('/api/movies/:movieId/rate', async (req, res) => {
+    try {
+      const movieId = String((req.params as any).movieId || '').trim();
+      const uid = String((req.body as any)?.uid || '').trim();
+      const rawScore = Number((req.body as any)?.score);
+      if (!movieId || movieId.length > 128) {
+        return res.status(400).json({ ok: false, error: 'Invalid movie id' });
+      }
+      if (!uid || uid.length > 128) {
+        return res.status(400).json({ ok: false, error: 'Missing uid' });
+      }
+      if (!Number.isFinite(rawScore) || rawScore < 0.5 || rawScore > 10) {
+        return res.status(400).json({ ok: false, error: 'Score must be between 0.5 and 10' });
+      }
+      const score = Math.round(rawScore * 2) / 2; // snap to half-stars
+
+      if (!db.ratings) db.ratings = {};
+      if (!db.ratings[movieId]) db.ratings[movieId] = {};
+      db.ratings[movieId][uid] = score;
+
+      const { ccRating, ratingCount } = getMovieRating(movieId);
+      await saveDB(db);
+      res.json({ ok: true, movieId, ccRating, ratingCount, userRating: score });
+    } catch (err: any) {
+      console.error(`[rate] ${err?.message || err}`);
+      res.status(500).json({ ok: false, error: 'Internal server error' });
+    }
+  });
+
+  // Fetch a movie's aggregated rating + the calling user's own score.
+  app.get('/api/movies/:movieId/rating', (req, res) => {
+    try {
+      const movieId = String((req.params as any).movieId || '').trim();
+      const uid = typeof req.query.uid === 'string' ? req.query.uid.trim() : '';
+      const { ccRating, ratingCount } = getMovieRating(movieId);
+      const userRating = uid && db.ratings?.[movieId]?.[uid]
+        ? db.ratings[movieId][uid]
+        : 0;
+      res.json({ ok: true, movieId, ccRating, ratingCount, userRating });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'Internal server error' });
+    }
+  });
+
   // --- FAVORITES ---
   // Per-user favorite movie ids, persisted in db.favorites (movieId -> addedAt)
   // and mirrored onto the user record so the frontend can hydrate both stores.
@@ -2712,8 +2949,9 @@ async function startServer() {
           new Set([...(Array.isArray(user.favorites) ? user.favorites : []), movieId])
         );
       }
+      rebuildFavoriteCounts();
       await saveDB(db);
-      res.json({ ok: true, movieId, added: true });
+      res.json({ ok: true, movieId, added: true, favoriteCount: db.favoriteCounts?.[movieId] || 0 });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err?.message || 'Internal server error' });
     }
@@ -2734,8 +2972,9 @@ async function startServer() {
       if (user && Array.isArray(user.favorites)) {
         user.favorites = user.favorites.filter((id: string) => id !== movieId);
       }
+      rebuildFavoriteCounts();
       await saveDB(db);
-      res.json({ ok: true, movieId, added: false });
+      res.json({ ok: true, movieId, added: false, favoriteCount: db.favoriteCounts?.[movieId] || 0 });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err?.message || 'Internal server error' });
     }
@@ -4781,17 +5020,10 @@ async function startServer() {
       let results: any[] = [...moviesCache];
 
       // Enrich with ephemeral live-viewer counts + normalized metric fields so
-      // cards can show "watching now" badges and like counts without a separate
-      // request. Live counts live in memory; likes/views persist in db.json.
-      results = results.map((m: any) => {
-        const sessionMap = movieViewerSessions.get(m.id);
-        return {
-          ...m,
-          liveViewers: sessionMap ? sessionMap.size : 0,
-          likes: Number(m.likes) || 0,
-          views: Number(m.views) || 0,
-        };
-      });
+      // cards can show "watching now" badges, CinemaChat ratings, favorite counts
+      // and trending scores without a separate request. Live counts live in
+      // memory; likes/views/ratings/favorites persist in db.json.
+      results = results.map((m: any) => enrichMovie(m));
       
       const ytRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
       const heroUrl = db.heroConfig.heroVideoUrl;
@@ -4812,7 +5044,14 @@ async function startServer() {
         date: new Date().toISOString(),
         tags: ['Trailer', 'Trailers'],
         whatsappLink: socialLinks.group || 'https://chat.whatsapp.com/Cinmachat',
-        heroPlaylist: heroPlaylist
+        heroPlaylist: heroPlaylist,
+        liveViewers: movieViewerSessions.get('hero-promo')?.size || 0,
+        likes: 0,
+        views: 0,
+        ccRating: 0,
+        ratingCount: 0,
+        favoriteCount: 0,
+        trendingScore: 0,
       };
 
       // Convert to a Map then back to array to ensure ID uniqueness
@@ -4821,12 +5060,441 @@ async function startServer() {
       );
       
       console.log(`[${new Date().toISOString()}] SUCCESS: Returning ${uniqueResults.length} movies from local DB`);
-      res.json({ status: 'ok', results: uniqueResults });
+      res.json({
+        status: 'ok',
+        results: uniqueResults,
+        topLiveId: getTopLiveMovieId(),
+      });
     } catch (err) {
       console.error('CRITICAL ERROR in /api/movies:', err);
       res.status(500).json({ status: 'error', error: 'Internal Server Error' });
     }
   });
+
+  // Trending ranking (server-computed): the top movies by trending score or live
+  // viewers. Lets the client render a "sort by live viewers / trending" control
+  // without re-implementing the algorithm.
+  app.get('/api/movies/trending', (req, res) => {
+    try {
+      const limitRaw = parseInt(String(req.query.limit || '20'), 10);
+      const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 100) : 20;
+      const sortBy = req.query.sort === 'live' ? 'live' : 'trending';
+      res.json({ status: 'ok', results: getTrendingMovies(limit, sortBy), topLiveId: getTopLiveMovieId() });
+    } catch (err: any) {
+      console.error('[movies/trending]', err?.message || err);
+      res.status(500).json({ status: 'error', error: 'Internal server error' });
+    }
+  });
+
+  // ================================
+  // SMART SEARCH SYSTEM
+  // (fuzzy title search + genre filter + AI semantic search + history/trending)
+  // ================================
+
+  // Normalize a search string for fuzzy matching (case + whitespace folding).
+  const normalizeSearch = (s: string): string =>
+    String(s || '')
+      .toLowerCase()
+      .replace(/[\u064B-\u065F\u0670]/g, '') // strip Arabic diacritics
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  // Damerau-Levenshtein distance between two strings (max 1 substitution
+  // swap). Used for typo-tolerant title matching.
+  const editDistance = (a: string, b: string): number => {
+    const m = a.length;
+    const n = b.length;
+    if (m === 0) return n;
+    if (n === 0) return m;
+    let prev = new Array<number>(n + 1);
+    let curr = new Array<number>(n + 1);
+    for (let j = 0; j <= n; j++) prev[j] = j;
+    for (let i = 1; i <= m; i++) {
+      curr[0] = i;
+      for (let j = 1; j <= n; j++) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+        if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+          curr[j] = Math.min(curr[j], prev[j - 2] + 1);
+        }
+      }
+      const tmp = prev;
+      prev = curr;
+      curr = tmp;
+    }
+    return prev[n];
+  };
+
+  // Score a movie against a query. Returns 0 when no meaningful match and a
+  // higher number for stronger matches (exact prefix > substring > token match
+  // > fuzzy/typo match). Genres (tags/category) also match so "Action" works.
+  const fuzzyMatchMovie = (movie: any, query: string): number => {
+    const q = normalizeSearch(query);
+    if (!q) return 0;
+    const title = normalizeSearch(String(movie?.title || ''));
+    const tags = (Array.isArray(movie?.tags) ? movie.tags : [])
+      .concat(movie?.category ? [movie.category] : [])
+      .map((t: any) => normalizeSearch(String(t)))
+      .filter(Boolean);
+    const description = normalizeSearch(String(movie?.description || ''));
+
+    if (!title && tags.length === 0) return 0;
+
+    // Exact / prefix match on the title is the strongest signal.
+    if (title === q) return 100;
+    if (title.startsWith(q)) return 80;
+    if (title.includes(q)) return 70;
+
+    // Whole-word prefix match inside the title (e.g. "the dark" -> "The Dark Knight").
+    const titleWords = title.split(' ');
+    if (titleWords.some((w) => w === q)) return 65;
+    if (titleWords.some((w) => w.startsWith(q))) return 55;
+
+    // Fuzzy typo tolerance: allow the whole-title edit distance up to ~25%.
+    const titleDist = editDistance(title, q);
+    if (q.length >= 4 && titleDist <= Math.max(1, Math.floor(q.length * 0.25))) return 50;
+
+    // Tag / genre match.
+    if (tags.some((t) => t === q || t.startsWith(q) || t.includes(q))) return 60;
+    if (tags.some((t) => {
+      const d = editDistance(t, q);
+      return q.length >= 3 && d <= Math.max(1, Math.floor(q.length * 0.3));
+    })) return 45;
+
+    // Description keyword match (weaker).
+    if (q.length >= 5 && description.includes(q)) return 35;
+
+    // Token-level partial match: e.g. query "dark knight" matches when both
+    // tokens appear anywhere in the title.
+    const tokens = q.split(' ').filter((t) => t.length >= 2);
+    if (tokens.length > 1 && tokens.every((t) => title.includes(t))) return 75;
+    if (tokens.length > 1 && tokens.some((t) => title.includes(t))) return 30;
+
+    return 0;
+  };
+
+  // Rank the full catalog against a query, merging movie + genre matches.
+  const searchMovies = (query: string, genres: string[], limit = 50): any[] => {
+    const q = normalizeSearch(query);
+    const genreSet = new Set(genres.map((g) => normalizeSearch(g)).filter(Boolean));
+    let scored = moviesCache
+      .map((m: any) => {
+        let score = q ? fuzzyMatchMovie(m, q) : 1;
+        const movieTags = (Array.isArray(m.tags) ? m.tags : [])
+          .concat(m.category ? [m.category] : [])
+          .map((t: any) => normalizeSearch(String(t)));
+        // Genre filter (multi-select OR) — always applied when provided.
+        if (genreSet.size > 0) {
+          const hasGenre = movieTags.some((t) => genreSet.has(t)) ||
+            (genreSet.size === 1 && movieTags.some((t) => t.includes([...genreSet][0])));
+          if (!hasGenre) score = 0;
+          else if (!q) score = 60; // pure genre browse
+        }
+        return { movie: enrichMovie(m), score };
+      })
+      .filter((x: any) => x.score > 0)
+      .sort((a: any, b: any) => b.score - a.score || b.movie.trendingScore - a.movie.trendingScore)
+      .slice(0, limit)
+      .map((x: any) => x.movie);
+    return scored;
+  };
+
+  // Search endpoints are registered before the /api/movies/:movieId routes so a
+  // path segment can never be captured as a movie id.
+  app.get('/api/search', (req, res) => {
+    try {
+      const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+      const rawGenres = Array.isArray(req.query.genres)
+        ? req.query.genres
+        : req.query.genres ? [req.query.genres] : [];
+      const genres = rawGenres
+        .map((g) => String(g).trim())
+        .filter((g) => g.length > 0 && g.length <= 64);
+      const limitRaw = parseInt(String(req.query.limit || '50'), 10);
+      const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 50;
+      if (q.length > 128) {
+        return res.status(400).json({ status: 'error', error: 'Query too long' });
+      }
+      const results = searchMovies(q, genres, limit);
+      // Suggestions double as a live dropdown payload (title prefix matches).
+      const suggestions = q
+        ? moviesCache
+            .map((m: any) => ({ title: String(m.title || ''), id: String(m.id || '') }))
+            .filter((m: any) => normalizeSearch(m.title).startsWith(normalizeSearch(q)))
+            .slice(0, 8)
+        : [];
+      res.json({ status: 'ok', query: q, genres, results, suggestions });
+    } catch (err: any) {
+      console.error('[search]', err?.message || err);
+      res.status(500).json({ status: 'error', error: 'Internal server error' });
+    }
+  });
+
+  // Record a search term for a given identity (uid or device id) and update the
+  // popular-terms ranking used by "trending searches".
+  app.post('/api/search/history', async (req, res) => {
+    try {
+      const query = String((req.body as any)?.query || '').trim().slice(0, 128);
+      const identity = String((req.body as any)?.identity || 'guest').trim().slice(0, 128);
+      if (!query) return res.status(400).json({ ok: false, error: 'Missing query' });
+      if (!db.searchHistory) db.searchHistory = {};
+      if (!db.searchHistory[identity]) db.searchHistory[identity] = [];
+      db.searchHistory[identity].unshift({ query, at: Date.now() });
+      db.searchHistory[identity] = db.searchHistory[identity].slice(0, 50);
+      if (!db.popularSearchTerms) db.popularSearchTerms = {};
+      const term = normalizeSearch(query);
+      if (term) db.popularSearchTerms[term] = (db.popularSearchTerms[term] || 0) + 1;
+      await saveDB(db);
+      res.json({ ok: true, history: db.searchHistory[identity] });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'Internal server error' });
+    }
+  });
+
+  // Recent search history for an identity (uid or device id).
+  app.get('/api/search/history', (req, res) => {
+    try {
+      const identity = typeof req.query.identity === 'string'
+        ? req.query.identity.trim().slice(0, 128)
+        : 'guest';
+      const history = db.searchHistory?.[identity] || [];
+      res.json({ status: 'ok', history: history.slice(0, 20) });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', error: 'Internal server error' });
+    }
+  });
+
+  // Trending / popular searches ranked by aggregate usage.
+  app.get('/api/search/trending', (req, res) => {
+    try {
+      const top = (Object.entries(db.popularSearchTerms || {}) as [string, number][])
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 15)
+        .map(([term, count]) => ({ term, count }));
+      // Fall back to popular genre names when there is no recorded history yet.
+      const fallback = top.length === 0
+        ? ['ئاکشن', 'دراما', 'کۆمیدی', 'ترسناک', 'New Releases'].map((term) => ({ term, count: 0 }))
+        : [];
+      res.json({ status: 'ok', results: top.length ? top : fallback });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', error: 'Internal server error' });
+    }
+  });
+
+  // Live suggestion payload: fast prefix + fuzzy title suggestions for the
+  // search box dropdown while the user types.
+  app.get('/api/search/suggestions', (req, res) => {
+    try {
+      const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+      if (!q || q.length > 64) return res.json({ status: 'ok', results: [] });
+      const nq = normalizeSearch(q);
+      const scored = moviesCache
+        .map((m: any) => {
+          const title = normalizeSearch(String(m.title || ''));
+          let s = 0;
+          if (title.startsWith(nq)) s = 100 - (title.length - nq.length);
+          else if (title.includes(nq)) s = 60;
+          else if (q.length >= 3) {
+            const d = editDistance(title, nq);
+            if (d <= Math.max(1, Math.floor(q.length * 0.3))) s = 40;
+          }
+          return { title: String(m.title || ''), id: String(m.id || ''), image: m.image || '', year: m.year || '', s };
+        })
+        .filter((x: any) => x.s > 0)
+        .sort((a: any, b: any) => b.s - a.s)
+        .slice(0, 8)
+        .map(({ title, id, image, year }: any) => ({ title, id, image, year }));
+      res.json({ status: 'ok', results: scored });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', error: 'Internal server error' });
+    }
+  });
+
+  // --- AI SEMANTIC SEARCH ---
+  // Turns a natural-language description (English, Kurdish, Arabic, ...) into a
+  // ranked list of movies. Gemini understands the MEANING of the query, extracts
+  // topics/genres + likely movie titles, and the local fuzzy engine then ranks
+  // the catalog. Falls back to keyword search when the API is unavailable.
+  const aiSearchCache = new Map<string, { at: number; results: any[] }>();
+  const AI_SEARCH_CACHE_TTL_MS = 10 * 60 * 1000;
+
+  const callAiSearch = async (query: string): Promise<{ keywords: string[]; genres: string[]; titles: string[] }> => {
+    const apiKey = process.env.GEMINI_API_KEY;
+    const fallback: { keywords: string[]; genres: string[]; titles: string[] } = { keywords: [], genres: [], titles: [] };
+    if (!apiKey) return fallback;
+
+    const prompt =
+      `You are a movie search engine for a Kurdish streaming platform. Given the user's ` +
+      `natural-language description below, extract:\n` +
+      `1. "keywords": up to 8 topical keywords that describe the film (e.g. space survival, zombies, time travel).\n` +
+      `2. "genres": up to 4 matching genres (use standard genre names like Action, Drama, Comedy, Animation, Sci-Fi, Romance, Adventure, Crime, Fantasy, Thriller, Horror, Documentary, Family, Mystery, War).\n` +
+      `3. "titles": up to 4 real movie/tv titles this description most likely refers to (their exact common English names).\n` +
+      `Respond with STRICT JSON only — no markdown, no commentary — in this exact shape:\n` +
+      `{"keywords":[],"genres":[],"titles":[]}\n` +
+      `User description: ${query.slice(0, 500)}`;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0.2, responseMimeType: 'application/json' },
+          }),
+          signal: controller.signal,
+        },
+      );
+      if (!response.ok) return fallback;
+      const data = await response.json();
+      const text = data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join('') || '';
+      const parsed = JSON.parse(text);
+      return {
+        keywords: Array.isArray(parsed.keywords) ? parsed.keywords.map(String).slice(0, 8) : [],
+        genres: Array.isArray(parsed.genres) ? parsed.genres.map(String).slice(0, 4) : [],
+        titles: Array.isArray(parsed.titles) ? parsed.titles.map(String).slice(0, 4) : [],
+      };
+    } catch (e: any) {
+      if (controller.signal.aborted) console.warn('[ai-search] Gemini timed out; falling back to keyword search');
+      return fallback;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const semanticScoreMovie = (movie: any, parsed: { keywords: string[]; genres: string[]; titles: string[] }): number => {
+    const title = normalizeSearch(String(movie?.title || ''));
+    const description = normalizeSearch(String(movie?.description || ''));
+    const tags = (Array.isArray(movie?.tags) ? movie.tags : [])
+      .concat(movie?.category ? [movie.category] : [])
+      .map((t: any) => normalizeSearch(String(t)));
+
+    let score = 0;
+    for (const t of parsed.titles) {
+      const nt = normalizeSearch(t);
+      if (nt && title.includes(nt)) score += 60;
+    }
+    for (const g of parsed.genres) {
+      const ng = normalizeSearch(g);
+      if (ng && tags.some((tag) => tag.includes(ng) || ng.includes(tag))) score += 25;
+    }
+    for (const k of parsed.keywords) {
+      const nk = normalizeSearch(k);
+      if (!nk || nk.length < 2) continue;
+      if (title.includes(nk)) score += 20;
+      if (description.includes(nk)) score += 12;
+      if (tags.some((tag) => tag.includes(nk))) score += 10;
+    }
+    return score;
+  };
+
+  app.post('/api/search/ai', async (req, res) => {
+    try {
+      const query = String((req.body as any)?.query || '').trim();
+      if (!query || query.length > 500) {
+        return res.status(400).json({ status: 'error', error: 'Query must be 1-500 characters' });
+      }
+      const cacheKey = normalizeSearch(query);
+      const cached = aiSearchCache.get(cacheKey);
+      if (cached && Date.now() - cached.at < AI_SEARCH_CACHE_TTL_MS) {
+        return res.json({ status: 'ok', query, ai: true, cached: true, results: cached.results });
+      }
+
+      const parsed = await callAiSearch(query);
+      let results: any[] = [];
+      if (parsed.keywords.length || parsed.genres.length || parsed.titles.length) {
+        const scored = moviesCache
+          .map((m: any) => ({ movie: enrichMovie(m), score: semanticScoreMovie(m, parsed) }))
+          .filter((x: any) => x.score > 0)
+          .sort((a: any, b: any) => b.score - a.score || b.movie.trendingScore - a.movie.trendingScore)
+          .slice(0, 24)
+          .map((x: any) => x.movie);
+        results = scored;
+      }
+
+      // Fallback: even when Gemini succeeds but ranks nothing (very new movie),
+      // a plain keyword fuzzy search over the query still returns candidates.
+      if (results.length === 0) {
+        results = searchMovies(query, [], 12);
+      }
+
+      aiSearchCache.set(cacheKey, { at: Date.now(), results });
+      if (aiSearchCache.size > 200) aiSearchCache.delete(aiSearchCache.keys().next().value);
+
+      res.json({
+        status: 'ok',
+        query,
+        ai: parsed.keywords.length > 0,
+        keywords: parsed.keywords,
+        genres: parsed.genres,
+        titles: parsed.titles,
+        results,
+      });
+    } catch (err: any) {
+      console.error('[search/ai]', err?.message || err);
+      res.status(500).json({ status: 'error', error: 'Internal server error' });
+    }
+  });
+
+  // --- CONTINUE WATCHING ---
+  // Persists per-movie playback progress per identity so the homepage can offer
+  // a "Continue Watching" row. Progress is best-effort (never blocks playback).
+  app.post('/api/movies/:movieId/progress', async (req, res) => {
+    try {
+      const movieId = String((req.params as any).movieId || '').trim();
+      const identity = String((req.body as any)?.identity || 'guest').trim().slice(0, 128);
+      const progress = Number((req.body as any)?.progress);
+      const duration = Number((req.body as any)?.duration);
+      if (!movieId || movieId.length > 128) {
+        return res.status(400).json({ ok: false, error: 'Invalid movie id' });
+      }
+      if (!Number.isFinite(progress) || progress < 0) {
+        return res.status(400).json({ ok: false, error: 'Invalid progress' });
+      }
+      if (!db.continueWatching) db.continueWatching = {};
+      if (!db.continueWatching[identity]) db.continueWatching[identity] = {};
+      db.continueWatching[identity][movieId] = {
+        progress: Math.round(progress),
+        duration: Number.isFinite(duration) && duration > 0 ? Math.round(duration) : 0,
+        updatedAt: Date.now(),
+      };
+      await saveDB(db);
+      res.json({ ok: true, movieId, progress: db.continueWatching[identity][movieId].progress });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'Internal server error' });
+    }
+  });
+
+  // Continue-watching entries for an identity, enriched with full movie objects.
+  app.get('/api/movies/continue-watching', (req, res) => {
+    try {
+      const identity = typeof req.query.identity === 'string'
+        ? req.query.identity.trim().slice(0, 128)
+        : 'guest';
+      const entries = db.continueWatching?.[identity] || {};
+      const list = Object.entries(entries)
+        .map(([movieId, data]: any) => {
+          const movie = db.manualMovies.find((m: any) => m.id === movieId);
+          if (!movie) return null;
+          return {
+            movie: enrichMovie(movie),
+            progress: data.progress || 0,
+            duration: data.duration || 0,
+            updatedAt: data.updatedAt || 0,
+          };
+        })
+        .filter(Boolean)
+        .sort((a: any, b: any) => b.updatedAt - a.updatedAt)
+        .slice(0, 20);
+      res.json({ status: 'ok', results: list });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', error: err?.message || 'Internal server error' });
+    }
+  });
+
 
   // Generates SRT subtitles for a movie source on the server (ffmpeg + Whisper +
   // optional Gemini translation). Used by the player's "درستکردنی وەرگێڕان" button.

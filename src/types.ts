@@ -38,6 +38,21 @@ export interface Movie {
   fileLrunUrl?: string;
   external_link?: string;
   externalMovieLink?: string;
+  // --- Live metrics / social metrics (server-enriched) ---
+  /** Total number of users who added this movie to their favorites. */
+  favoriteCount?: number;
+  /** Aggregated CinemaChat user rating (0-10, server-computed). */
+  ccRating?: number;
+  /** Number of users who rated this movie on CinemaChat. */
+  ratingCount?: number;
+  /** The current user's own CinemaChat rating for this movie (0 when none). */
+  userRating?: number;
+  /** Server-computed trending score (live viewers + likes + favorites + views + IMDb + recency). */
+  trendingScore?: number;
+  /** Language of the movie (e.g. Kurdish, English, Arabic, Turkish). */
+  language?: string;
+  /** IMDb rating passed through for display (alias of rating). */
+  imdbRating?: string;
 }
 
 export interface SocialUser {

@@ -22,6 +22,13 @@ export default defineConfig(({mode}) => {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Re-enabled HMR with port 0 to allow Vite to find an available port
       hmr: { port: 0 },
+      // db.json is persisted by the Express server on almost every interaction
+      // (progress saves, likes, chat...). Watching it makes Vite full-reload the
+      // page on every movie open — which resets scroll + closes the modal. Ignore
+      // it so HMR only reacts to actual source changes.
+      watch: {
+        ignored: ['**/db.json'],
+      },
       proxy: {
         '/api': {
           target: 'http://localhost:3001',
