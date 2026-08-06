@@ -627,6 +627,24 @@ process.on('unhandledRejection', (reason: any) => {
 
 const DB_PATH = path.join(process.cwd(), 'db.json');
 
+// Firestore is the durable cross-deploy store for movie view counts. Render's
+// filesystem is ephemeral — db.json (and its viewsCounts) resets on every
+// deploy/restart, which wiped the lifetime counters in production. The counters
+// are written through to Firestore and re-hydrated at boot so they survive
+// redeploys. Same project + public web API key the client already uses
+// (src/lib/firebase.ts); all overridable via env (e.g. local QA isolation).
+const FIREBASE_PROJECT_ID =
+  process.env.FIREBASE_PROJECT_ID ||
+  process.env.VITE_FIREBASE_PROJECT_ID ||
+  'gen-lang-client-0240212572';
+const FIREBASE_API_KEY =
+  process.env.FIREBASE_API_KEY ||
+  process.env.VITE_FIREBASE_API_KEY ||
+  'AIzaSyDQBu-FwP9w7O6KqaWQOsqyTP6NudH9eBI';
+// Doc that stores { counts: { movieId: views } } in the `config` collection
+// (rules: allow read, write: if true — no deploy of firestore.rules needed).
+const MOVIE_VIEWS_DOC = process.env.MOVIE_VIEWS_DOC || 'config/movieViews';
+
 // Initial DB Structure
 const INITIAL_DB = {
   admins: [
@@ -716,6 +734,18 @@ const INITIAL_BROADCAST_ROOM = {
   updatedAt: new Date().toISOString()
 };
 
+const INITIAL_GLOBAL_ROOM = {
+  id: 'global_room_official',
+  name: 'ژووری سەرەکی',
+  hostCode: 'GLOBAL_HOST',
+  currentMovieUrl: '',
+  isPlaying: false,
+  currentTime: 0,
+  activeUsers: [],
+  chatMessages: [],
+  updatedAt: new Date().toISOString()
+};
+
 async function loadDB() {
   try {
     const data = await fs.readFile(DB_PATH, 'utf-8');
@@ -783,6 +813,192 @@ async function fetchWithTimeout(url: string, options: any = {}, timeout = 5000) 
     throw error;
   }
 }
+
+// --- Durable movie view counts (Firestore) ---
+// Render's ephemeral filesystem resets db.json on every deploy/restart, which
+// wiped the lifetime view counters in production. These helpers persist
+// viewsCounts to Firestore and re-hydrate them at boot so the counters survive
+// redeploys (firestore.rules allows public validated writes on `config`).
+const firestoreDocUrl = (docPath: string, query: string) =>
+  `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+    FIREBASE_PROJECT_ID
+  )}/databases/(default)/documents/${docPath}?key=${encodeURIComponent(
+    FIREBASE_API_KEY
+  )}${query}`;
+
+// Load the persisted per-movie view counts. Returns {} when the doc has never
+// been written (e.g. first deploy) so boot can proceed with the local seed.
+const loadMovieViewsFromFirestore = async (): Promise<Record<string, number>> => {
+  const res = await fetchWithTimeout(
+    firestoreDocUrl(MOVIE_VIEWS_DOC, ''),
+    { headers: { Accept: 'application/json' } },
+    8000
+  );
+  if (res.status === 404) return {};
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  const fields = data?.fields?.counts?.mapValue?.fields;
+  if (!fields || typeof fields !== 'object') return {};
+  const counts: Record<string, number> = {};
+  for (const [key, val] of Object.entries(fields)) {
+    const n = Number((val as any)?.integerValue ?? (val as any)?.doubleValue);
+    if (Number.isFinite(n) && n >= 0) counts[key] = n;
+  }
+  return counts;
+};
+
+// Persist the current view counts to Firestore (best-effort, fire-and-forget:
+// a Firestore hiccup must never break the view endpoint).
+const saveMovieViewsToFirestore = (counts: Record<string, number>): void => {
+  const fields: Record<string, any> = {};
+  for (const [key, value] of Object.entries(counts)) {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) continue;
+    fields[key] = Number.isInteger(value)
+      ? { integerValue: String(value) }
+      : { doubleValue: value };
+  }
+  const url = firestoreDocUrl(
+    MOVIE_VIEWS_DOC,
+    '&updateMask.fieldPaths=counts&updateMask.fieldPaths=updatedAt'
+  );
+  fetchWithTimeout(
+    url,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fields: {
+          counts: { mapValue: { fields } },
+          updatedAt: { stringValue: new Date().toISOString() }
+        }
+      })
+    },
+    8000
+  )
+    .then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    })
+    .catch((err: any) =>
+      console.warn('[views] Firestore write-through failed:', err?.message || err)
+    );
+};
+
+// --- Durable movie catalog sync (Firestore → server cache) ---
+// The homepage catalog lives in Firestore (movies/{id}) — the admin panel writes
+// every movie there from the browser. The backend used to serve only the local
+// db.json manual list, so /api/movies returned a near-empty payload in production
+// (Render's filesystem is ephemeral) and the frontend had to block on a full
+// Firestore read before a single card could render. This mirrors the Firestore
+// catalog into an in-memory server cache merged over the local manual list, so
+// /api/movies returns the complete catalog instantly and the homepage can paint
+// cards immediately, then refine live through the client's own Firestore listener.
+const firestoreMoviesCache: Record<string, any> = {};
+
+// Convert a single Firestore REST "Value" object into a plain JS value
+// (string/number/boolean/array/map/timestamp), so a Firestore movie doc can be
+// re-serialized by /api/movies without the Firestore wire format.
+const firestoreValueToPlain = (val: any): any => {
+  if (!val || typeof val !== 'object') return null;
+  if (val.nullValue !== undefined) return null;
+  if (val.stringValue !== undefined) return val.stringValue;
+  if (val.integerValue !== undefined) return Number(val.integerValue);
+  if (val.doubleValue !== undefined) return Number(val.doubleValue);
+  if (val.booleanValue !== undefined) return val.booleanValue;
+  if (val.timestampValue !== undefined) return val.timestampValue;
+  if (val.referenceValue !== undefined) return val.referenceValue;
+  if (Array.isArray(val.arrayValue?.values)) return val.arrayValue.values.map(firestoreValueToPlain);
+  if (val.mapValue?.fields) {
+    const out: Record<string, any> = {};
+    for (const [key, value] of Object.entries(val.mapValue.fields)) {
+      out[key] = firestoreValueToPlain(value);
+    }
+    return out;
+  }
+  return null;
+};
+
+const firestoreMoviesUrl = (query: string) =>
+  `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+    FIREBASE_PROJECT_ID
+  )}/databases/(default)/documents/movies?key=${encodeURIComponent(
+    FIREBASE_API_KEY
+  )}${query}`;
+
+// One-shot read of the Firestore movies collection (capped at 300 docs — the
+// whole catalog is far below that). Returns plain movie objects keyed by doc id.
+const loadFirestoreMovies = async (): Promise<any[]> => {
+  const res = await fetchWithTimeout(
+    firestoreMoviesUrl('&pageSize=300'),
+    { headers: { Accept: 'application/json' } },
+    12000
+  );
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  const docs = Array.isArray(data?.documents) ? data.documents : [];
+  return docs.map((doc: any) => {
+    const id = String((doc?.name || '').split('/').pop() || '');
+    const fields = (doc?.fields && typeof doc.fields === 'object') ? doc.fields : {};
+    const plain: Record<string, any> = {};
+    for (const [key, value] of Object.entries(fields)) {
+      plain[key] = firestoreValueToPlain(value);
+    }
+    return { ...plain, id };
+  });
+};
+
+// Mirror the Firestore catalog into the server cache. Purely additive: it can
+// never remove a locally-managed movie, and a sync failure is non-fatal.
+const syncFirestoreMovies = async (): Promise<void> => {
+  try {
+    const remote = await loadFirestoreMovies();
+    if (remote.length === 0) return;
+    for (const movie of remote) {
+      if (movie && typeof movie.id === 'string' && movie.id) {
+        firestoreMoviesCache[movie.id] = movie;
+      }
+    }
+    console.log(
+      `[Movies] Firestore catalog synced: ${remote.length} movie(s) in server cache.`
+    );
+  } catch (err: any) {
+    console.warn('[Movies] Firestore catalog sync failed:', err?.message || err);
+  }
+};
+
+// Stored URLs may arrive HTML-entity-encoded (e.g. "https:&#x2F;&#x2F;…?a=1&amp;b=2")
+// when a URL was pasted from an HTML source or saved through a form. If left
+// raw, a browser resolves such a string to a malformed request like
+// "https://&/" (the "&#x2F;" "&#x2F;" becomes a "#fragment" / "&" and Chrome
+// rewrites the host), so posters break and console fills with
+// ERR_NAME_NOT_RESOLVED. Decode the common entities here so consumers never
+// see encoded URLs.
+const decodeStoredUrl = (url: any): any => {
+  if (typeof url !== 'string' || !url.includes('&')) return url;
+  return url
+    .replace(/&#x2F;/gi, '/')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;/gi, "'")
+    .replace(/&#39;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>');
+};
+
+// Merge the local manual movies with the Firestore catalog into one list.
+// Firestore entries win on id conflicts because Firestore is the durable,
+// admin-controlled source of truth.
+const mergeCatalogWithFirestore = (local: any[]): any[] => {
+  const merged = new Map<string, any>();
+  const store = (movie: any) => {
+    if (!movie || typeof movie.id !== 'string') return;
+    if (movie.image) movie = { ...movie, image: decodeStoredUrl(movie.image) };
+    if (movie.posterUrl) movie = { ...movie, posterUrl: decodeStoredUrl(movie.posterUrl) };
+    merged.set(movie.id, movie);
+  };
+  for (const movie of local) store(movie);
+  for (const movie of Object.values(firestoreMoviesCache)) store(movie);
+  return Array.from(merged.values());
+};
 
 async function startServer() {
   console.log('==================================================');
@@ -1341,6 +1557,26 @@ async function startServer() {
   try { rebuildFavoriteCounts(); } catch (e) { /* favorites may be empty */ }
   // Rebuild the view-count cache from persisted movie data at boot.
   try { rebuildViewsCounts(); } catch (e) { /* views may be empty */ }
+  // Re-hydrate the durable view counts from Firestore so they survive Render
+  // deploys/restarts (Render's ephemeral filesystem resets db.json). Firestore
+  // is authoritative where it has an entry; local seeds remain a fallback.
+  try {
+    const remoteViews = await loadMovieViewsFromFirestore();
+    if (remoteViews && Object.keys(remoteViews).length > 0) {
+      db.viewsCounts = { ...(db.viewsCounts || {}), ...remoteViews };
+      console.log(
+        `[DB] Restored ${Object.keys(remoteViews).length} movie view count(s) from Firestore.`
+      );
+    }
+  } catch (err: any) {
+    console.warn('[DB] Could not load view counts from Firestore:', err?.message || err);
+  }
+
+  // Mirror the Firestore movie catalog into the server cache at boot so
+  // /api/movies can serve the full homepage instantly, then keep it fresh with
+  // a periodic re-sync (Firestore remains the durable source of truth).
+  syncFirestoreMovies();
+  setInterval(() => { syncFirestoreMovies(); }, 5 * 60 * 1000);
 
   // Social Links updated for WhatsApp
   let socialLinks = {
@@ -2745,7 +2981,7 @@ async function startServer() {
       const stats: Record<string, { liveViewers: number; views: number; likes: number; ccRating: number; ratingCount: number; favoriteCount: number; trendingScore: number }> = {};
       for (const id of ids) {
         const sessions = movieViewerSessions.get(id);
-        const movie = db.manualMovies.find((m: any) => m.id === id);
+        const movie = db.manualMovies.find((m: any) => m.id === id) || firestoreMoviesCache[id];
         const { ccRating, ratingCount } = getMovieRating(id);
         stats[id] = {
           liveViewers: sessions ? sessions.size : 0,
@@ -2809,6 +3045,9 @@ async function startServer() {
         views = getViewsCount(movieId) + 1;
         db.viewsCounts = db.viewsCounts || {};
         db.viewsCounts[movieId] = views;
+        // Persist the updated counters to the durable Firestore copy so they
+        // survive the next Render deploy/restart.
+        saveMovieViewsToFirestore(db.viewsCounts);
         if (movie) {
           movie.views = views;
           setMoviesCache(prev =>
@@ -3302,6 +3541,9 @@ async function startServer() {
         return res.status(404).json({ error: 'ژوور بەردەست نییە' }); // Room not found
       } // End if room not found
 
+      // Update room data
+      const room = db.syncGroups[roomId];
+
       // Handle user heartbeat (lastSeen update)
       if (userCode) {
         const cleanCode = String(userCode).trim().toUpperCase();
@@ -3318,8 +3560,6 @@ async function startServer() {
           });
         }
       }
-      // Update room data
-      const room = db.syncGroups[roomId];
       if (currentTime !== undefined) room.playback.currentTime = Number(currentTime);
       if (isPlaying !== undefined) room.playback.isPlaying = Boolean(isPlaying);
       if (currentMovieUrl !== undefined) room.currentMovieUrl = currentMovieUrl;
@@ -3366,6 +3606,7 @@ async function startServer() {
       const { id } = req.params;
       const { uniqueCode, username } = req.body;
       const isBroadcastRoom = id === 'main_broadcast_room';
+      const roomId = id.trim().toUpperCase(); // Room ID is uppercase
 
       let cleanCode = uniqueCode ? uniqueCode.trim().toUpperCase() : ''; // Clean unique code
       if (isBroadcastRoom && !cleanCode) {
@@ -3373,7 +3614,8 @@ async function startServer() {
         cleanCode = 'GUEST_' + Math.random().toString(36).substring(2, 8).toUpperCase();
       }
 
-      const room = db.syncGroups[roomId];
+      if (!db.syncGroups) db.syncGroups = {}; // Ensure syncGroups exists
+      let room = db.syncGroups[roomId];
 
       // Access Control check: validate uniqueCode in database (bypass for Broadcast Room)
       const userExists = db.users && db.users.some((u: any) => {
@@ -3382,19 +3624,17 @@ async function startServer() {
       });
 
       const isGlobalHost = cleanCode === 'GLOBAL_HOST';
-      const isRoomHost = room.hostCode && (cleanCode === room.hostCode.toUpperCase());
+      const isRoomHost = room?.hostCode && (cleanCode === room.hostCode.toUpperCase());
       const isVipTicketCode = db.vipTickets && db.vipTickets.some((t: any) => (t.code || '').trim().toUpperCase() === cleanCode);
 
       if (!cleanCode && !isBroadcastRoom) { // Only require code if not broadcast room
         return res.status(400).json({ error: 'پێویستە کۆدی خۆت بنەخشێنیت' });
       }
 
-      if (!db.syncGroups) db.syncGroups = {}; // Ensure syncGroups exists
-      const roomId = id.trim().toUpperCase(); // Room ID is uppercase
-
       // Initialize broadcast room if it doesn't exist
       if (!db.syncGroups[roomId] && isBroadcastRoom) {
         db.syncGroups[roomId] = INITIAL_BROADCAST_ROOM;
+        room = db.syncGroups[roomId]; // Refresh after init
         await saveDB(db); // Persist the new room
       }
 
@@ -3444,6 +3684,7 @@ async function startServer() {
     if (!db.syncGroups) db.syncGroups = {}; // Ensure syncGroups exists
     if (!db.syncGroups[id]) db.syncGroups[id] = { id, name: id, activeUsers: [], chatMessages: [], playback: { isPlaying: false, currentTime: 0, updatedAt: new Date().toISOString() } }; // Initialize if not exists
     db.syncGroups[id] = { ...db.syncGroups[id], ...updateData, updatedAt: new Date().toISOString() };
+    const room = db.syncGroups[id];
 
     await saveDB(db);
     res.json({ success: true, room });
@@ -3536,6 +3777,10 @@ async function startServer() {
   // The frontend (App.tsx) directly uses Firebase SDK. If you intend to use real Firebase
   // for these server-side endpoints, you must replace these mocks with actual Firebase Admin SDK calls.
   class MockFirestoreDoc {
+
+    private colName: string;
+    private docId: string;
+    private serverDb: any;
 
     constructor(colName: string, docId: string, serverDb: any) {
       this.colName = colName;
@@ -4742,7 +4987,7 @@ async function startServer() {
     const activeVideoSource = streamingUrl || videoUrl || req.body.external_link;
     if (!activeVideoSource) return res.status(400).json({ success: false, error: "لینکی ڤیدیۆ پێویستە (Video source is required)" });
 
-    const finalPoster = posterUrl || image || 'https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800';
+    const finalPoster = decodeStoredUrl(posterUrl || image || 'https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800');
 
     console.log(`[Admin] Posting movie: ${title} | Source: ${activeVideoSource}`);
     
@@ -4810,6 +5055,9 @@ async function startServer() {
       const { sender, text, secret } = req.body;
       const webhookSecret = process.env.WHATSAPP_WEBHOOK_SECRET || 'Cinemachat_Secure_2024';
       const adminNumber = process.env.WHATSAPP_ADMIN_NUMBER || '9647701966649';
+      // 2. Security Check: Admin number enforcement (handling with/without +)
+      const normalizedSender = String(sender).replace(/\D/g, '');
+      const normalizedAdmin = adminNumber.replace(/\D/g, '');
 
       // 1. Security Check: Secret verification
       if (secret !== webhookSecret) {
@@ -4817,10 +5065,6 @@ async function startServer() {
         await addIntrusionAttempt(db, normalizedSender, req.url, "Unauthorized WhatsApp Webhook Access", "Webhook Security Breach"); // Added
         return res.status(401).json({ error: 'Unauthorized webhook access' });
       }
-
-      // 2. Security Check: Admin number enforcement (handling with/without +)
-      const normalizedSender = String(sender).replace(/\D/g, '');
-      const normalizedAdmin = adminNumber.replace(/\D/g, '');
 
       if (normalizedSender !== normalizedAdmin) {
         console.warn(`[Webhook Security] Non-admin number attempt: ${sender} (Normalized: ${normalizedSender})`);
@@ -5017,7 +5261,10 @@ async function startServer() {
       res.setHeader('Expires', '0');
       res.setHeader('Surrogate-Control', 'no-store');
 
-      let results: any[] = [...moviesCache];
+      // Start from the local manual list and merge the Firestore catalog (the
+      // durable store the admin panel writes to) so the homepage gets the full
+      // catalog in one fast request instead of blocking on a Firestore read.
+      let results: any[] = mergeCatalogWithFirestore(moviesCache);
 
       // Enrich with ephemeral live-viewer counts + normalized metric fields so
       // cards can show "watching now" badges, CinemaChat ratings, favorite counts

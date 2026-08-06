@@ -757,6 +757,24 @@ const setCachedHeroVideoUrl = (url: string) => {
   safeStorage.set(HERO_VIDEO_LOCAL_KEY, clean);
 };
 
+// Decode HTML-entity-encoded stored URLs (e.g. "https:&#x2F;&#x2F;…?a=1&amp;b=2")
+// that admins may have pasted from an HTML source. Left raw, a browser resolves
+// such a string to a malformed request like "https://&/" (Chrome reads the
+// "&#x2F;" as a "#fragment" + "&"), so posters break and the console fills with
+// ERR_NAME_NOT_RESOLVED. Applied at the data layer so every consumer (grid,
+// hero, detail modal, related rows, admin lists) renders clean URLs.
+const decodeStoredUrl = (url: any): any => {
+  if (typeof url !== "string" || !url.includes("&")) return url;
+  return url
+    .replace(/&#x2F;/gi, "/")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;/gi, "'")
+    .replace(/&#39;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
+};
+
 const popOutPlayer = (url: string | undefined) => {
   if (!url) return;
   const win = window.open(
@@ -9319,13 +9337,19 @@ export default function App() {
     return Array.from(map.values());
   };
 
-  // Apply a list to `movies`: dedupe, drop tombstones, sort newest-first.
-  // This only ever sets state from real data — it never clears the grid.
+  // Apply a list to `movies`: dedupe, drop tombstones, sanitize stored URLs,
+  // sort newest-first. This only ever sets state from real data — it never
+  // clears the grid.
   const applyMovies = (list: any[]) => {
     const unique = Array.from(new Map(list.map((m: any) => [m.id, m])).values());
     setMovies(
       unique
         .filter((m: any) => !deletedMovieIdsRef.current.has(m.id))
+        .map((m: any) => ({
+          ...m,
+          image: decodeStoredUrl(m.image),
+          posterUrl: decodeStoredUrl(m.posterUrl),
+        }))
         .sort((a: any, b: any) => {
           const idA = parseInt(String(a.id).replace("manual-", ""));
           const idB = parseInt(String(b.id).replace("manual-", ""));
@@ -11017,7 +11041,7 @@ export default function App() {
                                           type="button"
                                           onClick={() =>
                                             setPlayerMenu(
-                                              playerMenu === "substyle"
+                                              (playerMenu as "subtitle" | "substyle") === "substyle"
                                                 ? null
                                                 : "substyle",
                                             )
