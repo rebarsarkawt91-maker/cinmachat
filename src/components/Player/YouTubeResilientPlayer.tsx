@@ -14,11 +14,16 @@ import { api } from "../../services/api";
  *     so a blocked/black-screen embed is detected instead of silently showing
  *     the "Playback ID" error page. A stall timer covers embeds that never
  *     report anything.
- *  3) DIRECT STREAM (fallback): when the embed is blocked, the player asks the
- *     server (/api/resolve-stream, cached) for a direct progressive-MP4 stream
- *     and plays it in a native <video> — bypassing YouTube's embedding
+ *  3) RECONNECT: a failed embed is automatically retried up to 3 times with
+ *     exponential backoff (1s → 2s → 4s). During retries only a
+ *     "Reconnecting..." spinner is shown; if an attempt succeeds, playback
+ *     continues automatically. Users are never redirected to youtube.com.
+ *  4) DIRECT STREAM (fallback): when all embed retries fail, the player asks
+ *     the server (/api/resolve-stream, cached) for a direct progressive-MP4
+ *     stream and plays it in a native <video> — bypassing YouTube's embedding
  *     restrictions entirely (embedding-disabled, region locks, bot checks).
- *  4) OPEN-ON-YOUTUBE (last resort): a panel with a "Watch on YouTube" button.
+ *  5) ERROR (last resort): a simple "Unable to load the video. Please try
+ *     again later." message with a single Retry button.
  *
  * The iframe keeps the configured `iframeId` so existing postMessage-based
  * controls (mute, play/pause, subtitle clock) keep working while in embed mode.
@@ -30,6 +35,11 @@ const YT_BLOCK_CODES = new Set([2, 5, 100, 101, 150]);
 // If the embed neither errors nor starts playing within this window, assume it
 // is stuck on YouTube's silent "Playback ID" error screen and escalate.
 const STALL_MS = 15000;
+
+// Number of automatic embed reloads after the first failure.
+const MAX_EMBED_RETRIES = 3;
+// Exponential backoff between retries: 1s → 2s → 4s.
+const EMBED_BACKOFF_MS = [1000, 2000, 4000];
 
 type PlayerMode = "embed" | "direct" | "error";
 
@@ -54,21 +64,23 @@ export default function YouTubeResilientPlayer({
   // Live flags read inside the message listener / stall timer so they never go stale.
   const playedRef = useRef(false);
   const blockedRef = useRef(false);
+  // Embed retries already performed (0..MAX_EMBED_RETRIES), read from timers.
+  const retryCountRef = useRef(0);
+  // Pending reconnect timer so it can be cleared on unmount/url change.
+  const retryTimerRef = useRef<number | null>(null);
 
   const videoId = getYTId(url);
 
   const [blocked, setBlocked] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
   const [resolving, setResolving] = useState(false);
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
-  // Bump to force a fresh iframe mount (Retry button).
+  // Bump to force a fresh iframe mount (auto-retry and Retry button).
   const [retryKey, setRetryKey] = useState(0);
 
   const poster = videoId
     ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`
     : "";
-  const watchUrl = videoId
-    ? `https://www.youtube.com/watch?v=${videoId}`
-    : url;
 
   const embedSrc = useCallback(
     (id: string) =>
@@ -83,9 +95,25 @@ export default function YouTubeResilientPlayer({
     playedRef.current = false;
     blockedRef.current = false;
     setBlocked(false);
+    setReconnecting(false);
     setResolving(false);
     setStreamUrl(null);
   }, [url, retryKey]);
+
+  // A brand-new source always starts with a fresh retry budget.
+  useEffect(() => {
+    retryCountRef.current = 0;
+  }, [url]);
+
+  // Clear any pending reconnect timer when the component unmounts.
+  useEffect(() => {
+    return () => {
+      if (retryTimerRef.current !== null) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // Detect embed blocks via the YouTube widget postMessage protocol.
   useEffect(() => {
@@ -126,15 +154,8 @@ export default function YouTubeResilientPlayer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [url, retryKey, streamUrl, videoId]);
 
-  // Escalate to the direct-stream fallback (or the open-on-YouTube panel).
-  const handleBlocked = useCallback(() => {
-    if (blockedRef.current || streamUrl) return;
-    blockedRef.current = true;
-    setBlocked(true);
-    void escalateToDirectStream();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url, streamUrl]);
-
+  // Ask the server for a direct progressive-MP4 stream (cached) so we can play
+  // in a native <video>, bypassing YouTube embedding restrictions.
   const escalateToDirectStream = useCallback(async () => {
     if (!videoId) {
       setStreamUrl(null);
@@ -171,24 +192,58 @@ export default function YouTubeResilientPlayer({
     }
   }, [url, videoId]);
 
+  // A failed embed: reconnect the embed up to MAX_EMBED_RETRIES with exponential
+  // backoff. Only when the budget is exhausted do we escalate to the direct
+  // stream, and ultimately to the error panel.
+  const handleBlocked = useCallback(() => {
+    if (blockedRef.current || streamUrl) return;
+    blockedRef.current = true;
+
+    if (retryCountRef.current < MAX_EMBED_RETRIES) {
+      const delay =
+        EMBED_BACKOFF_MS[retryCountRef.current] ??
+        EMBED_BACKOFF_MS[EMBED_BACKOFF_MS.length - 1];
+      retryCountRef.current += 1;
+      // Unmount the broken embed so only the spinner is visible while we wait.
+      setBlocked(true);
+      setReconnecting(true);
+      retryTimerRef.current = window.setTimeout(() => {
+        retryTimerRef.current = null;
+        // Remount the embed fresh; the [url, retryKey] effect resets state.
+        setRetryKey((k) => k + 1);
+      }, delay);
+    } else {
+      // All embed retries exhausted → direct-stream fallback.
+      setBlocked(true);
+      void escalateToDirectStream();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [url, streamUrl, escalateToDirectStream]);
+
   // Tell the parent which mode is active so it can hide its YouTube-only masks
   // when we drop to the native direct-stream player.
   useEffect(() => {
-    const mode: PlayerMode = streamUrl ? "direct" : blocked ? "error" : "embed";
+    const mode: PlayerMode = streamUrl
+      ? "direct"
+      : blocked && !reconnecting
+        ? "error"
+        : "embed";
     onModeChange?.(mode);
-  }, [streamUrl, blocked, onModeChange]);
+  }, [streamUrl, blocked, reconnecting, onModeChange]);
 
-  // Native <video> failed to play the direct stream → show the last-resort panel.
+  // Native <video> failed to play the direct stream → show the error panel.
   const handleVideoError = () => {
     setStreamUrl(null);
   };
 
+  // Manual "Retry" from the error panel: start over with a fresh retry budget.
   const retryEmbed = () => {
+    retryCountRef.current = 0;
     setRetryKey((k) => k + 1);
   };
 
   const showEmbed = !blocked && !streamUrl;
-  const showError = blocked && !streamUrl && !resolving;
+  const showError = blocked && !streamUrl && !resolving && !reconnecting;
 
   return (
     <div className={`relative w-full h-full bg-black overflow-hidden ${className || ""}`}>
@@ -221,15 +276,6 @@ export default function YouTubeResilientPlayer({
             className="w-full h-full max-h-full"
             onError={handleVideoError}
           />
-          {/* Escape hatch: always allow opening the movie on YouTube itself. */}
-          <a
-            href={watchUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="absolute top-3 right-3 z-20 px-3 py-1.5 rounded-full bg-black/70 hover:bg-red-600 border border-white/10 text-[10px] font-bold text-white transition-all kurdish-text"
-          >
-            یوتیوب ↗
-          </a>
         </div>
       ) : showError ? (
         <div className="relative w-full h-full flex items-center justify-center bg-black p-6 text-center">
@@ -244,33 +290,31 @@ export default function YouTubeResilientPlayer({
           <div className="absolute inset-0 bg-black/60" />
           <div className="relative z-10 flex flex-col items-center gap-4 max-w-sm">
             <p className="text-white font-bold kurdish-text text-sm">
-              ڤیدیۆکە ناتوانرێت لە سەکۆکە بڵێندرێتەوە.
+              Unable to load the video. Please try again later.
             </p>
-            <p className="text-zinc-400 text-xs kurdish-text">
-              بەهۆی قەدەغەکردنی embedding لەلایەن یوتیوب. لە شێوازی ڕاستەوخۆ
-              یان لە یوتیوب بینی.
-            </p>
-            <div className="flex flex-wrap items-center justify-center gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  window.open(watchUrl, "_blank", "noopener,noreferrer");
-                }}
-                className="px-5 py-2.5 bg-red-600 hover:bg-red-500 text-white font-bold rounded-full text-xs transition-all cursor-pointer kurdish-text"
-              >
-                بینین لە یوتیوب
-              </button>
-              <button
-                type="button"
-                onClick={retryEmbed}
-                className="px-5 py-2.5 bg-white/10 hover:bg-white/20 text-white font-bold rounded-full text-xs transition-all cursor-pointer kurdish-text"
-              >
-                دووبارە هەوڵدانەوە
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={retryEmbed}
+              className="px-5 py-2.5 bg-red-600 hover:bg-red-500 text-white font-bold rounded-full text-xs transition-all cursor-pointer"
+            >
+              Retry
+            </button>
           </div>
         </div>
       ) : null}
+
+      {/* Reconnecting spinner while the embed is retried with backoff. */}
+      {reconnecting && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-black">
+          <div className="flex flex-col items-center gap-3">
+            <div
+              className="w-10 h-10 rounded-full border-2 border-white/20 border-t-red-600 animate-spin"
+              aria-hidden="true"
+            />
+            <p className="text-white text-xs font-bold">Reconnecting...</p>
+          </div>
+        </div>
+      )}
 
       {resolving && (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/70">
