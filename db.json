@@ -396,5 +396,52 @@
   "bannedDevices": [],
   "bannedDeviceTimestamps": {},
   "bannedDevicesInfo": {},
-  "favorites": {}
+  "favorites": {},
+  "favoriteCounts": {},
+  "ratings": {},
+  "searchHistory": {
+    "dbc27688-1c0a-458c-bc19-a19129347668": [
+      {
+        "query": "acti",
+        "at": 1786013620981
+      },
+      {
+        "query": "acti",
+        "at": 1786013619973
+      },
+      {
+        "query": "acti",
+        "at": 1786013618219
+      },
+      {
+        "query": "شەڕ",
+        "at": 1786013606064
+      },
+      {
+        "query": "New Releases",
+        "at": 1786013561870
+      },
+      {
+        "query": "New Releases",
+        "at": 1786013561687
+      }
+    ]
+  },
+  "popularSearchTerms": {
+    "new releases": 2,
+    "شەڕ": 1,
+    "acti": 3
+  },
+  "continueWatching": {
+    "315237a6-ce11-4376-8b8e-f3ae634e5e10": {
+      "manual-1785976443104": {
+        "progress": 0,
+        "duration": 0,
+        "updatedAt": 1786019507129
+      }
+    }
+  },
+  "viewsCounts": {
+    "manual-1785976443104": 1
+  }
 }
