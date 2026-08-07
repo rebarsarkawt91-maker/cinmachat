@@ -109,12 +109,45 @@
       "ip": "127.0.0.1",
       "username": "admin",
       "location": "ناوەخۆ (Erbil, KR)",
+      "timestamp": "2026-08-07T00:45:41.783Z"
+    },
+    {
+      "ip": "127.0.0.1",
+      "username": "admin",
+      "location": "ناوەخۆ (Erbil, KR)",
+      "timestamp": "2026-08-07T00:45:31.942Z"
+    },
+    {
+      "ip": "127.0.0.1",
+      "username": "admin",
+      "location": "ناوەخۆ (Erbil, KR)",
       "timestamp": "2026-07-12T13:13:35.467Z"
     }
   ],
   "bannedKeywords": [],
   "emergencyLock": false,
   "securityAuditLogs": [
+    {
+      "id": "log-g2a6h3m",
+      "admin": "admin",
+      "action": "Login Successful",
+      "details": "دەستپێکردنی دانیشتن لە ڕێگەی ئایپی 127.0.0.1",
+      "timestamp": "2026-08-07T00:46:18.691Z"
+    },
+    {
+      "id": "log-e84039b",
+      "admin": "admin",
+      "action": "Login Successful",
+      "details": "دەستپێکردنی دانیشتن لە ڕێگەی ئایپی 127.0.0.1",
+      "timestamp": "2026-08-07T00:22:58.942Z"
+    },
+    {
+      "id": "log-cqb0cpo",
+      "admin": "admin",
+      "action": "Login Successful",
+      "details": "دەستپێکردنی دانیشتن لە ڕێگەی ئایپی 127.0.0.1",
+      "timestamp": "2026-08-07T00:18:35.678Z"
+    },
     {
       "id": "log-hixy9a7",
       "admin": "naza",
@@ -265,6 +298,139 @@
   ],
   "systemErrorLogs": [
     {
+      "id": "err-5gs5q51",
+      "source": "DELETE /api/drama-rooms/drama_1786118383377_o1lhf",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 404",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-07T16:00:29.230Z"
+    },
+    {
+      "id": "err-frzvdqu",
+      "source": "GET /api/admin/monitored-users?adminName=staff1",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 403",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-07T00:55:58.762Z"
+    },
+    {
+      "id": "err-mu9t09m",
+      "source": "GET /api/admin/monitored-users?adminName=staff1",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 403",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-07T00:55:58.758Z"
+    },
+    {
+      "id": "err-j468war",
+      "source": "POST /api/admin/login",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-07T00:45:41.793Z"
+    },
+    {
+      "id": "err-3y8fdpb",
+      "source": "POST /api/admin/login",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-07T00:45:31.953Z"
+    },
+    {
+      "id": "err-9o9w9ca",
+      "source": "GET /api/admin/m17/status?adminName=Owner",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 403",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-07T00:39:19.778Z"
+    },
+    {
+      "id": "err-0qymns7",
+      "source": "GET /api/admin/m17/status?adminName=Owner",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 403",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-07T00:39:07.968Z"
+    },
+    {
+      "id": "err-milnxka",
+      "source": "GET /api/admin/m17/status",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-07T00:38:48.770Z"
+    },
+    {
+      "id": "err-lrit117",
+      "source": "GET /api/admin/m17/status",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-07T00:38:24.873Z"
+    },
+    {
+      "id": "err-h47winu",
+      "source": "GET /api/admin/m17/status",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-07T00:38:11.368Z"
+    },
+    {
+      "id": "err-any2z6h",
+      "source": "GET /api/admin",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 404",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-07T00:36:24.196Z"
+    },
+    {
+      "id": "err-xn7v8hk",
+      "source": "GET /api/admin",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 404",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-07T00:34:29.749Z"
+    },
+    {
+      "id": "err-msytsd0",
+      "source": "PATCH /api/admin/movies/manual-1785976786159/tags",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-07T00:08:57.307Z"
+    },
+    {
+      "id": "err-tvvsnol",
+      "source": "POST /api/subtitle/generate",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 400",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-06T23:23:14.812Z"
+    },
+    {
+      "id": "err-qsxwy8k",
+      "source": "POST /api/subtitle/generate",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 400",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-06T23:22:33.411Z"
+    },
+    {
+      "id": "err-dosie0n",
+      "source": "POST /api/subtitle/generate",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 400",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-06T22:54:30.771Z"
+    },
+    {
+      "id": "err-j9ozv2z",
+      "source": "POST /api/subtitle/generate",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 400",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-06T22:53:14.436Z"
+    },
+    {
+      "id": "err-ng9yowg",
+      "source": "POST /api/movies",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 404",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-06T14:48:43.016Z"
+    },
+    {
+      "id": "err-ghlxd83",
+      "source": "POST /api/subtitle/generate",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 400",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-06T12:44:06.651Z"
+    },
+    {
       "id": "err-c0t783r",
       "source": "GET /api/admin/users",
       "message": "شکست لە داواکاری بە کۆدی HTTP 401",
@@ -389,7 +555,12 @@
   "manualMovies": [],
   "vipRequests": [],
   "appSnapshots": [],
-  "ownerWhitelist": {},
+  "ownerWhitelist": {
+    "127.0.0.1": "2026-08-07T00:46:18.691Z",
+    "315237a6-ce11-4376-8b8e-f3ae634e5e10": "2026-08-07T00:18:35.677Z",
+    "86b1fd0b-09f7-4e85-8366-25849ad43cc8": "2026-08-07T00:22:58.941Z",
+    "380e11df-7732-4847-978d-1186388ca011": "2026-08-07T00:46:18.691Z"
+  },
   "bannedIpTimestamps": {},
   "unblockRequests": [],
   "unblockArchive": [],
@@ -437,11 +608,81 @@
       "manual-1785976443104": {
         "progress": 0,
         "duration": 0,
-        "updatedAt": 1786019507129
+        "updatedAt": 1786056792275
+      },
+      "manual-1785976145047": {
+        "progress": 0,
+        "duration": 0,
+        "updatedAt": 1786058562440
+      },
+      "manual-1785762832303": {
+        "progress": 0,
+        "duration": 0,
+        "updatedAt": 1786058516008
+      },
+      "manual-1785976786159": {
+        "progress": 0,
+        "duration": 0,
+        "updatedAt": 1786058570094
+      },
+      "manual-1785716492007": {
+        "progress": 0,
+        "duration": 0,
+        "updatedAt": 1786069125129
+      }
+    },
+    "b2d5d206-f552-4b42-892d-27b13d8353cb": {
+      "manual-1785976786159": {
+        "progress": 0,
+        "duration": 0,
+        "updatedAt": 1786027978783
+      }
+    },
+    "23b7ff87-c4a9-49cf-9a8c-091a526759d2": {
+      "manual-1785976786159": {
+        "progress": 0,
+        "duration": 0,
+        "updatedAt": 1786028271094
+      }
+    },
+    "49e428c9-8fa0-45f5-b640-2f01f5cafd81": {
+      "manual-1785976786159": {
+        "progress": 0,
+        "duration": 0,
+        "updatedAt": 1786057789587
+      }
+    },
+    "f0159d4e-40b7-4d11-9f95-aa929bfb615a": {
+      "manual-1785976786159": {
+        "progress": 0,
+        "duration": 0,
+        "updatedAt": 1786057863683
       }
     }
   },
   "viewsCounts": {
-    "manual-1785976443104": 1
+    "manual-1785976443104": 4,
+    "manual-1785976786159": 3,
+    "manual-1785976145047": 1,
+    "manual-1785762832303": 1,
+    "manual-1785716492007": 1,
+    "manual-1785715435011": 1,
+    "manual-1785817956816": 1,
+    "manual-1785714574022": 1,
+    "manual-1785762200733": 2,
+    "manual-1785716151131": 1
+  },
+  "dramaRooms": {
+    "drama_1786119907722_k5rbr": {
+      "id": "drama_1786119907722_k5rbr",
+      "title": "2026",
+      "description": "",
+      "coverUrl": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSrQtHAkRBHZQyjhNySwhbx-EjjO7XHojVUrTQl-OcnVw&s=10",
+      "dramas": [
+        "manual-1785762832303"
+      ],
+      "createdAt": "2026-08-07T16:25:07.722Z",
+      "updatedAt": "2026-08-07T16:26:25.623Z"
+    }
   }
 }

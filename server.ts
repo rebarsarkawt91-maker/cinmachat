@@ -719,7 +719,10 @@ const INITIAL_DB = {
   popularSearchTerms: {} as Record<string, number>,
   // Continue-watching progress per identity: id -> { movieId: { progress, duration, updatedAt } }.
   continueWatching: {} as Record<string, Record<string, any>>,
-  rooms: {} as Record<string, any>
+  rooms: {} as Record<string, any>,
+  // Drama Rooms: curated collections (cover, title, description, unlimited dramas).
+  // Stored as an object map keyed by id so the whole collection is one atomic write.
+  dramaRooms: {} as Record<string, any>
 };
 
 const INITIAL_BROADCAST_ROOM = {
@@ -881,6 +884,35 @@ const saveMovieViewsToFirestore = (counts: Record<string, number>): void => {
     .catch((err: any) =>
       console.warn('[views] Firestore write-through failed:', err?.message || err)
     );
+};
+
+// Persist a single movie's category tags to Firestore (movies/{id}) — the
+// durable catalog store the client reads via getDocs — so an admin "پۆلێن"
+// change is visible to every client immediately, not just in the server cache.
+// Throws on non-OK so the caller can surface a failed Firestore write.
+const saveMovieTagsToFirestore = async (movieId: string, tags: string[]): Promise<void> => {
+  const url = firestoreDocUrl(
+    `movies/${encodeURIComponent(movieId)}`,
+    '&updateMask.fieldPaths=tags'
+  );
+  const res = await fetchWithTimeout(
+    url,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fields: {
+          tags: {
+            arrayValue: {
+              values: tags.map((t) => ({ stringValue: String(t) }))
+            }
+          }
+        }
+      })
+    },
+    8000
+  );
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
 };
 
 // --- Durable movie catalog sync (Firestore → server cache) ---
@@ -1081,6 +1113,8 @@ async function startServer() {
   // Initialize syncGroups if not present, ensuring global room exists
   if (!db.syncGroups) db.syncGroups = {};
   if (!db.syncGroups["global_room_official"]) db.syncGroups["global_room_official"] = { ...INITIAL_DB.syncGroups["global_room_official"] };
+  // Initialize dramaRooms collection if not present (Drama Rooms feature)
+  if (!db.dramaRooms) db.dramaRooms = {};
   if (!db.vipVideos) db.vipVideos = [];
   // if (!Array.isArray(db.rooms)) db.rooms = []; // Removed
   if (!db.vipSettings) db.vipSettings = {
@@ -3690,6 +3724,101 @@ async function startServer() {
     res.json({ success: true, room });
   });
 
+  // --- Drama Rooms API (public, persisted in db.dramaRooms) ---
+  // Curated collections: cover, title, description, unlimited dramas. These
+  // endpoints are intentionally NOT admin-guarded so the app can read them at
+  // runtime; writes are still gated client-side by the verified-owner check.
+  app.get('/api/drama-rooms', (req, res) => {
+    try {
+      const rooms = Object.values(db.dramaRooms || {});
+      // Newest rooms first so the homepage gallery stays fresh
+      rooms.sort((a: any, b: any) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
+      res.json({ success: true, rooms });
+    } catch (err: any) {
+      console.error(err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/drama-rooms/:id', (req, res) => {
+    try {
+      const room = (db.dramaRooms || {})[req.params.id];
+      if (!room) return res.status(404).json({ error: 'ئەم ژوورە بەردەست نییە' });
+      res.json({ success: true, room });
+    } catch (err: any) {
+      console.error(err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/drama-rooms', async (req, res) => {
+    try {
+      const { title, description, coverUrl, dramas } = req.body || {};
+      if (!title || !String(title).trim()) {
+        return res.status(400).json({ success: false, error: 'ناونیشانی ژوورەکە پێویستە' });
+      }
+      if (!db.dramaRooms) db.dramaRooms = {};
+      const now = new Date().toISOString();
+      const id = `drama_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const room = {
+        id,
+        title: String(title).trim(),
+        description: String(description || '').trim(),
+        coverUrl: String(coverUrl || '').trim(),
+        dramas: Array.isArray(dramas) ? dramas : [],
+        createdAt: now,
+        updatedAt: now
+      };
+      db.dramaRooms[id] = room;
+      await saveDB(db);
+      console.log(`[Drama Rooms] Created room "${room.title}" (${id})`);
+      res.json({ success: true, room });
+    } catch (err: any) {
+      console.error(err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.put('/api/drama-rooms/:id', async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { title, description, coverUrl, dramas } = req.body || {};
+      if (!db.dramaRooms) db.dramaRooms = {};
+      if (!db.dramaRooms[id]) return res.status(404).json({ success: false, error: 'ئەم ژوورە بەردەست نییە' });
+      const existing = db.dramaRooms[id];
+      if (title !== undefined) {
+        if (!String(title).trim()) return res.status(400).json({ success: false, error: 'ناونیشانی ژوورەکە پێویستە' });
+        existing.title = String(title).trim();
+      }
+      if (description !== undefined) existing.description = String(description || '').trim();
+      if (coverUrl !== undefined) existing.coverUrl = String(coverUrl || '').trim();
+      if (dramas !== undefined) existing.dramas = Array.isArray(dramas) ? dramas : existing.dramas || [];
+      existing.updatedAt = new Date().toISOString();
+      await saveDB(db);
+      console.log(`[Drama Rooms] Updated room "${existing.title}" (${id})`);
+      res.json({ success: true, room: existing });
+    } catch (err: any) {
+      console.error(err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete('/api/drama-rooms/:id', async (req, res) => {
+    try {
+      const { id } = req.params;
+      if (!db.dramaRooms) db.dramaRooms = {};
+      if (!db.dramaRooms[id]) return res.status(404).json({ success: false, error: 'ئەم ژوورە بەردەست نییە' });
+      const removed = db.dramaRooms[id];
+      delete db.dramaRooms[id];
+      await saveDB(db);
+      console.log(`[Drama Rooms] Deleted room "${removed.title}" (${id})`);
+      res.json({ success: true, id });
+    } catch (err: any) {
+      console.error(err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get('/api/admin/imdb-fetch', async (req, res) => {
     const { url, imdbId } = req.query;
     
@@ -4903,10 +5032,31 @@ async function startServer() {
 
   app.patch('/api/admin/movies/:id/tags', async (req, res) => {
     const { id } = req.params;
-    const { tags } = req.body;
-    
+    const rawTags: any[] = Array.isArray(req.body?.tags) ? req.body.tags : [];
+    const tags = rawTags
+      .map((t: any) => (typeof t === 'string' ? t.trim() : ''))
+      .filter(Boolean);
+
+    // Firestore is the durable source of truth the client reads (movies/{id}),
+    // so persist the category change there FIRST. If that write fails, do not
+    // pretend success — the client keeps the previous selection on the grid.
+    try {
+      await saveMovieTagsToFirestore(id, tags);
+    } catch (err: any) {
+      console.warn(
+        `[movies] Firestore tags write failed for ${id}:`,
+        err?.message || err
+      );
+      return res.status(500).json({ success: false, error: 'Firestore update failed' });
+    }
+
+    // Mirror into the in-memory Firestore catalog cache + /api/movies cache so
+    // the server response reflects the change immediately.
+    if (firestoreMoviesCache[id]) {
+      firestoreMoviesCache[id] = { ...firestoreMoviesCache[id], tags };
+    }
     setMoviesCache(prev => prev.map(m => m.id === id ? { ...m, tags } : m));
-    
+
     const manualIndex = db.manualMovies.findIndex((m: any) => m.id === id);
     if (manualIndex !== -1) {
       db.manualMovies[manualIndex].tags = tags;
@@ -4916,7 +5066,7 @@ async function startServer() {
       db.tagOverrides[id] = tags;
       await saveDB(db);
     }
-    
+
     res.json({ success: true });
   });
 

@@ -978,17 +978,29 @@ const SUBTITLE_TARGET_LANGS = [
   { code: "kmr", label: "Kurdish (Kurmancî)" },
 ];
 
-const CategoryDropdown = ({ value, onChange, categories }: any) => (
+const CategoryDropdown = ({ value, onChange, categories, className }: any) => (
   <select
     value={value}
     onChange={(e) => onChange(e.target.value)}
-    className="bg-black/40 border border-white/10 rounded-xl px-2 py-3 text-white kurdish-text outline-none focus:border-brand-primary appearance-none cursor-pointer text-[10px]"
+    className={`bg-black/40 border border-white/10 rounded-xl px-2 py-3 text-white kurdish-text outline-none focus:border-brand-primary appearance-none cursor-pointer text-[10px] ${className || ""}`}
   >
-    <option value="ئاکشن">Action</option>
-    <option value="ترسناک">Horror</option>
-    <option value="دراما">Drama</option>
-    <option value="کۆمیدی">Comedy</option>
-    {/* Add more as needed */}
+    {Array.isArray(categories) && categories.length > 0 ? (
+      categories.map((c: any, i: number) => (
+        <option
+          key={`${c.value || c.tag || c.name}-${i}`}
+          value={c.value ?? c.tag ?? c.name}
+        >
+          {c.label || c.name}
+        </option>
+      ))
+    ) : (
+      <>
+        <option value="ئاکشن">Action</option>
+        <option value="ترسناک">Horror</option>
+        <option value="دراما">Drama</option>
+        <option value="کۆمیدی">Comedy</option>
+      </>
+    )}
   </select>
 );
 
@@ -6152,6 +6164,421 @@ const RoomSection: React.FC<{
   );
 };
 
+// ===== Drama Rooms (persistent curated collections) =====
+// A drama room stores: id, title, description, coverUrl, dramas (array of movie
+// IDs), createdAt, updatedAt. Rooms are persisted server-side in db.dramaRooms.
+// The hub below replaces the old Global Room / Broadcast section; the gallery
+// replaces the Trending row. Clicking a room opens its dramas.
+const DramaRoomCard = ({ room, onOpen, onEdit, onDelete, showActions, compact }: any) => {
+  const dramaCount = Array.isArray(room?.dramas) ? room.dramas.length : 0;
+  return (
+    <div
+      className={`group relative flex-shrink-0 bg-zinc-900 border border-white/10 rounded-3xl overflow-hidden transition-all hover:border-brand-primary/40 hover:scale-[1.02] cursor-pointer ${
+        compact ? "w-[170px] md:w-[220px]" : "w-[200px] md:w-[260px]"
+      }`}
+    >
+      <button
+        type="button"
+        onClick={() => onOpen(room)}
+        className="block w-full text-right focus:outline-none"
+      >
+        <div className="aspect-video w-full bg-gradient-to-br from-zinc-800 to-zinc-950 overflow-hidden relative">
+          {room?.coverUrl ? (
+            <img
+              src={room.coverUrl}
+              alt={room.title}
+              loading="lazy"
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-red-900/30 via-zinc-900 to-zinc-950">
+              <Tv className="w-10 h-10 text-brand-primary/60" />
+            </div>
+          )}
+          <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-transparent to-transparent" />
+          <span className="absolute bottom-3 right-3 px-2.5 py-1 bg-black/70 border border-white/10 text-white text-[10px] font-black rounded-full flex items-center gap-1">
+            <Play className="w-3 h-3" />
+            {dramaCount} {dramaCount === 1 ? "دراما" : "دراماکان"}
+          </span>
+        </div>
+        <div className="p-4">
+          <h3 className="text-sm font-black text-white kurdish-text leading-snug line-clamp-1">
+            {room?.title}
+          </h3>
+          {!compact && (
+            <p className="mt-1 text-[11px] text-gray-400 kurdish-text leading-relaxed line-clamp-2">
+              {room?.description}
+            </p>
+          )}
+        </div>
+      </button>
+      {showActions && (
+        <div className="absolute top-3 left-3 flex gap-2 z-10">
+          <button
+            type="button"
+            onClick={() => onEdit && onEdit(room)}
+            className="w-8 h-8 rounded-full bg-black/70 border border-white/10 text-white hover:text-brand-primary flex items-center justify-center"
+            title="دەستکاری"
+          >
+            <Edit3 className="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => onDelete && onDelete(room)}
+            className="w-8 h-8 rounded-full bg-black/70 border border-white/10 text-white hover:text-red-500 flex items-center justify-center"
+            title="سڕینەوە"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const DramaRoomDetailModal = ({ room, resolvedMovies, openMovie, onClose }: any) => {
+  const dramas = (Array.isArray(room?.dramas) ? room.dramas : [])
+    .map((id: string) => resolvedMovies?.[id])
+    .filter(Boolean);
+  return (
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-3xl max-h-[85vh] overflow-y-auto bg-zinc-900 border border-white/10 rounded-[2rem] p-6"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4 mb-6">
+          <div className="flex items-center gap-4 min-w-0">
+            <div className="w-20 h-12 rounded-xl overflow-hidden bg-gradient-to-br from-red-900/30 via-zinc-800 to-zinc-950 flex items-center justify-center flex-shrink-0">
+              {room?.coverUrl ? (
+                <img src={room.coverUrl} alt={room?.title} className="w-full h-full object-cover" />
+              ) : (
+                <Tv className="w-6 h-6 text-brand-primary/60" />
+              )}
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-xl font-black text-white kurdish-text truncate">
+                {room?.title}
+              </h3>
+              <p className="mt-1 text-xs text-gray-400 kurdish-text leading-relaxed">
+                {room?.description || "بێ وەسف"}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-9 h-9 rounded-full bg-white/5 border border-white/10 text-white hover:text-brand-primary flex items-center justify-center flex-shrink-0"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {dramas.length === 0 ? (
+          <div className="py-14 text-center text-gray-500 kurdish-text">
+            هیچ درامایەک لەم ژوورەدا بەردەست نییە
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+            {dramas.map((movie: any) => (
+              <button
+                type="button"
+                key={movie.id}
+                onClick={() => openMovie(movie)}
+                className="group text-right focus:outline-none"
+              >
+                <div className="aspect-[2/3] rounded-xl overflow-hidden bg-zinc-800 relative group-hover:ring-2 group-hover:ring-brand-primary/60 transition-all">
+                  {movie.posterUrl ? (
+                    <img src={movie.posterUrl} alt={movie.title} loading="lazy" className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-zinc-800 to-zinc-900">
+                      <Film className="w-8 h-8 text-white/20" />
+                    </div>
+                  )}
+                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all flex items-center justify-center">
+                    <div className="w-10 h-10 rounded-full bg-brand-primary text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all">
+                      <Play className="w-4 h-4" />
+                    </div>
+                  </div>
+                </div>
+                <p className="mt-2 text-xs font-bold text-white kurdish-text line-clamp-1">
+                  {movie.title}
+                </p>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const DramaRoomCrudModal = ({ editing, movies, onSave, onClose }: any) => {
+  const [title, setTitle] = useState(editing?.title || "");
+  const [description, setDescription] = useState(editing?.description || "");
+  const [coverUrl, setCoverUrl] = useState(editing?.coverUrl || "");
+  const [selectedIds, setSelectedIds] = useState<string[]>(
+    Array.isArray(editing?.dramas) ? [...editing.dramas] : [],
+  );
+  const [search, setSearch] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const filteredMovies = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    let list = movies;
+    if (q) {
+      list = movies.filter((m: any) =>
+        String(m?.title || "").toLowerCase().includes(q),
+      );
+    }
+    return list.slice(0, 80);
+  }, [movies, search]);
+
+  const toggleId = (id: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  };
+
+  const handleSubmit = async () => {
+    if (!title.trim()) {
+      alert("ناونیشانی ژوورەکە پێویستە");
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave({
+        title: title.trim(),
+        description: description.trim(),
+        coverUrl: coverUrl.trim(),
+        dramas: selectedIds,
+      });
+    } catch (e) {
+      console.warn("Failed to save drama room:", e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-2xl max-h-[85vh] overflow-y-auto bg-zinc-900 border border-white/10 rounded-[2rem] p-6"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-4 mb-6">
+          <h3 className="text-xl font-black text-white kurdish-text">
+            {editing ? "دەستکاری ژووری دراما" : "ژووری درامای نوێ"}
+          </h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-9 h-9 rounded-full bg-white/5 border border-white/10 text-white hover:text-brand-primary flex items-center justify-center"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="text-xs font-bold text-gray-400 kurdish-text block mb-1.5">
+              ناونیشان *
+            </label>
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white kurdish-text outline-none focus:border-brand-primary text-sm"
+              placeholder="نموونە: دراماکانی تورکی ٢٠٢٤"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-bold text-gray-400 kurdish-text block mb-1.5">
+              وەسف
+            </label>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={2}
+              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white kurdish-text outline-none focus:border-brand-primary text-sm resize-none"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-bold text-gray-400 kurdish-text block mb-1.5">
+              وێنەی سەرەوە (لینکی وێنە)
+            </label>
+            <input
+              type="text"
+              value={coverUrl}
+              onChange={(e) => setCoverUrl(e.target.value)}
+              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white kurdish-text outline-none focus:border-brand-primary text-sm"
+              placeholder="https://..."
+            />
+          </div>
+          <div>
+            <label className="text-xs font-bold text-gray-400 kurdish-text block mb-1.5">
+              دراماکان ({selectedIds.length} هەڵبژێردراوە)
+            </label>
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-white kurdish-text outline-none focus:border-brand-primary text-xs mb-2"
+              placeholder="بگەڕێ بۆ ناوی فیلم..."
+            />
+            <div className="max-h-56 overflow-y-auto rounded-xl border border-white/10 bg-black/20 divide-y divide-white/5">
+              {filteredMovies.length === 0 && (
+                <p className="p-4 text-center text-xs text-gray-500 kurdish-text">
+                  هیچ فیلمێک نەدۆزرایەوە
+                </p>
+              )}
+              {filteredMovies.map((m: any) => {
+                const checked = selectedIds.includes(m.id);
+                return (
+                  <label
+                    key={m.id}
+                    className="flex items-center gap-3 px-4 py-2.5 hover:bg-white/5 cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleId(m.id)}
+                      className="w-4 h-4 accent-red-600"
+                    />
+                    <span className="text-xs font-bold text-white kurdish-text truncate flex-1">
+                      {m.title}
+                    </span>
+                    {checked && (
+                      <CheckCircle2 className="w-4 h-4 text-brand-primary flex-shrink-0" />
+                    )}
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-6 flex items-center justify-end gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-5 py-3 rounded-xl bg-white/5 border border-white/10 text-gray-300 text-sm font-bold kurdish-text hover:bg-white/10"
+          >
+            پاشگەزبوونەوە
+          </button>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={saving}
+            className="px-5 py-3 rounded-xl bg-brand-primary text-white text-sm font-black kurdish-text hover:opacity-90 flex items-center gap-2 disabled:opacity-50"
+          >
+            {saving ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Plus className="w-4 h-4" />
+            )}
+            {editing ? "پاشەکەوتکردن" : "دروستکردن"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const DramaRoomsHub = ({
+  rooms,
+  currentUser,
+  systemVerified,
+  canCreateRoom,
+  onOpenRoom,
+  onCreate,
+  onEdit,
+  onDelete,
+}: any) => {
+  const canManage = systemVerified && !!currentUser;
+  return (
+    <section id="drama-rooms" className="relative z-20 px-8 pb-16 font-sans">
+      <div className="max-w-7xl mx-auto">
+        <div className="flex items-center justify-between gap-4 flex-wrap mb-8">
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <Tv className="w-5 h-5 text-brand-primary" />
+              <span className="text-[10px] font-black text-brand-primary uppercase tracking-[0.2em] font-mono">
+                DRAMA ROOMS
+              </span>
+            </div>
+            <h2 className="text-2xl md:text-3xl font-black text-white kurdish-text">
+              ژوورەکانی دراما
+            </h2>
+            <p className="mt-1 text-xs text-gray-500 kurdish-text">
+              ژوورە بەردەوامەکان — هەر ژوورێک کۆمەڵێک درامای بێسنوور تێدایە
+            </p>
+          </div>
+          {canCreateRoom && (
+            <button
+              type="button"
+              onClick={onCreate}
+              className="px-5 py-3 rounded-2xl bg-brand-primary text-white text-sm font-black kurdish-text hover:opacity-90 flex items-center gap-2 shadow-xl shadow-red-600/20"
+            >
+              <Plus className="w-4 h-4" />
+              ژووری نوێ
+            </button>
+          )}
+        </div>
+
+        {rooms.length === 0 ? (
+          <div className="text-center py-16 bg-white/5 border border-white/10 rounded-[2rem]">
+            <Tv className="w-12 h-12 text-white/15 mx-auto mb-4" />
+            <h3 className="text-lg font-black text-gray-400 kurdish-text">
+              هیچ ژوورێکی دراما نەدۆزرایەوە
+            </h3>
+            {canManage && (
+              <p className="mt-2 text-xs text-gray-500 kurdish-text">
+                دەتوانیت ژووری درامای نوێ دروست بکەیت بۆ کۆکردنەوەی زنجیرە و فیلمەکان
+              </p>
+            )}
+          </div>
+        ) : (
+          <div className="flex gap-5 overflow-x-auto no-scrollbar pb-6 pr-1">
+            {rooms.map((room: any) => (
+              <DramaRoomCard
+                key={room.id}
+                room={room}
+                onOpen={onOpenRoom}
+                onEdit={onEdit}
+                onDelete={onDelete}
+                showActions={canManage}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+};
+
+const DramaRoomGallery = ({ rooms, onOpenRoom }: any) => {
+  if (rooms.length === 0) return null;
+  return (
+    <section className="pl-8">
+      <h3 className="text-2xl font-black mb-6 kurdish-text text-white flex items-center gap-3">
+        <Tv className="w-6 h-6 text-brand-primary" />
+        گەلەری ژوورەکانی دراما
+      </h3>
+      <div className="flex gap-4 overflow-x-auto no-scrollbar pb-8 pr-8">
+        {rooms.map((room: any) => (
+          <DramaRoomCard key={room.id} room={room} onOpen={onOpenRoom} compact />
+        ))}
+      </div>
+    </section>
+  );
+};
+
 export default function App() {
   const { t: tr } = useI18n();
 
@@ -6282,7 +6709,7 @@ export default function App() {
   // Immersive cinematic player: zoom multiplier, subtitle vertical shift, active menu
   const [immersiveScale, setImmersiveScale] = useState(1);
   const [subtitlePosition, setSubtitlePosition] = useState(0);
-  const [playerMenu, setPlayerMenu] = useState<null | "quality" | "subtitle" | "substyle">(null);
+  const [playerMenu, setPlayerMenu] = useState<null | "quality" | "subtitle" | "substyle" | "speed">(null);
 
   // Subtitle style settings — session-scoped state that survives subtitle mode/language switches.
   const [subtitleFontSize, setSubtitleFontSize] = useState(24);
@@ -6294,6 +6721,25 @@ export default function App() {
   const [playerDuration, setPlayerDuration] = useState(0);
   const [dragTime, setDragTime] = useState<number | null>(null);
   const dragTimeRef = useRef<number | null>(null);
+
+  // Unified playback speed control. `playbackRateRef` mirrors the state so the
+  // hold-to-cycle interval can read the latest value without stale closures.
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const playbackRateRef = useRef(1);
+  // Big center HUD shown for a moment after a speed change (hold or menu).
+  const [speedHudValue, setSpeedHudValue] = useState(1);
+  const [speedHudVisible, setSpeedHudVisible] = useState(false);
+  const speedHudTimerRef = useRef<number | null>(null);
+  // Seconds to resume the next time the player mounts (set by openMovie).
+  const resumeTimeRef = useRef(0);
+  // Long-press "hold to change speed" bookkeeping.
+  const speedHoldRef = useRef<{
+    timer: number | null;
+    interval: number | null;
+    startX: number;
+    startY: number;
+    fired: boolean;
+  }>({ timer: null, interval: null, startX: 0, startY: 0, fired: false });
 
   useEffect(() => {
     const handleFsChange = () => {
@@ -6582,7 +7028,14 @@ export default function App() {
     const tick = () => {
       let t = 0;
       let d = 0;
-      if (plyrRef.current?.plyr) {
+      // 0. Direct-stream fallback <video> (YouTubeResilientPlayer "direct" mode)
+      //    takes priority — the embed is unmounted there, so ytCurrentTimeRef
+      //    is stale (0) and would otherwise snap the seek bar back to 00:00.
+      const directVideo = document.getElementById("room-player-direct-video") as HTMLVideoElement | null;
+      if (directVideo) {
+        t = typeof directVideo.currentTime === "number" ? directVideo.currentTime : 0;
+        d = typeof directVideo.duration === "number" && Number.isFinite(directVideo.duration) ? directVideo.duration : 0;
+      } else if (plyrRef.current?.plyr) {
         const p = plyrRef.current.plyr;
         t = typeof p.currentTime === "number" ? p.currentTime : 0;
         d = typeof p.duration === "number" && Number.isFinite(p.duration) ? p.duration : 0;
@@ -6633,6 +7086,16 @@ export default function App() {
         JSON.stringify({ event: "command", func: "seekTo", args: [t, true] }),
         "*",
       );
+    }
+    // 4. Direct-stream fallback <video> (YouTubeResilientPlayer "direct" mode):
+    //    seek it natively so the timeline works there too.
+    const directVideo = document.getElementById("room-player-direct-video") as HTMLVideoElement | null;
+    if (directVideo) {
+      try {
+        directVideo.currentTime = t;
+      } catch {
+        /* ignore */
+      }
     }
     localClockRef.current = t;
   };
@@ -6871,6 +7334,310 @@ export default function App() {
   const playerContainerRef = React.useRef<HTMLDivElement>(null);
   const modalPlayerRef = React.useRef<HTMLDivElement>(null);
   const plyrRef = React.useRef<any>(null);
+
+  // -------------------------------------------------------------------------
+  // Playback speed control (shared across Plyr / YouTube / embed players).
+  // -------------------------------------------------------------------------
+  const SPEED_OPTIONS = [1, 1.25, 1.5, 2];
+  const SPEED_HOLD_MS = 500; // Long-press duration before the first speed bump.
+  const SPEED_HOLD_MOVE_TOLERANCE = 12; // px; cancels the hold when dragging.
+
+  const formatSpeed = (rate: number) =>
+    `${Number.isInteger(rate) ? rate.toString() : rate.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")}x`;
+
+  const showSpeedHud = (rate: number) => {
+    setSpeedHudValue(rate);
+    setSpeedHudVisible(true);
+    if (speedHudTimerRef.current !== null) {
+      window.clearTimeout(speedHudTimerRef.current);
+    }
+    speedHudTimerRef.current = window.setTimeout(() => {
+      setSpeedHudVisible(false);
+    }, 900);
+  };
+
+  // Apply a playback rate to whichever player is currently active.
+  const applyPlaybackRate = React.useCallback((rate: number) => {
+    // 1. Plyr native player (direct video files).
+    if (plyrRef.current?.plyr) {
+      try {
+        plyrRef.current.plyr.playbackRate = rate;
+      } catch {
+        /* ignore */
+      }
+    }
+    // 2. YouTube embed (enablejsapi=1 is already set on the iframe).
+    const roomPlayer = document.getElementById(
+      "room-player",
+    ) as HTMLIFrameElement | null;
+    if (roomPlayer?.contentWindow) {
+      roomPlayer.contentWindow.postMessage(
+        JSON.stringify({ event: "command", func: "setPlaybackRate", args: [rate] }),
+        "https://www.youtube.com",
+      );
+    }
+    // 3. Other embeds: best-effort (many providers ignore this command).
+    const frame = document.getElementById(
+      "streaming-player",
+    ) as HTMLIFrameElement | null;
+    if (frame?.contentWindow) {
+      frame.contentWindow.postMessage(
+        JSON.stringify({ event: "command", func: "setPlaybackRate", args: [rate] }),
+        "*",
+      );
+    }
+    // 4. Any native <video> mounted inside the modal player. Covers the Plyr
+    //    media element and the YouTube direct-stream fallback <video>.
+    if (modalPlayerRef.current) {
+      modalPlayerRef.current.querySelectorAll("video").forEach((v) => {
+        try {
+          v.playbackRate = rate;
+        } catch {
+          /* ignore */
+        }
+      });
+    }
+  }, []);
+
+  const cyclePlaybackSpeed = React.useCallback(() => {
+    const idx = SPEED_OPTIONS.indexOf(playbackRateRef.current);
+    const next = SPEED_OPTIONS[idx < 0 ? 0 : (idx + 1) % SPEED_OPTIONS.length];
+    playbackRateRef.current = next;
+    setPlaybackRate(next);
+    showSpeedHud(next);
+  }, []);
+
+  const selectPlaybackRate = React.useCallback((rate: number) => {
+    playbackRateRef.current = rate;
+    setPlaybackRate(rate);
+    setPlayerMenu(null);
+    showSpeedHud(rate);
+  }, []);
+
+  // Keep the mirror ref in sync with the state.
+  React.useEffect(() => {
+    playbackRateRef.current = playbackRate;
+  }, [playbackRate]);
+
+  // Apply the selected speed whenever the player mounts, the source changes,
+  // or the rate changes.
+  React.useEffect(() => {
+    if (!showPlayer || !activeServerUrl) return;
+    applyPlaybackRate(playbackRateRef.current);
+  }, [showPlayer, activeServerUrl, applyPlaybackRate, playbackRate]);
+
+  // Long-press handlers: press and HOLD on the video cycles the playback speed
+  // (1x → 1.25x → 1.5x → 2x → 1x). Works with mouse, touch and pen pointers.
+  const clearSpeedHold = React.useCallback(() => {
+    const h = speedHoldRef.current;
+    if (h.timer !== null) {
+      window.clearTimeout(h.timer);
+      h.timer = null;
+    }
+    if (h.interval !== null) {
+      window.clearInterval(h.interval);
+      h.interval = null;
+    }
+    h.fired = false;
+  }, []);
+
+  React.useEffect(() => {
+    return () => clearSpeedHold();
+  }, [clearSpeedHold]);
+
+  const onPlayerPointerDown = (e: React.PointerEvent) => {
+    // Ignore presses that start on interactive controls (buttons, the seek
+    // bar, links, iframes). Native videos bubble to this container; cross-origin
+    // iframes never do, so this only fires on the native <video> paths.
+    const target = e.target as HTMLElement;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.closest("button, a, [role='slider'], input, select, textarea, iframe")) return;
+    const h = speedHoldRef.current;
+    h.startX = e.clientX;
+    h.startY = e.clientY;
+    h.fired = false;
+    if (h.timer !== null) window.clearTimeout(h.timer);
+    h.timer = window.setTimeout(() => {
+      h.fired = true;
+      cyclePlaybackSpeed();
+      // Keep ramping while the pointer stays down.
+      if (h.interval !== null) window.clearInterval(h.interval);
+      h.interval = window.setInterval(cyclePlaybackSpeed, SPEED_HOLD_MS);
+    }, SPEED_HOLD_MS);
+  };
+
+  const onPlayerPointerMove = (e: React.PointerEvent) => {
+    const h = speedHoldRef.current;
+    if (h.timer === null && h.interval === null) return;
+    if (Math.hypot(e.clientX - h.startX, e.clientY - h.startY) > SPEED_HOLD_MOVE_TOLERANCE) {
+      // The pointer is dragging (e.g. on the seek bar) — cancel the hold.
+      clearSpeedHold();
+    }
+  };
+
+  const onPlayerPointerUp = () => clearSpeedHold();
+  const onPlayerPointerCancel = () => clearSpeedHold();
+
+  // Resume: when the player mounts or the source changes, seek to the saved
+  // position (set by openMovie) once the player is ready — otherwise reopening
+  // a movie always starts over from 0s.
+  React.useEffect(() => {
+    if (!showPlayer || !activeServerUrl) return;
+    const resume = resumeTimeRef.current;
+    if (resume <= 0) return;
+    resumeTimeRef.current = 0; // One-shot per source.
+
+    // 1. Direct video (Plyr): seek once metadata is available.
+    if (plyrRef.current?.plyr) {
+      const p = plyrRef.current.plyr;
+      const media = p.media;
+      const doSeek = () => {
+        try {
+          if (Number.isFinite(p.duration) && p.duration > 0) {
+            p.currentTime = Math.min(resume, Math.max(0, p.duration - 1));
+          }
+        } catch {
+          /* ignore */
+        }
+      };
+      if (media) {
+        if (media.readyState >= 1) {
+          doSeek();
+        } else {
+          media.addEventListener("loadedmetadata", doSeek, { once: true });
+        }
+      }
+    }
+    // 2. YouTube embed: send seekTo repeatedly during the JS-API handshake.
+    const roomPlayer = document.getElementById(
+      "room-player",
+    ) as HTMLIFrameElement | null;
+    if (roomPlayer?.contentWindow) {
+      let attempts = 0;
+      const iv = window.setInterval(() => {
+        attempts += 1;
+        const frame = document.getElementById(
+          "room-player",
+        ) as HTMLIFrameElement | null;
+        if (frame?.contentWindow) {
+          frame.contentWindow.postMessage(
+            JSON.stringify({ event: "command", func: "seekTo", args: [resume, true] }),
+            "https://www.youtube.com",
+          );
+          ytCurrentTimeRef.current = resume;
+        }
+        if (attempts >= 8) window.clearInterval(iv);
+      }, 400);
+    }
+    // 3. Other embeds: best-effort seek + local-clock sync for AI subtitles.
+    const frame = document.getElementById(
+      "streaming-player",
+    ) as HTMLIFrameElement | null;
+    if (frame?.contentWindow) {
+      frame.contentWindow.postMessage(
+        JSON.stringify({ event: "command", func: "seekTo", args: [resume, true] }),
+        "*",
+      );
+      localClockRef.current = resume;
+    }
+    // 4. Direct-stream fallback <video> (YouTubeResilientPlayer "direct" mode):
+    //    resume it natively so continue-watching works there too.
+    const directVideo = document.getElementById(
+      "room-player-direct-video",
+    ) as HTMLVideoElement | null;
+    if (directVideo) {
+      const doSeek = () => {
+        try {
+          if (Number.isFinite(directVideo.duration) && directVideo.duration > 0) {
+            directVideo.currentTime = Math.min(resume, Math.max(0, directVideo.duration - 1));
+          }
+        } catch {
+          /* ignore */
+        }
+      };
+      if (directVideo.readyState >= 1) {
+        doSeek();
+      } else {
+        directVideo.addEventListener("loadedmetadata", doSeek, { once: true });
+      }
+    }
+  }, [showPlayer, activeServerUrl]);
+
+  // -------------------------------------------------------------------------
+  // Memoized Plyr source/options.
+  // The 250 ms progress poll re-renders App ~4x/sec. plyr-react reinstantiates
+  // Plyr (i.e. rebuilds the <video>) whenever the `source`/`options` object
+  // identity changes, which reset playback to 0s. Keeping these objects stable
+  // across renders — keyed ONLY on values that actually change the source —
+  // is what prevents the "jumps back to the first second" bug.
+  // -------------------------------------------------------------------------
+  const isYoutubeSource = !!activeServerUrl && /youtube\.com|youtu\.be/i.test(activeServerUrl);
+  const plyrSource = React.useMemo(
+    () => ({
+      type: "video" as const,
+      sources: [
+        {
+          src: activeServerUrl || "",
+          provider: (isYoutubeSource ? "youtube" : "html5") as "youtube" | "html5",
+        },
+      ],
+      tracks: selectedMovie?.subtitleUrl
+        ? [
+            {
+              kind: "captions" as const,
+              label: "Kurdish",
+              srcLang: "ku",
+              src: selectedMovie.subtitleUrl,
+              default: true,
+            },
+          ]
+        : [],
+    }),
+    // Do NOT add `selectedMovie` (object identity churns on sync-room writes).
+    [activeServerUrl, isYoutubeSource, selectedMovie?.subtitleUrl],
+  );
+
+  const plyrOptions = React.useMemo(
+    () => ({
+      autoplay: true,
+      muted: isRoomMuted,
+      controls: [
+        "play-large",
+        "play",
+        "progress",
+        "current-time",
+        "mute",
+        "volume",
+        "captions",
+        "settings",
+        "pip",
+        "airplay",
+        "fullscreen",
+        "rewind",
+        "fast-forward",
+      ],
+      // Speed is handled by the unified custom speed control; drop Plyr's own
+      // speed menu so the two selectors can't disagree. `speed.selected` stays
+      // static (1) — the actual rate is applied via applyPlaybackRate.
+      settings: ["quality"],
+      speed: {
+        selected: 1,
+        options: [0.5, 0.75, 1, 1.25, 1.5, 2],
+      },
+      keyboard: { focused: true, global: true },
+      tooltips: { controls: true, seek: true },
+      i18n: {
+        play: "لێدان",
+        pause: "وەستان",
+        mute: "بێدەنگکردن",
+        unmute: "لێدانەوەی دەنگ",
+        quality: "کوالێتی",
+        speed: "خێرایی",
+        loop: "دووبارەبوونەوە",
+      },
+    }),
+    [isRoomMuted],
+  );
 
   const featuredMovie = useMemo(() => {
     return movies.find((m) => m.isYouTube) || movies[0];
@@ -7282,6 +8049,20 @@ export default function App() {
       setSelectedMovie(movie);
       setActiveServerUrl(getMovieSourceUrl(movie));
       setShowPlayer(true);
+      // Restore a saved resume point (continue-watching) so reopening a movie
+      // resumes where the user left off instead of always starting at 0s.
+      try {
+        const local = JSON.parse(
+          localStorage.getItem("cinemachat_continue_watching") || "{}",
+        );
+        const saved = local[movie.id];
+        resumeTimeRef.current =
+          saved && typeof saved.progress === "number" && saved.progress >= 5
+            ? saved.progress
+            : 0;
+      } catch {
+        resumeTimeRef.current = 0;
+      }
       // Record an immediate continue-watching entry (local + server) so the
       // row shows up even if the user exits before the next progress save.
       const now = Date.now();
@@ -7595,8 +8376,10 @@ export default function App() {
     const movieId = selectedMovie.id;
     const save = () => {
       try {
-        const v = document.querySelector(
-          "#streaming-player video, .plyr__video-wrapper video",
+        // Query the modal player container so this also covers the YouTube
+        // direct-stream fallback <video> (which the old fixed selector missed).
+        const v = modalPlayerRef.current?.querySelector(
+          "video",
         ) as HTMLVideoElement | null;
         if (!v || !v.currentTime || Number.isNaN(v.currentTime)) return;
         const progress = Math.round(v.currentTime);
@@ -8854,6 +9637,19 @@ export default function App() {
     socialProfile?.role === "staff" ||
     socialProfile?.userRole === "staff";
 
+  // "New Room +" is restricted to Owner / Deputy Manager accounts only (reuses
+  // the existing role vocabulary — no new permission system).
+  const canCreateDramaRoom =
+    currentUser?.username?.toLowerCase() === "admin" ||
+    currentUser?.username?.toLowerCase() === "dekan@123" ||
+    currentUser?.role === "owner" ||
+    !!currentUser?.isOwner ||
+    currentUser?.role === "deputy_manager" ||
+    socialProfile?.role === "owner" ||
+    socialProfile?.userRole === "owner" ||
+    socialProfile?.role === "deputy_manager" ||
+    socialProfile?.userRole === "deputy_manager";
+
   // Monitor banned visitor IP on layout-load dynamically (Security Guard check).
   // Owner-whitelisted IPs/devices get a live countdown + auto-restore: the
   // server auto-unblocks after 1 minute and returns ownerExempt/unblockAt so
@@ -8967,7 +9763,26 @@ export default function App() {
     text: "بەخێربێن بۆ CinamaChat - نوێترین فیلم و زنجیرەکان لێرە ببینە",
     type: "normal",
   });
-  const [dynamicCategories, setDynamicCategories] = useState<string[]>([]);
+  // Category options for the admin "پۆلێن" dropdown. These MUST match the
+  // tags used by the homepage nav genre chips — otherwise the select can never
+  // reflect a movie's category and stays stuck on "هەمووی". Derived from the
+  // same genre source as navGenres (live genres, DEFAULT_GENRES fallback).
+  // Category options for the admin "پۆلێن" dropdown: union of the built-in
+  // DEFAULT_GENRES and the live Firestore genres. The live set can be a custom
+  // replacement that no longer contains default tags (e.g. "New Releases"), so
+  // relying on only one source hides a movie's real category behind "هەمووی".
+  // The union also removes the genresReady timing gap — defaults are always
+  // present and dynamic tags appear as soon as they load.
+  const dynamicCategories = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...DEFAULT_GENRES.map((g) => g.tag),
+          ...dynamicGenres.map((g) => g.tag),
+        ]),
+      ),
+    [dynamicGenres],
+  );
   const [stats, setStats] = useState({ visitors: 0 });
   const [isQuotaExceeded, setIsQuotaExceeded] = useState(false);
   const [config, setConfig] = useState({
@@ -9006,11 +9821,11 @@ export default function App() {
   // Silent Access Control / Route Guard for Module 17 and Staff permissions
   useEffect(() => {
     const isOwner =
-      currentUser?.username === "admin" ||
+      currentUser?.username?.toLowerCase() === "admin" ||
       currentUser?.username?.toLowerCase() === "dekan@123" ||
-      currentUser?.role === "owner" ||
-      socialProfile?.role === "owner" ||
-      socialProfile?.userRole === "owner";
+      currentUser?.role?.toLowerCase() === "owner" ||
+      socialProfile?.role?.toLowerCase() === "owner" ||
+      socialProfile?.userRole?.toLowerCase() === "owner";
 
     const isStaff =
       socialProfile?.role === "staff" ||
@@ -9538,12 +10353,17 @@ export default function App() {
     if (searchMode === "ai" && aiResults) return aiResults;
 
     const tab = activeTab;
+    // Normalize both sides (trim + lowercase) exactly like the admin category
+    // dropdown matches, so a movie shown under a nav tab always carries the same
+    // normalized tag that its "پۆلێن" select displays (e.g. "New Releases" vs
+    // "new releases").
+    const activeKey = String(tab || "").trim().toLowerCase();
     let list = movies.filter((movie) => {
       const tags = Array.isArray(movie.tags)
-        ? movie.tags.map((t: string) => String(t).toLowerCase())
+        ? movie.tags.map((t: string) => String(t).trim().toLowerCase())
         : [];
       const matchesTab =
-        tab === "all" || (Array.isArray(movie.tags) && movie.tags.includes(tab));
+        activeKey === "all" || (tags.length > 0 && tags.includes(activeKey));
       return matchesTab;
     });
 
@@ -9602,6 +10422,101 @@ export default function App() {
       ).length,
     }));
   }, [dynamicGenres, genresReady, movies]);
+
+  // ===== Drama Rooms (persistent curated collections) =====
+  // Loaded from /api/drama-rooms (server-persisted in db.dramaRooms). The hub
+  // and gallery both consume this list; the CRUD modal keeps it in sync.
+  const [dramaRooms, setDramaRooms] = useState<any[]>([]);
+  const [dramaCategory, setDramaCategory] = useState("all");
+  const [selectedDramaRoom, setSelectedDramaRoom] = useState<any>(null);
+  const [showDramaRoomModal, setShowDramaRoomModal] = useState(false);
+  const [editingDramaRoom, setEditingDramaRoom] = useState<any>(null);
+
+  const refreshDramaRooms = useCallback(async () => {
+    try {
+      const data = await api.baseFetch("/api/drama-rooms", {}, 2);
+      setDramaRooms(Array.isArray(data?.rooms) ? data.rooms : []);
+    } catch (e) {
+      console.warn("Failed to load drama rooms:", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshDramaRooms();
+  }, [refreshDramaRooms]);
+
+  // Save (create or update) a drama room through the public API.
+  const handleSaveDramaRoom = useCallback(
+    async (payload: any) => {
+      if (editingDramaRoom) {
+        await api.baseFetch(`/api/drama-rooms/${editingDramaRoom.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }, 2);
+      } else {
+        await api.baseFetch("/api/drama-rooms", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }, 2);
+      }
+      setShowDramaRoomModal(false);
+      setEditingDramaRoom(null);
+      await refreshDramaRooms();
+    },
+    [editingDramaRoom, refreshDramaRooms],
+  );
+
+  // Delete a drama room through the public API (confirm first).
+  const handleDeleteDramaRoom = useCallback(
+    async (room: any) => {
+      if (!room?.id) return;
+      if (!window.confirm(`دڵنیایت لە سڕینەوەی ژووری "${room.title}"؟`)) return;
+      try {
+        await api.baseFetch(`/api/drama-rooms/${room.id}`, { method: "DELETE" }, 2);
+        setSelectedDramaRoom((prev: any) => (prev?.id === room.id ? null : prev));
+        await refreshDramaRooms();
+      } catch (e) {
+        console.warn("Failed to delete drama room:", e);
+      }
+    },
+    [refreshDramaRooms],
+  );
+
+  // Drama category filter: shows only rooms that contain at least one movie
+  // tagged with the selected genre. "all" shows every room.
+  const dramaRoomsFiltered = useMemo(() => {
+    if (dramaCategory === "all") return dramaRooms;
+    const key = String(dramaCategory).trim().toLowerCase();
+    return dramaRooms.filter((room: any) =>
+      (Array.isArray(room.dramas) ? room.dramas : []).some((id: string) => {
+        const m = resolvedMovies[id];
+        return (
+          m &&
+          Array.isArray(m.tags) &&
+          m.tags.some((t: string) => String(t).trim().toLowerCase() === key)
+        );
+      }),
+    );
+  }, [dramaRooms, dramaCategory, resolvedMovies]);
+
+  // Option lists for the two filter dropdowns that replaced the category chips.
+  const movieCatOptions = useMemo(
+    () => [
+      { value: "all", label: "هەمووی (All)" },
+      ...navGenres.map((g) => ({ value: g.tag, label: g.name })),
+    ],
+    [navGenres],
+  );
+
+  const dramaCatOptions = useMemo(
+    () => [
+      { value: "all", label: "هەموو ژوورەکان (All Rooms)" },
+      ...navGenres.map((g) => ({ value: g.tag, label: g.name })),
+    ],
+    [navGenres],
+  );
 
   useEffect(() => {
     setTranslatedContent(null);
@@ -9770,6 +10685,27 @@ export default function App() {
       </div>
     );
   }
+
+  // Drama Rooms hub element — rendered once, placed directly below the wide
+  // advertisement banner inside the movie grid (see usage below).
+  const dramaRoomsHubElement = (
+    <DramaRoomsHub
+      rooms={dramaRoomsFiltered}
+      currentUser={currentUser}
+      systemVerified={systemVerified}
+      canCreateRoom={canCreateDramaRoom}
+      onOpenRoom={setSelectedDramaRoom}
+      onCreate={() => {
+        setEditingDramaRoom(null);
+        setShowDramaRoomModal(true);
+      }}
+      onEdit={(room: any) => {
+        setEditingDramaRoom(room);
+        setShowDramaRoomModal(true);
+      }}
+      onDelete={handleDeleteDramaRoom}
+    />
+  );
 
   return (
     <div
@@ -10028,6 +10964,7 @@ export default function App() {
         )}
 
         {socialTab === "movies" && (
+          <>
           <SafeRender fallbackName="Main Movies Feed">
             {/* ٢. پێکهاتەی سەرەکی ڤیدیۆی سەرەوە (Hero Video Component) */}
             {activeFeaturedMovie && !activeSyncGroup && (
@@ -10048,84 +10985,13 @@ export default function App() {
             )}
 
 
-            {/* Social / Broadcast / VIP sections — directly below the hero. No
-                movie lists render above the Search section. */}
-            <div className="relative z-20 pb-12">
-
-              {/* Unified Stream Automation: Bottom Room (Live Global Sync & VIP side-by-side) */}
-              {activeFeaturedMovie && ( // Only render if there's a featured movie
-                <RoomSection
-                  key={activeSyncGroup?.id || "empty-room"}
-                  activeFeaturedMovie={activeFeaturedMovie}
-                  activeSyncGroup={activeSyncGroup}
-                  isRoomMuted={isRoomMuted}
-                  setIsRoomMuted={setIsRoomMuted}
-                  currentRoomVideoUrl={config.roomVideoUrl || ""}
-                  extractYouTubeId={extractYouTubeId}
-                  config={config}
-                  setShowJoinCodeModal={setShowJoinCodeModal}
-                  setShowVipModal={setShowVipModal}
-                  setSocialTab={setSocialTab}
-                  socialProfile={socialProfile}
-                />
-              )}
-            </div>
+            {/* Drama Rooms hub now renders below the ad banner inside the
+                movie grid (kept in one place only). No movie lists render
+                above the Search section. */}
 
 
 
 
-
-            {/* Categories / Navigation Section (dynamic genres from Firestore) */}
-            <section className="sticky top-[73px] z-50 bg-black/95 backdrop-blur-3xl py-4 px-8 border-b border-white/5 shadow-2xl">
-              <div className="max-w-7xl mx-auto flex items-center gap-4 overflow-x-auto no-scrollbar">
-                {/* Special "all" view */}
-                <button
-                  key="all"
-                  onClick={() => {
-                    setActiveTab("all");
-                    setCurrentPage(1);
-                  }}
-                  className={`px-6 py-2.5 rounded-full font-bold kurdish-text whitespace-nowrap transition-all flex items-center gap-2 border-2 ${
-                    activeTab === "all"
-                      ? "bg-brand-primary border-brand-primary text-white shadow-xl shadow-red-600/20 scale-105"
-                      : "bg-white/5 border-white/10 text-gray-400 hover:bg-white/10 hover:border-white/20"
-                  }`}
-                >
-                  <TrendingUp className="w-4 h-4" />
-                  هەمووی
-                </button>
-                {navGenres.map((cat) => {
-                  const Icon = GENRE_ICONS[cat.tag] || GENRE_ICONS[cat.name] || Film;
-                  return (
-                    <button
-                      key={cat.id || cat.tag}
-                      onClick={() => {
-                        setActiveTab(cat.tag);
-                        setCurrentPage(1);
-                      }}
-                      className={`px-6 py-2.5 rounded-full font-bold kurdish-text whitespace-nowrap transition-all flex items-center gap-2 border-2 ${
-                        activeTab === cat.tag
-                          ? "bg-brand-primary border-brand-primary text-white shadow-xl shadow-red-600/20 scale-105"
-                          : "bg-white/5 border-white/10 text-gray-400 hover:bg-white/10 hover:border-white/20"
-                      }`}
-                    >
-                      <Icon className="w-4 h-4" />
-                      {cat.name}
-                      <span
-                        className={`text-[9px] font-black px-1.5 py-0.5 rounded-full ${
-                          activeTab === cat.tag
-                            ? "bg-white/20 text-white"
-                            : "bg-white/10 text-gray-500"
-                        }`}
-                        title={`${cat.count} فیلم`}
-                      >
-                        {cat.count}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </section>
 
             {/* Smart Search Section */}
             <div className="max-w-7xl mx-auto px-8 mt-16 mb-8 text-center">
@@ -10161,6 +11027,33 @@ export default function App() {
                     {mode.label}
                   </button>
                 ))}
+              </div>
+
+              {/* Genre filter dropdowns — replaced the old horizontal category chips */}
+              <div className="flex flex-wrap items-center justify-center gap-4 mb-8">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-black text-gray-400 kurdish-text">
+                    پۆلێنی فیلمەکان
+                  </span>
+                  <CategoryDropdown
+                    value={activeTab}
+                    onChange={(v: string) => {
+                      setActiveTab(v);
+                      setCurrentPage(1);
+                    }}
+                    categories={movieCatOptions}
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-black text-gray-400 kurdish-text">
+                    پۆلێنی دراماکان
+                  </span>
+                  <CategoryDropdown
+                    value={dramaCategory}
+                    onChange={setDramaCategory}
+                    categories={dramaCatOptions}
+                  />
+                </div>
               </div>
 
               {searchMode === "title" && (
@@ -10406,34 +11299,51 @@ export default function App() {
                     />
                   );
 
-                    if (idx === 5 && config.ads.banner.image) {
-                      return [
-                        movieCard,
-                        <div
-                          key="ad-banner"
-                          className="col-span-full my-12"
-                        >
-                          <a
-                            href={config.ads.banner.link}
-                            target="_blank"
-                            rel="noreferrer"
+                    if (idx === 5) {
+                      const items = [movieCard];
+                      if (config.ads.banner.image) {
+                        items.push(
+                          <div
+                            key="ad-banner"
+                            className="col-span-full my-12"
                           >
-                            <div className="w-full aspect-[728/90] md:h-[120px] bg-white/5 rounded-2xl overflow-hidden border border-white/10 group cursor-pointer relative">
-                              <img
-                                src={config.ads.banner.image || undefined}
-                                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                              />
-                              <div className="absolute top-2 right-2 px-2 py-1 bg-black/40 text-[8px] font-black text-white/50 uppercase tracking-widest rounded border border-white/5">
-                                ADVERTISEMENT
+                            <a
+                              href={config.ads.banner.link}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              <div className="w-full aspect-[728/90] md:h-[120px] bg-white/5 rounded-2xl overflow-hidden border border-white/10 group cursor-pointer relative">
+                                <img
+                                  src={config.ads.banner.image || undefined}
+                                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                                />
+                                <div className="absolute top-2 right-2 px-2 py-1 bg-black/40 text-[8px] font-black text-white/50 uppercase tracking-widest rounded border border-white/5">
+                                  ADVERTISEMENT
+                                </div>
                               </div>
-                            </div>
-                          </a>
-                        </div>,
-                      ];
+                            </a>
+                          </div>
+                        );
+                      }
+                      // Drama Rooms hub — rendered directly below the wide
+                      // advertisement banner inside the movie grid.
+                      items.push(
+                        <div
+                          key="drama-rooms-hub"
+                          className="col-span-full"
+                        >
+                          {dramaRoomsHubElement}
+                        </div>
+                      );
+                      return items;
                     }
                     return [movieCard];
                   })}
               </div>
+
+              {paginatedMovies.length <= 5 && (
+                <div className="col-span-full">{dramaRoomsHubElement}</div>
+              )}
 
               {isLoading && paginatedMovies.length === 0 && (
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-6 md:gap-8">
@@ -10496,34 +11406,12 @@ export default function App() {
             {/* Remaining movie sections — rendered AFTER the search + movie grid,
                 so no movie cards appear above the Search section. */}
             <div className="relative z-20 space-y-12 pb-12">
-              {/* Trending Now Section */}
-              <SafeRender fallbackName="Trending Row">
-                <section className="pl-8">
-                  <h3 className="text-2xl font-black mb-6 kurdish-text text-white flex items-center gap-3">
-                    <Flame className="w-6 h-6 text-orange-500" />
-                    فیلمە ترێندینگەکان
-                  </h3>
-                  <div className="flex gap-4 overflow-x-auto no-scrollbar pb-8 pr-8">
-                    {trendingMovies.map((movie, tidx) => (
-                      <div
-                        key={`trending-${movie.id}-${tidx}`}
-                        className="flex-shrink-0 w-[160px] md:w-[220px]"
-                      >
-                        <MovieCard
-                          movie={resolvedMovies[movie.id] ?? movie}
-                          liveViewers={getMovieLiveViewers(movie)}
-                          isTopLive={topLiveId === movie.id}
-                          isFavorite={favoriteIds.has(movie.id)}
-                          isLiked={likedIds.has(movie.id)}
-                          likes={getMovieLikes(movie)}
-                          onOpen={openMovie}
-                          onToggleFavorite={handleToggleFavorite}
-                          onToggleLike={handleToggleLike}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                </section>
+              {/* Drama Rooms Gallery — replaces the old Trending Now row */}
+              <SafeRender fallbackName="Drama Rooms Gallery">
+                <DramaRoomGallery
+                  rooms={dramaRoomsFiltered}
+                  onOpenRoom={setSelectedDramaRoom}
+                />
               </SafeRender>
 
               {/* My Favorites Section — dedicated persistent row of the current
@@ -10614,6 +11502,27 @@ export default function App() {
               )}
             </div>
           </SafeRender>
+          {/* Drama Room modals — detail view (opens a room's dramas) + CRUD form */}
+          {selectedDramaRoom && (
+            <DramaRoomDetailModal
+              room={selectedDramaRoom}
+              resolvedMovies={resolvedMovies}
+              openMovie={openMovie}
+              onClose={() => setSelectedDramaRoom(null)}
+            />
+          )}
+          {showDramaRoomModal && (
+            <DramaRoomCrudModal
+              editing={editingDramaRoom}
+              movies={movies}
+              onSave={handleSaveDramaRoom}
+              onClose={() => {
+                setShowDramaRoomModal(false);
+                setEditingDramaRoom(null);
+              }}
+            />
+          )}
+          </>
         )}
       </main>
 
@@ -10657,6 +11566,10 @@ export default function App() {
                 <div
                   ref={modalPlayerRef}
                   className="w-full h-full relative bg-black shadow-2xl aspect-video md:aspect-[21/9]"
+                  onPointerDown={onPlayerPointerDown}
+                  onPointerMove={onPlayerPointerMove}
+                  onPointerUp={onPlayerPointerUp}
+                  onPointerCancel={onPlayerPointerCancel}
                 >
                   {showPlayer && activeServerUrl ? (
                     <div className="absolute inset-0 bg-black flex items-center justify-center z-10 transition-all">
@@ -10718,70 +11631,25 @@ export default function App() {
                         <div className="relative w-full h-full flex items-center justify-center bg-black">
                           <Plyr
                             ref={plyrRef}
-                            source={{
-                              type: "video",
-                              sources: [
-                                {
-                                  src: activeServerUrl,
-                                  provider:
-                                    activeServerUrl.includes("youtube.com") ||
-                                    activeServerUrl.includes("youtu.be")
-                                      ? "youtube"
-                                      : "html5",
-                                },
-                              ],
-                              tracks: selectedMovie.subtitleUrl
-                                ? [
-                                    {
-                                      kind: "captions",
-                                      label: "Kurdish",
-                                      srcLang: "ku",
-                                      src: selectedMovie.subtitleUrl,
-                                      default: true,
-                                    },
-                                  ]
-                                : [],
-                            }}
-                            options={{
-                              autoplay: true,
-                              muted: isRoomMuted,
-                              controls: [
-                                "play-large",
-                                "play",
-                                "progress",
-                                "current-time",
-                                "mute",
-                                "volume",
-                                "captions",
-                                "settings",
-                                "pip",
-                                "airplay",
-                                "fullscreen",
-                                "rewind",
-                                "fast-forward",
-                              ],
-                              settings: ["quality", "speed"],
-                              speed: {
-                                selected: 1,
-                                options: [0.5, 0.75, 1, 1.25, 1.5, 2],
-                              },
-                              keyboard: { focused: true, global: true },
-                              tooltips: { controls: true, seek: true },
-                              i18n: {
-                                play: "لێدان",
-                                pause: "وەستان",
-                                mute: "بێدەنگکردن",
-                                unmute: "لێدانەوەی دەنگ",
-                                quality: "کوالێتی",
-                                speed: "خێرایی",
-                                loop: "دووبارەبوونەوە",
-                              },
-                            }}
+                            source={plyrSource}
+                            options={plyrOptions}
                           />
                         </div> // Plyr Player for direct video files
                       )}
 
-{/* AI-Translated Subtitle Overlay (parent-side, time-synced) */}
+                      {/* Playback speed HUD (shows after a speed change via the
+                          speed menu or press-and-hold on the video). */}
+                      {speedHudVisible && (
+                        <div className="pointer-events-none absolute inset-0 z-[70] flex items-center justify-center">
+                          <div className="px-6 py-3 rounded-2xl bg-black/80 border border-white/10 backdrop-blur-md shadow-2xl">
+                            <span className="text-3xl font-black text-white tabular-nums drop-shadow-lg">
+                              {formatSpeed(speedHudValue)}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* AI-Translated Subtitle Overlay (parent-side, time-synced) */}
                        {subtitleMode === "ai" && currentAiSubtitle && (
                          <div
                            className="absolute inset-x-0 z-[45] pointer-events-none select-none px-2 md:px-10 flex justify-center"
@@ -11238,6 +12106,57 @@ export default function App() {
                             <Play className="w-5 h-5 fill-current ml-0.5" />
                           )}
                         </button>
+
+                        {/* [2.5] Playback Speed */}
+                        <div className="relative">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setPlayerMenu(
+                                playerMenu === "speed" ? null : "speed",
+                              )
+                            }
+                            className={`w-10 h-10 md:w-11 md:h-11 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border border-white/10 ${
+                              playbackRate !== 1
+                                ? "bg-brand-primary text-white"
+                                : "bg-black/60 hover:bg-white/10 text-white"
+                            }`}
+                            title="خێرایی پلەیباک (Playback Speed)"
+                          >
+                            <FastForward className="w-4.5 h-4.5 md:w-5 md:h-5" />
+                          </button>
+
+                          {playerMenu === "speed" && (
+                            <>
+                              <div
+                                className="fixed inset-0 z-[55]"
+                                onClick={() => setPlayerMenu(null)}
+                              />
+                              <div className="absolute bottom-full right-0 mb-2 z-[60] w-44 rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-2 shadow-2xl">
+                                <div className="px-3 pb-2 text-[9px] font-black text-zinc-400 uppercase tracking-widest kurdish-text">
+                                  خێرایی پلەیباک
+                                </div>
+                                {SPEED_OPTIONS.map((r) => (
+                                  <button
+                                    key={r}
+                                    type="button"
+                                    onClick={() => selectPlaybackRate(r)}
+                                    className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                                      playbackRate === r
+                                        ? "bg-brand-primary text-white"
+                                        : "bg-white/5 hover:bg-white/10 text-zinc-300"
+                                    }`}
+                                  >
+                                    <span>{formatSpeed(r)}</span>
+                                    {playbackRate === r && (
+                                      <CheckCircle2 className="w-4 h-4" />
+                                    )}
+                                  </button>
+                                ))}
+                              </div>
+                            </>
+                          )}
+                        </div>
 
                         {/* [2] Quality Settings */}
                         <div className="relative">
@@ -12215,13 +13134,24 @@ export default function App() {
       <AnimatePresence> {/* Admin Dashboard */}
         {showAdminPanel &&
           (socialProfile?.role === "admin" ||
+            socialProfile?.userRole === "admin" ||
+            socialProfile?.role === "owner" ||
+            socialProfile?.userRole === "owner" ||
             socialProfile?.role === "super_admin" ||
+            socialProfile?.userRole === "super_admin" ||
             socialProfile?.role === "deputy_manager" ||
+            socialProfile?.userRole === "deputy_manager" ||
             socialProfile?.role === "staff" ||
+            socialProfile?.userRole === "staff" ||
             currentUser?.role === "admin" ||
+            currentUser?.role === "owner" ||
             currentUser?.role === "super_admin" ||
             currentUser?.role === "deputy_manager" ||
-            currentUser?.role === "staff") && (
+            currentUser?.role === "staff" ||
+            !!currentUser?.isOwner ||
+            !!currentUser?.isSuper ||
+            currentUser?.username?.toLowerCase() === "admin" ||
+            currentUser?.username?.toLowerCase() === "dekan@123") && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -12777,8 +13707,19 @@ const trailerId = movie.trailerUrl
                                     </span> {/* Category Label */}
                                     <select
                                       value={
-                                        movie.tags.find((t) =>
-                                          dynamicCategories.includes(t),
+                                        // Return the canonical option that matches
+                                        // the movie's tag case-insensitively, so the
+                                        // value is always a valid option (never a
+                                        // raw tag that has no matching <option>).
+                                        dynamicCategories.find((c) =>
+                                          (Array.isArray(movie.tags)
+                                            ? movie.tags
+                                            : []
+                                          ).some(
+                                            (t) =>
+                                              String(t).trim().toLowerCase() ===
+                                              String(c).toLowerCase(),
+                                          ),
                                         ) || "هەمووی"
                                       }
                                       onChange={async (e) => {
@@ -12793,6 +13734,8 @@ const trailerId = movie.trailerUrl
                                             },
                                             body: JSON.stringify({
                                               tags: [newTag],
+                                              adminName:
+                                                currentUser?.username || "Admin",
                                             }),
                                           },
                                         );

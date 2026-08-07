@@ -136,6 +136,13 @@ export default function YouTubeResilientPlayer({
       } else if (data.event === "onStateChange") {
         // info === 1 means PLAYING.
         if (data.info === 1 || data.data === 1) playedRef.current = true;
+      } else if (data.event === "infoDelivery" && typeof data.info?.currentTime === "number") {
+        // A live embed streams time updates via infoDelivery, which proves the
+        // video is playing. The app's `listening` handshake only subscribes to
+        // onInfoDelivery (never onStateChange), so without this the stall guard
+        // would remount a perfectly healthy embed every 15s and reset playback
+        // to 00:00.
+        playedRef.current = true;
       }
     };
     window.addEventListener("message", onMessage);
@@ -267,6 +274,7 @@ export default function YouTubeResilientPlayer({
         <div className="relative w-full h-full flex items-center justify-center bg-black">
           <video
             key={streamUrl}
+            id="room-player-direct-video"
             src={streamUrl}
             poster={poster}
             controls
