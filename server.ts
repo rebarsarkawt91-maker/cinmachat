@@ -980,12 +980,16 @@ const loadFirestoreMovies = async (): Promise<any[]> => {
 
 // Mirror the Firestore catalog into the server cache. Purely additive: it can
 // never remove a locally-managed movie, and a sync failure is non-fatal.
-const syncFirestoreMovies = async (): Promise<void> => {
+// Never re-seed a movie that an admin explicitly deleted (db.deletedIds is the
+// durable tombstone persisted in db.json). Keeps a deletion stable across server
+// restarts and 5-minute catalog re-syncs.
+const syncFirestoreMovies = async (deletedIds: string[] = []): Promise<void> => {
   try {
     const remote = await loadFirestoreMovies();
     if (remote.length === 0) return;
+    const deleted = new Set<string>(Array.isArray(deletedIds) ? deletedIds : []);
     for (const movie of remote) {
-      if (movie && typeof movie.id === 'string' && movie.id) {
+      if (movie && typeof movie.id === 'string' && movie.id && !deleted.has(movie.id)) {
         firestoreMoviesCache[movie.id] = movie;
       }
     }
@@ -1019,10 +1023,13 @@ const decodeStoredUrl = (url: any): any => {
 // Merge the local manual movies with the Firestore catalog into one list.
 // Firestore entries win on id conflicts because Firestore is the durable,
 // admin-controlled source of truth.
-const mergeCatalogWithFirestore = (local: any[]): any[] => {
+// Hard-exclude movies that an admin deleted so no stale copy (manual list,
+// in-memory mirror, or a leftover Firestore doc) can resurface in /api/movies.
+const mergeCatalogWithFirestore = (local: any[], deletedIds: string[] = []): any[] => {
   const merged = new Map<string, any>();
+  const deleted = new Set<string>(Array.isArray(deletedIds) ? deletedIds : []);
   const store = (movie: any) => {
-    if (!movie || typeof movie.id !== 'string') return;
+    if (!movie || typeof movie.id !== 'string' || deleted.has(movie.id)) return;
     if (movie.image) movie = { ...movie, image: decodeStoredUrl(movie.image) };
     if (movie.posterUrl) movie = { ...movie, posterUrl: decodeStoredUrl(movie.posterUrl) };
     merged.set(movie.id, movie);
@@ -1609,8 +1616,8 @@ async function startServer() {
   // Mirror the Firestore movie catalog into the server cache at boot so
   // /api/movies can serve the full homepage instantly, then keep it fresh with
   // a periodic re-sync (Firestore remains the durable source of truth).
-  syncFirestoreMovies();
-  setInterval(() => { syncFirestoreMovies(); }, 5 * 60 * 1000);
+  syncFirestoreMovies(db.deletedIds);
+  setInterval(() => { syncFirestoreMovies(db.deletedIds); }, 5 * 60 * 1000);
 
   // Social Links updated for WhatsApp
   let socialLinks = {
@@ -5023,6 +5030,12 @@ async function startServer() {
     // Remove from manual movies if applicable
     db.manualMovies = db.manualMovies.filter((m: any) => m.id !== id);
 
+    // Drop the in-memory Firestore mirror as well. /api/movies merges this
+    // cache, so without this the deleted movie keeps leaking back to the client
+    // on the next fetchMovies() poll or page reload even though the Firestore
+    // doc and db.json entry are already gone.
+    delete firestoreMoviesCache[id];
+
     await addAuditLog(db, adminName, "Delete Movie", `فیلمی پۆستکراو سڕایەوە: "${movieTitle}"`);
     await saveDB(db);
     setMoviesCache(prev => prev.filter(m => m.id !== id));
@@ -5417,7 +5430,7 @@ async function startServer() {
       // Start from the local manual list and merge the Firestore catalog (the
       // durable store the admin panel writes to) so the homepage gets the full
       // catalog in one fast request instead of blocking on a Firestore read.
-      let results: any[] = mergeCatalogWithFirestore(moviesCache);
+      let results: any[] = mergeCatalogWithFirestore(moviesCache, db.deletedIds);
 
       // Enrich with ephemeral live-viewer counts + normalized metric fields so
       // cards can show "watching now" badges, CinemaChat ratings, favorite counts

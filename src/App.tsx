@@ -6765,6 +6765,11 @@ export default function App() {
   // Firestore fallback from resurrecting it while the server delete is in
   // flight, or if the server is unreachable at delete time.
   const deletedMovieIdsRef = useRef<Set<string>>(new Set());
+
+  // Bulk-select state for Section 6 (Movie Management): ids of the movies the
+  // admin has ticked for batch deletion. Cleared after a successful bulk delete
+  // or by toggling the row/select-all checkboxes.
+  const [selectedMovieIds, setSelectedMovieIds] = useState<string[]>([]);
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
   const [showPlayer, setShowPlayer] = useState(false);
   // Page scroll position captured the instant the movie detail/player modal
@@ -7096,8 +7101,12 @@ export default function App() {
     setPlayerMenu(null);
   };
 
-  const handleGenerateAiSubtitles = async () => {
+  const handleGenerateAiSubtitles = async (langOverride?: string) => {
     if (!selectedMovie) return;
+    // When re-translating from the language <select>'s onChange, the new value
+    // must be passed explicitly: setAiSubtitleLang is batched, so the closure
+    // here would otherwise still hold the previously selected language.
+    const targetLang = langOverride || aiSubtitleLang;
     setAiSubtitleGenerating(true);
     setAiSubtitleStatus("loading");
     setAiSubtitleMessage("");
@@ -7126,8 +7135,8 @@ export default function App() {
         },
         body: JSON.stringify(
           useExistingSubtitle
-            ? { subtitleUrl: selectedMovie.subtitleUrl, lang: aiSubtitleLang }
-            : { url: captionSource, lang: aiSubtitleLang },
+            ? { subtitleUrl: selectedMovie.subtitleUrl, lang: targetLang }
+            : { url: captionSource, lang: targetLang },
         ),
         signal: controller.signal,
       });
@@ -7137,7 +7146,7 @@ export default function App() {
       if (cues.length === 0) throw new Error("No subtitles were generated");
       setAiSubtitleCues(cues);
       setAiSubtitleStatus("ready");
-      setAiSubtitleLangLoaded(aiSubtitleLang);
+      setAiSubtitleLangLoaded(targetLang);
     } catch (err: any) {
       setAiSubtitleStatus("error");
       setAiSubtitleMessage(
@@ -10385,38 +10394,122 @@ export default function App() {
   };
 
   // Permanent, all-views movie deletion (Admin "سەرپەرشتی فیلمەکان" panel).
-  // 1) Removes the movie from local state instantly — no page refresh needed.
-  // 2) Deletes the Firestore movie doc (movies/{id}) — the durable store the
-  //    admin list actually reads from (the Render backend is unreachable, so
-  //    fetchMovies falls back to Firestore). deleteDoc is a no-op success when
-  //    the doc never existed, so every listed movie clears reliably.
-  // 3) Best-effort server cache sync (non-blocking) in case the backend returns.
-  const handleDeleteMovie = async (movie: any) => {
-    if (!confirm(`ئایا دڵنیایت لە سڕینەوەی "${movie?.title}" ؟`)) return;
-
-    // Tombstone + optimistic UI removal: the movie vanishes from every view at once.
+  // Shared core used by both single and bulk delete. Flow:
+  // 1) Tombstone + optimistic UI removal — the movie vanishes from every view.
+  // 2) Firestore doc delete (movies/{id}) — the durable source of truth.
+  // 3) Awaited server mirror delete (/api/admin/movies/:id) so the server's
+  //    in-memory Firestore cache and db.json can never keep serving the movie.
+  // The tombstone is only dropped when BOTH stores confirm, so the 120s
+  // fetchMovies poll and the Firestore listener can never resurrect a movie
+  // that was not fully removed. Returns true only when deletion is durable.
+  const deleteMoviePermanent = async (movie: any): Promise<boolean> => {
     deletedMovieIdsRef.current.add(movie.id);
     setMovies((prev) => prev.filter((m: any) => m.id !== movie.id));
 
+    let firestoreOk = false;
     try {
-      // PRIMARY: permanent Firestore deletion.
       await deleteDoc(doc(realDb, "movies", movie.id));
-      // Both stores are clean, drop the tombstone (deletion is durable).
-      deletedMovieIdsRef.current.delete(movie.id);
-      alert(`فیلمی "${movie?.title}" بە سەرکەوتوویی سڕایەوە`);
+      firestoreOk = true;
     } catch (fsErr) {
       console.error("[DeleteMovie] Firestore delete failed:", fsErr);
-      // Keep the tombstone so the 60s poll can't resurrect the movie.
-      alert("سڕینەوەکە تەواو نەبوو — تکایە دووبارە هەوڵبدەرەوە");
+    }
+
+    let serverOk = false;
+    if (firestoreOk) {
+      try {
+        const adminName = encodeURIComponent(
+          currentUser?.username || "Admin",
+        );
+        const res = await fetchApi(
+          `/api/admin/movies/${encodeURIComponent(movie.id)}?adminName=${adminName}`,
+          { method: "DELETE" },
+        );
+        serverOk = res.ok;
+      } catch (err) {
+        console.warn("[DeleteMovie] Server mirror delete failed:", err);
+      }
+    }
+
+    if (!firestoreOk || !serverOk) {
+      // Keep the tombstone active this session so the poll can't resurrect it.
+      return false;
+    }
+    // Both stores are clean — deletion is durable, drop the tombstone.
+    deletedMovieIdsRef.current.delete(movie.id);
+    return true;
+  };
+
+  // Single delete from the Section 6 row action.
+  const handleDeleteMovie = async (movie: any) => {
+    if (!confirm(`ئایا دڵنیایت لە سڕینەوەی "${movie?.title}" ؟`)) return;
+    const ok = await deleteMoviePermanent(movie);
+    if (ok) {
+      alert(`فیلمی "${movie?.title}" بە سەرکەوتوویی سڕایەوە`);
+    } else {
+      alert(
+        "سڕینەوەکە تەواو نەبوو — فیلمەکە نەتوانرا لە سێرڤەر یان بنکەدراوە بسڕدرێتەوە. تکایە دووبارە هەوڵبدەرەوە",
+      );
       fetchMovies();
+    }
+  };
+
+  // Bulk delete from the Section 6 toolbar / header button. Every id must have
+  // been ticked explicitly; only those ids are touched, never unselected rows.
+  const handleBulkDeleteMovies = async () => {
+    if (adminTab !== "manage") {
+      alert("تکایە بڕۆ بۆ بەشی ٦. سەرپەرشتی فیلمەکان بۆ سڕینەوەی کۆمەڵی");
+      return;
+    }
+    const ids = selectedMovieIds.filter((id) =>
+      movies.some((m: any) => m.id === id),
+    );
+    if (ids.length === 0) {
+      alert("تکایە لانیکەم یەک فیلم دیاریبکە بۆ سڕینەوە");
+      return;
+    }
+    if (
+      !confirm(
+        `دڵنیایت لە سڕینەوەی ${ids.length} فیلم؟ ئەم کردارە ناگەڕێتەوە.`,
+      )
+    ) {
       return;
     }
 
-    // BEST-EFFORT, non-blocking: also clear the server cache so /api/movies
-    // stops serving the movie if the backend is ever reachable again. Never
-    // blocks the success alert above.
-    fetchApi(`/api/admin/movies/${movie.id}`, { method: "DELETE" }).catch(
-      (err) => console.warn("[DeleteMovie] Server cache sync skipped:", err),
+    let succeeded = 0;
+    let failed = 0;
+    for (const id of ids) {
+      const movie = movies.find((m: any) => m.id === id);
+      if (!movie) continue;
+      const ok = await deleteMoviePermanent(movie);
+      if (ok) succeeded++;
+      else failed++;
+    }
+
+    // Clear the selection (fully deleted movies are gone; failed ones are
+    // tombstoned this session, so keeping them selected would be misleading).
+    setSelectedMovieIds([]);
+
+    // Reload from the real source of truth instead of only trusting the rows.
+    fetchMovies();
+
+    if (failed === 0) {
+      alert(`${succeeded} فیلم بە سەرکەوتوویی سڕانەوە`);
+    } else {
+      alert(
+        `${succeeded} فیلم سڕانەوە، بەڵام ${failed} فیلم شکستیان هێنا — تکایە دووبارە هەوڵبدەرەوە`,
+      );
+    }
+  };
+
+  const toggleSelectedMovie = (id: string) => {
+    setSelectedMovieIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  };
+
+  const toggleSelectAllMovies = () => {
+    setSelectedMovieIds((prev) =>
+      prev.length === movies.length ? [] : movies.map((m: any) => m.id),
     );
   };
 
@@ -11988,7 +12081,7 @@ export default function App() {
                                             aiSubtitleStatus === "ready" &&
                                             aiSubtitleLangLoaded !== e.target.value
                                           ) {
-                                            void handleGenerateAiSubtitles();
+                                            void handleGenerateAiSubtitles(e.target.value);
                                           }
                                         }}
                                         className="w-full bg-black/40 border border-white/10 rounded-xl px-2 py-1.5 text-[10px] font-bold text-white kurdish-text outline-none focus:border-brand-primary cursor-pointer"
@@ -12018,7 +12111,7 @@ export default function App() {
                                       <div className="flex items-center gap-1.5">
                                         <button
                                           type="button"
-                                          onClick={handleGenerateAiSubtitles}
+                                          onClick={() => void handleGenerateAiSubtitles()}
                                           disabled={aiSubtitleGenerating}
                                           className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-[10px] font-black kurdish-text bg-brand-primary hover:bg-red-700 disabled:opacity-50 transition-all cursor-pointer"
                                         >
@@ -13525,7 +13618,11 @@ export default function App() {
                     </div>
 
                     <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
-                      <button className="px-5 py-3 sm:py-2.5 bg-red-600/10 text-red-500 border border-red-600/20 rounded-xl text-[10px] font-black kurdish-text hover:bg-red-600 hover:text-white transition-all flex items-center justify-center gap-2">
+                      <button
+                        onClick={handleBulkDeleteMovies}
+                        title="سڕینەوەی کۆمەڵی لە بەشی ٦. سەرپەرشتی فیلمەکان"
+                        className="px-5 py-3 sm:py-2.5 bg-red-600/10 text-red-500 border border-red-600/20 rounded-xl text-[10px] font-black kurdish-text hover:bg-red-600 hover:text-white transition-all flex items-center justify-center gap-2"
+                      >
                         <Trash2 className="w-4 h-4" />
                         سڕینەوەی دیاریکراوەکان
                       </button>
@@ -13804,6 +13901,26 @@ const trailerId = movie.trailerUrl
                             </div>
                           </div>
 
+                          <div className="flex flex-wrap items-center gap-3 bg-white/5 border border-white/10 rounded-xl px-4 py-3">
+                            <label className="flex items-center gap-2 cursor-pointer select-none">
+                              <input
+                                type="checkbox"
+                                checked={
+                                  movies.length > 0 &&
+                                  selectedMovieIds.length === movies.length
+                                }
+                                onChange={toggleSelectAllMovies}
+                                className="w-4 h-4 accent-red-500"
+                              />
+                              <span className="text-[10px] font-black text-gray-400 kurdish-text">
+                                هەموو دیاریبکە
+                              </span>
+                            </label>
+                            <span className="text-[10px] font-black text-gray-500 kurdish-text">
+                              {selectedMovieIds.length} دیاریکراوە
+                            </span>
+                          </div>
+
                           <div
                             id="movie-gallery"
                             className="grid grid-cols-1 gap-2"
@@ -13814,6 +13931,13 @@ const trailerId = movie.trailerUrl
                                 className="bg-white/5 border border-white/5 px-3 py-2 rounded-xl flex items-center justify-between group hover:bg-white/10 transition-all"
                               >
                                 <div className="flex items-center gap-3">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedMovieIds.includes(movie.id)}
+                                    onChange={() => toggleSelectedMovie(movie.id)}
+                                    className="w-4 h-4 accent-red-500 shrink-0"
+                                    title="دیاریکردنی بۆ سڕینەوە"
+                                  />
                                   <img
                                     src={movie.image || undefined}
                                     referrerPolicy="no-referrer"
