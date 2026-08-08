@@ -713,6 +713,10 @@ const INITIAL_DB = {
   viewsCounts: {} as Record<string, number>,
   // CinemaChat user ratings: movieId -> { uid: score(1-10) }.
   ratings: {} as Record<string, Record<string, number>>,
+  // Per-room CinemaChat user ratings: roomId -> { uid: score(1-10) }. Kept
+  // separate from movie `ratings` so a Drama Room's rating is fully isolated
+  // and can never bleed into a movie/post's rating (or vice versa).
+  roomRatings: {} as Record<string, Record<string, number>>,
   // Search history per identity (uid or device id): id -> [ { query, at } ].
   searchHistory: {} as Record<string, any[]>,
   // Aggregated popular search terms: term -> total count.
@@ -1438,7 +1442,28 @@ async function startServer() {
       if (sessions.size === 0) movieViewerSessions.delete(movieId);
     }
   }, 10000);
-  
+
+  // Distinct live viewers of a Drama Room: the union of every active session
+  // across the room's dramas. Two movies watched by the same session (same tab)
+  // count once, so "watching now" reflects real concurrent people, not summed
+  // per-movie counts. Room cards poll this via /api/drama-rooms/live.
+  const getRoomLiveViewers = (room: any): number => {
+    if (!room || !Array.isArray(room.dramas) || room.dramas.length === 0) return 0;
+    const seen = new Set<string>();
+    let count = 0;
+    for (const id of room.dramas) {
+      const sessions = movieViewerSessions.get(String(id));
+      if (!sessions) continue;
+      for (const sid of sessions.keys()) {
+        if (!seen.has(sid)) {
+          seen.add(sid);
+          count++;
+        }
+      }
+    }
+    return count;
+  };
+
   // Movie Store (In-Memory Cache) - Use a copy to prevent reference sharing with DB
   let moviesCache: any[] = db.manualMovies ? [...db.manualMovies] : [];
 
@@ -1459,6 +1484,20 @@ async function startServer() {
   // Aggregate CinemaChat user rating for a movie: mean of all per-user scores.
   const getMovieRating = (movieId: string): { ccRating: number; ratingCount: number } => {
     const ratings = db.ratings?.[movieId] as Record<string, number> | undefined;
+    if (!ratings) return { ccRating: 0, ratingCount: 0 };
+    const scores: number[] = [];
+    for (const v of Object.values(ratings)) {
+      if (typeof v === 'number' && v >= 0) scores.push(v);
+    }
+    if (scores.length === 0) return { ccRating: 0, ratingCount: 0 };
+    const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+    return { ccRating: Math.round(avg * 10) / 10, ratingCount: scores.length };
+  };
+
+  // Aggregate CinemaChat rating for a Drama Room: mean of all per-user scores,
+  // read from db.roomRatings (fully isolated from movie `ratings`).
+  const getRoomRating = (roomId: string): { ccRating: number; ratingCount: number } => {
+    const ratings = db.roomRatings?.[roomId] as Record<string, number> | undefined;
     if (!ratings) return { ccRating: 0, ratingCount: 0 };
     const scores: number[] = [];
     for (const v of Object.values(ratings)) {
@@ -3740,7 +3779,17 @@ async function startServer() {
       const rooms = Object.values(db.dramaRooms || {});
       // Newest rooms first so the homepage gallery stays fresh
       rooms.sort((a: any, b: any) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
-      res.json({ success: true, rooms });
+      // Attach a live snapshot (distinct sessions across the room's dramas) and
+      // the room's own aggregate rating so cards render real data immediately;
+      // the 30s bulk poll keeps the live count fresh.
+      res.json({
+        success: true,
+        rooms: rooms.map((r: any) => ({
+          ...r,
+          liveViewers: getRoomLiveViewers(r),
+          rating: getRoomRating(r.id)
+        }))
+      });
     } catch (err: any) {
       console.error(err);
       res.status(500).json({ error: err.message });
@@ -3751,10 +3800,42 @@ async function startServer() {
     try {
       const room = (db.dramaRooms || {})[req.params.id];
       if (!room) return res.status(404).json({ error: 'ئەم ژوورە بەردەست نییە' });
-      res.json({ success: true, room });
+      res.json({
+        success: true,
+        room: { ...room, liveViewers: getRoomLiveViewers(room), rating: getRoomRating(room.id) }
+      });
     } catch (err: any) {
       console.error(err);
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Bulk live-room viewer counts for an arbitrary set of room ids. The room
+  // cards poll this every 30s (mirroring /api/movies/live) so the "watching
+  // now" badge reflects real concurrent viewers across every drama in a room.
+  app.post('/api/drama-rooms/live', (req, res) => {
+    try {
+      const rawIds: unknown = (req.body as any)?.ids;
+      if (!Array.isArray(rawIds)) {
+        return res.status(400).json({ status: 'error', error: 'ids must be an array' });
+      }
+      const ids = rawIds
+        .filter((x: unknown): x is string => typeof x === 'string')
+        .map((s: string) => s.trim())
+        .filter((s: string) => s.length > 0 && s.length <= 128 && /^[a-zA-Z0-9_-]+$/.test(s))
+        .slice(0, 200);
+      const stats: Record<string, { liveViewers: number; rating: { ccRating: number; ratingCount: number } }> = {};
+      for (const id of ids) {
+        const room = (db.dramaRooms || {})[id];
+        stats[id] = {
+          liveViewers: room ? getRoomLiveViewers(room) : 0,
+          rating: room ? getRoomRating(room.id) : { ccRating: 0, ratingCount: 0 }
+        };
+      }
+      res.json({ status: 'ok', stats });
+    } catch (err: any) {
+      console.error('[drama-rooms/live]', err?.message || err);
+      res.status(500).json({ status: 'error', error: 'Internal server error' });
     }
   });
 
@@ -3823,6 +3904,43 @@ async function startServer() {
     } catch (err: any) {
       console.error(err);
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // --- DRAMA ROOM USER RATINGS ---
+  // Persists a per-user score (1-10) on a Drama Room. Stored in db.roomRatings
+  // keyed by roomId -> { uid: score }, so rating room A can never affect room B
+  // or any movie/post rating. Re-submitting overwrites the user's own score
+  // (upsert), so a user cannot create duplicate submissions.
+  app.post('/api/drama-rooms/:roomId/rate', async (req, res) => {
+    try {
+      const roomId = String((req.params as any).roomId || '').trim();
+      const uid = String((req.body as any)?.uid || '').trim();
+      const rawScore = Number((req.body as any)?.score);
+      if (!roomId || roomId.length > 128 || !/^[a-zA-Z0-9_-]+$/.test(roomId)) {
+        return res.status(400).json({ ok: false, error: 'Invalid room id' });
+      }
+      if (!db.dramaRooms?.[roomId]) {
+        return res.status(404).json({ ok: false, error: 'Room not found' });
+      }
+      if (!uid || uid.length > 128) {
+        return res.status(400).json({ ok: false, error: 'Missing uid' });
+      }
+      if (!Number.isFinite(rawScore) || rawScore < 0.5 || rawScore > 10) {
+        return res.status(400).json({ ok: false, error: 'Score must be between 0.5 and 10' });
+      }
+      const score = Math.round(rawScore * 2) / 2; // snap to half-stars
+
+      if (!db.roomRatings) db.roomRatings = {};
+      if (!db.roomRatings[roomId]) db.roomRatings[roomId] = {};
+      db.roomRatings[roomId][uid] = score;
+
+      const { ccRating, ratingCount } = getRoomRating(roomId);
+      await saveDB(db);
+      res.json({ ok: true, roomId, ccRating, ratingCount, userRating: score });
+    } catch (err: any) {
+      console.error(`[drama-room-rate] ${err?.message || err}`);
+      res.status(500).json({ ok: false, error: 'Internal server error' });
     }
   });
 

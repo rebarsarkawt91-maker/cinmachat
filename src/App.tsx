@@ -6228,7 +6228,7 @@ const isDramaMovie = (m: any) => {
   return Array.isArray(m?.tags) && m.tags.some((t: any) => String(t).trim() === DRAMA_GENRE_TAG);
 };
 
-const DramaRoomCard = ({ room, onOpen, onEdit, onDelete, showActions, compact }: any) => {
+const DramaRoomCard = ({ room, onOpen, onEdit, onDelete, showActions, compact, liveViewers, rating, ratingCount }: any) => {
   const dramaCount = Array.isArray(room?.dramas) ? room.dramas.length : 0;
   return (
     <div
@@ -6259,11 +6259,48 @@ const DramaRoomCard = ({ room, onOpen, onEdit, onDelete, showActions, compact }:
             <Play className="w-3 h-3" />
             {dramaCount} {dramaCount === 1 ? "دراما" : "دراماکان"}
           </span>
+          {/* Live now — distinct concurrent viewers across the room's dramas.
+              Same red-pill treatment as movie cards; count is server-computed
+              and refreshed by the 30s /api/drama-rooms/live poll. */}
+          {typeof liveViewers === "number" && liveViewers > 0 && (
+            <span
+              className="absolute bottom-3 left-3 px-2.5 py-1 bg-brand-primary text-white text-[10px] font-black rounded-full flex items-center gap-1.5 ring-1 ring-white/20"
+              title={`${liveViewers} watching now`}
+            >
+              <span className="relative flex h-2 w-2" aria-hidden="true">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-white" />
+              </span>
+              <Eye className="w-3 h-3" aria-hidden="true" />
+              <span className="tabular-nums">{liveViewers}</span>
+            </span>
+          )}
         </div>
         <div className="p-4">
           <h3 className="text-sm font-black text-white kurdish-text leading-snug line-clamp-1">
             {room?.title}
           </h3>
+          {/* Room's own CinemaChat rating — same pill treatment as movie cards;
+              tied to this room's id so it never mixes with movie/post ratings. */}
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            {Number(rating) > 0 ? (
+              <span
+                className="flex items-center gap-0.5 px-1.5 py-0.5 bg-emerald-500/15 border border-emerald-500/30 rounded-full text-emerald-400 font-black text-[9px]"
+                title={`CinemaChat rating (${Number(ratingCount) || 0} ratings)`}
+              >
+                <Star className="w-2.5 h-2.5 fill-current" aria-hidden="true" />
+                {Number(rating).toFixed(1)}
+                <span className="text-[7px] font-bold text-emerald-400/70">
+                  CC
+                </span>
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-full border border-white/10 text-gray-500 font-black text-[9px]">
+                <Star className="w-2.5 h-2.5 text-gray-600" aria-hidden="true" />
+                <span className="kurdish-text">بێ هەڵسەنگاندن</span>
+              </span>
+            )}
+          </div>
           {!compact && (
             <p className="mt-1 text-[11px] text-gray-400 kurdish-text leading-relaxed line-clamp-2">
               {room?.description}
@@ -6295,7 +6332,7 @@ const DramaRoomCard = ({ room, onOpen, onEdit, onDelete, showActions, compact }:
   );
 };
 
-const DramaRoomDetailModal = ({ room, resolvedMovies, openMovie, onClose }: any) => {
+const DramaRoomDetailModal = ({ room, resolvedMovies, openMovie, onClose, rating, ratingCount, userRating, onRate }: any) => {
   // Resolve each stored drama id to its movie, keeping the room's stored order
   // so the per-room numbering ("Drama 1", "Drama 2", ...) is automatic — only
   // this room's dramas are ever resolved, never dramas from other rooms.
@@ -6336,6 +6373,52 @@ const DramaRoomDetailModal = ({ room, resolvedMovies, openMovie, onClose }: any)
           >
             <X className="w-4 h-4" />
           </button>
+        </div>
+
+        {/* Room's own interactive rating — mirrors the movie rating row, but
+            keyed to this room's id (db.roomRatings) so it is fully isolated. */}
+        <div className="mb-6">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-[10px] font-black uppercase tracking-widest text-gray-500 kurdish-text">
+              هەڵسەنگاندنی ژوور
+            </span>
+            {Number(userRating) > 0 && (
+              <span className="text-[10px] font-bold text-brand-primary">
+                (تۆ: {Number(userRating)}/10)
+              </span>
+            )}
+            {Number(ratingCount) > 0 && (
+              <span className="text-[10px] font-bold text-gray-500">
+                · {Number(ratingCount)} دەنگ
+              </span>
+            )}
+            {Number(rating) > 0 && (
+              <span className="text-[10px] font-bold text-emerald-400">
+                · {Number(rating).toFixed(1)}/10
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-1">
+            {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+              <button
+                key={n}
+                type="button"
+                onClick={() => onRate?.(room, n)}
+                title={`${n}/10`}
+                className={`transition-all active:scale-75 ${
+                  Number(userRating) >= n
+                    ? "text-brand-primary"
+                    : "text-gray-600 hover:text-brand-primary/50"
+                }`}
+              >
+                <Star
+                  className={`w-4 h-4 ${
+                    Number(userRating) >= n ? "fill-current" : ""
+                  }`}
+                />
+              </button>
+            ))}
+          </div>
         </div>
 
         {dramas.length === 0 ? (
@@ -6380,7 +6463,7 @@ const DramaRoomDetailModal = ({ room, resolvedMovies, openMovie, onClose }: any)
   );
 };
 
-const DramaRoomCrudModal = ({ editing, movies, onSave, onClose }: any) => {
+const DramaRoomCrudModal = ({ editing, movies, allMovies, onSave, onClose }: any) => {
   const [title, setTitle] = useState(editing?.title || "");
   const [description, setDescription] = useState(editing?.description || "");
   const [coverUrl, setCoverUrl] = useState(editing?.coverUrl || "");
@@ -6389,17 +6472,25 @@ const DramaRoomCrudModal = ({ editing, movies, onSave, onClose }: any) => {
   );
   const [search, setSearch] = useState("");
   const [saving, setSaving] = useState(false);
+  // Selection mode: "drama" keeps the existing drama-only list (default, so the
+  // old behavior is untouched); "all" shows the full catalog so an admin can mix
+  // dramas AND movies in one room. Only affects the picker, never persistence.
+  const [mode, setMode] = useState<"drama" | "all">("drama");
+
+  // The base list the picker draws from for the current mode. "all" falls back
+  // to the drama-only list when the full catalog prop is missing.
+  const modeMovies = mode === "all" ? (Array.isArray(allMovies) ? allMovies : movies) : movies;
 
   const filteredMovies = useMemo(() => {
     const q = search.trim().toLowerCase();
-    let list = movies;
+    let list = modeMovies;
     if (q) {
-      list = movies.filter((m: any) =>
+      list = list.filter((m: any) =>
         String(m?.title || "").toLowerCase().includes(q),
       );
     }
     return list.slice(0, 80);
-  }, [movies, search]);
+  }, [modeMovies, search]);
 
   // Always keep already-assigned dramas in the visible list (checked), even if
   // the search or the 80-item cap would otherwise hide them, so the admin can
@@ -6409,12 +6500,12 @@ const DramaRoomCrudModal = ({ editing, movies, onSave, onClose }: any) => {
     const ids = new Set(list.map((m: any) => m?.id));
     for (const id of editing?.dramas || []) {
       if (!ids.has(id)) {
-        const movie = movies.find((m: any) => m?.id === id);
+        const movie = modeMovies.find((m: any) => m?.id === id);
         if (movie) list.push(movie);
       }
     }
     return list;
-  }, [filteredMovies, movies, editing]);
+  }, [filteredMovies, modeMovies, editing]);
 
   const toggleId = (id: string) => {
     setSelectedIds((prev) =>
@@ -6501,20 +6592,51 @@ const DramaRoomCrudModal = ({ editing, movies, onSave, onClose }: any) => {
             />
           </div>
           <div>
-            <label className="text-xs font-bold text-gray-400 kurdish-text block mb-1.5">
-              دراماکان ({selectedIds.length} هەڵبژێردراوە)
-            </label>
+            <div className="flex items-center justify-between gap-3 mb-1.5">
+              <label className="text-xs font-bold text-gray-400 kurdish-text">
+                {mode === "all"
+                  ? `فیلم و دراماکان (${selectedIds.length} هەڵبژێردراوە)`
+                  : `دراماکان (${selectedIds.length} هەڵبژێردراوە)`}
+              </label>
+              {/* Mode toggle: drama-only (default) or dramas AND movies. The
+                  picker list changes but the saved assignment shape does not —
+                  room.dramas stores mixed ids and the detail view resolves any. */}
+              <div className="flex items-center rounded-lg bg-black/40 border border-white/10 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setMode("drama")}
+                  className={`px-3 py-1 rounded-md text-[11px] font-black kurdish-text transition-all ${
+                    mode === "drama"
+                      ? "bg-brand-primary text-white"
+                      : "text-gray-400 hover:text-white"
+                  }`}
+                >
+                  دراما تەنها
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMode("all")}
+                  className={`px-3 py-1 rounded-md text-[11px] font-black kurdish-text transition-all ${
+                    mode === "all"
+                      ? "bg-brand-primary text-white"
+                      : "text-gray-400 hover:text-white"
+                  }`}
+                >
+                  دراما و فیلم
+                </button>
+              </div>
+            </div>
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-white kurdish-text outline-none focus:border-brand-primary text-xs mb-2"
-              placeholder="بگەڕێ بۆ ناوی دراما..."
+              placeholder={mode === "all" ? "بگەڕێ بۆ ناوی فیلم یان دراما..." : "بگەڕێ بۆ ناوی دراما..."}
             />
             <div className="max-h-56 overflow-y-auto rounded-xl border border-white/10 bg-black/20 divide-y divide-white/5">
               {selectableMovies.length === 0 && (
                 <p className="p-4 text-center text-xs text-gray-500 kurdish-text">
-                  هیچ درامایەک نەدۆزرایەوە
+                  {mode === "all" ? "هیچ فیلم یان درامایەک نەدۆزرایەوە" : "هیچ درامایەک نەدۆزرایەوە"}
                 </p>
               )}
               {selectableMovies.map((m: any) => {
@@ -6579,6 +6701,8 @@ const DramaRoomsHub = ({
   onCreate,
   onEdit,
   onDelete,
+  liveViewersMap,
+  ratingsMap,
 }: any) => {
   const canManage = systemVerified && !!currentUser;
   return (
@@ -6633,6 +6757,9 @@ const DramaRoomsHub = ({
                 onEdit={onEdit}
                 onDelete={onDelete}
                 showActions={canManage}
+                liveViewers={liveViewersMap?.[room.id] ?? 0}
+                rating={ratingsMap?.[room.id]?.ccRating ?? 0}
+                ratingCount={ratingsMap?.[room.id]?.ratingCount ?? 0}
               />
             ))}
           </div>
@@ -6642,7 +6769,7 @@ const DramaRoomsHub = ({
   );
 };
 
-const DramaRoomGallery = ({ rooms, onOpenRoom }: any) => {
+const DramaRoomGallery = ({ rooms, onOpenRoom, liveViewersMap, ratingsMap }: any) => {
   if (rooms.length === 0) return null;
   return (
     <section className="pl-8">
@@ -6652,7 +6779,15 @@ const DramaRoomGallery = ({ rooms, onOpenRoom }: any) => {
       </h3>
       <div className="flex gap-4 overflow-x-auto no-scrollbar pb-8 pr-8">
         {rooms.map((room: any) => (
-          <DramaRoomCard key={room.id} room={room} onOpen={onOpenRoom} compact />
+          <DramaRoomCard
+            key={room.id}
+            room={room}
+            onOpen={onOpenRoom}
+            compact
+            liveViewers={liveViewersMap?.[room.id] ?? 0}
+            rating={ratingsMap?.[room.id]?.ccRating ?? 0}
+            ratingCount={ratingsMap?.[room.id]?.ratingCount ?? 0}
+          />
         ))}
       </div>
     </section>
@@ -6728,6 +6863,17 @@ export default function App() {
   const [likedIds, setLikedIds] = useState<Set<string>>(new Set());
   const [likesMap, setLikesMap] = useState<Record<string, number>>({});
   const [liveViewersMap, setLiveViewersMap] = useState<Record<string, number>>({});
+  // Live concurrent viewers per Drama Room (distinct sessions across the room's
+  // dramas). Server-computed and refreshed by a dedicated 30s poll so room card
+  // badges reflect real activity without touching the movie-card metrics.
+  const [roomLiveViewers, setRoomLiveViewers] = useState<Record<string, number>>({});
+  // Per-room CinemaChat ratings: roomId -> { ccRating, ratingCount }. Kept
+  // separate from movie ratings so each room's rating is fully independent.
+  const [roomRatingsMap, setRoomRatingsMap] = useState<
+    Record<string, { ccRating: number; ratingCount: number }>
+  >({});
+  // Current user's own rating per room (optimistic + server-confirmed).
+  const [userRoomRatingsMap, setUserRoomRatingsMap] = useState<Record<string, number>>({});
   // Lifetime view counts per movie (server-computed, persistent) shown as the
   // "📈 Views" counter on every card. Refreshed by the live poll + heartbeat.
   const [viewsMap, setViewsMap] = useState<Record<string, number>>({});
@@ -8035,6 +8181,52 @@ export default function App() {
     // otherwise leave cards without live badges until the next 30s tick.
   }, [movies]);
 
+  // Live Drama Room viewer counts + ratings: polls the dedicated bulk endpoint
+  // every 30s (mirrors the movie live poll above) so room cards show real
+  // "watching now" numbers and fresh aggregate ratings. Restarts only when the
+  // room list itself changes.
+  useEffect(() => {
+    let cancelled = false;
+    const roomIds = dramaRooms
+      .map((r: any) => r?.id)
+      .filter((id: unknown): id is string => typeof id === "string");
+    if (!roomIds.length) return;
+    const refresh = async () => {
+      try {
+        const stats = await api.getDramaRoomLiveStats(roomIds);
+        if (cancelled || !stats || typeof stats !== "object") return;
+        const next: Record<string, number> = {};
+        const nextRatings: Record<string, { ccRating: number; ratingCount: number }> = {};
+        for (const id of roomIds) {
+          const s = (stats as Record<string, { liveViewers?: number; rating?: { ccRating?: number; ratingCount?: number } }>)[id];
+          const n = typeof s?.liveViewers === "number" ? s.liveViewers : 0;
+          if (n > 0) next[id] = n;
+          const rr = s?.rating;
+          if (rr && (rr.ccRating || 0) > 0) {
+            nextRatings[id] = { ccRating: rr.ccRating || 0, ratingCount: rr.ratingCount || 0 };
+          }
+        }
+        setRoomLiveViewers((prev) => {
+          if (Object.keys(next).length !== Object.keys(prev).length) return next;
+          for (const k in next) if (prev[k] !== next[k]) return next;
+          return prev;
+        });
+        setRoomRatingsMap((prev) => {
+          if (Object.keys(nextRatings).length !== Object.keys(prev).length) return nextRatings;
+          for (const k in nextRatings) {
+            if (prev[k]?.ccRating !== nextRatings[k].ccRating || prev[k]?.ratingCount !== nextRatings[k].ratingCount) return nextRatings;
+          }
+          return prev;
+        });
+      } catch (e) {
+        // Server down — keep the last known counts.
+      }
+    };
+    refresh();
+    const iv = setInterval(refresh, 30000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [dramaRooms]);
+
   // Heartbeat while a movie is open so the backend counts us as a live viewer
   // of that movie and returns its current concurrent count.
   useEffect(() => {
@@ -8284,6 +8476,21 @@ export default function App() {
     [userRatingsMap],
   );
 
+  // Per-room rating getters — read the room's OWN aggregate/user scores so
+  // room A's rating can never affect room B or any movie/post rating.
+  const getRoomCCRating = useCallback(
+    (room: any): number => roomRatingsMap[room?.id]?.ccRating ?? 0,
+    [roomRatingsMap],
+  );
+  const getRoomRatingCount = useCallback(
+    (room: any): number => roomRatingsMap[room?.id]?.ratingCount ?? 0,
+    [roomRatingsMap],
+  );
+  const getUserRoomRating = useCallback(
+    (room: any): number => userRoomRatingsMap[room?.id] ?? 0,
+    [userRoomRatingsMap],
+  );
+
   // Build a fully-resolved Movie (server metrics merged into the object) so the
   // premium card — which reads ccRating/ratingCount/favoriteCount/trendingScore
   // off the movie — renders accurate data for Firestore-only movies too.
@@ -8386,6 +8593,40 @@ export default function App() {
     },
     [fbUid],
   );
+
+  const handleRateDramaRoom = useCallback(
+    async (room: any, score: number) => {
+      const id = room?.id;
+      if (!id) return;
+      // Optimistic update so the star row responds instantly.
+      setUserRoomRatingsMap((prev) => ({ ...prev, [id]: score }));
+      if (!fbUid) {
+        try {
+          const all = JSON.parse(localStorage.getItem("cinemachat_guest_room_ratings") || "{}");
+          all[id] = score;
+          localStorage.setItem("cinemachat_guest_room_ratings", JSON.stringify(all));
+        } catch (e) { /* ignore */ }
+      }
+      try {
+        const res = await api.rateDramaRoom(id, fbUid || getDeviceId(), score);
+        if (res?.ok) {
+          setRoomRatingsMap((prev) => ({
+            ...prev,
+            [id]: { ccRating: res.ccRating, ratingCount: res.ratingCount },
+          }));
+        }
+      } catch (e) { /* ignore */ }
+    },
+    [fbUid],
+  );
+
+  // Hydrate the guest's own room ratings from localStorage on mount.
+  useEffect(() => {
+    try {
+      const all = JSON.parse(localStorage.getItem("cinemachat_guest_room_ratings") || "{}");
+      setUserRoomRatingsMap(all);
+    } catch (e) { /* ignore */ }
+  }, []);
 
   // Hydrate the guest's own ratings from localStorage on mount.
   useEffect(() => {
@@ -10657,7 +10898,35 @@ export default function App() {
   const refreshDramaRooms = useCallback(async () => {
     try {
       const data = await api.baseFetch("/api/drama-rooms", {}, 2);
-      setDramaRooms(Array.isArray(data?.rooms) ? data.rooms : []);
+      const rooms = Array.isArray(data?.rooms) ? data.rooms : [];
+      setDramaRooms(rooms);
+      // Seed room viewer counts from the server snapshot so badges render
+      // instantly; the 30s /api/drama-rooms/live poll keeps them fresh.
+      setRoomLiveViewers((prev) => {
+        const next: Record<string, number> = {};
+        for (const r of rooms) {
+          const n = Number(r?.liveViewers) || 0;
+          if (n > 0) next[String(r?.id)] = n;
+        }
+        if (Object.keys(next).length !== Object.keys(prev).length) return next;
+        for (const k in next) if (prev[k] !== next[k]) return next;
+        return prev;
+      });
+      // Seed each room's own aggregate rating from the server snapshot too.
+      setRoomRatingsMap((prev) => {
+        const next: Record<string, { ccRating: number; ratingCount: number }> = {};
+        for (const r of rooms) {
+          const agg = r?.rating;
+          if (agg && Number(agg.ccRating) > 0) {
+            next[String(r?.id)] = { ccRating: Number(agg.ccRating) || 0, ratingCount: Number(agg.ratingCount) || 0 };
+          }
+        }
+        if (Object.keys(next).length !== Object.keys(prev).length) return next;
+        for (const k in next) {
+          if (prev[k]?.ccRating !== next[k].ccRating || prev[k]?.ratingCount !== next[k].ratingCount) return next;
+        }
+        return prev;
+      });
     } catch (e) {
       console.warn("Failed to load drama rooms:", e);
     }
@@ -10926,6 +11195,8 @@ export default function App() {
         setShowDramaRoomModal(true);
       }}
       onDelete={handleDeleteDramaRoom}
+      liveViewersMap={roomLiveViewers}
+      ratingsMap={roomRatingsMap}
     />
   );
 
@@ -11633,6 +11904,8 @@ export default function App() {
                 <DramaRoomGallery
                   rooms={dramaRoomsFiltered}
                   onOpenRoom={setSelectedDramaRoom}
+                  liveViewersMap={roomLiveViewers}
+                  ratingsMap={roomRatingsMap}
                 />
               </SafeRender>
 
@@ -11731,12 +12004,17 @@ export default function App() {
               resolvedMovies={resolvedMovies}
               openMovie={openMovie}
               onClose={() => setSelectedDramaRoom(null)}
+              rating={getRoomCCRating(selectedDramaRoom)}
+              ratingCount={getRoomRatingCount(selectedDramaRoom)}
+              userRating={getUserRoomRating(selectedDramaRoom)}
+              onRate={handleRateDramaRoom}
             />
           )}
           {showDramaRoomModal && (
             <DramaRoomCrudModal
               editing={editingDramaRoom}
               movies={dramaRoomEditMovies}
+              allMovies={movies}
               onSave={handleSaveDramaRoom}
               onClose={() => {
                 setShowDramaRoomModal(false);

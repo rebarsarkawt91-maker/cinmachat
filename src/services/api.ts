@@ -206,6 +206,24 @@ export const api = {
     }
   },
 
+  // Bulk live-viewer counts for Drama Rooms (distinct sessions across each
+  // room's dramas, unioned server-side). Room cards poll this every 30s so the
+  // "watching now" badge reflects real activity without reloading the catalog.
+  async getDramaRoomLiveStats(ids: string[]) {
+    try {
+      const res = await fetch(api.resolveApiUrl('/api/drama-rooms/live'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({ ids })
+      });
+      if (!res.ok) return {};
+      const data = await res.json();
+      return data.stats || {};
+    } catch (error) {
+      return {};
+    }
+  },
+
   // Toggles a per-user like on a movie. Best-effort mirror of Firestore likes.
   async toggleLike(movieId: string, uid: string) {
     try {
@@ -226,6 +244,22 @@ export const api = {
   async rateMovie(movieId: string, uid: string, score: number) {
     try {
       const res = await fetch(api.resolveApiUrl(`/api/movies/${encodeURIComponent(movieId)}/rate`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({ uid, score })
+      });
+      if (!res.ok) return { ok: false, ccRating: 0, ratingCount: 0, userRating: 0 };
+      return await res.json();
+    } catch (error) {
+      return { ok: false, ccRating: 0, ratingCount: 0, userRating: 0 };
+    }
+  },
+
+  // Submit a 0.5-10 score for a Drama Room; returns the aggregated room rating
+  // + count. Stored per roomId in db.roomRatings — fully isolated from movies.
+  async rateDramaRoom(roomId: string, uid: string, score: number) {
+    try {
+      const res = await fetch(api.resolveApiUrl(`/api/drama-rooms/${encodeURIComponent(roomId)}/rate`), {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain' },
         body: JSON.stringify({ uid, score })
