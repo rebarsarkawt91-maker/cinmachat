@@ -1058,6 +1058,7 @@ const ContentModule = ({
     duration: "",
     language: "",
     type: "movie",
+    postType: "فیلم",
     whatsappLink: "",
     externalMovieLink: "",
   });
@@ -1486,6 +1487,7 @@ const ContentModule = ({
         duration: "",
         language: "",
         type: "movie",
+        postType: "فیلم",
         whatsappLink: "",
         externalMovieLink: "",
       });
@@ -1571,6 +1573,7 @@ const ContentModule = ({
         duration: "",
         language: "",
         type: "movie",
+        postType: "فیلم",
         whatsappLink: "",
         externalMovieLink: "",
       });
@@ -1670,6 +1673,46 @@ const ContentModule = ({
                 {postStatus.message}
               </div>
             )}
+          </div>
+
+          {/* Post Type (جۆری پۆست): explicit Film/Drama type. This is the
+              primary way Drama Rooms tell dramas from films — only "دراما"
+              posts appear in the Drama Room selection list. */}
+          <div className="p-6 bg-zinc-900/50 border border-white/10 rounded-[2.5rem] space-y-3">
+            <label className="text-xs font-black text-white kurdish-text uppercase tracking-widest flex items-center gap-2">
+              <Film className="w-4 h-4 text-brand-primary" />
+              جۆری پۆست
+            </label>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() =>
+                  setFormData({ ...formData, postType: "فیلم" })
+                }
+                className={`rounded-2xl px-6 py-4 text-sm font-black kurdish-text border-2 transition-all flex items-center justify-center gap-2 ${
+                  formData.postType === "فیلم"
+                    ? "border-brand-primary bg-brand-primary/15 text-white shadow-lg shadow-brand-primary/10"
+                    : "border-white/10 bg-black/40 text-gray-400 hover:bg-white/5"
+                }`}
+              >
+                <Play className="w-4 h-4" />
+                فیلم
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setFormData({ ...formData, postType: "دراما" })
+                }
+                className={`rounded-2xl px-6 py-4 text-sm font-black kurdish-text border-2 transition-all flex items-center justify-center gap-2 ${
+                  formData.postType === "دراما"
+                    ? "border-brand-primary bg-brand-primary/15 text-white shadow-lg shadow-brand-primary/10"
+                    : "border-white/10 bg-black/40 text-gray-400 hover:bg-white/5"
+                }`}
+              >
+                <Tv className="w-4 h-4" />
+                دراما
+              </button>
+            </div>
           </div>
 
           <div className="p-8 bg-zinc-900/50 border border-white/10 rounded-[2.5rem] space-y-6">
@@ -6169,6 +6212,22 @@ const RoomSection: React.FC<{
 // IDs), createdAt, updatedAt. Rooms are persisted server-side in db.dramaRooms.
 // The hub below replaces the old Global Room / Broadcast section; the gallery
 // replaces the Trending row. Clicking a room opens its dramas.
+
+// A post's explicit Film/Drama type ("جۆری پۆست") is the PRIMARY way to tell
+// dramas from films for Drama Rooms. Legacy posts that predate the field fall
+// back to the previous rule (tags include the "دراما" genre tag) so posts
+// already recognized as dramas keep counting as dramas; everything else is a
+// normal film and never appears in a Drama Room's selection list.
+const DRAMA_GENRE_TAG = "دراما";
+const DRAMA_POST_TYPE = "دراما";
+const FILM_POST_TYPE = "فیلم";
+const isDramaMovie = (m: any) => {
+  const postType = String(m?.postType || "").trim();
+  if (postType === DRAMA_POST_TYPE) return true;
+  if (postType === FILM_POST_TYPE) return false;
+  return Array.isArray(m?.tags) && m.tags.some((t: any) => String(t).trim() === DRAMA_GENRE_TAG);
+};
+
 const DramaRoomCard = ({ room, onOpen, onEdit, onDelete, showActions, compact }: any) => {
   const dramaCount = Array.isArray(room?.dramas) ? room.dramas.length : 0;
   return (
@@ -6237,9 +6296,12 @@ const DramaRoomCard = ({ room, onOpen, onEdit, onDelete, showActions, compact }:
 };
 
 const DramaRoomDetailModal = ({ room, resolvedMovies, openMovie, onClose }: any) => {
+  // Resolve each stored drama id to its movie, keeping the room's stored order
+  // so the per-room numbering ("Drama 1", "Drama 2", ...) is automatic — only
+  // this room's dramas are ever resolved, never dramas from other rooms.
   const dramas = (Array.isArray(room?.dramas) ? room.dramas : [])
-    .map((id: string) => resolvedMovies?.[id])
-    .filter(Boolean);
+    .map((id: string, order: number) => ({ id, order, movie: resolvedMovies?.[id] }))
+    .filter((x: any) => Boolean(x.movie));
   return (
     <div
       className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
@@ -6282,7 +6344,7 @@ const DramaRoomDetailModal = ({ room, resolvedMovies, openMovie, onClose }: any)
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-            {dramas.map((movie: any) => (
+            {dramas.map(({ movie, order }: any) => (
               <button
                 type="button"
                 key={movie.id}
@@ -6297,6 +6359,9 @@ const DramaRoomDetailModal = ({ room, resolvedMovies, openMovie, onClose }: any)
                       <Film className="w-8 h-8 text-white/20" />
                     </div>
                   )}
+                  <span className="absolute top-2 right-2 px-2 py-0.5 rounded-full bg-black/70 border border-white/15 text-white text-[10px] font-black">
+                    Drama {order + 1}
+                  </span>
                   <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all flex items-center justify-center">
                     <div className="w-10 h-10 rounded-full bg-brand-primary text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all">
                       <Play className="w-4 h-4" />
@@ -6335,6 +6400,21 @@ const DramaRoomCrudModal = ({ editing, movies, onSave, onClose }: any) => {
     }
     return list.slice(0, 80);
   }, [movies, search]);
+
+  // Always keep already-assigned dramas in the visible list (checked), even if
+  // the search or the 80-item cap would otherwise hide them, so the admin can
+  // still uncheck them to remove the assignment from this room only.
+  const selectableMovies = useMemo(() => {
+    const list = [...filteredMovies];
+    const ids = new Set(list.map((m: any) => m?.id));
+    for (const id of editing?.dramas || []) {
+      if (!ids.has(id)) {
+        const movie = movies.find((m: any) => m?.id === id);
+        if (movie) list.push(movie);
+      }
+    }
+    return list;
+  }, [filteredMovies, movies, editing]);
 
   const toggleId = (id: string) => {
     setSelectedIds((prev) =>
@@ -6429,15 +6509,15 @@ const DramaRoomCrudModal = ({ editing, movies, onSave, onClose }: any) => {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-white kurdish-text outline-none focus:border-brand-primary text-xs mb-2"
-              placeholder="بگەڕێ بۆ ناوی فیلم..."
+              placeholder="بگەڕێ بۆ ناوی دراما..."
             />
             <div className="max-h-56 overflow-y-auto rounded-xl border border-white/10 bg-black/20 divide-y divide-white/5">
-              {filteredMovies.length === 0 && (
+              {selectableMovies.length === 0 && (
                 <p className="p-4 text-center text-xs text-gray-500 kurdish-text">
-                  هیچ فیلمێک نەدۆزرایەوە
+                  هیچ درامایەک نەدۆزرایەوە
                 </p>
               )}
-              {filteredMovies.map((m: any) => {
+              {selectableMovies.map((m: any) => {
                 const checked = selectedIds.includes(m.id);
                 return (
                   <label
@@ -6587,6 +6667,59 @@ export default function App() {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [movies, setMovies] = useState<Movie[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+
+  // ===== Drama Rooms (persistent curated collections) =====
+  // Loaded from /api/drama-rooms (server-persisted in db.dramaRooms). The hub
+  // and gallery both consume this list; the CRUD modal keeps it in sync.
+  const [dramaRooms, setDramaRooms] = useState<any[]>([]);
+  const [dramaCategory, setDramaCategory] = useState("all");
+  const [selectedDramaRoom, setSelectedDramaRoom] = useState<any>(null);
+  const [showDramaRoomModal, setShowDramaRoomModal] = useState(false);
+  const [editingDramaRoom, setEditingDramaRoom] = useState<any>(null);
+
+  // Movie IDs currently assigned to any Drama Room. Used to hide assigned
+  // dramas from the public main listing (they stay visible inside their room);
+  // removing a drama from every room removes it from this set automatically.
+  const assignedDramaIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const room of dramaRooms) {
+      if (Array.isArray(room?.dramas)) {
+        for (const id of room.dramas) {
+          if (id) ids.add(String(id));
+        }
+      }
+    }
+    return ids;
+  }, [dramaRooms]);
+
+  // Public catalog = every post EXCEPT dramas currently assigned to a Drama
+  // Room. Assigned dramas stay permanently stored and remain reachable through
+  // their room; they never mix with normal movies in the public listing.
+  const publicMovies = useMemo(
+    () => movies.filter((m: any) => !assignedDramaIds.has(m.id)),
+    [movies, assignedDramaIds],
+  );
+
+  // Movies shown in the Drama Room edit selection list: drama-tagged posts only
+  // (no normal movie posts), plus any already-assigned dramas so they can
+  // always be unchecked to remove the assignment from the room.
+  const dramaRoomEditMovies = useMemo(() => {
+    const ids = new Set<string>();
+    const out: any[] = [];
+    for (const m of movies) {
+      if (isDramaMovie(m)) {
+        out.push(m);
+        ids.add(m.id);
+      }
+    }
+    for (const id of editingDramaRoom?.dramas || []) {
+      if (!ids.has(id)) {
+        const movie = movies.find((x: any) => x?.id === id);
+        if (movie) out.push(movie);
+      }
+    }
+    return out;
+  }, [movies, editingDramaRoom]);
 
   // Movie-card enhancements: favorites, likes, and live-viewer metrics.
   // favorites/liked are per-user (Firestore users/{uid}, localStorage for guests);
@@ -8315,11 +8448,11 @@ export default function App() {
     if (searchMode !== "title") return [];
     const q = searchQuery.trim().toLowerCase();
     if (!q) return [];
-    return movies
+    return publicMovies
       .filter((m) => String(m.title || "").toLowerCase().includes(q))
       .slice(0, 6)
       .map((m) => ({ id: m.id, title: m.title, year: m.year || "" }));
-  }, [movies, searchQuery, searchMode]);
+  }, [publicMovies, searchQuery, searchMode]);
 
   // AI semantic search: prefers the server's Gemini-ranked results, falls back
   // to a client-side semantic ranking over the catalog when offline.
@@ -10350,7 +10483,10 @@ export default function App() {
   // Smart filtering: title search uses fuzzy matching, genre mode uses
   // multi-select genre chips, and AI mode uses the server-side semantic results.
   const filteredMovies = useMemo(() => {
-    if (searchMode === "ai" && aiResults) return aiResults;
+    if (searchMode === "ai" && aiResults) {
+      // Hide dramas currently assigned to a Drama Room from AI search too.
+      return aiResults.filter((m: any) => !assignedDramaIds.has(m.id));
+    }
 
     const tab = activeTab;
     // Normalize both sides (trim + lowercase) exactly like the admin category
@@ -10358,7 +10494,8 @@ export default function App() {
     // normalized tag that its "پۆلێن" select displays (e.g. "New Releases" vs
     // "new releases").
     const activeKey = String(tab || "").trim().toLowerCase();
-    let list = movies.filter((movie) => {
+    // The public listing never includes dramas assigned to a Drama Room.
+    let list = publicMovies.filter((movie) => {
       const tags = Array.isArray(movie.tags)
         ? movie.tags.map((t: string) => String(t).trim().toLowerCase())
         : [];
@@ -10382,7 +10519,7 @@ export default function App() {
       }
     }
     return list;
-  }, [movies, searchQuery, activeTab, searchMode, selectedGenres, aiResults]);
+  }, [publicMovies, searchQuery, activeTab, searchMode, selectedGenres, aiResults, assignedDramaIds]);
 
   const sortedMovies = useMemo(() => {
     const arr = [...filteredMovies];
@@ -10423,15 +10560,7 @@ export default function App() {
     }));
   }, [dynamicGenres, genresReady, movies]);
 
-  // ===== Drama Rooms (persistent curated collections) =====
-  // Loaded from /api/drama-rooms (server-persisted in db.dramaRooms). The hub
-  // and gallery both consume this list; the CRUD modal keeps it in sync.
-  const [dramaRooms, setDramaRooms] = useState<any[]>([]);
-  const [dramaCategory, setDramaCategory] = useState("all");
-  const [selectedDramaRoom, setSelectedDramaRoom] = useState<any>(null);
-  const [showDramaRoomModal, setShowDramaRoomModal] = useState(false);
-  const [editingDramaRoom, setEditingDramaRoom] = useState<any>(null);
-
+  // Load the drama rooms once on mount (server-persisted in db.dramaRooms).
   const refreshDramaRooms = useCallback(async () => {
     try {
       const data = await api.baseFetch("/api/drama-rooms", {}, 2);
@@ -11514,7 +11643,7 @@ export default function App() {
           {showDramaRoomModal && (
             <DramaRoomCrudModal
               editing={editingDramaRoom}
-              movies={movies}
+              movies={dramaRoomEditMovies}
               onSave={handleSaveDramaRoom}
               onClose={() => {
                 setShowDramaRoomModal(false);

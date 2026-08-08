@@ -5127,7 +5127,7 @@ async function startServer() {
     if (!req.body) {
       return res.status(400).json({ success: false, error: "Body is empty — check Content-Type header (use application/json or text/plain)" });
     }
-    const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, mainTrailerUrl, streamingSourceUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, quality, tags, category, rating, year, type, duration } = req.body;
+    const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, mainTrailerUrl, streamingSourceUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, quality, tags, category, rating, year, type, duration, postType } = req.body;
     
     // VALIDATION: Detailed error reporting as requested
     if (!title) return res.status(400).json({ success: false, error: "ناونیشان پێویستە (Title is required)" });
@@ -5177,6 +5177,9 @@ async function startServer() {
       year: year || "",
       duration: typeof duration === 'string' ? duration.trim() : "",
       type: type || "movie",
+      // Explicit Film/Drama post type ("جۆری پۆست"). Primary way to tell
+      // dramas from films for Drama Rooms. Missing/non-drama → "فیلم".
+      postType: postType === "دراما" ? "دراما" : "فیلم",
       likes: 0,
       likedBy: [],
       views: 0,
