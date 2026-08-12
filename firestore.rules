@@ -471,6 +471,149 @@ service cloud.firestore {
       allow delete: if settingId != '_meta';
     }
 
+    // --- Permanent CinemaChat Two-Person Watch Room (cinemaChatRoom) ---
+    // Dedicated, isolated Firestore schema for the permanent "CinemaChat" room
+    // (main_broadcast_room): the state doc holds the session, pairing, mutual
+    // approvals and the playback source of truth; its /messages subcollection
+    // holds the realtime chat. Zero overlap with syncGroups, VIP, friends_rooms
+    // or the main broadcast. Anonymous Firebase Auth is DISABLED on this project,
+    // so writes are validated public writes (same pattern as genres/config/VIP).
+    // Security is still enforced structurally: ONLY a registered session
+    // participant (host or guest, matched by id) may mutate the state doc, and a
+    // guest may only join by adding themselves (never by touching another
+    // participant or playback). Chat messages are immutable.
+    function isValidCinemaChatParticipant(p) {
+      return p.get('id', '') is string && p.get('id', '').size() > 0 && p.get('id', '').size() <= 128
+        && p.get('name', '') is string && p.get('name', '').size() > 0 && p.get('name', '').size() <= 200
+        && p.get('code', '') is string && p.get('code', '').size() > 0 && p.get('code', '').size() <= 64
+        && (p.get('avatarUrl', null) == null || p.get('avatarUrl', '') is string);
+    }
+
+    function isValidCinemaChatMovieData(m) {
+      return m.get('id', '') is string && m.get('id', '').size() > 0 && m.get('id', '').size() <= 128
+        && m.get('title', '') is string && m.get('title', '').size() > 0 && m.get('title', '').size() <= 500
+        && (m.get('image', null) == null || (m.get('image', '') is string && m.get('image', '').size() <= 500000))
+        && (m.get('embedUrl', null) == null || m.get('embedUrl', '') is string)
+        && (m.get('videoUrl', null) == null || m.get('videoUrl', '') is string)
+        && (m.get('hdtodayUrl', null) == null || m.get('hdtodayUrl', '') is string)
+        && (m.get('vidsrcUrl', null) == null || m.get('vidsrcUrl', '') is string)
+        && (m.get('vidmolyUrl', null) == null || m.get('vidmolyUrl', '') is string)
+        && (m.get('streamwishUrl', null) == null || m.get('streamwishUrl', '') is string)
+        && (m.get('fileLrunUrl', null) == null || m.get('fileLrunUrl', '') is string)
+        && (m.get('youtubeMovieUrl', null) == null || m.get('youtubeMovieUrl', '') is string)
+        && (m.get('otherVideoUrl', null) == null || m.get('otherVideoUrl', '') is string)
+        && (m.get('streamingUrl', null) == null || m.get('streamingUrl', '') is string)
+        && (m.get('external_link', null) == null || m.get('external_link', '') is string)
+        && (m.get('externalMovieLink', null) == null || m.get('externalMovieLink', '') is string)
+        && (m.get('isYouTube', null) == null || m.isYouTube is bool)
+        && (m.get('videoId', null) == null || m.videoId is string)
+        && (m.get('duration', null) == null || m.duration is int || m.duration is float);
+    }
+
+    function isValidCinemaChatPlayback(pb) {
+      return (pb.get('movieData', null) == null || isValidCinemaChatMovieData(pb.get('movieData', {})))
+        && (pb.get('movieId', null) == null || pb.get('movieId', '') is string)
+        && pb.get('isPlaying', false) is bool
+        && (pb.get('currentTime', 0) is int || pb.get('currentTime', 0) is float)
+        && pb.get('currentTime', 0) >= 0
+        && (pb.get('updatedAt', 0) is int || pb.get('updatedAt', 0) is float)
+        && (pb.get('updatedBy', null) == null || pb.get('updatedBy', '') is string);
+    }
+
+    function isValidCinemaChatProposal(prop) {
+      return (prop.get('movieData', null) == null || isValidCinemaChatMovieData(prop.get('movieData', {})))
+        && prop.get('hostApproved', false) is bool
+        && prop.get('guestApproved', false) is bool
+        && (prop.get('proposedBy', null) == null || prop.get('proposedBy', '') is string);
+    }
+
+    function isValidCinemaChatState(data) {
+      return data.get('roomId', '') == 'main_broadcast_room'
+        && data.get('name', '') is string && data.get('name', '').size() > 0 && data.get('name', '').size() <= 200
+        && data.get('isOfficial', false) is bool
+        && (data.get('sessionId', null) == null || data.get('sessionId', '') is string)
+        && data.get('sessionState', '') in ['EMPTY','WAITING_FOR_PARTNER','PAIRING','WAITING_FOR_APPROVAL','READY','PLAYING','PAUSED','DISCONNECTED','ENDED']
+        && (data.get('host', null) == null || isValidCinemaChatParticipant(data.get('host', {})))
+        && (data.get('guest', null) == null || isValidCinemaChatParticipant(data.get('guest', {})))
+        && data.get('hostApproved', false) is bool
+        && data.get('guestApproved', false) is bool
+        && (data.get('joinCode', null) == null || (data.get('joinCode', '') is string && data.get('joinCode', '').size() <= 32))
+        && (data.get('movieProposal', null) == null || isValidCinemaChatProposal(data.get('movieProposal', {})))
+        && (data.get('playback', null) == null || isValidCinemaChatPlayback(data.get('playback', {})))
+        && (data.get('hostLastSeen', null) == null || data.get('hostLastSeen', 0) is int || data.get('hostLastSeen', 0) is float)
+        && (data.get('guestLastSeen', null) == null || data.get('guestLastSeen', 0) is int || data.get('guestLastSeen', 0) is float)
+        && (data.get('updatedAt', 0) is int || data.get('updatedAt', 0) is float)
+        && (data.get('updatedBy', null) == null || data.get('updatedBy', '') is string);
+    }
+
+    function isValidCinemaChatMessage(data) {
+      let kind = data.get('kind', 'text');
+      return kind in ['text', 'voice']
+        && data.get('senderId', '') is string && data.get('senderId', '').size() > 0 && data.get('senderId', '').size() <= 128
+        && data.get('senderName', '') is string && data.get('senderName', '').size() > 0 && data.get('senderName', '').size() <= 200
+        && data.get('senderCode', '') is string && data.get('senderCode', '').size() > 0 && data.get('senderCode', '').size() <= 64
+        && data.get('text', '') is string && data.get('text', '').size() <= 2000
+        && (kind == 'text' ? data.get('text', '').size() > 0 : data.get('text', '') == '')
+        && (data.get('voiceDataUrl', null) == null || (data.get('voiceDataUrl', '') is string && data.get('voiceDataUrl', '').size() > 0 && data.get('voiceDataUrl', '').size() <= 1200000))
+        && (data.get('duration', null) == null || data.get('duration', 0) is int || data.get('duration', 0) is float)
+        && (data.get('timestamp', null) == null || data.get('timestamp', '') is string)
+        && (data.get('createdAt', null) == null || data.createdAt is timestamp);
+    }
+
+    // Safe participant-id lookup. The host/guest fields may be ABSENT or NULL
+    // (e.g. a session with no guest yet), and Firestore rules throw a null
+    // value error when .get() is called on a null value — so resolve to ''.
+    function cinemaChatParticipantId(p) {
+      return p == null ? '' : p.get('id', '');
+    }
+
+    // The actor of any state mutation (from the incoming doc's updatedBy) must be
+    // one of the two registered session participants.
+    function isCinemaChatActor(incoming) {
+      // roomId is not in scope here (this function is declared above the
+      // match /cinemaChatRoom/{roomId} block), so use the fixed room id.
+      let current = get(/databases/$(database)/documents/cinemaChatRoom/main_broadcast_room).data;
+      return incoming.get('updatedBy', '') in [
+        cinemaChatParticipantId(current.get('host', null)),
+        cinemaChatParticipantId(current.get('guest', null))
+      ];
+    }
+
+    // A stranger may only JOIN an existing session by adding themselves as the
+    // guest; nothing else may change in the same write (no playback/approvals),
+    // and there must be no guest already seated (strict two-person room).
+    function isCinemaChatJoin(incoming) {
+      // roomId is not in scope here (function is above the match block), so use
+      // the fixed room id.
+      let current = get(/databases/$(database)/documents/cinemaChatRoom/main_broadcast_room).data;
+      let me = incoming.get('updatedBy', '');
+      return me == cinemaChatParticipantId(incoming.get('guest', null))
+        && current.get('host', {}).get('id', '') != me
+        && current.get('guest', null) == null
+        && current.get('sessionState', '') in ['WAITING_FOR_PARTNER','PAIRING','WAITING_FOR_APPROVAL','READY','PLAYING','PAUSED','DISCONNECTED']
+        && incoming.diff(current).affectedKeys().hasOnly(['guest','sessionState','joinCode','guestApproved','hostApproved','guestLastSeen','updatedAt','updatedBy']);
+    }
+
+    match /cinemaChatRoom/{roomId} {
+      allow read: if true;
+      allow create: if roomId == 'main_broadcast_room'
+        && isValidCinemaChatState(incoming())
+        && incoming().get('updatedBy', '') in [
+          cinemaChatParticipantId(incoming().get('host', null)),
+          cinemaChatParticipantId(incoming().get('guest', null))
+        ];
+      allow update: if roomId == 'main_broadcast_room'
+        && isValidCinemaChatState(incoming())
+        && (isCinemaChatActor(incoming()) || isCinemaChatJoin(incoming()));
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if true;
+        allow create: if isValidCinemaChatMessage(incoming());
+        allow update, delete: if false;
+      }
+    }
+
     // --- Friends Room (ژوورەکانی هاوڕێیان) ---
     // Dedicated, isolated Firestore schema for the "Came Here Rooms" module.
     // friends_rooms/{roomId} holds the room (name, host code, generated unique

@@ -266,9 +266,14 @@ export default function YouTubeResilientPlayer({
           scrolling="no"
           allow="autoplay; fullscreen; encrypted-media; picture-in-picture; accelerometer; gyroscope; clipboard-write"
           allowFullScreen
-          // Relaxed sandbox: the strict token set made some embeds refuse to
-          // initialize. Popups/ads are still neutralized by the parent masks.
-          sandbox="allow-scripts allow-same-origin allow-presentation allow-popups allow-popups-to-escape-sandbox allow-forms allow-pointer-lock allow-modals allow-downloads"
+          // NOTE: NO `sandbox` attribute on purpose. A sandboxed iframe creates a
+          // distinct WindowProxy, so `event.source === frame.contentWindow` is
+          // always false in Chrome. The parent's onMessage relies on that identity
+          // check to trust infoDelivery/onStateChange (clock, seek bar, ended ->
+          // auto-next); a sandbox silently kills all of it (clock stays 0:00 and
+          // the stall-guard keeps remounting the video). This frame only ever
+          // loads app-constructed YouTube embed URLs, so dropping the sandbox is
+          // safe. Popups/ads are still neutralized by the parent masks.
         />
       ) : streamUrl ? (
         <div className="relative w-full h-full flex items-center justify-center bg-black">

@@ -59,8 +59,9 @@ import {
   Rocket,
   RotateCcw,
   FastForward,
+  Gauge,
+  SkipForward,
   Rewind,
-  Languages,
   Sparkles,
   User,
   Heart as HeartIcon,
@@ -79,7 +80,6 @@ import {
   Ticket,
   BarChart2,
   Share2,
-  Type,
   Eye,
   EyeOff,
   Layers,
@@ -92,7 +92,7 @@ import { GoogleGenAI } from "@google/genai";
 import ImmersiveShieldedPlayer from "./components/Player/ImmersiveShieldedPlayer";
 import YouTubeResilientPlayer from "./components/Player/YouTubeResilientPlayer";
 import { api } from "./services/api";
-import { LanguageSelector, useI18n } from "./i18n";
+import { useI18n } from "./i18n";
 import {
   subscribeGenres,
   addGenre,
@@ -127,6 +127,10 @@ import { Movie, SyncGroup, SocialUser } from "./types";
 import { useSocialAuth } from "./context/SocialAuthContext";
 import jsQR from "jsqr";
 import { RegistrationModal } from "./components/Social/RegistrationModal";
+import { CinemaChatRoom } from "./components/Social/CinemaChatRoom";
+import { CinemaChatInviteNotification } from "./components/Social/CinemaChatInviteNotification";
+import { RoomInviteNotification } from "./components/Social/RoomInviteNotification";
+import type { CinemaChatParticipant } from "./services/cinemaChat";
 const SecurityShieldModule = React.lazy(() =>
   import("./components/Admin/SecurityShieldModule").then((m) => ({
     default: m.SecurityShieldModule,
@@ -874,39 +878,6 @@ const IMMERSIVE_QUALITY_PRESETS = [
 
 import { getYTId as extractYouTubeId, loadYouTubeAPI } from './utils/youtube'; // Use the shared utility
 
-// A single timed subtitle cue for the parent-side AI-subtitle overlay.
-type SubtitleCue = { start: number; end: number; text: string };
-
-// Minimal SRT / WebVTT parser: extracts the timing line + following text block for
-// every cue, strips inline VTT tags, and keeps only non-empty cues.
-function parseSubtitleText(content: string): SubtitleCue[] {
-  const normalized = content.replace(/\r\n?/g, "\n");
-  const timeRe = /(\d{1,2}):(\d{2}):(\d{2})[.,](\d{1,3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[.,](\d{1,3})/g;
-  const toSec = (h: string, m: string, s: string, ms: string) =>
-    +h * 3600 + +m * 60 + +s + +("0." + ms.padEnd(3, "0").slice(0, 3));
-  const cues: SubtitleCue[] = [];
-  let match: RegExpExecArray | null;
-  while ((match = timeRe.exec(normalized)) !== null) {
-    const afterTiming = match.index + match[0].length;
-    const lineBreak = normalized.indexOf("\n", afterTiming);
-    const textStart = lineBreak === -1 ? afterTiming : lineBreak + 1;
-    const blank = normalized.indexOf("\n\n", textStart);
-    const blockEnd = blank === -1 ? normalized.length : blank;
-    const text = normalized
-      .slice(textStart, blockEnd)
-      .replace(/<[^>]+>/g, "")
-      .trim();
-    if (text) {
-      cues.push({
-        start: toSec(match[1], match[2], match[3], match[4]),
-        end: toSec(match[5], match[6], match[7], match[8]),
-        text,
-      });
-    }
-  }
-  return cues;
-}
-
 // Format a seconds value as `H:MM:SS` (or `MM:SS` when under an hour) for the seek bar.
 function formatTime(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds || 0));
@@ -916,67 +887,6 @@ function formatTime(seconds: number): string {
   return `${h > 0 ? `${h}:` : ""}${h > 0 ? String(m).padStart(2, "0") : String(m)}:${String(sec).padStart(2, "0")}`;
 }
 
-// Target languages for the AI-subtitle translation feature. The user picks one
-// from the player's subtitle menu; the source text is the movie's existing
-// subtitle file when available, otherwise Whisper transcription of the audio.
-const SUBTITLE_TARGET_LANGS = [
-  { code: "ku", label: "Kurdish (Sorani)" },
-  { code: "en", label: "English" },
-  { code: "ar", label: "Arabic" },
-  { code: "fa", label: "Persian" },
-  { code: "tr", label: "Turkish" },
-  { code: "es", label: "Spanish" },
-  { code: "fr", label: "French" },
-  { code: "de", label: "German" },
-  { code: "ru", label: "Russian" },
-  { code: "zh", label: "Chinese" },
-  { code: "hi", label: "Hindi" },
-  { code: "pt", label: "Portuguese" },
-  { code: "it", label: "Italian" },
-  { code: "ja", label: "Japanese" },
-  { code: "ko", label: "Korean" },
-  { code: "th", label: "Thai" },
-  { code: "vi", label: "Vietnamese" },
-  { code: "id", label: "Indonesian" },
-  { code: "ms", label: "Malay" },
-  { code: "pl", label: "Polish" },
-  { code: "nl", label: "Dutch" },
-  { code: "uk", label: "Ukrainian" },
-  { code: "bn", label: "Bengali" },
-  { code: "ta", label: "Tamil" },
-  { code: "te", label: "Telugu" },
-  { code: "ml", label: "Malayalam" },
-  { code: "kn", label: "Kannada" },
-  { code: "mr", label: "Marathi" },
-  { code: "gu", label: "Gujarati" },
-  { code: "pa", label: "Punjabi" },
-  { code: "ur", label: "Urdu" },
-  { code: "el", label: "Greek" },
-  { code: "he", label: "Hebrew" },
-  { code: "sw", label: "Swahili" },
-  { code: "am", label: "Amharic" },
-  { code: "hy", label: "Armenian" },
-  { code: "ka", label: "Georgian" },
-  { code: "az", label: "Azerbaijani" },
-  { code: "kk", label: "Kazakh" },
-  { code: "uz", label: "Uzbek" },
-  { code: "tg", label: "Tajik" },
-  { code: "ky", label: "Kyrgyz" },
-  { code: "mn", label: "Mongolian" },
-  { code: "lo", label: "Lao" },
-  { code: "km", label: "Khmer" },
-  { code: "my", label: "Burmese" },
-  { code: "si", label: "Sinhala" },
-  { code: "ne", label: "Nepali" },
-  { code: "so", label: "Somali" },
-  { code: "ha", label: "Hausa" },
-  { code: "yo", label: "Yoruba" },
-  { code: "ig", label: "Igbo" },
-  { code: "ff", label: "Fula" },
-  { code: "sd", label: "Sindhi" },
-  { code: "ps", label: "Pashto" },
-  { code: "kmr", label: "Kurdish (Kurmancî)" },
-];
 
 const CategoryDropdown = ({ value, onChange, categories, className }: any) => (
   <select
@@ -1051,9 +961,10 @@ const ContentModule = ({
     mainTrailerUrl: "",
     streamingSourceUrl: "",
     quality: "HD",
-    tags: "",
-    subtitleUrl: "",
-    rating: "",
+        tags: "",
+        subtitleUrl: "",
+        subtitleText: "",
+        rating: "",
     year: "",
     duration: "",
     language: "",
@@ -1482,6 +1393,7 @@ const ContentModule = ({
         quality: "HD",
         tags: "",
         subtitleUrl: "",
+        subtitleText: "",
         rating: "",
         year: "",
         duration: "",
@@ -1568,6 +1480,7 @@ const ContentModule = ({
         quality: "HD",
         tags: "",
         subtitleUrl: "",
+        subtitleText: "",
         rating: "",
         year: "",
         duration: "",
@@ -1951,6 +1864,20 @@ const ContentModule = ({
               >
                 بڵاوکردنەوە
               </button>
+            </div>
+            <div>
+              <label className="text-xs font-black text-brand-primary kurdish-text uppercase tracking-widest flex items-center gap-2 mb-2">
+                Subtitle Text (Copy & Paste the .srt/.vtt content here)
+              </label>
+              <textarea
+                rows={6}
+                placeholder="Paste your .srt/.vtt subtitle content here..."
+                value={formData.subtitleText}
+                onChange={(e) =>
+                  setFormData({ ...formData, subtitleText: e.target.value })
+                }
+                className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-3 text-white kurdish-text outline-none focus:border-brand-primary transition-all text-xs font-mono resize-y"
+              />
             </div>
           </div>
 
@@ -5069,7 +4996,6 @@ const HeroSection: React.FC<{
   setShowVipModal: React.Dispatch<React.SetStateAction<boolean>>;
   activeAudioSource?: "hero" | "room";
   isMoviePlayerOpen?: boolean;
-  onOpenTranslatePlayer?: () => void;
 }> = ({
   activeFeaturedMovie,
   countdown,
@@ -5082,7 +5008,6 @@ const HeroSection: React.FC<{
   setShowVipModal,
   activeAudioSource = "hero",
   isMoviePlayerOpen = false,
-  onOpenTranslatePlayer,
 }) => {
   const [isPlaying, setIsPlaying] = useState(true);
   const isMuted = isHeroMuted;
@@ -5303,12 +5228,6 @@ const HeroSection: React.FC<{
     } else {
       disableCaptions(playerRef.current);
     }
-  };
-
-  const handleOpenTranslateGesture = (event: React.SyntheticEvent) => {
-    event.preventDefault();
-    event.stopPropagation();
-    onOpenTranslatePlayer?.();
   };
 
   // Play/Pause toggle: called inside the click gesture so the player command is
@@ -5714,21 +5633,6 @@ const HeroSection: React.FC<{
             )}
           </button>
 
-          <button
-            onPointerDown={handleOpenTranslateGesture}
-            onMouseDown={handleOpenTranslateGesture}
-            onTouchStart={handleOpenTranslateGesture}
-            onClick={handleOpenTranslateGesture}
-            className="pointer-events-auto flex items-center gap-2 p-2 md:p-3 bg-black/50 hover:bg-brand-primary/20 border border-white/10 hover:border-brand-primary/35 rounded-xl md:rounded-2xl text-white hover:text-brand-primary backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/translate"
-            title="کردنەوەی ڤیدیۆ بە وەرگێڕانی AI"
-            id="hero-translate-btn"
-          >
-            <Languages className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/translate:scale-110" />
-            <span className="hidden md:inline text-[10px] font-black kurdish-text whitespace-nowrap">
-              وەرگێڕان
-            </span>
-          </button>
-
           {/* VIP Button */}
           <button
             onClick={() => setShowVipModal(true)}
@@ -5911,17 +5815,6 @@ const HeroSection: React.FC<{
               <span className="text-[10px] md:text-xs font-black text-brand-primary uppercase tracking-[0.6em] font-mono">
                 CINEMACHAT SHOW
               </span>
-              <button
-                type="button"
-                onPointerDown={handleOpenTranslateGesture}
-                onMouseDown={handleOpenTranslateGesture}
-                onTouchStart={handleOpenTranslateGesture}
-                onClick={handleOpenTranslateGesture}
-                className="mt-4 pointer-events-auto inline-flex items-center gap-2 px-4 py-2 rounded-2xl bg-brand-primary hover:bg-red-700 text-white text-xs md:text-sm font-black kurdish-text shadow-xl shadow-red-600/20 transition-all active:scale-95"
-              >
-                <Languages className="w-4 h-4" />
-                وەرگێڕانی ڕاستەوخۆی AI
-              </button>
             </div>
 
             <div className="w-12 h-1 bg-brand-primary mt-4 rounded-full shadow-[0_0_15px_rgba(239,68,68,0.5)]" />
@@ -6228,6 +6121,55 @@ const isDramaMovie = (m: any) => {
   return Array.isArray(m?.tags) && m.tags.some((t: any) => String(t).trim() === DRAMA_GENRE_TAG);
 };
 
+// Blurred, darkened full-bleed poster backdrop placed behind the Drama Room
+// episode preview cards (portrait/poster-focused look). Purely decorative and
+// pointer-transparent so playback and player controls stay fully interactive.
+const DramaEpisodeBackdrop = ({ posterUrl }: { posterUrl: string }) => (
+  <div className="absolute inset-0 overflow-hidden">
+    <img
+      src={posterUrl}
+      alt=""
+      loading="lazy"
+      referrerPolicy="no-referrer"
+      onError={(e) => {
+        const target = e.target as HTMLImageElement;
+        target.src =
+          "https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800";
+      }}
+      className="w-full h-full object-cover scale-125 blur-3xl opacity-40"
+    />
+    <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/80 to-black/90" />
+  </div>
+);
+
+// Shared card for the Drama Room episode overlays: the "Up Next" card shown
+// during the final 30 seconds and the "Now Playing" card shown for the first
+// 5 seconds of an episode. `foot` is the dynamic bottom line (countdown vs
+// playing state) passed in by each overlay.
+const DramaEpisodePreviewCard = ({ label, posterUrl, title, foot }: any) => (
+  <div className="flex flex-col items-center text-center px-6 py-8 max-w-lg">
+    <div className="text-[10px] md:text-xs font-black uppercase tracking-[0.35em] text-brand-primary kurdish-text mb-5 drop-shadow-lg">
+      {label}
+    </div>
+    <img
+      src={posterUrl}
+      alt={title}
+      loading="lazy"
+      referrerPolicy="no-referrer"
+      onError={(e) => {
+        const target = e.target as HTMLImageElement;
+        target.src =
+          "https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800";
+      }}
+      className="w-56 h-80 md:w-72 md:h-96 rounded-2xl object-cover ring-1 ring-white/20 shadow-2xl shadow-black/70 mb-6"
+    />
+    <div className="text-lg md:text-2xl font-bold text-white kurdish-text drop-shadow-lg leading-snug mb-3">
+      {title}
+    </div>
+    {foot}
+  </div>
+);
+
 const DramaRoomCard = ({ room, onOpen, onEdit, onDelete, showActions, compact, liveViewers, rating, ratingCount }: any) => {
   const dramaCount = Array.isArray(room?.dramas) ? room.dramas.length : 0;
   return (
@@ -6331,6 +6273,50 @@ const DramaRoomCard = ({ room, onOpen, onEdit, onDelete, showActions, compact, l
     </div>
   );
 };
+
+// The permanent official two-person watch room (main_broadcast_room). Rendered
+// as the first card of the Drama Rooms hub. It is NOT a drama room and stays
+// protected: the server refuses to create/delete the reserved id, and it never
+// shows in the admin drama-room CRUD (its data lives in its own Firestore doc).
+const CinemaChatCard = ({ onOpen }: any) => (
+  <div className="group relative flex-shrink-0 w-[200px] md:w-[260px] bg-gradient-to-br from-zinc-900 via-red-950/15 to-zinc-950 border border-brand-primary/30 rounded-3xl overflow-hidden transition-all hover:border-brand-primary/60 hover:scale-[1.02] cursor-pointer">
+    <button
+      type="button"
+      onClick={onOpen}
+      className="block w-full text-right focus:outline-none"
+    >
+      <div className="aspect-video w-full bg-gradient-to-br from-red-900/40 via-zinc-900 to-zinc-950 overflow-hidden relative">
+        <div className="w-full h-full flex items-center justify-center">
+          <div className="relative">
+            <Tv className="w-10 h-10 text-brand-primary/80" />
+            <span className="absolute -top-2 -left-3 flex h-2.5 w-2.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-brand-primary opacity-75" />
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-brand-primary" />
+            </span>
+          </div>
+        </div>
+        <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-transparent to-transparent" />
+        <span className="absolute top-3 right-3 px-2 py-0.5 bg-brand-primary text-white text-[8px] font-black rounded-full flex items-center gap-1 uppercase tracking-widest">
+          <ShieldCheck className="w-2.5 h-2.5" />
+          Official
+        </span>
+        <span className="absolute bottom-3 right-3 px-2.5 py-1 bg-black/70 border border-white/10 text-white text-[10px] font-black rounded-full flex items-center gap-1">
+          <Users className="w-3 h-3" />
+          2 کەس
+        </span>
+      </div>
+      <div className="p-4">
+        <h3 className="text-sm font-black text-white kurdish-text leading-snug flex items-center gap-2">
+          <Film className="w-3.5 h-3.5 text-brand-primary" />
+          CinemaChat
+        </h3>
+        <p className="mt-1.5 text-[11px] text-gray-400 kurdish-text leading-relaxed line-clamp-2">
+          ژووری سینەمای فەرمی — پەخشی هاوبەشی دوو کەس بە ڤیدیۆ چات و کۆنترۆڵی یەکگرتوو
+        </p>
+      </div>
+    </button>
+  </div>
+);
 
 const DramaRoomDetailModal = ({ room, resolvedMovies, openMovie, onClose, rating, ratingCount, userRating, onRate }: any) => {
   // Resolve each stored drama id to its movie, keeping the room's stored order
@@ -6703,6 +6689,7 @@ const DramaRoomsHub = ({
   onDelete,
   liveViewersMap,
   ratingsMap,
+  onOpenCinemaChat,
 }: any) => {
   const canManage = systemVerified && !!currentUser;
   return (
@@ -6735,8 +6722,8 @@ const DramaRoomsHub = ({
           )}
         </div>
 
-        {rooms.length === 0 ? (
-          <div className="text-center py-16 bg-white/5 border border-white/10 rounded-[2rem]">
+        {rooms.length === 0 && (
+          <div className="text-center py-16 bg-white/5 border border-white/10 rounded-[2rem] mb-4">
             <Tv className="w-12 h-12 text-white/15 mx-auto mb-4" />
             <h3 className="text-lg font-black text-gray-400 kurdish-text">
               هیچ ژوورێکی دراما نەدۆزرایەوە
@@ -6747,23 +6734,24 @@ const DramaRoomsHub = ({
               </p>
             )}
           </div>
-        ) : (
-          <div className="flex gap-5 overflow-x-auto no-scrollbar pb-6 pr-1">
-            {rooms.map((room: any) => (
-              <DramaRoomCard
-                key={room.id}
-                room={room}
-                onOpen={onOpenRoom}
-                onEdit={onEdit}
-                onDelete={onDelete}
-                showActions={canManage}
-                liveViewers={liveViewersMap?.[room.id] ?? 0}
-                rating={ratingsMap?.[room.id]?.ccRating ?? 0}
-                ratingCount={ratingsMap?.[room.id]?.ratingCount ?? 0}
-              />
-            ))}
-          </div>
         )}
+        <div className="flex gap-5 overflow-x-auto no-scrollbar pb-6 pr-1">
+          {/* Permanent official two-person watch room — always first. */}
+          <CinemaChatCard onOpen={onOpenCinemaChat} />
+          {rooms.map((room: any) => (
+            <DramaRoomCard
+              key={room.id}
+              room={room}
+              onOpen={onOpenRoom}
+              onEdit={onEdit}
+              onDelete={onDelete}
+              showActions={canManage}
+              liveViewers={liveViewersMap?.[room.id] ?? 0}
+              rating={ratingsMap?.[room.id]?.ccRating ?? 0}
+              ratingCount={ratingsMap?.[room.id]?.ratingCount ?? 0}
+            />
+          ))}
+        </div>
       </div>
     </section>
   );
@@ -6811,6 +6799,8 @@ export default function App() {
   const [selectedDramaRoom, setSelectedDramaRoom] = useState<any>(null);
   const [showDramaRoomModal, setShowDramaRoomModal] = useState(false);
   const [editingDramaRoom, setEditingDramaRoom] = useState<any>(null);
+  // The permanent CinemaChat watch room modal (main_broadcast_room).
+  const [showCinemaChatRoom, setShowCinemaChatRoom] = useState(false);
 
   // Movie IDs currently assigned to any Drama Room. Used to hide assigned
   // dramas from the public main listing (they stay visible inside their room);
@@ -6964,7 +6954,6 @@ export default function App() {
   const [roomIndex, setRoomIndex] = useState(0);
   const [heroTrailerPlaylist, setHeroTrailerPlaylist] = useState<string[]>([]);
   const [globalStreamURL, setGlobalStreamURL] = useState<string | null>(null);
-  const [lastSyncTime, setLastSyncTime] = useState(0);
 
   const [lastAddedMovie, setLastAddedMovie] = useState<any>(null);
   const [activeServerUrl, setActiveServerUrl] = useState<string | null>(null);
@@ -6987,18 +6976,11 @@ export default function App() {
   // Main Modal Player customized states
   const [isIframePlaying, setIsIframePlaying] = useState(true);
   const [isIframeMuted, setIsIframeMuted] = useState(false);
-  const [showIframeSubtitles, setShowIframeSubtitles] = useState(true);
   const [isIframeFullscreen, setIsIframeFullscreen] = useState(false);
 
-  // Immersive cinematic player: zoom multiplier, subtitle vertical shift, active menu
+  // Immersive cinematic player: zoom multiplier and active menu.
   const [immersiveScale, setImmersiveScale] = useState(1);
-  const [subtitlePosition, setSubtitlePosition] = useState(0);
-  const [playerMenu, setPlayerMenu] = useState<null | "quality" | "subtitle" | "substyle" | "speed">(null);
-
-  // Subtitle style settings — session-scoped state that survives subtitle mode/language switches.
-  const [subtitleFontSize, setSubtitleFontSize] = useState(24);
-  const [subtitleBrightness, setSubtitleBrightness] = useState(100);
-  const [subtitleBackground, setSubtitleBackground] = useState<"solid" | "glass">("solid");
+  const [playerMenu, setPlayerMenu] = useState<null | "quality" | "speed">(null);
 
   // Progress / seek bar state.
   const [playerCurrentTime, setPlayerCurrentTime] = useState(0);
@@ -7059,55 +7041,19 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [showPlayer, activeServerUrl, isIframeMuted]);
 
-  // Track which movies have already had auto Kurdish subtitles generated,
-  // so we don't re-trigger on every re-render or Firestore sync.
-  const autoSubbedRef = useRef<Set<string>>(new Set());
-
-  // Auto-generate Kurdish subtitles when a new video link is selected.
-  // If the movie has English (or source) subtitles, translate them to
-  // Kurdish (Sorani). Otherwise, run Whisper + Gemini on the video audio.
-  useEffect(() => {
-    if (!selectedMovie) {
-      autoSubbedRef.current.clear();
-      return;
-    }
-    if (!selectedMovie) return;
-    const movieKey = selectedMovie.id || selectedMovie.embedUrl || selectedMovie.videoUrl || "";
-    if (!movieKey || autoSubbedRef.current.has(movieKey)) return;
-
-    const hasSubtitles = !!selectedMovie.subtitleUrl;
-    const hasVideoUrl = !!getMovieSourceUrl(selectedMovie);
-    if (!hasSubtitles && !hasVideoUrl) return;
-
-    autoSubbedRef.current.add(movieKey);
-    setAiSubtitleLang("ku");
-    setSubtitleMode("ai");
-    // Small delay so the state update from setSubtitleMode settles before
-    // the generate call reads the updated subtitleMode.
-    const timer = window.setTimeout(() => {
-      void handleGenerateAiSubtitles();
-    }, 300);
-    return () => window.clearTimeout(timer);
-  }, [selectedMovie?.id, selectedMovie?.subtitleUrl, selectedMovie?.videoUrl, selectedMovie?.embedUrl]);
-
-  // ---- AI-translated subtitles (parent-side overlay) ----
-  // The embed players (YouTube/hdtoday) are cross-origin iframes, so translated
-  // subtitles cannot be injected as native <track> elements. Instead we render a
-  // text overlay on top of the player, time-synced from the YouTube embed's
-  // infoDelivery postMessages (currentTime) with a local clock fallback for
-  // providers that expose no playback API.
-  const [subtitleMode, setSubtitleMode] = useState<"original" | "ai">("original");
-  const [aiSubtitleCues, setAiSubtitleCues] = useState<SubtitleCue[]>([]);
-  const [aiSubtitleStatus, setAiSubtitleStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
-  const [aiSubtitleMessage, setAiSubtitleMessage] = useState("");
-  const [currentAiSubtitle, setCurrentAiSubtitle] = useState<string | null>(null);
-  const [aiSubtitleGenerating, setAiSubtitleGenerating] = useState(false);
-  const [aiSubtitleLang, setAiSubtitleLang] = useState("ku");
-  // Language of the currently loaded AI cues, so re-selecting "ai" mode only
-  // re-translates when the movie or the selected language actually changed.
-  const [aiSubtitleLangLoaded, setAiSubtitleLangLoaded] = useState("");
   const ytCurrentTimeRef = useRef(0);
   const localClockRef = useRef(0);
+  // Mirrors `isIframePlaying` for stable live-sync callbacks (the state version
+  // would otherwise force re-subscribing the SyncRoom listener on every change).
+  const ytPlayingRef = useRef(true);
+  // Latest activeServerUrl, mirrored for the same reason (stable callbacks).
+  const activeServerUrlRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeServerUrlRef.current = activeServerUrl;
+  }, [activeServerUrl]);
+  // Set by the host live-publisher effect; invoked by seekToPlayer/toggleIframePlay
+  // so a host seek or play/pause reaches the room immediately (not on the next poll).
+  const publishPlaybackNowRef = useRef<(override?: { currentTime?: number; isPlaying?: boolean }) => void>(() => {});
   // True while the modal is showing a YouTube source. The infoDelivery filter
   // resolves the modal's own iframe at message time, so a late-mounting embed
   // is still accepted and the background hero can't override the clock.
@@ -7115,6 +7061,11 @@ export default function App() {
   // True once the modal's YouTube embed actually streams infoDelivery; used to
   // stop the listening-handshake retry loop (YouTube may init slowly).
   const ytClockLiveRef = useRef(false);
+  // Holds the user's play/pause intent until the room-player embed's JS-API
+  // channel is live. Posting play/pause too early (before the embed streams)
+  // permanently desyncs the widget, which then never emits onReady/infoDelivery
+  // — the clock stays 0:00 and the stall guard later restarts the video.
+  const pendingRoomPlayerPlayRef = useRef<boolean | null>(null);
 
   // Track the embedded YouTube player's clock via its postMessage events.
   useEffect(() => {
@@ -7134,9 +7085,60 @@ export default function App() {
         if (!frame?.contentWindow || event.source !== frame.contentWindow) return;
         ytClockLiveRef.current = true;
         ytCurrentTimeRef.current = data.info.currentTime;
+        // If play/pause was requested before the embed's channel was live, apply
+        // it now that the clock is streaming (the video is autoplaying, so a
+        // held "pause" pauses at the live position and the clock stays accurate).
+        if (pendingRoomPlayerPlayRef.current !== null) {
+          const pendingCmd = pendingRoomPlayerPlayRef.current ? "playVideo" : "pauseVideo";
+          frame.contentWindow.postMessage(
+            JSON.stringify({ event: "command", func: pendingCmd, args: [] }),
+            "https://www.youtube.com",
+          );
+          pendingRoomPlayerPlayRef.current = null;
+        }
         // Also capture the embed-reported duration so the seek bar knows the total length.
         if (typeof data.info.duration === "number" && data.info.duration > 0) {
           setPlayerDuration(data.info.duration);
+          // Drama Room auto-next (clock fallback): the embed reports the clock
+          // at the very end right before looping back to 0s. When it reaches
+          // the duration the episode has truly finished.
+          if (data.info.currentTime >= data.info.duration - 1.5) {
+            dramaEndedHandlerRef.current?.();
+          }
+        }
+      }
+      // YouTube widget ENDED state (0) — the episode finished. Only accept it
+      // from the modal's own embed (never from the hero player underneath).
+      if (
+        data?.event === "onStateChange" &&
+        (data.info === 0 || data.data === 0)
+      ) {
+        if (!modalYoutubeRef.current) return;
+        const frame = document.getElementById("room-player") as HTMLIFrameElement | null;
+        if (frame?.contentWindow && event.source === frame.contentWindow) {
+          dramaEndedHandlerRef.current?.();
+        }
+      }
+      // Keep the Play/Pause button honest: mirror the embed's reported state so
+      // an ignored/failed command never leaves the icon showing the wrong side.
+      if (
+        data?.event === "onStateChange" &&
+        (data.info === 1 || data.data === 1)
+      ) {
+        const frame = document.getElementById("room-player") as HTMLIFrameElement | null;
+        if (frame?.contentWindow && event.source === frame.contentWindow) {
+          setIsIframePlaying(true);
+          ytPlayingRef.current = true;
+        }
+      }
+      if (
+        data?.event === "onStateChange" &&
+        (data.info === 2 || data.data === 2)
+      ) {
+        const frame = document.getElementById("room-player") as HTMLIFrameElement | null;
+        if (frame?.contentWindow && event.source === frame.contentWindow) {
+          setIsIframePlaying(false);
+          ytPlayingRef.current = false;
         }
       }
       // YouTube IFrame API handshake: acknowledge onReady and subscribe to
@@ -7170,6 +7172,7 @@ export default function App() {
   useEffect(() => {
     if (!showPlayer || !activeServerUrl || !/youtube\.com|youtu\.be/i.test(activeServerUrl)) return;
     ytClockLiveRef.current = false;
+    pendingRoomPlayerPlayRef.current = null;
     const msg = JSON.stringify({
       event: "listening",
       id: "widget",
@@ -7189,122 +7192,11 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [showPlayer, activeServerUrl]);
 
-  // Load / reset AI subtitle cues whenever a new movie or server is mounted.
+  // Reset playback clocks whenever a new movie or server is mounted.
   useEffect(() => {
     localClockRef.current = 0;
     ytCurrentTimeRef.current = 0;
-    setCurrentAiSubtitle(null);
-    setAiSubtitleCues([]);
-    setAiSubtitleStatus("idle");
-    setAiSubtitleMessage("");
-    setAiSubtitleLangLoaded("");
-    setAiSubtitleGenerating(false);
-    // If the movie has an existing subtitle file, auto-translate it (fast path)
-    // the moment the user opens AI mode — see selectSubtitleMode.
   }, [selectedMovie?.id, activeServerUrl]);
-
-  // Ticker: advance the local clock and pick the active AI subtitle cue.
-  useEffect(() => {
-    if (subtitleMode !== "ai" || aiSubtitleCues.length === 0) {
-      setCurrentAiSubtitle(null);
-      return;
-    }
-    const isYouTube = !!activeServerUrl && /youtube\.com|youtu\.be/i.test(activeServerUrl);
-    const tick = () => {
-      if (!isIframePlaying) {
-        setCurrentAiSubtitle(null);
-        return;
-      }
-      const t = isYouTube ? ytCurrentTimeRef.current : localClockRef.current;
-      const cue = aiSubtitleCues.find((c) => t >= c.start && t <= c.end);
-      setCurrentAiSubtitle(cue ? cue.text : null);
-      if (!isYouTube) localClockRef.current += 0.25;
-    };
-    const iv = window.setInterval(tick, 250);
-    return () => window.clearInterval(iv);
-  }, [subtitleMode, aiSubtitleCues, isIframePlaying, activeServerUrl]);
-
-  const selectSubtitleMode = (mode: "original" | "ai") => {
-    if (mode === "original") {
-      setSubtitleMode("original");
-      if (!showIframeSubtitles) toggleIframeSubtitles();
-    } else {
-      setSubtitleMode("ai");
-      // Avoid double subtitles: keep the provider's native CC off while the
-      // parent-side AI overlay is active.
-      if (showIframeSubtitles) toggleIframeSubtitles();
-      // Fast path: this movie already has a subtitle file — translate it instead
-      // of running Whisper. Only re-translate if cues aren't loaded yet or the
-      // target language changed.
-      if (
-        selectedMovie?.subtitleUrl &&
-        (aiSubtitleStatus !== "ready" || aiSubtitleLangLoaded !== aiSubtitleLang) &&
-        !aiSubtitleGenerating
-      ) {
-        void handleGenerateAiSubtitles();
-      }
-    }
-    setPlayerMenu(null);
-  };
-
-  const handleGenerateAiSubtitles = async (langOverride?: string) => {
-    if (!selectedMovie) return;
-    // When re-translating from the language <select>'s onChange, the new value
-    // must be passed explicitly: setAiSubtitleLang is batched, so the closure
-    // here would otherwise still hold the previously selected language.
-    const targetLang = langOverride || aiSubtitleLang;
-    setAiSubtitleGenerating(true);
-    setAiSubtitleStatus("loading");
-    setAiSubtitleMessage("");
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 600000);
-    try {
-      // Prefer the movie's existing subtitle file as the translation source:
-      // the server translates it with Gemini directly (no audio download, no
-      // Whisper). Only fall back to Whisper transcription of the audio when the
-      // movie has NO subtitle file attached.
-      const useExistingSubtitle = !!selectedMovie?.subtitleUrl;
-      // Prefer the movie's YouTube source for caption fetching: the server
-      // extracts YouTube timedtext captions. getMovieSourceUrl may return a
-      // non-YouTube embed (hdtoday/vidsrc) even when the movie also has a
-      // YouTube link, so fall back to findYoutubeSource for the caption path.
-      const primarySource = getMovieSourceUrl(selectedMovie);
-      const captionSource =
-        primarySource && /youtube\.com|youtu\.be/i.test(primarySource)
-          ? primarySource
-          : findYoutubeSource(selectedMovie) || primarySource;
-      const res = await fetch("/api/subtitle/generate", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Device-Id": getDeviceId(),
-        },
-        body: JSON.stringify(
-          useExistingSubtitle
-            ? { subtitleUrl: selectedMovie.subtitleUrl, lang: targetLang }
-            : { url: captionSource, lang: targetLang },
-        ),
-        signal: controller.signal,
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || `Server error ${res.status}`);
-      const cues = parseSubtitleText(data.srt || "");
-      if (cues.length === 0) throw new Error("No subtitles were generated");
-      setAiSubtitleCues(cues);
-      setAiSubtitleStatus("ready");
-      setAiSubtitleLangLoaded(targetLang);
-    } catch (err: any) {
-      setAiSubtitleStatus("error");
-      setAiSubtitleMessage(
-        err?.name === "AbortError"
-          ? "Generation timed out after 10 minutes — try again"
-          : err?.message || "Failed to generate subtitles",
-      );
-    } finally {
-      clearTimeout(timer);
-      setAiSubtitleGenerating(false);
-    }
-  };
 
   // ---- Progress / seek bar ----
   // Poll the active player's clock ~4x/sec to drive the bar and time readout.
@@ -7332,15 +7224,14 @@ export default function App() {
       } else {
         t = localClockRef.current;
       }
-      // Duration fallback: use the last AI subtitle cue when the player reports none.
-      if (d <= 0 && aiSubtitleCues.length > 0) d = aiSubtitleCues[aiSubtitleCues.length - 1].end;
+      // Duration fallback: keep the last reported duration when the player reports none.
       setPlayerCurrentTime(t);
       if (d > 0) setPlayerDuration(d);
     };
     tick();
     const iv = window.setInterval(tick, 250);
     return () => window.clearInterval(iv);
-  }, [showPlayer, activeServerUrl, aiSubtitleCues]);
+  }, [showPlayer, activeServerUrl]);
 
   // Compute the target time from a pointer position on the seek bar.
   const seekTimeFromEvent = (e: React.PointerEvent) => {
@@ -7386,6 +7277,9 @@ export default function App() {
       }
     }
     localClockRef.current = t;
+    // Publish immediately so guests follow a host seek without waiting for the
+    // next 3s poll (uses the seek target, since iframe clocks lag the command).
+    publishPlaybackNowRef.current({ currentTime: t });
   };
 
   const startSeekDrag = (e: React.PointerEvent) => {
@@ -7443,24 +7337,38 @@ export default function App() {
       }
     }
 
-    // 2. Control room-player YouTube iframe if active
+    // 2. Control room-player YouTube iframe if active. Play/pause commands are
+    //    only posted once the embed's JS-API channel is live (first infoDelivery).
+    //    Posting them earlier — right after mount, before the embed streams —
+    //    permanently desyncs the widget: it never emits onReady/infoDelivery
+    //    afterwards, the clock freezes at 0:00, and the stall guard later
+    //    remounts the iframe so the video visibly "jumps to the beginning".
     const roomPlayer = document.getElementById(
       "room-player",
     ) as HTMLIFrameElement;
     if (roomPlayer?.contentWindow) {
-      const command = isPlaying ? "playVideo" : "pauseVideo";
-      roomPlayer.contentWindow.postMessage(
-        JSON.stringify({
-          event: "command",
-          func: command,
-          args: [],
-        }),
-        "https://www.youtube.com",
-      );
+      if (ytClockLiveRef.current) {
+        const command = isPlaying ? "playVideo" : "pauseVideo";
+        roomPlayer.contentWindow.postMessage(
+          JSON.stringify({
+            event: "command",
+            func: command,
+            args: [],
+          }),
+          "https://www.youtube.com",
+        );
+      } else {
+        pendingRoomPlayerPlayRef.current = isPlaying;
+      }
     }
 
     // 3. Control the cinematic shielded embed (hdtoday, vidcloud, ...) if active
     postVideoCommand("streaming-player", isPlaying ? "playVideo" : "pauseVideo");
+
+    ytPlayingRef.current = isPlaying;
+    // Publish the play/pause intent immediately (player clocks may lag the
+    // command, so publish the intent rather than the live read).
+    publishPlaybackNowRef.current({ isPlaying });
   };
 
   const toggleIframeMute = () => {
@@ -7490,34 +7398,6 @@ export default function App() {
 
     // 3. Control the cinematic shielded embed (mute / unmute) if active
     postVideoCommand("streaming-player", isMuted ? "mute" : "unMute");
-  };
-
-  const toggleIframeSubtitles = () => {
-    const showSub = !showIframeSubtitles;
-    setShowIframeSubtitles(showSub);
-
-    // 1. Control Plyr captions
-    if (plyrRef.current?.plyr) {
-      plyrRef.current.plyr.toggleCaptions();
-    }
-
-    // 2. Control room-player YouTube captions
-    const roomPlayer = document.getElementById(
-      "room-player",
-    ) as HTMLIFrameElement;
-    if (roomPlayer?.contentWindow) {
-      roomPlayer.contentWindow.postMessage(
-        JSON.stringify({
-          event: "command",
-          func: "toggleClosedCaptions",
-          args: [],
-        }),
-        "*",
-      );
-    }
-
-    // 3. Control the cinematic shielded embed (native captions) if active
-    postVideoCommand("streaming-player", "toggleClosedCaptions");
   };
 
   const toggleFullscreenMain = () => {
@@ -8034,12 +7914,6 @@ export default function App() {
     }
   }, [isRoomMuted]);
 
-  const [targetLang, setTargetLang] = useState("Kurdish");
-  const [translatedContent, setTranslatedContent] = useState<string | null>(
-    null,
-  );
-  const [isTranslating, setIsTranslating] = useState(false);
-
   // Social Protocol State
   const {
     currentUser: fbUser,
@@ -8052,6 +7926,37 @@ export default function App() {
   // ============ Favorites / Likes / Live-metrics (movie card enhancements) ============
   // The Firebase uid drives persistence; guests use localStorage instead.
   const fbUid = fbUser?.uid || "";
+
+  // Identity for the permanent CinemaChat watch room: signed-in users use their
+  // social uid + unique code; guests fall back to the persistent device id so
+  // their host/guest slot survives a refresh on the same device.
+  const cinemaChatIdentity = useMemo<CinemaChatParticipant>(() => {
+    const deviceId = getDeviceId();
+    const id = fbUser?.uid || deviceId;
+    const name = socialProfile?.name || "میوان";
+    const code =
+      socialProfile?.uniqueCode || `DEV-${deviceId.slice(0, 8).toUpperCase()}`;
+    return {
+      id,
+      name,
+      code,
+      avatarUrl: socialProfile?.avatarUrl || socialProfile?.avatar,
+    };
+  }, [
+    fbUser?.uid,
+    socialProfile?.name,
+    socialProfile?.uniqueCode,
+    socialProfile?.avatarUrl,
+    socialProfile?.avatar,
+  ]);
+
+  // Account status for the CinemaChat room's invitation flow: account users can
+  // send AND receive real persisted invitations; device-only guests can still
+  // join via code/QR but cannot receive account invitations.
+  const hasCinemaChatAccount = !!fbUser || !!socialProfile;
+  const cinemaChatAccountName = socialProfile?.name || cinemaChatIdentity.name;
+  const cinemaChatAccountCode =
+    socialProfile?.uniqueCode || cinemaChatIdentity.code;
 
   // Hydrate the signed-in user's favorites + liked movies in real time from
   // Firestore (users/{uid}). Guests fall back to localStorage.
@@ -8374,7 +8279,7 @@ export default function App() {
 
   // Open a movie in the detail/player modal from any card.
   const openMovie = useCallback(
-    (movie: Movie) => {
+    (movie: Movie, opts?: { startFromBeginning?: boolean }) => {
       // Capture the homepage's scroll position BEFORE the modal mounts so we
       // can restore it exactly when the modal closes.
       if (savedPageScrollRef.current === null) {
@@ -8384,16 +8289,21 @@ export default function App() {
       setActiveServerUrl(getMovieSourceUrl(movie));
       setShowPlayer(true);
       // Restore a saved resume point (continue-watching) so reopening a movie
-      // resumes where the user left off instead of always starting at 0s.
+      // resumes where the user left off instead of always starting at 0s —
+      // EXCEPT for drama-room auto-advance, which must start the next episode
+      // from the beginning (a saved ~90% position would otherwise jump the new
+      // episode straight into its "Up Next" window and cascade-skip episodes).
       try {
         const local = JSON.parse(
           localStorage.getItem("cinemachat_continue_watching") || "{}",
         );
         const saved = local[movie.id];
         resumeTimeRef.current =
-          saved && typeof saved.progress === "number" && saved.progress >= 5
-            ? saved.progress
-            : 0;
+          opts?.startFromBeginning
+            ? 0
+            : saved && typeof saved.progress === "number" && saved.progress >= 5
+              ? saved.progress
+              : 0;
       } catch {
         resumeTimeRef.current = 0;
       }
@@ -8546,6 +8456,226 @@ export default function App() {
     }
     return out;
   }, [movies, resolveMovie]);
+
+  // -------------------------------------------------------------------------
+  // Drama Room auto-next: when an episode is opened from a Drama Room, remember
+  // that room's stored episode order so that when the current episode finishes
+  // we automatically advance to the NEXT episode in the SAME room. The final
+  // episode simply stops — never navigating to another room, movie or series.
+  // -------------------------------------------------------------------------
+  const dramaRoomPlaylistRef = useRef<{ roomId: string; episodes: string[] } | null>(null);
+  // Anti-double-fire guard: the "finished" signal can arrive from several
+  // sources at the same moment (YouTube onStateChange ENDED + embed clock
+  // reaching the duration + a native <video> onended). Only one advance is
+  // ever allowed per finished episode, and it only fires AFTER the episode
+  // actually finishes (never on play/pause/seek).
+  const dramaAdvanceGuardRef = useRef({ fromId: "", lastAt: 0 });
+  const selectedMovieRef = useRef<Movie | null>(null);
+  selectedMovieRef.current = selectedMovie;
+
+  // -------------------------------------------------------------------------
+  // Drama Room "Next Episode" preview: ONLY during the final 30 seconds of the
+  // current episode we surface a full-screen "Up Next" overlay showing the NEXT
+  // episode in the same room (large poster + title + live countdown). The
+  // overlay is pure UI — the current episode keeps playing untouched and the
+  // player controls stay interactive above it (pointer-events: none).
+  // -------------------------------------------------------------------------
+  const [dramaNextEpisode, setDramaNextEpisode] = useState<any>(null);
+  // Remaining time of the CURRENT episode (duration - currentTime). It is the
+  // single source for both the visibility gate and the countdown, so the
+  // overlay can never appear early nor display a value from the next episode.
+  const dramaNextRemaining = playerDuration > 0 ? playerDuration - playerCurrentTime : 0;
+
+  // Resolve the next episode for a movie inside the active drama room, using
+  // the room's stored `dramas` order (never re-sorted). Returns null when
+  // there is no next episode or it isn't playable, so callers can bail out
+  // safely without retrying or breaking the current player.
+  const getDramaNextEpisode = useCallback(
+    (movieId: string | undefined): Movie | null => {
+      const playlist = dramaRoomPlaylistRef.current;
+      if (!movieId || !playlist) return null;
+      const idx = playlist.episodes.indexOf(movieId);
+      if (idx === -1) return null;
+      const nextId = playlist.episodes[idx + 1];
+      if (!nextId) return null;
+      const nextMovie =
+        resolvedMovies[nextId] ?? movies.find((m: Movie) => m.id === nextId);
+      // A missing or unplayable next episode must never break the current
+      // player nor trigger retries — treat it as "no next episode".
+      if (!nextMovie || !getMovieSourceUrl(nextMovie)) return null;
+      return nextMovie;
+    },
+    [resolvedMovies, movies],
+  );
+
+  // Resolve the Next Episode control state: `inRoom` is true only while the
+  // active movie belongs to a Drama Room playlist (so the button never appears
+  // for regular movies), and `next` is the next episode in the room's stored
+  // order — null on the final episode, which disables the button and guarantees
+  // it can never navigate anywhere. Reuses getDramaNextEpisode so the button
+  // and the auto-next logic always agree on the same episode.
+  const dramaNextInfo = useMemo<{ inRoom: boolean; next: Movie | null }>(() => {
+    const playlist = dramaRoomPlaylistRef.current;
+    const movie = selectedMovie;
+    if (!playlist || !movie) return { inRoom: false, next: null };
+    const inRoom = playlist.episodes.includes(movie.id);
+    return { inRoom, next: inRoom ? getDramaNextEpisode(movie.id) : null };
+  }, [selectedMovie, getDramaNextEpisode]);
+
+  // Recompute the preview on every progress tick: visible ONLY while
+  // 0 < remaining <= 30 on the current episode's clock, hidden immediately the
+  // time leaves that window (seek, loop-back, manual switch, ended). Because
+  // `getDramaNextEpisode` returns the same object reference while the state
+  // persists, this setState is idempotent — no remount/flicker while visible.
+  useEffect(() => {
+    if (!showPlayer) {
+      setDramaNextEpisode(null);
+      return;
+    }
+    const movie = selectedMovieRef.current;
+    if (!movie || !dramaRoomPlaylistRef.current) {
+      setDramaNextEpisode(null);
+      return;
+    }
+    if (dramaNextRemaining <= 0 || dramaNextRemaining > 30) {
+      setDramaNextEpisode(null);
+      return;
+    }
+    const next = getDramaNextEpisode(movie.id);
+    if (!next) {
+      setDramaNextEpisode(null);
+      return;
+    }
+    setDramaNextEpisode(next);
+  }, [dramaNextRemaining, showPlayer, getDramaNextEpisode]);
+
+  const handleDramaRoomEnded = useCallback(() => {
+    const playlist = dramaRoomPlaylistRef.current;
+    const movie = selectedMovieRef.current;
+    if (!playlist || !movie) return;
+    // Only auto-advance for episodes that belong to the active drama room.
+    const idx = playlist.episodes.indexOf(movie.id);
+    if (idx === -1) {
+      // The current movie is not part of this room — stop tracking it.
+      dramaRoomPlaylistRef.current = null;
+      return;
+    }
+    const guard = dramaAdvanceGuardRef.current;
+    // Ignore repeat finished-signals for the same episode (races, duplicates).
+    if (guard.fromId === movie.id && Date.now() - guard.lastAt < 4000) return;
+    // Last episode in the room: finish normally, do NOT navigate anywhere.
+    const nextId = playlist.episodes[idx + 1];
+    if (!nextId) {
+      dramaRoomPlaylistRef.current = null;
+      return;
+    }
+    const nextMovie =
+      resolvedMovies[nextId] ?? movies.find((m: Movie) => m.id === nextId);
+    // Missing or unplayable next episode: stop auto-advance entirely so we
+    // never retry/loop on repeated "ended" signals nor break the player.
+    if (!nextMovie || !getMovieSourceUrl(nextMovie)) {
+      dramaRoomPlaylistRef.current = null;
+      return;
+    }
+    guard.fromId = movie.id;
+    guard.lastAt = Date.now();
+    // Always start the auto-advanced episode at 0s — never at a saved resume
+    // position (see openMovie) so progression flows cleanly through the room.
+    openMovie(nextMovie, { startFromBeginning: true });
+  }, [resolvedMovies, movies, openMovie]);
+
+  // Live ref so the once-mounted player message listeners can always reach the
+  // latest handler without re-subscribing (avoids stale closures).
+  const dramaEndedHandlerRef = useRef<() => void>(() => {});
+  dramaEndedHandlerRef.current = handleDramaRoomEnded;
+
+  // -------------------------------------------------------------------------
+  // Player start-of-playback preview: when any movie begins playing in the
+  // modal player — a drama room episode (auto-next, manual switch, first
+  // open) or a regular movie opened via the movie details / VIP / continue-
+  // watching views — we immediately surface a "Now Playing" card (same visual
+  // language as the "Up Next" overlay) for EXACTLY 5 seconds while playback
+  // continues normally — the video is never paused, seeked or restarted. A
+  // single shared timer is reused so a fast switch can never stack duplicate
+  // timers, and it is fully independent from the final-30-seconds "Up Next"
+  // overlay. The hero background trailer player is intentionally excluded.
+  // -------------------------------------------------------------------------
+  const [playerStartPreview, setPlayerStartPreview] = useState<Movie | null>(null);
+  const playerStartPreviewTimerRef = useRef<number | null>(null);
+  const showPlayerStartPreview = useCallback((movie: Movie) => {
+    if (playerStartPreviewTimerRef.current !== null) {
+      window.clearTimeout(playerStartPreviewTimerRef.current);
+      playerStartPreviewTimerRef.current = null;
+    }
+    setPlayerStartPreview(movie);
+    playerStartPreviewTimerRef.current = window.setTimeout(() => {
+      playerStartPreviewTimerRef.current = null;
+      setPlayerStartPreview(null);
+    }, 5000);
+  }, []);
+
+  // Trigger the preview each time the modal player starts a movie: a drama
+  // room episode (auto-next, manual switch, first open) or any regular movie
+  // opened in the player (movie details, VIP, continue-watching). The cleanup
+  // guarantees the timer can never outlive the preview nor fire into a later
+  // movie.
+  useEffect(() => {
+    if (!showPlayer) {
+      setPlayerStartPreview(null);
+      return;
+    }
+    const movie = selectedMovieRef.current;
+    if (!movie) {
+      setPlayerStartPreview(null);
+      return;
+    }
+    showPlayerStartPreview(movie);
+    return () => {
+      if (playerStartPreviewTimerRef.current !== null) {
+        window.clearTimeout(playerStartPreviewTimerRef.current);
+        playerStartPreviewTimerRef.current = null;
+      }
+    };
+  }, [showPlayer, selectedMovie?.id, showPlayerStartPreview]);
+
+  // Clear the active playlist and the next-episode preview whenever the player
+  // or the drama room modal closes, so stale state can never fire after the
+  // room was dismissed.
+  useEffect(() => {
+    if (!showPlayer) {
+      dramaRoomPlaylistRef.current = null;
+      setDramaNextEpisode(null);
+    }
+  }, [showPlayer]);
+  useEffect(() => {
+    if (!selectedDramaRoom) {
+      dramaRoomPlaylistRef.current = null;
+      setDramaNextEpisode(null);
+    }
+  }, [selectedDramaRoom]);
+  // A new movie (auto-next, manual episode switch, different movie) invalidates
+  // the previous episode's preview state and resets the auto-next transition
+  // guard, so the newly selected episode is recomputed cleanly from its own
+  // position in the room's order.
+  useEffect(() => {
+    setDramaNextEpisode(null);
+    dramaAdvanceGuardRef.current = { fromId: "", lastAt: 0 };
+  }, [selectedMovie?.id]);
+
+  // Native <video> ended (direct-stream fallback + Plyr direct MP4): advance
+  // the current drama room to the next episode.
+  useEffect(() => {
+    if (!showPlayer || !activeServerUrl) return;
+    const onEnded = () => dramaEndedHandlerRef.current?.();
+    const direct = document.getElementById("room-player-direct-video") as HTMLVideoElement | null;
+    direct?.addEventListener("ended", onEnded);
+    const plyrMedia = (plyrRef.current as any)?.plyr?.media as HTMLVideoElement | null;
+    plyrMedia?.addEventListener("ended", onEnded);
+    return () => {
+      direct?.removeEventListener("ended", onEnded);
+      plyrMedia?.removeEventListener("ended", onEnded);
+    };
+  }, [showPlayer, activeServerUrl, selectedMovie?.id]);
 
   // Similar/related movies for the detail modal: shared tags first, ranked by
   // trending score; falls back to the currently most-watched movies so the row
@@ -8812,15 +8942,6 @@ export default function App() {
     }
   }, [showPlayer]);
 
-  const openHeroTranslatePlayer = () => {
-    if (!activeFeaturedMovie) return;
-    setAiSubtitleLang("ku");
-    setSubtitleMode("ai");
-    setSelectedMovie(activeFeaturedMovie);
-    setActiveServerUrl(getMovieSourceUrl(activeFeaturedMovie));
-    setShowPlayer(true);
-  };
-
   useEffect(() => {
     if (activeSyncGroup) {
       setActiveAudioSource("room");
@@ -8875,8 +8996,11 @@ export default function App() {
       setActiveSyncGroup((prev) => (prev ? { ...prev, videoUrl: url } : prev));
 
       // Best-effort mirror into the dedicated vip_rooms doc for real-time sync.
+      // isVIP: true is required — the vip_rooms rules only accept updates whose
+      // incoming data validates as a VIP sync group.
       if (activeSyncGroup?.isVIP && activeSyncGroup.id) {
         updateDoc(doc(db, "vip_rooms", activeSyncGroup.id), {
+          isVIP: true,
           videoUrl: url,
           playback: {
             currentTime: 0,
@@ -9336,53 +9460,163 @@ export default function App() {
   }, []);
 
   // Point 42: Global Playback Sync Handler
-  const updateGlobalPlayback = (time: number, playing: boolean) => {
-    if (!plyrRef.current?.plyr) return;
-    const plyr = plyrRef.current.plyr;
+  // ---- Live sync helpers (watch-together) ----
+  // How far the local player may drift from the authoritative room clock before
+  // a corrective seek is applied (guards against constant re-seek jitter).
+  const SYNC_SEEK_TOLERANCE = 2.5;
 
-    // Only update if drift is significant (> 2s) to avoid jitter
-    if (Math.abs(plyr.currentTime - time) > 2) {
-      plyr.currentTime = time;
+  // Read whichever player is actually active, mirroring the seek-bar poller:
+  // direct-stream fallback <video> → Plyr → YouTube embed clock → local clock.
+  const readLivePlayback = (): { currentTime: number; isPlaying: boolean } => {
+    const directVideo = document.getElementById("room-player-direct-video") as HTMLVideoElement | null;
+    if (directVideo) {
+      return {
+        currentTime: typeof directVideo.currentTime === "number" ? directVideo.currentTime : 0,
+        isPlaying: !directVideo.paused,
+      };
     }
-
-    if (playing && plyr.paused) plyr.play().catch(() => {});
-    else if (!playing && !plyr.paused) plyr.pause();
+    if (plyrRef.current?.plyr) {
+      const p = plyrRef.current.plyr;
+      return {
+        currentTime: typeof p.currentTime === "number" ? p.currentTime : 0,
+        isPlaying: !p.paused,
+      };
+    }
+    const isYouTube =
+      !!activeServerUrlRef.current &&
+      /youtube\.com|youtu\.be/i.test(activeServerUrlRef.current);
+    if (isYouTube) {
+      return { currentTime: ytCurrentTimeRef.current || 0, isPlaying: ytPlayingRef.current };
+    }
+    return { currentTime: localClockRef.current || 0, isPlaying: ytPlayingRef.current };
   };
 
-  // Point 43: Local Playback State Collector (Sync to Cloud - OPTIMIZED)
-  useEffect(() => {
-    if (!activeSyncGroup || !plyrRef.current?.plyr || !socialProfile) return;
-    if (socialProfile.uid !== activeSyncGroup.creatorId) return;
+  // Guest-side live sync: apply the room's authoritative (drift-corrected)
+  // playback state to EVERY player type — Plyr, the YouTube embed, third-party
+  // embeds and the direct-stream fallback <video>. The inner closure is swapped
+  // on every render so it always sees fresh state, while the exported callback
+  // stays referentially stable (SyncRoom's listener must not re-subscribe on
+  // each render).
+  const applySyncedPlaybackRef = React.useRef<(time: number, playing: boolean) => void>(() => {});
+  applySyncedPlaybackRef.current = (time: number, playing: boolean) => {
+    const live = readLivePlayback();
 
-    const plyr = plyrRef.current.plyr;
-    const interval = setInterval(() => {
-      const currentTime = plyr.currentTime;
-      const isPlaying = !plyr.paused;
+    // Corrective seek only when the drift is meaningful (avoid jitter).
+    if (Math.abs(live.currentTime - time) > SYNC_SEEK_TOLERANCE) {
+      seekToPlayer(time);
+    }
 
-      // Update Firestore if changed significantly (>5s drift) or every 30s heartbeat
-      const timeDiff = Math.abs(currentTime - lastSyncTime);
-      const isPeriodicSync = Date.now() % 30000 < 10000;
-
-      if (timeDiff > 10 || isPeriodicSync) {
-        const path = `rooms/${activeSyncGroup.id}`;
-        fetchApi(`/api/${path}`, {
-          method: "POST",
-          body: JSON.stringify({
-            playback: {
-              currentTime: currentTime,
-              isPlaying: isPlaying,
-              updatedAt: new Date().toISOString(),
-            },
-          }),
-        }).catch((err) => {
-          console.error("Heartbeat sync failed:", err);
-        });
-        setLastSyncTime(currentTime);
+    // Resume all active players.
+    if (playing && !live.isPlaying) {
+      if (plyrRef.current?.plyr) plyrRef.current.plyr.play().catch(() => {});
+      const directVideo = document.getElementById("room-player-direct-video") as HTMLVideoElement | null;
+      if (directVideo) directVideo.play().catch(() => {});
+      const roomPlayer = document.getElementById("room-player") as HTMLIFrameElement | null;
+      if (roomPlayer?.contentWindow) {
+        if (ytClockLiveRef.current) {
+          roomPlayer.contentWindow.postMessage(
+            JSON.stringify({ event: "command", func: "playVideo", args: [] }),
+            "https://www.youtube.com",
+          );
+        } else {
+          pendingRoomPlayerPlayRef.current = true;
+        }
       }
-    }, 10000); // Check every 10 seconds instead of 5
+      postVideoCommand("streaming-player", "playVideo");
+      setIsIframePlaying(true);
+      ytPlayingRef.current = true;
+    } else if (!playing && live.isPlaying) {
+      // Pause all active players.
+      if (plyrRef.current?.plyr) plyrRef.current.plyr.pause();
+      const directVideo = document.getElementById("room-player-direct-video") as HTMLVideoElement | null;
+      if (directVideo) directVideo.pause();
+      const roomPlayer = document.getElementById("room-player") as HTMLIFrameElement | null;
+      if (roomPlayer?.contentWindow) {
+        if (ytClockLiveRef.current) {
+          roomPlayer.contentWindow.postMessage(
+            JSON.stringify({ event: "command", func: "pauseVideo", args: [] }),
+            "https://www.youtube.com",
+          );
+        } else {
+          pendingRoomPlayerPlayRef.current = false;
+        }
+      }
+      postVideoCommand("streaming-player", "pauseVideo");
+      setIsIframePlaying(false);
+      ytPlayingRef.current = false;
+    }
+  };
+  const handleSyncedPlayback = React.useCallback((time: number, playing: boolean) => {
+    applySyncedPlaybackRef.current(time, playing);
+  }, []);
 
-    return () => clearInterval(interval);
-  }, [activeSyncGroup, socialProfile, lastSyncTime]);
+  // Point 43: Host → Firestore live playback publisher (watch-together).
+  // Publishes { isPlaying, currentTime, updatedAt } to the room doc so the
+  // SyncRoom / Point 46 listeners on every client see host seeks, pauses and
+  // playback in near real-time. Only the creator (or the official global room)
+  // publishes — the host's state is authoritative and guests only read.
+  // VIP rooms publish to vip_rooms/{id} (same shape + isVIP flag so the rules
+  // accept the partial update).
+  useEffect(() => {
+    if (!activeSyncGroup) return;
+    const roomId = activeSyncGroup.id;
+    const isVip = !!activeSyncGroup.isVIP;
+    const canPublish =
+      !!socialProfile?.uid &&
+      socialProfile.uid !== "admin_local_bypass" &&
+      (socialProfile.uid === activeSyncGroup.creatorId || roomId === "global_room_official");
+    if (!canPublish) return;
+
+    const roomRef = doc(db, isVip ? "vip_rooms" : "syncGroups", roomId);
+
+    let lastPublishedTime = -1;
+    let lastPublishedPlaying: boolean | null = null;
+    let lastPublishedAt = 0;
+
+    const publish = (override?: { currentTime?: number; isPlaying?: boolean }) => {
+      const live = readLivePlayback();
+      const currentTime =
+        typeof override?.currentTime === "number" ? override.currentTime : live.currentTime;
+      const isPlaying =
+        typeof override?.isPlaying === "boolean" ? override.isPlaying : live.isPlaying;
+      const now = Date.now();
+
+      const timeDelta = Math.abs(currentTime - lastPublishedTime);
+      const stateChanged = lastPublishedPlaying !== null && isPlaying !== lastPublishedPlaying;
+      const stale = now - lastPublishedAt > 12000;
+
+      // Skip redundant publishes (same time, same state, still fresh).
+      if (lastPublishedTime >= 0 && timeDelta < 2 && !stateChanged && !stale) return;
+
+      lastPublishedTime = currentTime;
+      lastPublishedPlaying = isPlaying;
+      lastPublishedAt = now;
+
+      const payload: any = {
+        playback: {
+          isPlaying,
+          currentTime: Math.round(currentTime * 10) / 10,
+          updatedAt: new Date().toISOString(),
+        },
+      };
+      if (isVip) payload.isVIP = true;
+
+      updateDoc(roomRef, payload).catch((err: any) => {
+        if (err?.code !== "permission-denied") {
+          console.warn("Live playback publish failed:", err?.message || err);
+        }
+      });
+    };
+
+    publishPlaybackNowRef.current = publish;
+    const iv = window.setInterval(() => publish(), 3000);
+    return () => {
+      window.clearInterval(iv);
+      if (publishPlaybackNowRef.current === publish) {
+        publishPlaybackNowRef.current = () => {};
+      }
+    };
+  }, [activeSyncGroup, socialProfile?.uid]);
 
   const [showJoinCodeModal, setShowJoinCodeModal] = useState(false);
   const [joinRoomCode, setJoinRoomCode] = useState("");
@@ -9713,35 +9947,6 @@ export default function App() {
     }
   };
 
-  const LANGUAGES = [
-    {
-      code: "Kurdish",
-      name: "کوردی",
-      prompt:
-        "بە کوردییەکی پاراو و ئەدەبی وەریگێڕە بۆ سەر زمانی کوردی (سۆرانی)",
-    },
-    {
-      code: "Arabic",
-      name: "عربي",
-      prompt: "ترجم إلى اللغة العربية الفصحى بشكل أدبي",
-    },
-    {
-      code: "English",
-      name: "English",
-      prompt: "Translate this into fluent, natural English",
-    },
-    {
-      code: "Persian",
-      name: "فارسی",
-      prompt: "به زبان فارسی روان و ادبی ترجمه کن",
-    },
-    {
-      code: "Turkish",
-      name: "Türkçe",
-      prompt:
-        "Akıcı ve doğal bir Türkçe ile tercüme et (tüm içeriği tercüme et)",
-    },
-  ];
 
   // Point 45: Handle Global Stream updates in the room (REFINED)
   useEffect(() => {
@@ -9789,11 +9994,13 @@ export default function App() {
 
   // Point 46: Playback Synchronization Logic
   useEffect(() => {
-    if (!activeSyncGroup || !plyrRef.current?.plyr) return;
-    (window as any).currentPlayer = plyrRef.current.plyr;
+    if (!activeSyncGroup) return;
+    (window as any).currentPlayer = plyrRef.current?.plyr;
 
     let unsubscribe: any;
-    const docRef = doc(db, "syncGroups", activeSyncGroup.id);
+    // VIP rooms live in their own collection (vip_rooms), regular rooms in syncGroups.
+    const syncCollection = activeSyncGroup.isVIP ? "vip_rooms" : "syncGroups";
+    const docRef = doc(db, syncCollection, activeSyncGroup.id);
 
     getDoc(docRef)
       .then((docS) => {
@@ -9804,7 +10011,8 @@ export default function App() {
               if (!docS.exists()) return;
               const data = docS.data() as SyncGroup;
 
-              // Movie Sync Logic
+              // Movie Sync Logic — guests adopt the host's posted movie so their
+              // player loads the same source before synced playback is applied.
               if (data.videoData) {
                 const movieUpdate: Movie = {
                   id: data.videoData.id || "broadcast-" + Date.now(),
@@ -9835,7 +10043,6 @@ export default function App() {
                   setSelectedMovie(movieUpdate);
                   setActiveServerUrl(getMovieSourceUrl(movieUpdate));
                   setShowPlayer(true);
-                  setTranslatedContent(null);
                 }
               } else if (
                 data.currentMovieId &&
@@ -9848,25 +10055,12 @@ export default function App() {
                   setSelectedMovie(targetMovie);
                   setActiveServerUrl(getMovieSourceUrl(targetMovie));
                   setShowPlayer(true);
-                  setTranslatedContent(null);
                 }
               }
 
-              // Sync playback
-              if (
-                socialProfile?.uid !== data.creatorId &&
-                plyrRef.current?.plyr
-              ) {
-                const player = plyrRef.current.plyr;
-                const diff = Math.abs(
-                  player.currentTime - data.playback.currentTime,
-                );
-                if (diff > 3) player.currentTime = data.playback.currentTime;
-                if (data.playback.isPlaying && player.paused)
-                  player.play().catch(() => {});
-                else if (!data.playback.isPlaying && !player.paused)
-                  player.pause();
-              }
+              // Playback sync (seek/play/pause) is applied by handleSyncedPlayback
+              // via the SyncRoom listener, which carries drift compensation and
+              // covers every player type — so it is NOT duplicated here.
             },
             (error) => {
               const messageStr =
@@ -9902,53 +10096,7 @@ export default function App() {
     return () => {
       if (unsubscribe) unsubscribe();
     };
-  }, [activeSyncGroup?.id, plyrRef.current?.plyr, socialProfile?.uid, movies]);
-
-  const translateWithAI = async (
-    text: string,
-    langCode: string = "Kurdish",
-  ) => {
-    if (!text) {
-      console.warn("No text provided for translation");
-      return;
-    }
-
-    console.log(`Starting AI translation to ${langCode}...`);
-    setIsTranslating(true);
-    setTranslatedContent(null);
-
-    const lang = LANGUAGES.find((l) => l.code === langCode) || LANGUAGES[0];
-
-    try {
-      const ai = getAI();
-      if (!ai) throw new Error("AI not configured");
-
-      const response = await ai.models.generateContent({
-        model: "gemini-2.0-flash",
-        contents: `${lang.prompt} for the following text. Do not include original text, just the translation: "${text}"`,
-      });
-
-      if (response && response.text) {
-        console.log("AI Translation Success:", response.text.substring(0, 50));
-        setTranslatedContent(response.text);
-      } else {
-        console.warn("AI Response was empty");
-        setTranslatedContent(
-          "وەڵامی وەرگێڕان بەتاڵ بوو. تکایە جارێکی تر کلیک بکەوە.",
-        );
-      }
-    } catch (err) {
-      console.error(
-        "CRITICAL: AI Translation failed inside translateWithAI:",
-        err,
-      );
-      setTranslatedContent(
-        `هەڵە: ${err instanceof Error ? err.message : "پەیوەندی سەرکەوتوو نەبوو"}`,
-      );
-    } finally {
-      setIsTranslating(false);
-    }
-  };
+  }, [activeSyncGroup?.id, activeSyncGroup?.isVIP, selectedMovie, movies]);
 
   // Fullscreen effect
   useEffect(() => {
@@ -11009,10 +11157,6 @@ export default function App() {
     [navGenres],
   );
 
-  useEffect(() => {
-    setTranslatedContent(null);
-  }, [selectedMovie]);
-
   if (bannedFromSystem) {
     const blockTime = blockedAt || new Date();
     const pad2 = (n: number) => String(n).padStart(2, "0");
@@ -11197,6 +11341,7 @@ export default function App() {
       onDelete={handleDeleteDramaRoom}
       liveViewersMap={roomLiveViewers}
       ratingsMap={roomRatingsMap}
+      onOpenCinemaChat={() => setShowCinemaChatRoom(true)}
     />
   );
 
@@ -11387,9 +11532,6 @@ export default function App() {
               )}
             </div>
 
-            {/* Compact language selector (top header, right side) */}
-            <LanguageSelector />
-
             <button
               onClick={handleAdminClick}
               className="flex items-center gap-1 p-1 md:p-1.5 bg-white/5 border border-white/10 rounded-lg hover:bg-brand-primary/10 transition-all text-gray-400 hover:text-brand-primary active:scale-95"
@@ -11473,7 +11615,6 @@ export default function App() {
                 setShowVipModal={setShowVipModal}
                 activeAudioSource={activeAudioSource}
                 isMoviePlayerOpen={!!selectedMovie && showPlayer}
-                onOpenTranslatePlayer={openHeroTranslatePlayer}
               />
             )}
 
@@ -12002,7 +12143,18 @@ export default function App() {
             <DramaRoomDetailModal
               room={selectedDramaRoom}
               resolvedMovies={resolvedMovies}
-              openMovie={openMovie}
+              openMovie={(movie: Movie) => {
+                // Remember this room's ordered episodes so an episode that
+                // finishes auto-advances to the NEXT episode in the SAME room
+                // (the room's stored `dramas` order, never re-sorted).
+                dramaRoomPlaylistRef.current = {
+                  roomId: selectedDramaRoom?.id,
+                  episodes: Array.isArray(selectedDramaRoom?.dramas)
+                    ? [...selectedDramaRoom.dramas]
+                    : [],
+                };
+                openMovie(movie);
+              }}
               onClose={() => setSelectedDramaRoom(null)}
               rating={getRoomCCRating(selectedDramaRoom)}
               ratingCount={getRoomRatingCount(selectedDramaRoom)}
@@ -12022,9 +12174,42 @@ export default function App() {
               }}
             />
           )}
+          {/* Permanent CinemaChat two-person watch room (main_broadcast_room). */}
+          <CinemaChatRoom
+            open={showCinemaChatRoom}
+            onClose={() => setShowCinemaChatRoom(false)}
+            identity={cinemaChatIdentity}
+            movies={publicMovies}
+            hasAccount={hasCinemaChatAccount}
+            accountName={cinemaChatAccountName}
+            accountCode={cinemaChatAccountCode}
+            onRequestAccount={() => {
+              setModalMode("signup");
+              setShowSocialModal(true);
+            }}
+          />
           </>
         )}
       </main>
+
+      {/* Global "watch together" invite notification — lives OUTSIDE the room so
+          the host sees it even while browsing the app. Accept/Reject reuse the
+          existing CinemaChat approval flow (no separate pairing system). */}
+      <CinemaChatInviteNotification
+        identity={cinemaChatIdentity}
+        roomOpen={showCinemaChatRoom}
+        onOpenRoom={() => setShowCinemaChatRoom(true)}
+      />
+
+      {/* Global "account invitation" notification for CinemaChat — only account
+          users have a stable uid to receive persisted invitations by code/phone.
+          Mounted OUTSIDE the room so the recipient sees it anywhere in the app. */}
+      {hasCinemaChatAccount && (
+        <RoomInviteNotification
+          identity={cinemaChatIdentity}
+          onOpenRoom={() => setShowCinemaChatRoom(true)}
+        />
+      )}
 
       {/* Point 14/15/16: Detailed Movie View (Selection) */}
       <AnimatePresence>
@@ -12125,7 +12310,6 @@ export default function App() {
                           iframeId="streaming-player"
                           title={`${selectedMovie?.title || "CinemaChat"} — Cinematic Player`}
                           scale={immersiveScale}
-                          subtitleOffset={subtitlePosition}
                         /> // Cinematic Shielded Player for external embeds
                       ) : (
                         <div className="relative w-full h-full flex items-center justify-center bg-black">
@@ -12149,26 +12333,83 @@ export default function App() {
                         </div>
                       )}
 
-                      {/* AI-Translated Subtitle Overlay (parent-side, time-synced) */}
-                       {subtitleMode === "ai" && currentAiSubtitle && (
-                         <div
-                           className="absolute inset-x-0 z-[45] pointer-events-none select-none px-2 md:px-10 flex justify-center"
-                           style={{ bottom: `calc(64px + ${Math.max(0, Math.min(14, subtitlePosition))}%)` }}
-                         >
-                           <div
-                             className="max-w-[90%] md:max-w-[85%] text-center font-bold kurdish-text leading-snug rounded-lg px-3 py-1.5 transition-colors duration-200 overflow-hidden text-ellipsis break-words"
-                             style={{
-                               fontSize: `${subtitleFontSize}px`,
-                               color: `rgba(255,255,255,${Math.max(0.35, subtitleBrightness / 100)})`,
-                               textShadow: "0 2px 6px rgba(0,0,0,0.95)",
-                             }}
-                           >
-                             {currentAiSubtitle}
-                           </div>
-                         </div>
-                       )}
+                       {/* Drama Room "Next Episode" preview — visible ONLY during
+                           the FINAL 30 SECONDS of the current episode. Full-screen
+                           "Up Next" overlay: pointer-events-none so the current
+                           episode keeps playing and the player controls stay
+                           interactive; the countdown reads the live remaining time
+                           of the CURRENT episode only. Explicit render guard:
+                           no overlay unless a next episode exists AND
+                           0 < remaining <= 30. */}
+                        {dramaNextEpisode &&
+                          dramaNextRemaining > 0 &&
+                          dramaNextRemaining <= 30 &&
+                          !playerStartPreview && (
+                            <div
+                              data-testid="next-episode-preview"
+                              className="pointer-events-none absolute inset-0 z-[45] flex items-center justify-center bg-black/50"
+                            >
+                              <DramaEpisodeBackdrop
+                                posterUrl={dramaNextEpisode.posterUrl || dramaNextEpisode.image || ""}
+                              />
+                              <DramaEpisodePreviewCard
+                                label="ئەڵقەی داهاتوو • NEXT EPISODE"
+                                posterUrl={dramaNextEpisode.posterUrl || dramaNextEpisode.image || ""}
+                                title={dramaNextEpisode.title}
+                                foot={
+                                  <>
+                                    <div className="text-2xl md:text-4xl font-black text-brand-primary kurdish-text tabular-nums drop-shadow-lg">
+                                      دەستپێدەکات لە {Math.ceil(dramaNextRemaining)}
+                                    </div>
+                                    <div className="text-sm md:text-base font-bold text-white/90 kurdish-text mt-1 drop-shadow">
+                                      Starting in {Math.ceil(dramaNextRemaining)}
+                                    </div>
+                                  </>
+                                }
+                              />
+                            </div>
+                          )}
 
-                      {/* SyncRoom Overlay Integration */}
+                        {/* Player start-of-playback preview — shown immediately
+                            for EXACTLY 5 seconds when a movie begins in the
+                            modal player (drama episode auto-next / manual
+                            switch / first open, or any regular movie) while
+                            playback continues normally (no pause/seek/restart).
+                            It has its own timer, fully independent from the
+                            final-30s "Up Next" overlay, and the two never
+                            stack (e.g. very short episodes). The suppression
+                            only applies when the "Up Next" overlay is actually
+                            rendering (dramaNextEpisode truthy), so regular
+                            movies — where no next-episode overlay exists — are
+                            never blocked. */}
+                        {playerStartPreview &&
+                          !(
+                            dramaNextEpisode &&
+                            dramaNextRemaining > 0 &&
+                            dramaNextRemaining <= 30
+                          ) && (
+                            <div
+                              data-testid="episode-start-preview"
+                              className="pointer-events-none absolute inset-0 z-[45] flex items-center justify-center bg-black/90"
+                            >
+                              <DramaEpisodeBackdrop
+                                posterUrl={(playerStartPreview as any).posterUrl || playerStartPreview.image || ""}
+                              />
+                              <DramaEpisodePreviewCard
+                                label="ئەڵقەی ئێستا • NOW PLAYING"
+                                posterUrl={(playerStartPreview as any).posterUrl || playerStartPreview.image || ""}
+                                title={playerStartPreview.title}
+                                foot={
+                                  <div className="text-sm md:text-base font-bold text-brand-primary kurdish-text mt-1 drop-shadow">
+                                    دەستی پێکرد • Now Playing
+                                  </div>
+                                }
+                              />
+                            </div>
+                          )}
+
+
+                       {/* SyncRoom Overlay Integration */}
                       {activeSyncGroup && (
                         <SafeRender fallbackName="Live Sync Room Overlay">
                           <div key={activeSyncGroup.id} className="absolute inset-0 z-[100] pointer-events-none">
@@ -12176,9 +12417,7 @@ export default function App() {
                               room={activeSyncGroup}
                               currentMovie={selectedMovie}
                               onClose={() => setActiveSyncGroup(null)}
-                              onSyncPlayback={(time, playing) =>
-                                updateGlobalPlayback(time, playing)
-                              }
+                              onSyncPlayback={handleSyncedPlayback}
                               vipVideoUrl={(activeSyncGroup as any)?.videoUrl || undefined}
                               onSelectVipVideo={handleVipSelectVideo}
                             />
@@ -12239,8 +12478,10 @@ export default function App() {
 
                       {/* Bottom-right Cinematic Control Bar.
                           Exact right→left sequence:
-                          [1] Fullscreen Expand · [2] Quality · [3] Play/Pause ·
-                          [4] Subtitle · [5] Exit Fullscreen · [6] Mute */}
+                          [1] Fullscreen Expand · [2] Quality · [3] Playback Speed ·
+                          [4] Forward 10s · [4.5] Next Episode (Drama Room) ·
+                          [5] Play/Pause · [6] Back 10s ·
+                          [7] Exit Fullscreen · [8] Mute */}
                       <div className="absolute bottom-0 right-0 z-50 h-16 flex items-center gap-1.5 md:gap-2 px-4 md:px-6 pointer-events-auto select-none font-sans">
                         {/* [6] Mute / Audio Toggle (leftmost of the cluster) */}
                         <button
@@ -12275,325 +12516,16 @@ export default function App() {
                           <Minimize className="w-4.5 h-4.5 md:w-5 md:h-5" />
                         </button>
 
-                        {/* [4] Subtitle + Subtitle Position Adjustment */}
-                        <div className="relative">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setPlayerMenu(
-                                playerMenu === "subtitle" ? null : "subtitle",
-                              )
-                            }
-                            className={`w-10 h-10 md:w-11 md:h-11 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border border-white/10 ${
-                              !showIframeSubtitles
-                                ? "bg-zinc-800 text-zinc-500"
-                                : "bg-black/60 hover:bg-white/10 text-white"
-                            }`}
-                            title="سەبتاتڵ و بەرزکردنەوەی سەبتایتڵ (Subtitles)"
-                          >
-                            <Languages className="w-4.5 h-4.5 md:w-5 md:h-5" />
-                          </button>
+                        {/* [6] Back 10s (skip back) / [5] Play-Pause / [4] Forward 10s */}
+                        <button
+                          type="button"
+                          onClick={() => seekToPlayer(playerCurrentTime - 10)}
+                          className="w-10 h-10 md:w-11 md:h-11 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border border-white/10 bg-black/60 hover:bg-white/10 text-white"
+                          title="پاشگەڕاندن 10 چرکە (Back 10s)"
+                        >
+                          <Rewind className="w-4.5 h-4.5 md:w-5 md:h-5" />
+                        </button>
 
-                          {playerMenu === "subtitle" && (
-                            <>
-                              <div
-                                className="fixed inset-0 z-[55]"
-                                onClick={() => setPlayerMenu(null)}
-                              />
-                              <div className="absolute bottom-full right-0 mb-2 z-[60] w-60 rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-3 shadow-2xl">
-                                <div className="px-1 pb-2 text-[9px] font-black text-zinc-400 uppercase tracking-widest kurdish-text">
-                                  سەبتایتڵ (CC)
-                                </div>
-
-                                {/* Original subtitles: the embed's native captions */}
-                                <button
-                                  type="button"
-                                  onClick={() => selectSubtitleMode("original")}
-                                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-black transition-all cursor-pointer ${
-                                    subtitleMode === "original"
-                                      ? "bg-brand-primary text-white"
-                                      : "bg-white/5 hover:bg-white/10 text-zinc-300"
-                                  }`}
-                                >
-                                  <span className="kurdish-text">سەبتایتڵی سەرەکی</span>
-                                  {subtitleMode === "original" ? (
-                                    <Captions className="w-4 h-4" />
-                                  ) : (
-                                    <span className="w-4 h-4 rounded-full border-2 border-zinc-500" />
-                                  )}
-                                </button>
-
-                                {/* AI-translated subtitles: parent-side overlay */}
-                                <button
-                                  type="button"
-                                  onClick={() => selectSubtitleMode("ai")}
-                                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-black transition-all cursor-pointer mt-1 ${
-                                    subtitleMode === "ai"
-                                      ? "bg-brand-primary text-white"
-                                      : "bg-white/5 hover:bg-white/10 text-zinc-300"
-                                  }`}
-                                >
-                                  <span className="kurdish-text">وەرگێڕانی AI</span>
-                                  {subtitleMode === "ai" ? (
-                                    <Captions className="w-4 h-4" />
-                                  ) : (
-                                    <span className="w-4 h-4 rounded-full border-2 border-zinc-500" />
-                                  )}
-                                </button>
-
-                                {/* AI subtitle status / generate flow */}
-                                {subtitleMode === "ai" && (
-                                  <>
-                                    {/* Target language for the AI translation */}
-                                    <div className="mt-2 space-y-1">
-                                      <div className="px-1 text-[9px] font-bold text-zinc-400 kurdish-text">
-                                        زمانی وەرگێڕان
-                                      </div>
-                                      <select
-                                        value={aiSubtitleLang}
-                                        onChange={(e) => {
-                                          setAiSubtitleLang(e.target.value);
-                                          // Re-translate immediately when the
-                                          // language changes and cues are loaded.
-                                          if (
-                                            aiSubtitleStatus === "ready" &&
-                                            aiSubtitleLangLoaded !== e.target.value
-                                          ) {
-                                            void handleGenerateAiSubtitles(e.target.value);
-                                          }
-                                        }}
-                                        className="w-full bg-black/40 border border-white/10 rounded-xl px-2 py-1.5 text-[10px] font-bold text-white kurdish-text outline-none focus:border-brand-primary cursor-pointer"
-                                      >
-                                        {SUBTITLE_TARGET_LANGS.map((l) => (
-                                          <option key={l.code} value={l.code} className="bg-[#0a0a0c] text-white">
-                                            {l.label}
-                                          </option>
-                                        ))}
-                                      </select>
-                                    </div>
-                                  {aiSubtitleStatus === "loading" ? (
-                                    <div className="mt-2 px-3 py-1.5 text-[10px] font-bold text-zinc-400 kurdish-text">
-                                      بارکردنی سەبتایتڵ...
-                                    </div>
-                                  ) : aiSubtitleStatus === "ready" ? (
-                                    <div className="mt-2 px-3 py-1.5 text-[10px] font-bold text-emerald-400 kurdish-text">
-                                      {aiSubtitleCues.length} ڕیزی سەبتایتڵ بارکرا
-                                    </div>
-                                  ) : (
-                                    <div className="mt-2 space-y-1.5">
-                                      {aiSubtitleMessage && (
-                                        <div className="px-3 py-1.5 text-[9px] font-bold text-red-400 kurdish-text break-words">
-                                          {aiSubtitleMessage}
-                                        </div>
-                                      )}
-                                      <div className="flex items-center gap-1.5">
-                                        <button
-                                          type="button"
-                                          onClick={() => void handleGenerateAiSubtitles()}
-                                          disabled={aiSubtitleGenerating}
-                                          className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-[10px] font-black kurdish-text bg-brand-primary hover:bg-red-700 disabled:opacity-50 transition-all cursor-pointer"
-                                        >
-                                          {aiSubtitleGenerating ? (
-                                            <>
-                                              <span className="w-3 h-3 rounded-full border-2 border-white/40 border-t-white animate-spin" />
-                                              دروستکردن...
-                                            </>
-                                          ) : (
-                                            <>
-                                              <Sparkles className="w-3.5 h-3.5" />
-                                              دروستکردنی وەرگێڕان
-                                            </>
-                                          )}
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            setPlayerMenu(
-                                              (playerMenu as "subtitle" | "substyle") === "substyle"
-                                                ? null
-                                                : "substyle",
-                                            )
-                                          }
-                                          className="w-10 h-10 flex items-center justify-center rounded-xl bg-white/5 hover:bg-white/10 text-white transition-all cursor-pointer border border-white/10"
-                                          title="شێوازی سەبتایتڵ"
-                                        >
-                                          <Settings className="w-4 h-4" />
-                                        </button>
-                                      </div>
-                                    </div>
-                                  )}
-                                  </>
-                                )}
-
-                                <div className="mt-2 flex items-center justify-between gap-2 px-1">
-                                  <span className="text-[10px] font-bold text-zinc-400 kurdish-text">
-                                    بەرزکردنەوە
-                                  </span>
-                                  <div className="flex items-center gap-1">
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setSubtitlePosition((p) =>
-                                          Math.max(0, p - 2),
-                                        )
-                                      }
-                                      className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/10 text-white cursor-pointer"
-                                      title="نزمکردنەوە"
-                                    >
-                                      <ChevronDown className="w-4 h-4" />
-                                    </button>
-                                    <span className="w-9 text-center text-xs font-black text-white">
-                                      {subtitlePosition}%
-                                    </span>
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setSubtitlePosition((p) =>
-                                          Math.min(14, p + 2),
-                                        )
-                                      }
-                                      className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/10 text-white cursor-pointer"
-                                      title="بەرزکردنەوە"
-                                    >
-                                      <ChevronUp className="w-4 h-4" />
-                                    </button>
-                                  </div>
-                                </div>
-                              </div>
-                            </>
-                          )}
-                        </div>
-
-                        {/* [3.5] Subtitle Style Settings (font size / brightness / background) */}
-                        <div className="relative">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setPlayerMenu(
-                                playerMenu === "substyle" ? null : "substyle",
-                              )
-                            }
-                            className={`w-10 h-10 md:w-11 md:h-11 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border border-white/10 ${
-                              playerMenu === "substyle"
-                                ? "bg-brand-primary text-white"
-                                : "bg-black/60 hover:bg-white/10 text-white"
-                            }`}
-                            title="شێوازی سەبتایتڵ (Subtitle Style)"
-                          >
-                            <Type className="w-4.5 h-4.5 md:w-5 md:h-5" />
-                          </button>
-
-                          {playerMenu === "substyle" && (
-                            <>
-                              <div
-                                className="fixed inset-0 z-[55]"
-                                onClick={() => setPlayerMenu(null)}
-                              />
-                              <div className="absolute bottom-full right-0 mb-2 z-[60] w-64 rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-3 shadow-2xl">
-                                <div className="px-1 pb-2 text-[9px] font-black text-zinc-400 uppercase tracking-widest kurdish-text">
-                                  شێوازی سەبتایتڵ
-                                </div>
-
-                                {/* Font size */}
-                                <div className="flex items-center justify-between gap-2 px-1">
-                                  <span className="text-[10px] font-bold text-zinc-400 kurdish-text">
-                                    قەبارەی تێکست
-                                  </span>
-                                  <div className="flex items-center gap-1">
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setSubtitleFontSize((s) => Math.max(16, s - 2))
-                                      }
-                                      className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/10 text-white cursor-pointer"
-                                      title="کەمکردنەوە"
-                                    >
-                                      <ChevronDown className="w-4 h-4" />
-                                    </button>
-                                    <span className="w-9 text-center text-xs font-black text-white">
-                                      {subtitleFontSize}
-                                    </span>
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setSubtitleFontSize((s) => Math.min(40, s + 2))
-                                      }
-                                      className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/10 text-white cursor-pointer"
-                                      title="زیادکردن"
-                                    >
-                                      <ChevronUp className="w-4 h-4" />
-                                    </button>
-                                  </div>
-                                </div>
-
-                                {/* Brightness */}
-                                <div className="mt-2 flex items-center justify-between gap-2 px-1">
-                                  <span className="text-[10px] font-bold text-zinc-400 kurdish-text">
-                                    ڕووناکی
-                                  </span>
-                                  <div className="flex items-center gap-1">
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setSubtitleBrightness((s) => Math.max(40, s - 10))
-                                      }
-                                      className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/10 text-white cursor-pointer"
-                                      title="کەمکردنەوە"
-                                    >
-                                      <ChevronDown className="w-4 h-4" />
-                                    </button>
-                                    <span className="w-9 text-center text-xs font-black text-white">
-                                      {subtitleBrightness}%
-                                    </span>
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setSubtitleBrightness((s) => Math.min(100, s + 10))
-                                      }
-                                      className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/10 text-white cursor-pointer"
-                                      title="زیادکردن"
-                                    >
-                                      <ChevronUp className="w-4 h-4" />
-                                    </button>
-                                  </div>
-                                </div>
-
-                                {/* Background style */}
-                                <div className="mt-3 space-y-1">
-                                  <span className="block px-1 text-[10px] font-bold text-zinc-400 kurdish-text">
-                                    پاشبنەما
-                                  </span>
-                                  <div className="grid grid-cols-2 gap-1">
-                                    <button
-                                      type="button"
-                                      onClick={() => setSubtitleBackground("solid")}
-                                      className={`px-2 py-2 rounded-xl text-[10px] font-black kurdish-text transition-all cursor-pointer ${
-                                        subtitleBackground === "solid"
-                                          ? "bg-brand-primary text-white"
-                                          : "bg-white/5 hover:bg-white/10 text-zinc-300"
-                                      }`}
-                                    >
-                                      داڕێژ
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => setSubtitleBackground("glass")}
-                                      className={`px-2 py-2 rounded-xl text-[10px] font-black kurdish-text transition-all cursor-pointer ${
-                                        subtitleBackground === "glass"
-                                          ? "bg-brand-primary text-white"
-                                          : "bg-white/5 hover:bg-white/10 text-zinc-300"
-                                      }`}
-                                    >
-                                      شووشە
-                                    </button>
-                                  </div>
-                                </div>
-                              </div>
-                            </>
-                          )}
-                        </div>
-
-                        {/* [3] Play / Pause */}
                         <button
                           type="button"
                           onClick={toggleIframePlay}
@@ -12606,6 +12538,37 @@ export default function App() {
                             <Play className="w-5 h-5 fill-current ml-0.5" />
                           )}
                         </button>
+
+                        <button
+                          type="button"
+                          onClick={() => seekToPlayer(playerCurrentTime + 10)}
+                          className="w-10 h-10 md:w-11 md:h-11 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border border-white/10 bg-black/60 hover:bg-white/10 text-white"
+                          title="پێشبڕین 10 چرکە (Forward 10s)"
+                        >
+                          <FastForward className="w-4.5 h-4.5 md:w-5 md:h-5" />
+                        </button>
+
+                        {/* [4.5] Next Episode — Drama Room only. Advances to the
+                            NEXT episode of the SAME room in its stored order,
+                            starting at 00:00, by reusing handleDramaRoomEnded so
+                            it can never drift from the auto-next logic nor double
+                            fire (same anti-repeat guard). Disabled (no navigation)
+                            on the room's final episode; hidden for regular movies. */}
+                        {dramaNextInfo.inRoom && (
+                          <button
+                            type="button"
+                            onClick={handleDramaRoomEnded}
+                            disabled={!dramaNextInfo.next}
+                            className={`w-10 h-10 md:w-11 md:h-11 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border border-white/10 ${
+                              dramaNextInfo.next
+                                ? "bg-black/60 hover:bg-white/10 text-white"
+                                : "bg-black/60 text-white/25 cursor-not-allowed opacity-50"
+                            }`}
+                            title="ئەڵقەی دواتر (Next Episode)"
+                          >
+                            <SkipForward className="w-4.5 h-4.5 md:w-5 md:h-5" />
+                          </button>
+                        )}
 
                         {/* [2.5] Playback Speed */}
                         <div className="relative">
@@ -12623,7 +12586,7 @@ export default function App() {
                             }`}
                             title="خێرایی پلەیباک (Playback Speed)"
                           >
-                            <FastForward className="w-4.5 h-4.5 md:w-5 md:h-5" />
+                            <Gauge className="w-4.5 h-4.5 md:w-5 md:h-5" />
                           </button>
 
                           {playerMenu === "speed" && (
@@ -12770,18 +12733,6 @@ export default function App() {
                           {formatTime(playerDuration)}
                         </span>
                       </div>
-
-                      {translatedContent && (
-                        <motion.div
-                          initial={{ y: 50, opacity: 0 }}
-                          animate={{ y: 0, opacity: 1 }}
-                          className="absolute bottom-20 inset-x-4 md:inset-x-0 max-w-4xl mx-auto p-4 md:p-6 bg-black/60 backdrop-blur-md border border-white/10 rounded-2xl z-50 pointer-events-none"
-                        >
-                          <p className="text-xl md:text-3xl font-black kurdish-text text-white leading-relaxed text-center drop-shadow-[0_2px_4px_rgba(0,0,0,1)]">
-                            {translatedContent}
-                          </p>
-                        </motion.div>
-                      )} {/* Translated Content Overlay */}
                     </div>
                   ) : (
                     <div className="relative h-full aspect-[2/3] md:aspect-auto">
@@ -12988,160 +12939,10 @@ export default function App() {
                     </div>
 
                     <p className="text-gray-400 kurdish-text text-lg leading-relaxed mb-10 max-w-xl">
-                      {translatedContent || selectedMovie.description}
+                      {selectedMovie.description}
                     </p>
 
                     <div className="flex flex-col gap-4 mt-auto pt-8 border-t border-white/5">
-                      <div className="flex items-center gap-2">
-                        <div className="flex bg-white/5 border border-white/10 rounded-xl overflow-hidden p-0.5">
-                          {LANGUAGES.map((l) => (
-                            <button
-                              key={l.code}
-                              onClick={() => setTargetLang(l.code)}
-                              className={`px-3 py-1 text-[10px] font-black uppercase transition-all ${targetLang === l.code ? "bg-brand-primary text-white" : "text-gray-500 hover:text-white"}`}
-                            >
-                              {l.name}
-                            </button>
-                          ))}
-                        </div>
-                          <div className="relative">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setPlayerMenu(
-                                  playerMenu === "substyle" ? null : "substyle",
-                                )
-                              }
-                              className={`w-8 h-8 flex items-center justify-center rounded-lg transition-all active:scale-95 cursor-pointer shadow-sm border border-brand-primary/20 ${
-                                playerMenu === "substyle"
-                                  ? "bg-brand-primary text-white"
-                                  : "bg-brand-primary/10 hover:bg-brand-primary/20 text-brand-primary"
-                              }`}
-                              title="Subtitle style"
-                            >
-                              <Settings className="w-3.5 h-3.5" />
-                            </button>
-
-                            {playerMenu === "substyle" && (
-                              <>
-                                <div
-                                  className="fixed inset-0 z-[55]"
-                                  onClick={() => setPlayerMenu(null)}
-                                />
-                                <div className="absolute bottom-full right-0 mb-2 z-[60] w-64 rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-3 shadow-2xl">
-                                  <div className="px-1 pb-2 text-[9px] font-black text-zinc-400 uppercase tracking-widest kurdish-text">
-                                    شێوازی سەبتایتڵ
-                                  </div>
-
-                                  <div className="flex items-center justify-between gap-2 px-1">
-                                    <span className="text-[10px] font-bold text-zinc-400 kurdish-text">
-                                      قەبارەی تێکست
-                                    </span>
-                                    <div className="flex items-center gap-1">
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          setSubtitleFontSize((s) => Math.max(16, s - 2))
-                                        }
-                                        className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/10 text-white cursor-pointer"
-                                        title="کەمکردنەوە"
-                                      >
-                                        <ChevronDown className="w-4 h-4" />
-                                      </button>
-                                      <span className="w-9 text-center text-xs font-black text-white">
-                                        {subtitleFontSize}
-                                      </span>
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          setSubtitleFontSize((s) => Math.min(40, s + 2))
-                                        }
-                                        className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/10 text-white cursor-pointer"
-                                        title="زیادکردن"
-                                      >
-                                        <ChevronUp className="w-4 h-4" />
-                                      </button>
-                                    </div>
-                                  </div>
-
-                                  <div className="mt-2 flex items-center justify-between gap-2 px-1">
-                                    <span className="text-[10px] font-bold text-zinc-400 kurdish-text">
-                                      ڕووناکی
-                                    </span>
-                                    <div className="flex items-center gap-1">
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          setSubtitleBrightness((s) => Math.max(40, s - 10))
-                                        }
-                                        className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/10 text-white cursor-pointer"
-                                        title="کەمکردنەوە"
-                                      >
-                                        <ChevronDown className="w-4 h-4" />
-                                      </button>
-                                      <span className="w-9 text-center text-xs font-black text-white">
-                                        {subtitleBrightness}%
-                                      </span>
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          setSubtitleBrightness((s) => Math.min(100, s + 10))
-                                        }
-                                        className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/10 text-white cursor-pointer"
-                                        title="زیادکردن"
-                                      >
-                                        <ChevronUp className="w-4 h-4" />
-                                      </button>
-                                    </div>
-                                  </div>
-
-                                  <div className="mt-3 space-y-1">
-                                    <span className="block px-1 text-[10px] font-bold text-zinc-400 kurdish-text">
-                                      پاشبنەما
-                                    </span>
-                                    <div className="grid grid-cols-2 gap-1">
-                                      <button
-                                        type="button"
-                                        onClick={() => setSubtitleBackground("solid")}
-                                        className={`px-2 py-2 rounded-xl text-[10px] font-black kurdish-text transition-all cursor-pointer ${
-                                          subtitleBackground === "solid"
-                                            ? "bg-brand-primary text-white"
-                                            : "bg-white/5 hover:bg-white/10 text-zinc-300"
-                                        }`}
-                                      >
-                                        داڕێژ
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => setSubtitleBackground("glass")}
-                                        className={`px-2 py-2 rounded-xl text-[10px] font-black kurdish-text transition-all cursor-pointer ${
-                                          subtitleBackground === "glass"
-                                            ? "bg-brand-primary text-white"
-                                            : "bg-white/5 hover:bg-white/10 text-zinc-300"
-                                        }`}
-                                      >
-                                        شووشە
-                                      </button>
-                                    </div>
-                                  </div>
-                                </div>
-                              </>
-                            )}
-                          </div>
-                        <button
-                          disabled={isTranslating}
-                          onClick={() =>
-                            translateWithAI(
-                              selectedMovie.description,
-                              targetLang,
-                            )
-                          }
-                            className="flex items-center gap-2 px-3 py-1.5 bg-brand-primary/10 border border-brand-primary/20 rounded-lg text-brand-primary font-black text-[10px] hover:bg-brand-primary/20 transition-all shadow-sm"
-                        >
-                          <Sparkles className="w-3 h-3" />
-                          <span className="kurdish-text">وەرگێڕان (AI)</span>
-                        </button>
-                      </div> {/* Translation Controls */}
 
                       {selectedMovie.externalMovieLink && (
                         <div className="flex items-center gap-2 mb-6 p-4 bg-emerald-900/20 border border-emerald-500/20 rounded-2xl">
@@ -13380,6 +13181,37 @@ export default function App() {
                               method: "POST",
                               body: JSON.stringify(updatePayload),
                             });
+
+                            // Mirror the posted movie into the Firestore room doc
+                            // so every client's Point 46 / SyncRoom listener adopts
+                            // the same source and synced playback starts at 0.
+                            // VIP rooms live in vip_rooms (isVIP flag needed for the
+                            // rules to accept the partial update); regular rooms in
+                            // syncGroups. A non-creator member is denied by rules for
+                            // the movie fields — that is expected, so it is silenced.
+                            try {
+                              const syncCollection = activeSyncGroup.isVIP
+                                ? "vip_rooms"
+                                : "syncGroups";
+                              const syncPayload: any = {
+                                currentMovieId: updatePayload.currentMovieId,
+                                videoData: updatePayload.videoData,
+                                playback: updatePayload.playback,
+                              };
+                              if (activeSyncGroup.isVIP) syncPayload.isVIP = true;
+                              await updateDoc(
+                                doc(db, syncCollection, targetRoomId),
+                                syncPayload,
+                              );
+                            } catch (err: any) {
+                              if (err?.code !== "permission-denied") {
+                                console.warn(
+                                  "Firestore room mirror failed:",
+                                  err?.message || err,
+                                );
+                              }
+                            }
+
                             alert(
                               `فیلمەکە بە سەرکەوتوویی پۆست کرا بۆ ژووری ${activeSyncGroup.name}`,
                             );

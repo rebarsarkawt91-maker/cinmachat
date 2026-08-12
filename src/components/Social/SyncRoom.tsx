@@ -33,7 +33,6 @@ import {
   Plus,
   Settings,
   ShieldAlert,
-  Languages,
   Headphones,
   Info
 } from 'lucide-react';
@@ -53,6 +52,9 @@ const AGORA_APP_ID = (import.meta.env.VITE_AGORA_APP_ID || '').trim();
 
 export const SyncRoom: React.FC<SyncRoomProps> = ({ room, currentMovie, onClose, onSyncPlayback, vipVideoUrl, onSelectVipVideo }) => {
   const { socialProfile } = useSocialAuth();
+  // VIP rooms live in their own collection (vip_rooms); regular rooms in
+  // syncGroups. All room-bound listeners/writes go through this root.
+  const ROOT = room.isVIP ? 'vip_rooms' : 'syncGroups';
   // Check for Agora ID and warn if missing
   useEffect(() => {
     if (!AGORA_APP_ID) {
@@ -73,7 +75,7 @@ export const SyncRoom: React.FC<SyncRoomProps> = ({ room, currentMovie, onClose,
   const [isAddingFriend, setIsAddingFriend] = useState(false);
   const [addFriendError, setAddFriendError] = useState<string | null>(null);
   const [showAddFriend, setShowAddFriend] = useState(false);
-  const [translationLang, setTranslationLang] = useState<string | null>('Sorani');
+  const [translationLang, setTranslationLang] = useState<string | null>(null);
   const [currentSubtitle, setCurrentSubtitle] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -168,7 +170,7 @@ export const SyncRoom: React.FC<SyncRoomProps> = ({ room, currentMovie, onClose,
     let unsubReactions: any;
     
     if (!room.id) return;
-    const docRef = doc(db, 'syncGroups', room.id);
+    const docRef = doc(db, ROOT, room.id);
     getDoc(docRef).then((snap) => {
       if (snap.exists()) {
         // 1. Playback
@@ -202,7 +204,7 @@ export const SyncRoom: React.FC<SyncRoomProps> = ({ room, currentMovie, onClose,
         const hasAuth = auth.currentUser !== null && auth.currentUser.uid !== 'admin_local_bypass';
         if (!isChatQuotaExceeded && (isGlobal || hasAuth)) {
           const qChat = query(
-            collection(db, 'syncGroups', room.id, 'messages'),
+            collection(db, ROOT, room.id, 'messages'),
             orderBy('createdAt', 'asc'),
             limit(30)
           );
@@ -225,7 +227,7 @@ export const SyncRoom: React.FC<SyncRoomProps> = ({ room, currentMovie, onClose,
         // 3. Reactions
         if (!isReactionsQuotaExceeded && (isGlobal || hasAuth)) {
           const qReact = query(
-            collection(db, 'syncGroups', room.id, 'reactions'),
+            collection(db, ROOT, room.id, 'reactions'),
             orderBy('createdAt', 'desc'),
             limit(10)
           );
@@ -472,7 +474,7 @@ export const SyncRoom: React.FC<SyncRoomProps> = ({ room, currentMovie, onClose,
 
       const parsed = parseSubtitles(text);
       if (parsed.length > 0) {
-        await updateDoc(doc(db, 'syncGroups', room.id), {
+        await updateDoc(doc(db, ROOT, room.id), {
           activeSubtitles: parsed.slice(0, 500) // Limit to avoid Firestore doc size limit
         });
         alert('ژێڕنووس بە سەرکەوتوویی بارکرا بۆ هەمووان.');
@@ -519,7 +521,7 @@ export const SyncRoom: React.FC<SyncRoomProps> = ({ room, currentMovie, onClose,
       const targetUser = querySnapshot.docs[0].data() as SocialUser;
       
       // Update sync group member list
-      const roomRef = doc(db, 'syncGroups', room.id);
+      const roomRef = doc(db, ROOT, room.id);
       await updateDoc(roomRef, {
         memberIds: arrayUnion(targetUser.uid)
       });
@@ -561,7 +563,7 @@ export const SyncRoom: React.FC<SyncRoomProps> = ({ room, currentMovie, onClose,
         reader.onloadend = async () => {
           const base64Audio = reader.result as string;
           if (!socialProfile) return;
-          await addDoc(collection(db, 'syncGroups', room.id, 'messages'), {
+          await addDoc(collection(db, ROOT, room.id, 'messages'), {
             senderId: socialProfile.uid,
             senderName: socialProfile.name,
             audio: base64Audio,
@@ -596,7 +598,7 @@ export const SyncRoom: React.FC<SyncRoomProps> = ({ room, currentMovie, onClose,
     if ((socialProfile.uid === room.creatorId || room.id === 'global_room_official') && (newMsg.startsWith('http') || newMsg.includes('youtube.com/watch') || newMsg.includes('youtu.be/'))) {
        if (confirm('دەتەوێت ئەم لینکە پەخش بکەیت بۆ هەمووان؟')) {
           const url = newMsg.trim();
-          await updateDoc(doc(db, 'syncGroups', room.id), {
+        await updateDoc(doc(db, ROOT, room.id), {
             'playback.isPlaying': true,
             'playback.currentTime': 0,
             'playback.updatedAt': new Date().toISOString(),
@@ -624,7 +626,7 @@ export const SyncRoom: React.FC<SyncRoomProps> = ({ room, currentMovie, onClose,
       });
     }
 
-    await addDoc(collection(db, 'syncGroups', room.id, 'messages'), {
+    await addDoc(collection(db, ROOT, room.id, 'messages'), {
       senderId: socialProfile.uid,
       senderName: socialProfile.name,
       text: censoredMsg,
@@ -641,7 +643,7 @@ export const SyncRoom: React.FC<SyncRoomProps> = ({ room, currentMovie, onClose,
       return;
     }
     try {
-      await addDoc(collection(db, 'syncGroups', room.id, 'reactions'), {
+      await addDoc(collection(db, ROOT, room.id, 'reactions'), {
         senderId: socialProfile.uid,
         type: emoji,
         createdAt: serverTimestamp(),
@@ -707,31 +709,6 @@ export const SyncRoom: React.FC<SyncRoomProps> = ({ room, currentMovie, onClose,
              </div>
 
              <div className="flex items-center gap-2">
-               {/* AI Translation Toggle */}
-               <div className="flex items-center bg-black/40 rounded-2xl p-1 border border-white/5 mr-2">
-                 <button 
-                  onClick={() => setTranslationLang(translationLang ? null : 'Sorani')}
-                  className={`flex items-center gap-2 p-3 px-4 rounded-xl transition-all ${translationLang ? 'bg-brand-primary text-white shadow-lg' : 'text-gray-500 hover:text-white'}`}
-                  title="AI Live Translation"
-                 >
-                   <Languages className="w-4 h-4" />
-                   <span className="text-[10px] font-black uppercase tracking-widest hidden md:inline">
-                     {translationLang ? `AI: ${translationLang}` : 'AI Translate'}
-                   </span>
-                 </button>
-                 {translationLang && (
-                   <select 
-                     value={translationLang}
-                     onChange={(e) => setTranslationLang(e.target.value)}
-                     className="bg-transparent text-[8px] font-bold text-white outline-none px-2 border-l border-white/10"
-                   >
-                     <option value="Sorani" className="bg-zinc-900">Sorani</option>
-                     <option value="Arabic" className="bg-zinc-900">Arabic</option>
-                     <option value="Spanish" className="bg-zinc-900">Spanish</option>
-                   </select>
-                 )}
-               </div>
-
                {/* Voice Controls */}
                <div className="flex items-center bg-black/40 rounded-2xl p-1 border border-white/5">
                  <button 

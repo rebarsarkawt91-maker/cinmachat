@@ -731,13 +731,19 @@ const INITIAL_DB = {
 
 const INITIAL_BROADCAST_ROOM = {
   id: 'main_broadcast_room',
-  name: 'هۆڵی پەخشی سەرەکی (Broadcast)',
+  // Permanent "CinemaChat" two-person watch room. The name must always read
+  // "CinemaChat" — the startup guard below re-asserts it even when the room
+  // already exists so renames can never stick.
+  name: 'CinemaChat',
   hostCode: 'ADMIN_BROADCAST',
   currentMovieUrl: '',
   isPlaying: false,
   currentTime: 0,
   activeUsers: [],
   chatMessages: [],
+  // Marks the room as official/permanent/protected in the admin panel & UI;
+  // normal room creation is forbidden from overwriting it (see /api/rooms/create).
+  isOfficial: true,
   updatedAt: new Date().toISOString()
 };
 
@@ -1124,6 +1130,22 @@ async function startServer() {
   // Initialize syncGroups if not present, ensuring global room exists
   if (!db.syncGroups) db.syncGroups = {};
   if (!db.syncGroups["global_room_official"]) db.syncGroups["global_room_official"] = { ...INITIAL_DB.syncGroups["global_room_official"] };
+  // Permanent "CinemaChat" two-person watch room (main_broadcast_room).
+  // Ensured at EVERY startup so the room always survives restarts. If it already
+  // exists, ALL of its data (activeUsers, chatMessages, videoData, playback,
+  // currentMovieUrl, ...) is preserved untouched — only the name is guaranteed
+  // to read "CinemaChat" and the isOfficial flag is enforced.
+  if (!db.syncGroups["main_broadcast_room"]) {
+    db.syncGroups["main_broadcast_room"] = { ...INITIAL_BROADCAST_ROOM };
+  } else {
+    const existingBroadcastRoom = db.syncGroups["main_broadcast_room"];
+    existingBroadcastRoom.name = "CinemaChat";
+    existingBroadcastRoom.isOfficial = true;
+    if (typeof existingBroadcastRoom.hostCode !== "string") {
+      existingBroadcastRoom.hostCode = INITIAL_BROADCAST_ROOM.hostCode;
+    }
+    if (!existingBroadcastRoom.id) existingBroadcastRoom.id = "main_broadcast_room";
+  }
   // Initialize dramaRooms collection if not present (Drama Rooms feature)
   if (!db.dramaRooms) db.dramaRooms = {};
   if (!db.vipVideos) db.vipVideos = [];
@@ -3541,6 +3563,12 @@ async function startServer() {
       if (!db.syncGroups) db.syncGroups = {};
       // Set roomId directly to the host's unique code to prevent duplicate/random codes
       const roomId = hostCode.trim().toUpperCase(); // Room ID is host code
+      // The permanent "CinemaChat" room (main_broadcast_room / ADMIN_BROADCAST)
+      // is protected: normal room creation must NEVER rename, overwrite or clear
+      // it. Only the server startup guard may touch its identity/name.
+      if (roomId === 'MAIN_BROADCAST_ROOM' || roomId === 'ADMIN_BROADCAST' || roomId === 'CINEMACHAT') {
+        return res.status(400).json({ success: false, error: 'ئەم ژوورە ژووری هەمیشەییە (CinemaChat) و دەپارێزرێت — ناکرێت گۆڕانکاری بەسەردا بکرێت' });
+      }
       const newRoom = { // New room object
         id: roomId,
         name: name.trim(),
@@ -3578,9 +3606,10 @@ async function startServer() {
     let room = db.syncGroups[id] || db.syncGroups[id.trim().toUpperCase()];
     if (!room) {
       if (id === 'global_room_official') {
-        room = INITIAL_GLOBAL_ROOM;
+        room = { ...INITIAL_GLOBAL_ROOM };
       } else if (id === 'main_broadcast_room') {
-        room = INITIAL_BROADCAST_ROOM;
+        // Fresh copy — never hand out (and never mutate) the shared constant.
+        room = { ...INITIAL_BROADCAST_ROOM };
       } else { // Room not found
         return res.status(404).json({ error: 'ژوور بەردەست نییە' }); // Return 404
       }
@@ -3713,7 +3742,7 @@ async function startServer() {
 
       // Initialize broadcast room if it doesn't exist
       if (!db.syncGroups[roomId] && isBroadcastRoom) {
-        db.syncGroups[roomId] = INITIAL_BROADCAST_ROOM;
+        db.syncGroups[roomId] = { ...INITIAL_BROADCAST_ROOM };
         room = db.syncGroups[roomId]; // Refresh after init
         await saveDB(db); // Persist the new room
       }
@@ -5258,7 +5287,7 @@ async function startServer() {
     if (!req.body) {
       return res.status(400).json({ success: false, error: "Body is empty — check Content-Type header (use application/json or text/plain)" });
     }
-    const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, mainTrailerUrl, streamingSourceUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, quality, tags, category, rating, year, type, duration, postType } = req.body;
+    const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, mainTrailerUrl, streamingSourceUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, quality, tags, category, rating, year, type, duration, postType, subtitleText } = req.body;
     
     // VALIDATION: Detailed error reporting as requested
     if (!title) return res.status(400).json({ success: false, error: "ناونیشان پێویستە (Title is required)" });
@@ -5311,6 +5340,8 @@ async function startServer() {
       // Explicit Film/Drama post type ("جۆری پۆست"). Primary way to tell
       // dramas from films for Drama Rooms. Missing/non-drama → "فیلم".
       postType: postType === "دراما" ? "دراما" : "فیلم",
+      // Raw pasted .srt/.vtt subtitle content from the admin movie form
+      subtitleText: typeof subtitleText === "string" ? subtitleText.trim() : "",
       likes: 0,
       likedBy: [],
       views: 0,

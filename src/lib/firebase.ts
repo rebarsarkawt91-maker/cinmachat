@@ -1,6 +1,7 @@
 import { initializeApp } from "firebase/app";
 import {
   getFirestore,
+  connectFirestoreEmulator,
   collectionGroup,
   query,
   onSnapshot,
@@ -32,7 +33,8 @@ import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   updateProfile,
-  signInWithCustomToken
+  signInWithCustomToken,
+  connectAuthEmulator
 } from "firebase/auth";
 import { 
   getStorage,
@@ -56,7 +58,27 @@ const app = initializeApp(firebaseConfig);
 // A stale build-time VITE_FIREBASE_DATABASE_ID can point at a deleted AI Studio
 // database and leave the app stuck on its initial loading screen.
 export const db = getFirestore(app);
+
+// Local development runs against the local Firestore emulator so the app's
+// writes are validated by this repo's own firestore.rules (deterministic —
+// no dependency on the deployed production ruleset). Vite sets import.meta.env
+// .DEV only for `npm run dev`; production builds never connect to the emulator.
+// Override with VITE_USE_FIRESTORE_EMULATOR=false to test against production.
+if (import.meta.env.DEV && import.meta.env.VITE_USE_FIRESTORE_EMULATOR !== "false") {
+  connectFirestoreEmulator(db, "127.0.0.1", 8080);
+}
+
 export const auth = getAuth(app);
+
+// Local E2E/testing runs against the local Auth emulator so anonymous sign-in
+// (which the join-room flow relies on) produces tokens the Firestore emulator
+// accepts — anonymous auth is DISABLED on the real Firebase project
+// (ADMIN_ONLY_OPERATION), so it would fail in a plain `npm run dev`. Gated
+// behind VITE_USE_AUTH_EMULATOR === "true" so normal dev (real Google sign-in)
+// and production are completely unchanged.
+if (import.meta.env.DEV && import.meta.env.VITE_USE_AUTH_EMULATOR === "true") {
+  connectAuthEmulator(auth, "http://127.0.0.1:9099");
+}
 export const storage = getStorage(app);
 
 // Re-export SDK functions needed by App.tsx
