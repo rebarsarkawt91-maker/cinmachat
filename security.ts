@@ -43,6 +43,7 @@ export function sanitizeInput(val: any, key?: string): any {
       lowerKey.includes('data') || 
       lowerKey.includes('url') || 
       lowerKey.includes('link') || 
+      lowerKey === 'fullvideoreference' ||
       lowerKey.includes('content')
     ) {
       return val;

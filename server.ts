@@ -16,7 +16,7 @@ import { execFile } from 'node:child_process';
 import * as XLSX from 'xlsx';
 
 // ---------------------------------------------------------------------------
-// Pure Node.js YouTube caption fetcher — no yt-dlp, no external npm packages.
+// Pure Node.js YouTube caption fetcher â€” no yt-dlp, no external npm packages.
 // Extracts the video ID, fetches the YouTube page to locate caption tracks,
 // downloads the first available caption track, and returns the raw text.
 // ---------------------------------------------------------------------------
@@ -36,8 +36,27 @@ function extractYoutubeVideoId(url: string): string | null {
   return null;
 }
 
+function decodeSubtitleEntities(rawText: string): string {
+  let text = rawText;
+  for (let i = 0; i < 2; i += 1) {
+    text = text
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'");
+  }
+  return text;
+}
+
 function normalizeSubtitleText(rawText: string): string {
-  const cleanText = rawText.replace(/^\uFEFF/, '').trim();
+  const cleanText = decodeSubtitleEntities(rawText)
+    .replace(
+      /(\d{2}:\d{2}:\d{2}[\.,]\d{3})\s*(?:-->)?\s*>\s*(\d{2}:\d{2}:\d{2}[\.,]\d{3})/g,
+      '$1 --> $2',
+    )
+    .replace(/^\uFEFF/, '')
+    .trim();
   if (!cleanText) return '';
   return cleanText.startsWith('WEBVTT')
     ? cleanText
@@ -130,6 +149,9 @@ function buildTrackTimedtextCandidates(track: YouTubeCaptionTrack, videoId: stri
   const add = (url: string) => {
     if (!candidates.includes(url)) candidates.push(url);
   };
+  const addFirst = (url: string) => {
+    if (!candidates.includes(url)) candidates.unshift(url);
+  };
 
   if (!track.baseUrl) return candidates;
 
@@ -158,7 +180,7 @@ function buildTrackTimedtextCandidates(track: YouTubeCaptionTrack, videoId: stri
     if (targetLang && targetLang !== trackLang && (track.isTranslatable ?? true)) {
       const translated = new URL(videoGoogle.toString());
       translated.searchParams.set('tlang', targetLang);
-      add(translated.toString());
+      addFirst(translated.toString());
     }
   } catch {
     // ignore malformed track URLs
@@ -188,6 +210,361 @@ function captionPayloadToSrt(raw: string): string {
     return normalizeSubtitleText(youtubeCaptionXmlToSrt(clean));
   }
   return normalizeSubtitleText(clean);
+}
+
+function trimSubtitleToMaxStartSeconds(subtitleText: string, maxSeconds: number): string {
+  if (!Number.isFinite(maxSeconds) || maxSeconds <= 0) return subtitleText;
+  const blocks = subtitleText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split(/\n{2,}/);
+  const kept = blocks.filter((block) => {
+    const timingMatch = block.match(/(\d{2}):(\d{2}):(\d{2})[\.,](\d{3})\s+-->/);
+    if (!timingMatch) return true;
+    const seconds =
+      Number(timingMatch[1]) * 3600 +
+      Number(timingMatch[2]) * 60 +
+      Number(timingMatch[3]) +
+      Number(timingMatch[4]) / 1000;
+    return seconds <= maxSeconds;
+  });
+  return kept.join('\n\n');
+}
+
+function trimSubtitleToTimeWindow(subtitleText: string, startSeconds: number, windowSeconds: number): string {
+  if (!Number.isFinite(startSeconds) || !Number.isFinite(windowSeconds) || windowSeconds <= 0) {
+    return subtitleText;
+  }
+  const windowStart = Math.max(0, startSeconds);
+  const windowEnd = windowStart + Math.max(10, windowSeconds);
+  const blocks = subtitleText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split(/\n{2,}/);
+  const kept = blocks.filter((block) => {
+    const timingMatch = block.match(
+      /(\d{2}):(\d{2}):(\d{2})[\.,](\d{3})\s+-->\s+(\d{2}):(\d{2}):(\d{2})[\.,](\d{3})/,
+    );
+    if (!timingMatch) return true;
+    const cueStart =
+      Number(timingMatch[1]) * 3600 +
+      Number(timingMatch[2]) * 60 +
+      Number(timingMatch[3]) +
+      Number(timingMatch[4]) / 1000;
+    const cueEnd =
+      Number(timingMatch[5]) * 3600 +
+      Number(timingMatch[6]) * 60 +
+      Number(timingMatch[7]) +
+      Number(timingMatch[8]) / 1000;
+    return cueEnd >= windowStart && cueStart <= windowEnd;
+  });
+  return kept.join('\n\n');
+}
+
+function shouldTranslateSubtitleLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  if (/^\[[^\]]+\]$/.test(trimmed)) return false;
+  if (/^WEBVTT$/i.test(trimmed)) return false;
+  if (/^(Kind|Language):/i.test(trimmed)) return false;
+  if (/^(NOTE|STYLE|REGION)(\s|$)/i.test(trimmed)) return false;
+  if (/^\d+$/.test(trimmed)) return false;
+  if (/-->/.test(trimmed)) return false;
+  return /[\p{L}\p{N}]/u.test(trimmed);
+}
+
+function cleanSubtitleDialogueForTranslation(line: string): string {
+  return decodeSubtitleEntities(line)
+    .replace(/<\d{2}:\d{2}:\d{2}[\.,]\d{3}>/g, '')
+    .replace(/<\/?c[^>]*>/g, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isBadSubtitleTranslation(text: string, targetLang: string): boolean {
+  const clean = decodeSubtitleEntities(String(text || '')).trim();
+  if (!clean) return true;
+  if (/\?{4,}/.test(clean)) return true;
+  if (targetLang === 'ckb' && !/[\u0600-\u06FF]/.test(clean)) return true;
+  return false;
+}
+
+async function translateTextViaMyMemory(text: string, targetLang: string, sourceLang = 'auto'): Promise<string> {
+  const source = sourceLang && sourceLang !== 'auto' ? sourceLang : 'en';
+  const memoryUrl =
+    `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}` +
+    `&langpair=${encodeURIComponent(`${source}|${targetLang}`)}`;
+  let memoryData: any = null;
+  let lastError: any = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      memoryData = await fetchJsonWithTimeout<any>(memoryUrl, 60000, {
+        headers: { 'Accept-Language': 'en-US,en;q=0.9' },
+      });
+      lastError = null;
+      break;
+    } catch (err: any) {
+      lastError = err;
+      const message = err?.message || String(err);
+      if (!/HTTP (429|500|502|503|504)/.test(message) || attempt === 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 2000 * (attempt + 1)));
+    }
+  }
+  if (lastError) throw lastError;
+  const memoryTranslated = memoryData?.responseData?.translatedText;
+  if (!memoryTranslated || memoryData?.responseStatus >= 400 || isBadSubtitleTranslation(memoryTranslated, targetLang)) {
+    throw new Error('Public subtitle translation fallback returned an empty result');
+  }
+  return String(memoryTranslated);
+}
+
+async function translateTextViaGoogleCloud(text: string, targetLang: string, sourceLang = 'auto'): Promise<string> {
+  const apiKey = process.env.GOOGLE_TRANSLATE_API_KEY || process.env.GOOGLE_CLOUD_TRANSLATE_API_KEY;
+  if (!apiKey) throw new Error('Google Cloud Translate API key is not configured');
+
+  const body: Record<string, any> = {
+    q: text,
+    target: targetLang,
+    format: 'text',
+  };
+  if (sourceLang && sourceLang !== 'auto') body.source = sourceLang;
+
+  const response = await fetchJsonWithTimeout<any>(
+    `https://translation.googleapis.com/language/translate/v2?key=${encodeURIComponent(apiKey)}`,
+    60000,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  );
+  const translated = response?.data?.translations?.[0]?.translatedText;
+  if (!translated || !String(translated).trim()) {
+    throw new Error('Google Cloud Translate returned an empty result');
+  }
+  return decodeSubtitleEntities(String(translated));
+}
+
+async function translateTextViaGoogle(text: string, targetLang: string, sourceLang = 'auto'): Promise<string> {
+  if (process.env.GOOGLE_TRANSLATE_API_KEY || process.env.GOOGLE_CLOUD_TRANSLATE_API_KEY) {
+    return await translateTextViaGoogleCloud(text, targetLang, sourceLang);
+  }
+
+  if (targetLang === 'ckb') {
+    try {
+      return await translateTextViaMyMemory(text, targetLang, sourceLang);
+    } catch {
+      // Fall through to Google as a secondary option.
+    }
+  }
+
+  const body = new URLSearchParams({
+    client: 'gtx',
+    sl: sourceLang || 'auto',
+    tl: targetLang,
+    dt: 't',
+    q: text,
+  });
+  let data: any = null;
+  let lastError: any = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      data = await fetchJsonWithTimeout<any>(
+        'https://translate.googleapis.com/translate_a/single',
+        60000,
+        {
+          method: 'POST',
+          headers: {
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+          },
+          body,
+        },
+      );
+      lastError = null;
+      break;
+    } catch (err: any) {
+      lastError = err;
+      const message = err?.message || String(err);
+      if (/HTTP 429/.test(message) || !/HTTP (500|502|503|504)/.test(message) || attempt === 3) break;
+      await new Promise((resolve) => setTimeout(resolve, 2500 * (attempt + 1)));
+    }
+  }
+  if (lastError) {
+    try {
+      return await translateTextViaMyMemory(text, targetLang, sourceLang);
+    } catch {
+      throw lastError;
+    }
+  }
+  const translated = data?.[0]?.map((part: any[]) => part?.[0] || '').join('');
+  if (!translated || !translated.trim()) throw new Error('Public subtitle translation returned an empty result');
+  return translated;
+}
+
+async function translateSubtitleViaGoogle(
+  subtitleText: string,
+  targetLang: string,
+  sourceLang = 'auto',
+): Promise<string> {
+  const normalizedText = subtitleText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const cueBlocks = normalizedText.split(/\n{2,}/);
+  if (cueBlocks.some((block) => /-->/.test(block))) {
+    const preparedBlocks = cueBlocks.map((block) => ({ lines: block.split('\n') }));
+    const cueJobs: Array<{ blockIndex: number; bodyIndexes: number[]; text: string }> = [];
+
+    preparedBlocks.forEach((prepared, blockIndex) => {
+      const { lines } = prepared;
+      const timingIndex = lines.findIndex((line) => /-->/.test(line));
+      if (timingIndex < 0) return;
+      const body = lines.slice(timingIndex + 1);
+      const translatableIndexes = body
+        .map((line, index) => ({ line, index }))
+        .filter(({ line }) => shouldTranslateSubtitleLine(line));
+
+      if (!translatableIndexes.length) return;
+      cueJobs.push({
+        blockIndex,
+        bodyIndexes: translatableIndexes.map(({ index }) => timingIndex + 1 + index),
+        text: translatableIndexes
+          .map(({ line }) => cleanSubtitleDialogueForTranslation(line))
+          .filter(Boolean)
+          .join('\n'),
+      });
+    });
+    const filteredCueJobs = cueJobs.filter((job) => job.text.trim());
+
+    const applyCueTranslation = (job: (typeof cueJobs)[number], translatedText: string) => {
+      const lines = preparedBlocks[job.blockIndex].lines;
+      lines[job.bodyIndexes[0]] = decodeSubtitleEntities(translatedText).trim() || lines[job.bodyIndexes[0]];
+      job.bodyIndexes.slice(1).forEach((lineIndex) => {
+        lines[lineIndex] = '';
+      });
+    };
+
+    if (targetLang === 'ckb') {
+      const translationCache = new Map<string, string>();
+      const uniqueJobs = filteredCueJobs.filter((job) => {
+        const key = job.text.trim();
+        if (translationCache.has(key)) return false;
+        translationCache.set(key, '');
+        return true;
+      });
+      let nextJobIndex = 0;
+      const workerCount = Math.min(2, Math.max(1, uniqueJobs.length));
+
+      const translateOne = async (text: string) => {
+        if (text.length <= 450) {
+          return decodeSubtitleEntities(await translateTextViaMyMemory(text, targetLang, sourceLang));
+        }
+        const parts = text.match(/.{1,420}(?:\s|$)/gs)?.map((part) => part.trim()).filter(Boolean) || [text];
+        const translatedParts: string[] = [];
+        for (const part of parts) {
+          translatedParts.push(decodeSubtitleEntities(await translateTextViaMyMemory(part, targetLang, sourceLang)));
+        }
+        return translatedParts.join(' ').trim();
+      };
+
+      await Promise.all(
+        Array.from({ length: workerCount }, async () => {
+          while (nextJobIndex < uniqueJobs.length) {
+            const job = uniqueJobs[nextJobIndex];
+            nextJobIndex += 1;
+            translationCache.set(job.text.trim(), await translateOne(job.text.trim()));
+          }
+        }),
+      );
+
+      filteredCueJobs.forEach((job) => {
+        applyCueTranslation(job, translationCache.get(job.text.trim()) || job.text);
+      });
+
+      return preparedBlocks.map(({ lines }) => lines.filter((line) => line !== '').join('\n')).join('\n\n');
+    }
+
+    const marker = 'CINEMACHATCUEBREAK123';
+    const maxBatchChars = targetLang === 'ckb' ? 900 : 4500;
+    for (let start = 0; start < filteredCueJobs.length;) {
+      const batch: typeof cueJobs = [];
+      let chars = 0;
+      while (start < filteredCueJobs.length) {
+        const next = filteredCueJobs[start];
+        const nextChars = next.text.length + marker.length + 4;
+        if (batch.length && chars + nextChars > maxBatchChars) break;
+        batch.push(next);
+        chars += nextChars;
+        start += 1;
+      }
+
+      const joined = batch.map((job) => job.text).join(`\n${marker}\n`);
+      const translated = await translateTextViaGoogle(joined, targetLang, sourceLang);
+      const translatedCues = translated.split(new RegExp(`\\s*${marker}\\s*`));
+
+      if (translatedCues.length === batch.length) {
+        batch.forEach((job, offset) => applyCueTranslation(job, translatedCues[offset]));
+      } else {
+        for (const job of batch) {
+          applyCueTranslation(job, await translateTextViaGoogle(job.text, targetLang, sourceLang));
+        }
+      }
+    }
+
+    return preparedBlocks.map(({ lines }) => lines.filter((line) => line !== '').join('\n')).join('\n\n');
+  }
+
+  const lines = normalizedText.split(/\n/);
+  const marker = 'CINEMACHATCUEBREAK123';
+  const jobs: Array<{ index: number; text: string }> = [];
+
+  lines.forEach((line, index) => {
+    if (shouldTranslateSubtitleLine(line)) jobs.push({ index, text: line });
+  });
+
+  if (!jobs.length) return subtitleText;
+
+  const maxBatchChars = targetLang === 'ckb' ? 900 : 4500;
+  for (let start = 0; start < jobs.length;) {
+    const batch: typeof jobs = [];
+    let chars = 0;
+    while (start < jobs.length) {
+      const next = jobs[start];
+      const nextChars = next.text.length + marker.length + 4;
+      if (batch.length && chars + nextChars > maxBatchChars) break;
+      batch.push(next);
+      chars += nextChars;
+      start += 1;
+    }
+
+    const joined = batch.map((job) => job.text).join(`\n${marker}\n`);
+    const translated = await translateTextViaGoogle(joined, targetLang, sourceLang);
+    const translatedLines = translated.split(new RegExp(`\\s*${marker}\\s*`));
+
+    if (translatedLines.length === batch.length) {
+      batch.forEach((job, offset) => {
+        lines[job.index] = translatedLines[offset].trim() || job.text;
+      });
+    } else {
+      for (const job of batch) {
+        lines[job.index] = (await translateTextViaGoogle(job.text, targetLang, sourceLang)).trim() || job.text;
+      }
+    }
+  }
+
+  return lines.join('\n');
+}
+
+async function translateSubtitleWithFallback(
+  subtitleText: string,
+  targetLang: string,
+  sourceLang = 'auto',
+): Promise<string> {
+  try {
+    return await translateSubtitleViaGoogle(subtitleText, targetLang, sourceLang);
+  } catch (publicErr: any) {
+    try {
+      return await translateSrtViaGemini(subtitleText, targetLang);
+    } catch (geminiErr: any) {
+      throw new Error(
+        `Public subtitle translation failed: ${publicErr?.message || publicErr}; ` +
+          `Gemini fallback failed: ${geminiErr?.message || geminiErr}`,
+      );
+    }
+  }
 }
 
 async function fetchYouTubeCaptionTracks(videoId: string): Promise<YouTubeCaptionTrack[]> {
@@ -306,7 +683,7 @@ async function fetchCaptionsViaInvidious(
 async function fetchYouTubeCaptionsFromWeb(
   videoId: string,
   targetLang: string,
-): Promise<{ srt: string; source: string; fetchUrl: string }> {
+): Promise<{ srt: string; source: string; fetchUrl: string; lang: string }> {
   const lang = (targetLang || 'en').toLowerCase();
   const tracks = await fetchYouTubeCaptionTracks(videoId);
   const errors: string[] = [];
@@ -317,6 +694,22 @@ async function fetchYouTubeCaptionsFromWeb(
       candidates.push({ url, source });
     }
   };
+  const getCandidateLang = (url: string, source: string) => {
+    try {
+      const parsed = new URL(url);
+      const translatedLang = parsed.searchParams.get('tlang');
+      if (translatedLang) return translatedLang.toLowerCase();
+      const sourceLang = parsed.searchParams.get('lang');
+      if (sourceLang) return sourceLang.toLowerCase();
+    } catch {
+      // Fall through to source-label hints.
+    }
+    const genericMatch = source.match(/^generic-([a-z]{2,3})/i);
+    if (genericMatch?.[1]) return genericMatch[1].toLowerCase();
+    const trackMatch = source.match(/^track(?:-[a-z]+-fallback)?-([a-z]{2,3})/i);
+    if (trackMatch?.[1]) return trackMatch[1].toLowerCase();
+    return lang;
+  };
 
   for (const u of buildGenericTimedtextCandidates(videoId, lang)) {
     pushCandidate(u, `generic-${lang}`);
@@ -326,6 +719,18 @@ async function fetchYouTubeCaptionsFromWeb(
     for (const u of buildTrackTimedtextCandidates(track, videoId, lang)) {
       const trackLang = getTrackLang(track) || 'unknown';
       pushCandidate(u, `track-${trackLang}${track.kind === 'asr' ? '-asr' : ''}`);
+    }
+  }
+
+  if (lang === 'ckb') {
+    for (const u of buildGenericTimedtextCandidates(videoId, 'ku')) {
+      pushCandidate(u, 'generic-ku-fallback');
+    }
+    for (const track of tracks) {
+      for (const u of buildTrackTimedtextCandidates(track, videoId, 'ku')) {
+        const trackLang = getTrackLang(track) || 'unknown';
+        pushCandidate(u, `track-ku-fallback-${trackLang}`);
+      }
     }
   }
 
@@ -355,8 +760,11 @@ async function fetchYouTubeCaptionsFromWeb(
       }
       return {
         srt,
-        source: candidate.source,
+        source: candidate.url.includes(`tlang=${encodeURIComponent(lang)}`)
+          ? `${candidate.source}-translated-${lang}`
+          : candidate.source,
         fetchUrl: candidate.url,
+        lang: getCandidateLang(candidate.url, candidate.source),
       };
     } catch (err: any) {
       errors.push(`${candidate.source}: ${err?.message || err}`);
@@ -365,7 +773,7 @@ async function fetchYouTubeCaptionsFromWeb(
 
   const invidiousResult = await fetchCaptionsViaInvidious(videoId, lang);
   if (invidiousResult) {
-    return invidiousResult;
+    return { ...invidiousResult, lang };
   }
 
   throw new Error(`Web caption extractors failed. ${errors.join(' | ')}`);
@@ -415,6 +823,23 @@ function findSubtitleFileInDir(dir: string, lang: string): string | null {
   return en || null;
 }
 
+function readSubtitleFromDir(
+  dir: string,
+  preferredLang: string,
+): { srt: string; lang: string; file: string } | null {
+  const subtitleFile = findSubtitleFileInDir(dir, preferredLang);
+  if (!subtitleFile) return null;
+  const raw = readFileSync(path.join(dir, subtitleFile), 'utf-8');
+  const normalized = normalizeSubtitleText(raw);
+  if (!normalized) return null;
+  const fileLang =
+    subtitleFile.endsWith(`.${preferredLang}.vtt`) ||
+    subtitleFile.endsWith(`.${preferredLang}.en.vtt`)
+      ? preferredLang
+      : subtitleFile.match(/\.([a-z]{2,3}(?:-[A-Za-z]{2,4})?)\.vtt$/)?.[1]?.toLowerCase() || 'en';
+  return { srt: normalized, lang: fileLang, file: subtitleFile };
+}
+
 async function fetchYoutubeCaptionsViaYtDlp(
   videoUrl: string,
   workDir: string,
@@ -422,66 +847,51 @@ async function fetchYoutubeCaptionsViaYtDlp(
 ): Promise<{ srt: string; mode: string; lang: string }> {
   const lang = (targetLang || 'en').toLowerCase();
   const outputBase = path.join(workDir, 'subs');
-  const attempts: Array<{ mode: string; args: string[] }> = [
-    {
-      mode: `yt-dlp-${lang}`,
-      args: [
-        '--skip-download',
-        '--write-subs',
-        '--write-auto-subs',
-        '--sub-langs', lang,
-        '--sub-format', 'vtt',
-        '--no-playlist',
-        '--quiet',
-        '--no-warnings',
-        '--js-runtimes', 'node',
-        '--output', `${outputBase}.%(ext)s`,
-        videoUrl,
-      ],
-    },
-    {
-      mode: 'yt-dlp-en',
-      args: [
-        '--skip-download',
-        '--write-subs',
-        '--write-auto-subs',
-        '--sub-langs', 'en',
-        '--sub-format', 'vtt',
-        '--no-playlist',
-        '--quiet',
-        '--no-warnings',
-        '--js-runtimes', 'node',
-        '--output', `${outputBase}.%(ext)s`,
-        videoUrl,
-      ],
-    },
-  ];
+  const captionLangs = lang === 'en'
+    ? ['en']
+    : lang === 'ckb'
+      ? ['ckb', 'ku', 'en']
+      : [lang, 'en'];
+  const attempts: Array<{ mode: string; captionLang: string; args: string[] }> = captionLangs.map((captionLang) => ({
+    mode: `yt-dlp-${captionLang}`,
+    captionLang,
+    args: [
+      '--skip-download',
+      '--write-subs',
+      '--write-auto-subs',
+      '--sub-langs', captionLang,
+      '--sub-format', 'vtt',
+      '--no-playlist',
+      '--quiet',
+      '--no-warnings',
+      '--js-runtimes', 'node',
+      '--output', `${outputBase}.%(ext)s`,
+      videoUrl,
+    ],
+  }));
 
   const logs: string[] = [];
   for (const attempt of attempts) {
-    if (lang === 'en' && attempt.mode !== 'yt-dlp-en') continue;
     try {
       const { stdout, stderr } = await execFileText('yt-dlp', attempt.args, {
         cwd: workDir,
         timeoutMs: 120000,
       });
-      const subtitleFile = findSubtitleFileInDir(workDir, lang);
-      if (!subtitleFile) {
+      const subtitleResult = readSubtitleFromDir(workDir, attempt.captionLang);
+      if (!subtitleResult) {
         logs.push(`[${attempt.mode}] no subtitle file (stdout=${(stdout || '').trim().slice(0, 120) || '<empty>'} stderr=${(stderr || '').trim().slice(0, 120) || '<empty>'})`);
         continue;
       }
-      const raw = readFileSync(path.join(workDir, subtitleFile), 'utf-8');
-      const normalized = normalizeSubtitleText(raw);
-      if (!normalized) {
-        logs.push(`[${attempt.mode}] subtitle file ${subtitleFile} was empty`);
-        continue;
-      }
-      const fileLang = subtitleFile.endsWith(`.${lang}.vtt`) || subtitleFile.endsWith(`.${lang}.en.vtt`) ? lang : 'en';
-      return { srt: normalized, mode: attempt.mode, lang: fileLang };
+      return { srt: subtitleResult.srt, mode: attempt.mode, lang: subtitleResult.lang };
     } catch (error: any) {
       const cause = error?.cause;
       if (cause?.code === 'ENOENT') {
         throw new Error('yt-dlp not found on PATH. Rebuild the server with "pip install yt-dlp" (see render.yaml).');
+      }
+      const subtitleResult = readSubtitleFromDir(workDir, attempt.captionLang);
+      if (subtitleResult) {
+        logs.push(`[${attempt.mode}] command failed but subtitle file ${subtitleResult.file} was usable`);
+        return { srt: subtitleResult.srt, mode: attempt.mode, lang: subtitleResult.lang };
       }
       logs.push(`[${attempt.mode}] error=${error?.message?.split('\n')[0] || error}`);
     }
@@ -491,7 +901,7 @@ async function fetchYoutubeCaptionsViaYtDlp(
 }
 
 // ---------------------------------------------------------------------------
-// Direct YouTube stream resolution (yt-dlp) — powers the player's fallback so
+// Direct YouTube stream resolution (yt-dlp) â€” powers the player's fallback so
 // posted movies still play when YouTube blocks embedding (the "Playback ID"
 // error). yt-dlp already exists on the server (used for captions) and returns a
 // progressive MP4 URL that any <video> element can stream directly without CORS.
@@ -508,9 +918,9 @@ type DirectStreamInfo = {
 const ytStreamCache = new Map<string, { at: number; streams: DirectStreamInfo[] }>();
 const YT_STREAM_CACHE_TTL_MS = 15 * 60 * 1000;
 
-async function resolveYoutubeDirectStreams(videoId: string): Promise<DirectStreamInfo[]> {
+async function resolveYoutubeDirectStreams(videoId: string, forceRefresh = false): Promise<DirectStreamInfo[]> {
   const cached = ytStreamCache.get(videoId);
-  if (cached && Date.now() - cached.at < YT_STREAM_CACHE_TTL_MS) return cached.streams;
+  if (!forceRefresh && cached && Date.now() - cached.at < YT_STREAM_CACHE_TTL_MS) return cached.streams;
 
   const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
   // Prefer a progressive MP4 (plays natively in <video>); fall back to whatever
@@ -592,7 +1002,7 @@ function formatSrtTime(seconds: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
 }
 
-// Sanitize URLs to decode HTML entities (e.g. &#x2F; → /) and convert YouTube watch links to embed links
+// Sanitize URLs to decode HTML entities (e.g. &#x2F; â†’ /) and convert YouTube watch links to embed links
 function sanitizeUrl(url: string): string {
   if (!url || typeof url !== 'string') return '';
   let cleanUrl = url
@@ -628,7 +1038,7 @@ process.on('unhandledRejection', (reason: any) => {
 const DB_PATH = path.join(process.cwd(), 'db.json');
 
 // Firestore is the durable cross-deploy store for movie view counts. Render's
-// filesystem is ephemeral — db.json (and its viewsCounts) resets on every
+// filesystem is ephemeral â€” db.json (and its viewsCounts) resets on every
 // deploy/restart, which wiped the lifetime counters in production. The counters
 // are written through to Firestore and re-hydrated at boot so they survive
 // redeploys. Same project + public web API key the client already uses
@@ -642,7 +1052,7 @@ const FIREBASE_API_KEY =
   process.env.VITE_FIREBASE_API_KEY ||
   'AIzaSyDQBu-FwP9w7O6KqaWQOsqyTP6NudH9eBI';
 // Doc that stores { counts: { movieId: views } } in the `config` collection
-// (rules: allow read, write: if true — no deploy of firestore.rules needed).
+// (rules: allow read, write: if true â€” no deploy of firestore.rules needed).
 const MOVIE_VIEWS_DOC = process.env.MOVIE_VIEWS_DOC || 'config/movieViews';
 
 // Initial DB Structure
@@ -651,7 +1061,7 @@ const INITIAL_DB = {
     { username: 'admin', password: 'password123', isSuper: true, isOwner: true, role: 'owner' }
   ],
   users: [] as any[],
-  categories: ["هەمووی", "ئاکشن", "کۆمیدی", "دراما", "ترسناک", "ئەنیمێ", "دۆکیومێنتاری"],
+  categories: ["Ù‡Û•Ù…ÙˆÙˆÛŒ", "Ø¦Ø§Ú©Ø´Ù†", "Ú©Û†Ù…ÛŒØ¯ÛŒ", "Ø¯Ø±Ø§Ù…Ø§", "ØªØ±Ø³Ù†Ø§Ú©", "Ø¦Û•Ù†ÛŒÙ…ÛŽ", "Ø¯Û†Ú©ÛŒÙˆÙ…ÛŽÙ†ØªØ§Ø±ÛŒ"],
   heroConfig: {
     heroVideoUrl: '',
     heroPlaylist: [] as string[]
@@ -659,7 +1069,7 @@ const INITIAL_DB = {
   syncGroups: {
     "global_room_official": {
       id: "global_room_official",
-      name: "پەخشی ڕاستەوخۆ",
+      name: "Ù¾Û•Ø®Ø´ÛŒ Ú•Ø§Ø³ØªÛ•ÙˆØ®Û†",
       currentMovieId: "hero-promo",
       playback: {
         isPlaying: true,
@@ -668,7 +1078,7 @@ const INITIAL_DB = {
       },
       videoData: {
         id: "hero-promo",
-        title: "پەخشی ڕاستەوخۆ",
+        title: "Ù¾Û•Ø®Ø´ÛŒ Ú•Ø§Ø³ØªÛ•ÙˆØ®Û†",
         isYouTube: false,
         url: ""
       }
@@ -707,7 +1117,7 @@ const INITIAL_DB = {
   // Derived from `favorites` but cached so trending/enrichment stays O(1).
   favoriteCounts: {} as Record<string, number>,
   // Per-movie lifetime view count (movieId -> number of watch sessions).
-  // The single source of truth for every card's "📈 Views" counter. Covers
+  // The single source of truth for every card's "ðŸ“ˆ Views" counter. Covers
   // movies that only exist in Firestore (not in manualMovies), seeded at boot
   // from the movies' existing `views` field and incremented once per session.
   viewsCounts: {} as Record<string, number>,
@@ -732,7 +1142,7 @@ const INITIAL_DB = {
 const INITIAL_BROADCAST_ROOM = {
   id: 'main_broadcast_room',
   // Permanent "CinemaChat" two-person watch room. The name must always read
-  // "CinemaChat" — the startup guard below re-asserts it even when the room
+  // "CinemaChat" â€” the startup guard below re-asserts it even when the room
   // already exists so renames can never stick.
   name: 'CinemaChat',
   hostCode: 'ADMIN_BROADCAST',
@@ -749,7 +1159,7 @@ const INITIAL_BROADCAST_ROOM = {
 
 const INITIAL_GLOBAL_ROOM = {
   id: 'global_room_official',
-  name: 'ژووری سەرەکی',
+  name: 'Ú˜ÙˆÙˆØ±ÛŒ Ø³Û•Ø±Û•Ú©ÛŒ',
   hostCode: 'GLOBAL_HOST',
   currentMovieUrl: '',
   isPlaying: false,
@@ -763,14 +1173,14 @@ async function loadDB() {
   try {
     const data = await fs.readFile(DB_PATH, 'utf-8');
     const db = JSON.parse(data);
-    
+
     // Safety check & Deduplication to prevent key collisions in frontend
     if (db.manualMovies && Array.isArray(db.manualMovies)) {
       const initialCount = db.manualMovies.length;
       const uniqueMovies = Array.from(
         new Map(db.manualMovies.map((m: any) => [m.id, m])).values()
       );
-      
+
       if (uniqueMovies.length !== initialCount) {
         console.log(`[DB] Automatically deduplicated ${initialCount - uniqueMovies.length} movies during load.`);
         db.manualMovies = uniqueMovies;
@@ -778,7 +1188,7 @@ async function loadDB() {
         await saveDB(db);
       }
     }
-    
+
     return db;
   } catch (e: any) {
     // Preserve the corrupt file as a backup before replacing it, so no history
@@ -896,8 +1306,8 @@ const saveMovieViewsToFirestore = (counts: Record<string, number>): void => {
     );
 };
 
-// Persist a single movie's category tags to Firestore (movies/{id}) — the
-// durable catalog store the client reads via getDocs — so an admin "پۆلێن"
+// Persist a single movie's category tags to Firestore (movies/{id}) â€” the
+// durable catalog store the client reads via getDocs â€” so an admin "Ù¾Û†Ù„ÛŽÙ†"
 // change is visible to every client immediately, not just in the server cache.
 // Throws on non-OK so the caller can surface a failed Firestore write.
 const saveMovieTagsToFirestore = async (movieId: string, tags: string[]): Promise<void> => {
@@ -925,8 +1335,8 @@ const saveMovieTagsToFirestore = async (movieId: string, tags: string[]): Promis
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 };
 
-// --- Durable movie catalog sync (Firestore → server cache) ---
-// The homepage catalog lives in Firestore (movies/{id}) — the admin panel writes
+// --- Durable movie catalog sync (Firestore â†’ server cache) ---
+// The homepage catalog lives in Firestore (movies/{id}) â€” the admin panel writes
 // every movie there from the browser. The backend used to serve only the local
 // db.json manual list, so /api/movies returned a near-empty payload in production
 // (Render's filesystem is ephemeral) and the frontend had to block on a full
@@ -966,7 +1376,29 @@ const firestoreMoviesUrl = (query: string) =>
     FIREBASE_API_KEY
   )}${query}`;
 
-// One-shot read of the Firestore movies collection (capped at 300 docs — the
+// Firestore URL helpers for Cinema Window infrastructure
+const firestoreCinemaWindowsUrl = (query: string) =>
+  `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+    FIREBASE_PROJECT_ID
+  )}/databases/(default)/documents/cinemaWindows?key=${encodeURIComponent(
+    FIREBASE_API_KEY
+  )}${query}`;
+
+const firestoreAccessCodesUrl = (query: string) =>
+  `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+    FIREBASE_PROJECT_ID
+  )}/databases/(default)/documents/accessCodes?key=${encodeURIComponent(
+    FIREBASE_API_KEY
+  )}${query}`;
+
+const firestorePaymentsUrl = (query: string) =>
+  `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+    FIREBASE_PROJECT_ID
+  )}/databases/(default)/documents/payments?key=${encodeURIComponent(
+    FIREBASE_API_KEY
+  )}${query}`;
+
+// One-shot read of the Firestore movies collection (capped at 300 docs â€” the
 // whole catalog is far below that). Returns plain movie objects keyed by doc id.
 const loadFirestoreMovies = async (): Promise<any[]> => {
   const res = await fetchWithTimeout(
@@ -1011,7 +1443,7 @@ const syncFirestoreMovies = async (deletedIds: string[] = []): Promise<void> => 
   }
 };
 
-// Stored URLs may arrive HTML-entity-encoded (e.g. "https:&#x2F;&#x2F;…?a=1&amp;b=2")
+// Stored URLs may arrive HTML-entity-encoded (e.g. "https:&#x2F;&#x2F;â€¦?a=1&amp;b=2")
 // when a URL was pasted from an HTML source or saved through a form. If left
 // raw, a browser resolves such a string to a malformed request like
 // "https://&/" (the "&#x2F;" "&#x2F;" becomes a "#fragment" / "&" and Chrome
@@ -1089,7 +1521,7 @@ async function startServer() {
     console.error('[DB] Critical failed to load/init database:', err);
     db = { ...INITIAL_DB }; // Fallback to memory
   }
-  
+
   // Ensure all top-level properties exist
   if (!db.deletedIds) db.deletedIds = [];
   if (!db.manualMovies) db.manualMovies = [];
@@ -1119,7 +1551,7 @@ async function startServer() {
   if (!db.invitations) db.invitations = [];
   if (!db.directMessages) db.directMessages = [];
   if (!db.appSnapshots) db.appSnapshots = [];
-  if (!db.categories) db.categories = ["هەمووی", "ئاکشن", "کۆمیدی", "دراما", "ترسناک", "ئەنیمێ", "دۆکیومێنتاری"];
+  if (!db.categories) db.categories = ["Ù‡Û•Ù…ÙˆÙˆÛŒ", "Ø¦Ø§Ú©Ø´Ù†", "Ú©Û†Ù…ÛŒØ¯ÛŒ", "Ø¯Ø±Ø§Ù…Ø§", "ØªØ±Ø³Ù†Ø§Ú©", "Ø¦Û•Ù†ÛŒÙ…ÛŽ", "Ø¯Û†Ú©ÛŒÙˆÙ…ÛŽÙ†ØªØ§Ø±ÛŒ"];
   if (!db.favorites) db.favorites = {};
   if (!db.favoriteCounts) db.favoriteCounts = {};
   if (!db.ratings) db.ratings = {};
@@ -1133,7 +1565,7 @@ async function startServer() {
   // Permanent "CinemaChat" two-person watch room (main_broadcast_room).
   // Ensured at EVERY startup so the room always survives restarts. If it already
   // exists, ALL of its data (activeUsers, chatMessages, videoData, playback,
-  // currentMovieUrl, ...) is preserved untouched — only the name is guaranteed
+  // currentMovieUrl, ...) is preserved untouched â€” only the name is guaranteed
   // to read "CinemaChat" and the isOfficial flag is enforced.
   if (!db.syncGroups["main_broadcast_room"]) {
     db.syncGroups["main_broadcast_room"] = { ...INITIAL_BROADCAST_ROOM };
@@ -1148,13 +1580,52 @@ async function startServer() {
   }
   // Initialize dramaRooms collection if not present (Drama Rooms feature)
   if (!db.dramaRooms) db.dramaRooms = {};
+  if (!db.cinemaWindows) db.cinemaWindows = {};
+  if (!db.cinemaWindows.cinema_1) {
+    const now = new Date().toISOString();
+    db.cinemaWindows.cinema_1 = {
+      id: "cinema_1",
+      type: "CINEMA_WINDOW",
+      name: "Cinema Window",
+      description: "Premium VIP cinema preview with paid full-room access.",
+      movieId: "movie_1",
+      previewUrl: "https://www.youtube.com/embed/KINewMkvDZM?autoplay=1&mute=1&loop=1&playlist=KINewMkvDZM",
+      fullVideoReference: "",
+      posterUrl: "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?auto=format&fit=crop&q=80&w=900",
+      price: 1.99,
+      currency: "USD",
+      accessDurationHours: 24,
+      status: "ACTIVE",
+      paymentSettings: {
+        qrCodeUrl: "",
+        paymentLogoUrl: "",
+        paymentDetails: "",
+        instructions: ""
+      },
+      createdAt: now,
+      updatedAt: now
+    };
+  }
   if (!db.vipVideos) db.vipVideos = [];
   // if (!Array.isArray(db.rooms)) db.rooms = []; // Removed
   if (!db.vipSettings) db.vipSettings = {
     qrCodeUrl: "https://i.ibb.co/3kWy3m9/fastpay-qr-mock.png",
-    paymentDetails: "ژمارەی باڵانسی فاستپەی / زین کاش: 07501234567\nبانکی واڵێت: FIb - 12345678", // Default payment details
-    instructions: "بۆ بەژداریکردن و بینینی پەخشی ڕاستەوخۆی VIP CinemaChat بە شێوەی هەمیشەیی، بڕی پارەی تیکێتەکە بنێرە و پاشان پەیوەندی بە ئەدمینەوە بکە لە تێلیگرام (@cinemasupport) بۆ وەرگرتنی کۆدەکەت."
+    paymentDetails: "Ú˜Ù…Ø§Ø±Û•ÛŒ Ø¨Ø§ÚµØ§Ù†Ø³ÛŒ ÙØ§Ø³ØªÙ¾Û•ÛŒ / Ø²ÛŒÙ† Ú©Ø§Ø´: 07501234567\nØ¨Ø§Ù†Ú©ÛŒ ÙˆØ§ÚµÛŽØª: FIb - 12345678", // Default payment details
+    instructions: "Ø¨Û† Ø¨Û•Ú˜Ø¯Ø§Ø±ÛŒÚ©Ø±Ø¯Ù† Ùˆ Ø¨ÛŒÙ†ÛŒÙ†ÛŒ Ù¾Û•Ø®Ø´ÛŒ Ú•Ø§Ø³ØªÛ•ÙˆØ®Û†ÛŒ VIP CinemaChat Ø¨Û• Ø´ÛŽÙˆÛ•ÛŒ Ù‡Û•Ù…ÛŒØ´Û•ÛŒÛŒØŒ Ø¨Ú•ÛŒ Ù¾Ø§Ø±Û•ÛŒ ØªÛŒÚ©ÛŽØªÛ•Ú©Û• Ø¨Ù†ÛŽØ±Û• Ùˆ Ù¾Ø§Ø´Ø§Ù† Ù¾Û•ÛŒÙˆÛ•Ù†Ø¯ÛŒ Ø¨Û• Ø¦Û•Ø¯Ù…ÛŒÙ†Û•ÙˆÛ• Ø¨Ú©Û• Ù„Û• ØªÛŽÙ„ÛŒÚ¯Ø±Ø§Ù… (@cinemasupport) Ø¨Û† ÙˆÛ•Ø±Ú¯Ø±ØªÙ†ÛŒ Ú©Û†Ø¯Û•Ú©Û•Øª."
   };
+  if (db.cinemaWindows?.cinema_1) {
+    const room = db.cinemaWindows.cinema_1;
+    room.id = "cinema_1";
+    room.type = "CINEMA_WINDOW";
+    if (typeof room.fullVideoReference !== "string") room.fullVideoReference = "";
+    if (!room.paymentSettings) room.paymentSettings = {};
+    room.paymentSettings = {
+      qrCodeUrl: room.paymentSettings.qrCodeUrl || db.vipSettings.qrCodeUrl || "",
+      paymentLogoUrl: room.paymentSettings.paymentLogoUrl || "",
+      paymentDetails: room.paymentSettings.paymentDetails || db.vipSettings.paymentDetails || "",
+      instructions: room.paymentSettings.instructions || db.vipSettings.instructions || ""
+    };
+  }
 
   // Support Module 17 - Super Admin (Owner) Seed
   const ownerUserSeedName = "admin";
@@ -1215,9 +1686,9 @@ async function startServer() {
     String(deviceId || '').trim().replace(/[^\w.:@-]/g, '').slice(0, 128);
 
   // Resolve the caller's identity from a request:
-  //   deviceId — the unique browser/device fingerprint sent by the client.
-  //   ip       — the client's public IP (shared on mobile NAT networks).
-  //   key      — the identity used for auto-ban counting: the device fingerprint
+  //   deviceId â€” the unique browser/device fingerprint sent by the client.
+  //   ip       â€” the client's public IP (shared on mobile NAT networks).
+  //   key      â€” the identity used for auto-ban counting: the device fingerprint
   //              whenever it is present, otherwise the IP (non-browser clients).
   // Preferring the device fingerprint is what isolates a single misbehaving
   // device instead of blocking the whole platform / every user behind the IP.
@@ -1259,7 +1730,7 @@ async function startServer() {
     return !!(db.ownerWhitelist && clean && db.ownerWhitelist[clean]);
   };
 
-  // Exact IP match only — a substring match previously let a banned IP such as
+  // Exact IP match only â€” a substring match previously let a banned IP such as
   // "1.2.3.4" also block "1.2.3.40" or "101.2.3.4" (over-blocking whole ranges).
   const isIpBanned = (ip: string): boolean => {
     const cleanIp = normalizeIpKey(ip);
@@ -1356,7 +1827,7 @@ async function startServer() {
 
   function getIpLocation(ip: string): string {
     if (ip === "::1" || ip === "127.0.0.1" || ip.startsWith("192.168.")) {
-      return "ناوەخۆ (Erbil, KR)";
+      return "Ù†Ø§ÙˆÛ•Ø®Û† (Erbil, KR)";
     }
     const cities = ["Erbil", "Sulaymaniyah", "Duhok", "Kirkuk", "Halabja", "Zakho", "Sorani"];
     const sum = ip.split('.').reduce((acc, val) => acc + (parseInt(val) || 0), 0);
@@ -1428,8 +1899,8 @@ async function startServer() {
       dbAny.intrusionAttempts = dbAny.intrusionAttempts.slice(0, 200);
     }
   }
-  let trackerText = "بەخێربێن بۆ CinamaChat - نوێترین فیلم و زنجیرەکان لێرە ببینە";
-  let trackerType = "normal"; 
+  let trackerText = "Ø¨Û•Ø®ÛŽØ±Ø¨ÛŽÙ† Ø¨Û† CinamaChat - Ù†ÙˆÛŽØªØ±ÛŒÙ† ÙÛŒÙ„Ù… Ùˆ Ø²Ù†Ø¬ÛŒØ±Û•Ú©Ø§Ù† Ù„ÛŽØ±Û• Ø¨Ø¨ÛŒÙ†Û•";
+  let trackerType = "normal";
   let lastFetchTime = new Date().toISOString();
 
   // Real-time live presence tracking: every /api/stats poll carries a per-tab
@@ -1493,7 +1964,7 @@ async function startServer() {
     banner: { image: 'https://images.unsplash.com/photo-1611162617474-5b21e879e113?auto=format&fit=crop&q=80&w=1200', link: '#' },
     sidebar: { image: 'https://images.unsplash.com/photo-1611162616305-c69b3fa7fbe0?auto=format&fit=crop&q=80&w=800', link: '#' }
   };
-  
+
   function setMoviesCache(updater: (prev: any[]) => any[]) {
     moviesCache = updater(moviesCache);
   }
@@ -1629,7 +2100,7 @@ async function startServer() {
     };
   };
 
-  // Detect the highest live-viewer movie so cards can render the 🔥 #1 Live
+  // Detect the highest live-viewer movie so cards can render the ðŸ”¥ #1 Live
   // badge without a client round-trip.
   const getTopLiveMovieId = (): string => {
     let topId = '';
@@ -1736,7 +2207,7 @@ async function startServer() {
   }));
   // --- END CORS CONFIGURATION ---
 
-  // Body parsers — also accept text/plain so POST requests routed through
+  // Body parsers â€” also accept text/plain so POST requests routed through
   // Firebase's 307 redirect can avoid CORS preflight (simple content-type).
   app.use(express.json({ type: ['application/json', 'text/plain'], limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -1784,10 +2255,10 @@ async function startServer() {
         const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || "Unknown";
         const cleanIp = clientIp.trim();
         addSystemErrorLog(
-          db, 
-          `${req.method} ${req.url}`, 
-          `شکست لە داواکاری بە کۆدی HTTP ${res.statusCode}`, 
-          `ئایپی بەکارهێنەر: ${cleanIp}`
+          db,
+          `${req.method} ${req.url}`,
+          `Ø´Ú©Ø³Øª Ù„Û• Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ Ø¨Û• Ú©Û†Ø¯ÛŒ HTTP ${res.statusCode}`,
+          `Ø¦Ø§ÛŒÙ¾ÛŒ Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø±: ${cleanIp}`
         );
       }
     });
@@ -1818,7 +2289,7 @@ async function startServer() {
       } catch {
         urlToTest = req.originalUrl || req.url || "";
       }
-      
+
       const bodyToTest = req.body ? JSON.stringify(req.body) : "";
 
       let matchedPattern = "";
@@ -1836,9 +2307,9 @@ async function startServer() {
       if (matchedPattern) {
         console.warn(`[SECURITY WARNING] Threat detected from IP: ${cleanIp} device: ${identity.deviceId || 'unknown'}. Matched: ${matchedPattern}`);
         await addIntrusionAttempt(db, cleanIp, req.url, matchedPattern, "SQL Injection / XSS Probe", identity.deviceId);
-        
+
         // Count total threat records for this identity (device fingerprint when
-        // present, else IP). Auto-banning the DEVICE isolates the offender —
+        // present, else IP). Auto-banning the DEVICE isolates the offender â€”
         // never the whole site / other users behind a shared mobile IP.
         const threatKey = identity.key;
         const threatCount = db.intrusionAttempts.filter((att: any) => {
@@ -1859,13 +2330,13 @@ async function startServer() {
               recordBanTime(cleanIp);
             }
           }
-          await addAuditLog(db, "SYSTEM_AUTO_SHIELD", "Auto Device/IP Block (Intrusion)", `بلۆککردنی خۆکاری ${identity.deviceId ? `ئامێری ${identity.deviceId}` : `ئایپی ${cleanIp}`} بەهۆی زیاتر لە ٣ هەوڵی هێرشبردن.`);
+          await addAuditLog(db, "SYSTEM_AUTO_SHIELD", "Auto Device/IP Block (Intrusion)", `Ø¨Ù„Û†Ú©Ú©Ø±Ø¯Ù†ÛŒ Ø®Û†Ú©Ø§Ø±ÛŒ ${identity.deviceId ? `Ø¦Ø§Ù…ÛŽØ±ÛŒ ${identity.deviceId}` : `Ø¦Ø§ÛŒÙ¾ÛŒ ${cleanIp}`} Ø¨Û•Ù‡Û†ÛŒ Ø²ÛŒØ§ØªØ± Ù„Û• Ù£ Ù‡Û•ÙˆÚµÛŒ Ù‡ÛŽØ±Ø´Ø¨Ø±Ø¯Ù†.`);
           await saveDB(db);
-          return res.status(403).json({ error: "سیستەمی قەڵغانی ئاسایش ڕێگری لێکردیت بەهۆی گۆڕانکاری گوماناوی لکێندراو" });
+          return res.status(403).json({ error: "Ø³ÛŒØ³ØªÛ•Ù…ÛŒ Ù‚Û•ÚµØºØ§Ù†ÛŒ Ø¦Ø§Ø³Ø§ÛŒØ´ Ú•ÛŽÚ¯Ø±ÛŒ Ù„ÛŽÚ©Ø±Ø¯ÛŒØª Ø¨Û•Ù‡Û†ÛŒ Ú¯Û†Ú•Ø§Ù†Ú©Ø§Ø±ÛŒ Ú¯ÙˆÙ…Ø§Ù†Ø§ÙˆÛŒ Ù„Ú©ÛŽÙ†Ø¯Ø±Ø§Ùˆ" });
         }
-        
+
         await saveDB(db);
-        return res.status(400).json({ error: "کرداری گوماناوی دۆزرایەوە (Potential Threat Blocked by Security Shield)" });
+        return res.status(400).json({ error: "Ú©Ø±Ø¯Ø§Ø±ÛŒ Ú¯ÙˆÙ…Ø§Ù†Ø§ÙˆÛŒ Ø¯Û†Ø²Ø±Ø§ÛŒÛ•ÙˆÛ• (Potential Threat Blocked by Security Shield)" });
       }
     }
     next();
@@ -1898,10 +2369,10 @@ async function startServer() {
                 banned: true,
                 ownerExempt: true,
                 unblockAt: new Date(exemption.unblockAt || Date.now()).toISOString(),
-                error: 'تۆ بلۆک کراویت (بۆ خاوەنی سیستەم — دەکرێتەوە بە خۆکاری دوای ١ خولەک)'
+                error: 'ØªÛ† Ø¨Ù„Û†Ú© Ú©Ø±Ø§ÙˆÛŒØª (Ø¨Û† Ø®Ø§ÙˆÛ•Ù†ÛŒ Ø³ÛŒØ³ØªÛ•Ù… â€” Ø¯Û•Ú©Ø±ÛŽØªÛ•ÙˆÛ• Ø¨Û• Ø®Û†Ú©Ø§Ø±ÛŒ Ø¯ÙˆØ§ÛŒ Ù¡ Ø®ÙˆÙ„Û•Ú©)'
               });
             }
-            return next(); // Auto-unblocked owner device — allow the request.
+            return next(); // Auto-unblocked owner device â€” allow the request.
           }
         }
         if (ipBanned) {
@@ -1913,14 +2384,14 @@ async function startServer() {
                 banned: true,
                 ownerExempt: true,
                 unblockAt: new Date(exemption.unblockAt || Date.now()).toISOString(),
-                error: 'تۆ بلۆک کراویت (بۆ خاوەنی سیستەم — دەکرێتەوە بە خۆکاری دوای ١ خولەک)'
+                error: 'ØªÛ† Ø¨Ù„Û†Ú© Ú©Ø±Ø§ÙˆÛŒØª (Ø¨Û† Ø®Ø§ÙˆÛ•Ù†ÛŒ Ø³ÛŒØ³ØªÛ•Ù… â€” Ø¯Û•Ú©Ø±ÛŽØªÛ•ÙˆÛ• Ø¨Û• Ø®Û†Ú©Ø§Ø±ÛŒ Ø¯ÙˆØ§ÛŒ Ù¡ Ø®ÙˆÙ„Û•Ú©)'
               });
             }
-            return next(); // Auto-unblocked owner IP/device — allow the request.
+            return next(); // Auto-unblocked owner IP/device â€” allow the request.
           }
         }
         console.warn(`[Blocked] Blocked request from banned ${deviceBanned ? `device: ${identity.deviceId}` : `IP: ${identity.ip}`} to ${req.url}`);
-        return res.status(403).json({ banned: true, error: 'تۆ بلۆک کراویت' });
+        return res.status(403).json({ banned: true, error: 'ØªÛ† Ø¨Ù„Û†Ú© Ú©Ø±Ø§ÙˆÛŒØª' });
       }
     }
     next();
@@ -1934,7 +2405,7 @@ async function startServer() {
       const isStaticAsset = req.url.includes('.') && !isApiCall;
 
       if (isApiCall && !isAdminCall && !isStaticAsset) {
-        return res.status(503).json({ emergencyLock: true, error: '⚠️ ماڵپەڕ لە ئێستادا بە شێوەیەکی کاتی داخراوە بەهۆی باری نائاسایی.' });
+        return res.status(503).json({ emergencyLock: true, error: 'âš ï¸ Ù…Ø§ÚµÙ¾Û•Ú• Ù„Û• Ø¦ÛŽØ³ØªØ§Ø¯Ø§ Ø¨Û• Ø´ÛŽÙˆÛ•ÛŒÛ•Ú©ÛŒ Ú©Ø§ØªÛŒ Ø¯Ø§Ø®Ø±Ø§ÙˆÛ• Ø¨Û•Ù‡Û†ÛŒ Ø¨Ø§Ø±ÛŒ Ù†Ø§Ø¦Ø§Ø³Ø§ÛŒÛŒ.' });
       }
     }
     next();
@@ -1966,7 +2437,7 @@ async function startServer() {
           });
         }
         if (exemption.exempt) {
-          // Auto-unblocked just now — report the owner device as no longer banned.
+          // Auto-unblocked just now â€” report the owner device as no longer banned.
           return res.json({ banned: false, ip: identity.ip, deviceId: identity.deviceId, emergencyLock: !!db.emergencyLock });
         }
       }
@@ -1992,7 +2463,7 @@ async function startServer() {
     res.json({ banned: !!isBanned, ip: identity.ip, deviceId: identity.deviceId, emergencyLock: !!db.emergencyLock });
   });
 
-  // Public unblock-request endpoint (no auth — reachable by blocked users so
+  // Public unblock-request endpoint (no auth â€” reachable by blocked users so
   // they can request their IP/device to be unblocked). A light per-IP rate
   // limit prevents bots from flooding the admin queue.
   const unblockRequestRate: Record<string, { attempts: number; firstAt: number }> = {};
@@ -2007,7 +2478,7 @@ async function startServer() {
     const existing = unblockRequestRate[rateKey];
     if (existing && now - existing.firstAt < 10 * 60 * 1000) {
       if (existing.attempts >= 3) {
-        return res.status(429).json({ success: false, error: 'زۆر داواکاری نێردراوە لەم ئامێرەوە. تکایە دواتر هەوڵبدەوە.' });
+        return res.status(429).json({ success: false, error: 'Ø²Û†Ø± Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ Ù†ÛŽØ±Ø¯Ø±Ø§ÙˆÛ• Ù„Û•Ù… Ø¦Ø§Ù…ÛŽØ±Û•ÙˆÛ•. ØªÚ©Ø§ÛŒÛ• Ø¯ÙˆØ§ØªØ± Ù‡Û•ÙˆÚµØ¨Ø¯Û•ÙˆÛ•.' });
       }
       existing.attempts += 1;
     } else {
@@ -2019,10 +2490,10 @@ async function startServer() {
     const cleanPhone = typeof phone === 'string' ? phone.trim().replace(/\s+/g, '') : '';
 
     if (!cleanName) {
-      return res.status(400).json({ success: false, error: 'تکایە ناوی خۆت بنووسە.' });
+      return res.status(400).json({ success: false, error: 'ØªÚ©Ø§ÛŒÛ• Ù†Ø§ÙˆÛŒ Ø®Û†Øª Ø¨Ù†ÙˆÙˆØ³Û•.' });
     }
     if (!/^\+?\d{6,15}$/.test(cleanPhone)) {
-      return res.status(400).json({ success: false, error: 'تکایە ژمارەی مۆبایلی دروست بنووسە.' });
+      return res.status(400).json({ success: false, error: 'ØªÚ©Ø§ÛŒÛ• Ú˜Ù…Ø§Ø±Û•ÛŒ Ù…Û†Ø¨Ø§ÛŒÙ„ÛŒ Ø¯Ø±ÙˆØ³Øª Ø¨Ù†ÙˆÙˆØ³Û•.' });
     }
 
     if (!db.unblockRequests) db.unblockRequests = [];
@@ -2044,11 +2515,11 @@ async function startServer() {
     // Persist safely: if the write fails, respond with 500 instead of leaving
     // the client's request hanging (unhandled rejection).
     try {
-      await addAuditLog(db, "USER_UNBLOCK_REQUEST", "New Unblock Request", `داواکاری لابردنی بلۆک لە ${cleanName} (${cleanPhone}) ئایپی: ${cleanIp}${cleanDeviceId ? ` ئامێر: ${cleanDeviceId}` : ''}`);
+      await addAuditLog(db, "USER_UNBLOCK_REQUEST", "New Unblock Request", `Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ Ù„Ø§Ø¨Ø±Ø¯Ù†ÛŒ Ø¨Ù„Û†Ú© Ù„Û• ${cleanName} (${cleanPhone}) Ø¦Ø§ÛŒÙ¾ÛŒ: ${cleanIp}${cleanDeviceId ? ` Ø¦Ø§Ù…ÛŽØ±: ${cleanDeviceId}` : ''}`);
       await saveDB(db);
     } catch (err) {
       console.error('[Unblock Request] Failed to persist unblock request:', err);
-      return res.status(500).json({ success: false, error: 'هەڵەی ناوخۆیی ڕوویدا لە تۆمارکردنی داواکاری. تکایە دواتر هەوڵبدەوە.' });
+      return res.status(500).json({ success: false, error: 'Ù‡Û•ÚµÛ•ÛŒ Ù†Ø§ÙˆØ®Û†ÛŒÛŒ Ú•ÙˆÙˆÛŒØ¯Ø§ Ù„Û• ØªÛ†Ù…Ø§Ø±Ú©Ø±Ø¯Ù†ÛŒ Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ. ØªÚ©Ø§ÛŒÛ• Ø¯ÙˆØ§ØªØ± Ù‡Û•ÙˆÚµØ¨Ø¯Û•ÙˆÛ•.' });
     }
     console.log(`[Unblock Request] ${cleanName} (${cleanPhone}) from ${cleanIp} device=${cleanDeviceId || 'unknown'}`);
     res.json({ success: true });
@@ -2067,7 +2538,7 @@ async function startServer() {
     if (!db.bannedIps.includes(cleanIp)) {
       db.bannedIps.push(cleanIp);
       recordBanTime(cleanIp);
-      await addAuditLog(db, adminName, "Ban IP", `ئایپی بلۆککرا: ${cleanIp}`);
+      await addAuditLog(db, adminName, "Ban IP", `Ø¦Ø§ÛŒÙ¾ÛŒ Ø¨Ù„Û†Ú©Ú©Ø±Ø§: ${cleanIp}`);
       await saveDB(db);
       console.log(`[Ban IP] Admin banned IP: ${cleanIp}`);
     }
@@ -2081,14 +2552,14 @@ async function startServer() {
     const cleanIp = String(ip).trim();
     db.bannedIps = db.bannedIps.filter((item: string) => String(item).trim() !== cleanIp);
     clearBanTime(cleanIp);
-    await addAuditLog(db, adminName, "Unban IP", `بلۆکی ئایپی لادرا: ${cleanIp}`);
+    await addAuditLog(db, adminName, "Unban IP", `Ø¨Ù„Û†Ú©ÛŒ Ø¦Ø§ÛŒÙ¾ÛŒ Ù„Ø§Ø¯Ø±Ø§: ${cleanIp}`);
     await saveDB(db);
     console.log(`[Unban IP] Admin unbanned IP: ${cleanIp}`);
     res.json({ success: true, bannedIps: db.bannedIps });
   });
 
   // Banned-devices administration endpoints. Auto-bans target the device
-  // fingerprint (X-Device-Id), so admins unban devices here — while the
+  // fingerprint (X-Device-Id), so admins unban devices here â€” while the
   // manual approval flow (resolve-unblock-request) unblocks both at once.
   app.get('/api/admin/banned-devices', (req, res) => {
     const list = (db.bannedDevices || []).map((deviceId: string) => ({
@@ -2104,7 +2575,7 @@ async function startServer() {
     const key = normalizeDeviceKey(deviceId);
     if (!key) return res.status(400).json({ error: 'Device ID required' });
     clearBanDevice(key);
-    await addAuditLog(db, adminName, "Unban Device", `بلۆکی ئامێر لادرا: ${key}`);
+    await addAuditLog(db, adminName, "Unban Device", `Ø¨Ù„Û†Ú©ÛŒ Ø¦Ø§Ù…ÛŽØ± Ù„Ø§Ø¯Ø±Ø§: ${key}`);
     await saveDB(db);
     console.log(`[Unban Device] Admin unbanned device: ${key}`);
     res.json({ success: true, bannedDevices: db.bannedDevices });
@@ -2125,7 +2596,7 @@ async function startServer() {
       db.unblockRequests = db.unblockRequests.filter((r: any) => r.id !== id);
       db.unblockArchive = db.unblockArchive || [];
       db.unblockArchive.unshift({ ...target, status: 'deleted', resolvedBy: adminName || 'Admin', resolvedAt: new Date().toISOString() });
-      await addAuditLog(db, adminName, "Delete Unblock Request", `داواکاری لابردنی بلۆک سڕایەوە: ${target.name} (${target.phone})`);
+      await addAuditLog(db, adminName, "Delete Unblock Request", `Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ Ù„Ø§Ø¨Ø±Ø¯Ù†ÛŒ Ø¨Ù„Û†Ú© Ø³Ú•Ø§ÛŒÛ•ÙˆÛ•: ${target.name} (${target.phone})`);
       await saveDB(db);
     }
     res.json({ success: true, unblockRequests: db.unblockRequests });
@@ -2139,7 +2610,7 @@ async function startServer() {
       db.unblockArchive.unshift({ ...r, status: 'archived', resolvedBy: adminName || 'Admin', resolvedAt: new Date().toISOString() });
     });
     db.unblockRequests = [];
-    await addAuditLog(db, adminName, "Clear Unblock Requests", `هەموو داواکارییەکانی لابردنی بلۆک سڕانەوە (${count})`);
+    await addAuditLog(db, adminName, "Clear Unblock Requests", `Ù‡Û•Ù…ÙˆÙˆ Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒÛŒÛ•Ú©Ø§Ù†ÛŒ Ù„Ø§Ø¨Ø±Ø¯Ù†ÛŒ Ø¨Ù„Û†Ú© Ø³Ú•Ø§Ù†Û•ÙˆÛ• (${count})`);
     await saveDB(db);
     res.json({ success: true });
   });
@@ -2154,7 +2625,7 @@ async function startServer() {
     if (!target) return res.status(404).json({ error: 'Unblock request not found' });
 
     // Unban the requester's device fingerprint (the primary auto-ban target) and
-    // IP (for manually IP-banned requests). Only the exact device/IP is lifted —
+    // IP (for manually IP-banned requests). Only the exact device/IP is lifted â€”
     // other devices and users are never affected.
     const requesterDevice = String(target.deviceId || '').trim();
     if (requesterDevice) clearBanDevice(requesterDevice);
@@ -2175,10 +2646,10 @@ async function startServer() {
 
     await addAuditLog(db, adminName, "Resolve Unblock Request",
       requesterDevice
-        ? `داواکاری لابردنی بلۆکی پەسەندکرا و بلۆکی ئامێر/ئایپی (${requesterDevice}${requesterIp ? ` / ${requesterIp}` : ''}) لابرا بۆ ${target.name} (${target.phone})`
+        ? `Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ Ù„Ø§Ø¨Ø±Ø¯Ù†ÛŒ Ø¨Ù„Û†Ú©ÛŒ Ù¾Û•Ø³Û•Ù†Ø¯Ú©Ø±Ø§ Ùˆ Ø¨Ù„Û†Ú©ÛŒ Ø¦Ø§Ù…ÛŽØ±/Ø¦Ø§ÛŒÙ¾ÛŒ (${requesterDevice}${requesterIp ? ` / ${requesterIp}` : ''}) Ù„Ø§Ø¨Ø±Ø§ Ø¨Û† ${target.name} (${target.phone})`
         : requesterIp
-          ? `داواکاری لابردنی بلۆکی پەسەندکرا و بلۆکی ${requesterIp} لابرا بۆ ${target.name} (${target.phone})`
-          : `داواکاری لابردنی بلۆک لابرا: ${target.name} (${target.phone})`);
+          ? `Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ Ù„Ø§Ø¨Ø±Ø¯Ù†ÛŒ Ø¨Ù„Û†Ú©ÛŒ Ù¾Û•Ø³Û•Ù†Ø¯Ú©Ø±Ø§ Ùˆ Ø¨Ù„Û†Ú©ÛŒ ${requesterIp} Ù„Ø§Ø¨Ø±Ø§ Ø¨Û† ${target.name} (${target.phone})`
+          : `Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ Ù„Ø§Ø¨Ø±Ø¯Ù†ÛŒ Ø¨Ù„Û†Ú© Ù„Ø§Ø¨Ø±Ø§: ${target.name} (${target.phone})`);
     await saveDB(db);
     console.log(`[Unblock Request] Resolved by ${adminName}: ${target.name} (${target.phone}) ip=${requesterIp} device=${requesterDevice || 'unknown'}`);
     res.json({ success: true, bannedIps: db.bannedIps, bannedDevices: db.bannedDevices, unblockRequests: db.unblockRequests });
@@ -2208,10 +2679,10 @@ async function startServer() {
   app.get('/api/admin/export/blocked-users/xlsx', (req, res) => {
     const rows = (db.bannedIps || []).map((ip: string, idx: number) => ({
       '#': idx + 1,
-      'IP ئایپی بلۆککراو': ip,
-      'کاتی بلۆک (Blocked At)': (db.bannedIpTimestamps && db.bannedIpTimestamps[ip])
-        ? new Date(db.bannedIpTimestamps[ip]).toLocaleString('ku-IQ') : 'نەزانراو (Unknown)',
-      'جۆری بلۆک': (db.ownerWhitelist && db.ownerWhitelist[ip]) ? 'کاتی بۆ ئەدمین (Owner temp)' : 'بلۆکی تەواو (Permanent)'
+      'IP Ø¦Ø§ÛŒÙ¾ÛŒ Ø¨Ù„Û†Ú©Ú©Ø±Ø§Ùˆ': ip,
+      'Ú©Ø§ØªÛŒ Ø¨Ù„Û†Ú© (Blocked At)': (db.bannedIpTimestamps && db.bannedIpTimestamps[ip])
+        ? new Date(db.bannedIpTimestamps[ip]).toLocaleString('ku-IQ') : 'Ù†Û•Ø²Ø§Ù†Ø±Ø§Ùˆ (Unknown)',
+      'Ø¬Û†Ø±ÛŒ Ø¨Ù„Û†Ú©': (db.ownerWhitelist && db.ownerWhitelist[ip]) ? 'Ú©Ø§ØªÛŒ Ø¨Û† Ø¦Û•Ø¯Ù…ÛŒÙ† (Owner temp)' : 'Ø¨Ù„Û†Ú©ÛŒ ØªÛ•ÙˆØ§Ùˆ (Permanent)'
     }));
     sendXlsx(res, buildExportWorkbook(rows, 'Blocked Users', [6, 20, 30, 28]), 'blocked-users.xlsx');
   });
@@ -2219,12 +2690,12 @@ async function startServer() {
   app.get('/api/admin/export/unblock-requests/xlsx', (req, res) => {
     const rows = (db.unblockRequests || []).map((r: any, idx: number) => ({
       '#': idx + 1,
-      'ناو (Name)': r.name || '',
-      'ژمارەی مۆبایل (Phone)': r.phone || '',
-      'IP ئایپی': r.ip || '',
-      'کاتی بلۆک (Blocked At)': r.blockedAt ? new Date(r.blockedAt).toLocaleString('ku-IQ') : 'نەزانراو',
-      'کاتی داواکاری (Requested At)': r.timestamp ? new Date(r.timestamp).toLocaleString('ku-IQ') : 'نەزانراو',
-      'ئامێر/بەشێوە (Device)': r.device || ''
+      'Ù†Ø§Ùˆ (Name)': r.name || '',
+      'Ú˜Ù…Ø§Ø±Û•ÛŒ Ù…Û†Ø¨Ø§ÛŒÙ„ (Phone)': r.phone || '',
+      'IP Ø¦Ø§ÛŒÙ¾ÛŒ': r.ip || '',
+      'Ú©Ø§ØªÛŒ Ø¨Ù„Û†Ú© (Blocked At)': r.blockedAt ? new Date(r.blockedAt).toLocaleString('ku-IQ') : 'Ù†Û•Ø²Ø§Ù†Ø±Ø§Ùˆ',
+      'Ú©Ø§ØªÛŒ Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ (Requested At)': r.timestamp ? new Date(r.timestamp).toLocaleString('ku-IQ') : 'Ù†Û•Ø²Ø§Ù†Ø±Ø§Ùˆ',
+      'Ø¦Ø§Ù…ÛŽØ±/Ø¨Û•Ø´ÛŽÙˆÛ• (Device)': r.device || ''
     }));
     sendXlsx(res, buildExportWorkbook(rows, 'Unblock Requests', [6, 18, 18, 18, 28, 28, 45]), 'unblock-requests.xlsx');
   });
@@ -2251,7 +2722,7 @@ async function startServer() {
     if (!db.bannedKeywords) db.bannedKeywords = [];
     if (!db.bannedKeywords.includes(cleanKw)) {
       db.bannedKeywords.push(cleanKw);
-      await addAuditLog(db, adminName, "Add Keyword", `وشەی قەدەغەکراو زیادکرا: "${cleanKw}"`);
+      await addAuditLog(db, adminName, "Add Keyword", `ÙˆØ´Û•ÛŒ Ù‚Û•Ø¯Û•ØºÛ•Ú©Ø±Ø§Ùˆ Ø²ÛŒØ§Ø¯Ú©Ø±Ø§: "${cleanKw}"`);
       await saveDB(db);
     }
     res.json({ success: true, bannedKeywords: db.bannedKeywords });
@@ -2263,7 +2734,7 @@ async function startServer() {
     const cleanKw = String(keyword).trim();
     if (!db.bannedKeywords) db.bannedKeywords = [];
     db.bannedKeywords = db.bannedKeywords.filter((k: string) => String(k).trim() !== cleanKw);
-    await addAuditLog(db, adminName, "Delete Keyword", `وشەی قەدەغەکراو لادرا: "${cleanKw}"`);
+    await addAuditLog(db, adminName, "Delete Keyword", `ÙˆØ´Û•ÛŒ Ù‚Û•Ø¯Û•ØºÛ•Ú©Ø±Ø§Ùˆ Ù„Ø§Ø¯Ø±Ø§: "${cleanKw}"`);
     await saveDB(db);
     res.json({ success: true, bannedKeywords: db.bannedKeywords });
   });
@@ -2276,7 +2747,7 @@ async function startServer() {
   app.post('/api/admin/toggle-emergency-lock', async (req, res) => {
     const { enabled, adminName } = req.body;
     db.emergencyLock = !!enabled;
-    await addAuditLog(db, adminName, "Emergency Lock", `قوفڵی باری نائاسایی ماڵپەڕ ${db.emergencyLock ? "چالاککرا 🛑" : "ناچالاککرا 🔓"}`);
+    await addAuditLog(db, adminName, "Emergency Lock", `Ù‚ÙˆÙÚµÛŒ Ø¨Ø§Ø±ÛŒ Ù†Ø§Ø¦Ø§Ø³Ø§ÛŒÛŒ Ù…Ø§ÚµÙ¾Û•Ú• ${db.emergencyLock ? "Ú†Ø§Ù„Ø§Ú©Ú©Ø±Ø§ ðŸ›‘" : "Ù†Ø§Ú†Ø§Ù„Ø§Ú©Ú©Ø±Ø§ ðŸ”“"}`);
     await saveDB(db);
     res.json({ success: true, emergencyLock: db.emergencyLock });
   });
@@ -2301,12 +2772,12 @@ async function startServer() {
     try {
       const { backupData, adminName } = req.body;
       if (!backupData) {
-        return res.status(400).json({ error: 'داتای باکئەپ بنێرە' });
+        return res.status(400).json({ error: 'Ø¯Ø§ØªØ§ÛŒ Ø¨Ø§Ú©Ø¦Û•Ù¾ Ø¨Ù†ÛŽØ±Û•' });
       }
 
       // Basic validation
       if (!backupData.admins || !Array.isArray(backupData.admins)) {
-        return res.status(400).json({ error: 'داتاکە گونجاو نییە، پێویستە لیستی لایەنگری ئەدمین و فۆرماتە دروستەکانی تێدابێت' });
+        return res.status(400).json({ error: 'Ø¯Ø§ØªØ§Ú©Û• Ú¯ÙˆÙ†Ø¬Ø§Ùˆ Ù†ÛŒÛŒÛ•ØŒ Ù¾ÛŽÙˆÛŒØ³ØªÛ• Ù„ÛŒØ³ØªÛŒ Ù„Ø§ÛŒÛ•Ù†Ú¯Ø±ÛŒ Ø¦Û•Ø¯Ù…ÛŒÙ† Ùˆ ÙÛ†Ø±Ù…Ø§ØªÛ• Ø¯Ø±ÙˆØ³ØªÛ•Ú©Ø§Ù†ÛŒ ØªÛŽØ¯Ø§Ø¨ÛŽØª' });
       }
 
       // Overwrite
@@ -2324,17 +2795,17 @@ async function startServer() {
       delete db.rooms; // Ensure old db.rooms is removed after restore
       if (backupData.systemErrorLogs) db.systemErrorLogs = backupData.systemErrorLogs;
       if (backupData.intrusionAttempts) db.intrusionAttempts = backupData.intrusionAttempts;
-      
-      await addAuditLog(db, adminName || "Admin", "Restore Database", "بنکەدراوەی گشتی بە سەرکەوتوویی لە دروستکراوەیەکی کۆن گەڕێندرایەوە");
+
+      await addAuditLog(db, adminName || "Admin", "Restore Database", "Ø¨Ù†Ú©Û•Ø¯Ø±Ø§ÙˆÛ•ÛŒ Ú¯Ø´ØªÛŒ Ø¨Û• Ø³Û•Ø±Ú©Û•ÙˆØªÙˆÙˆÛŒÛŒ Ù„Û• Ø¯Ø±ÙˆØ³ØªÚ©Ø±Ø§ÙˆÛ•ÛŒÛ•Ú©ÛŒ Ú©Û†Ù† Ú¯Û•Ú•ÛŽÙ†Ø¯Ø±Ø§ÛŒÛ•ÙˆÛ•");
       await saveDB(db);
-      
+
       if (db.manualMovies) {
         setMoviesCache(() => [...db.manualMovies]);
       }
 
-      res.json({ success: true, message: 'داتابەیس بە سەرکەوتوویی گەڕێندرایەوە' });
+      res.json({ success: true, message: 'Ø¯Ø§ØªØ§Ø¨Û•ÛŒØ³ Ø¨Û• Ø³Û•Ø±Ú©Û•ÙˆØªÙˆÙˆÛŒÛŒ Ú¯Û•Ú•ÛŽÙ†Ø¯Ø±Ø§ÛŒÛ•ÙˆÛ•' });
     } catch (err: any) {
-      res.status(500).json({ error: `شکست لە گەڕاندنەوەی داتابەیس: ${err.message}` });
+      res.status(500).json({ error: `Ø´Ú©Ø³Øª Ù„Û• Ú¯Û•Ú•Ø§Ù†Ø¯Ù†Û•ÙˆÛ•ÛŒ Ø¯Ø§ØªØ§Ø¨Û•ÛŒØ³: ${err.message}` });
     }
   });
 
@@ -2357,7 +2828,7 @@ async function startServer() {
   app.post('/api/admin/clear-error-logs', async (req, res) => {
     const { adminName } = req.body;
     db.systemErrorLogs = [];
-    await addAuditLog(db, adminName || "Admin", "Clear Error Logs", "هەموو تۆماری هەڵەکانی سیستەم سڕدرانەوە");
+    await addAuditLog(db, adminName || "Admin", "Clear Error Logs", "Ù‡Û•Ù…ÙˆÙˆ ØªÛ†Ù…Ø§Ø±ÛŒ Ù‡Û•ÚµÛ•Ú©Ø§Ù†ÛŒ Ø³ÛŒØ³ØªÛ•Ù… Ø³Ú•Ø¯Ø±Ø§Ù†Û•ÙˆÛ•");
     await saveDB(db);
     res.json({ success: true, errorLogs: [] });
   });
@@ -2381,7 +2852,7 @@ async function startServer() {
   app.post('/api/admin/clear-intrusion-attempts', async (req, res) => {
     const { adminName } = req.body;
     db.intrusionAttempts = [];
-    await addAuditLog(db, adminName || "Admin", "Clear Intrusion Attempts", "هەموو تۆماری هێرشە گوماناوییەکان سڕدرانەوە");
+    await addAuditLog(db, adminName || "Admin", "Clear Intrusion Attempts", "Ù‡Û•Ù…ÙˆÙˆ ØªÛ†Ù…Ø§Ø±ÛŒ Ù‡ÛŽØ±Ø´Û• Ú¯ÙˆÙ…Ø§Ù†Ø§ÙˆÛŒÛŒÛ•Ú©Ø§Ù† Ø³Ú•Ø¯Ø±Ø§Ù†Û•ÙˆÛ•");
     await saveDB(db);
     res.json({ success: true, intrusionAttempts: [] });
   });
@@ -2398,12 +2869,12 @@ async function startServer() {
     try {
       const { name, description, adminName } = req.body;
       if (!name) {
-        return res.status(400).json({ error: 'ناوی کۆپی یەدەگ پێویستە' });
+        return res.status(400).json({ error: 'Ù†Ø§ÙˆÛŒ Ú©Û†Ù¾ÛŒ ÛŒÛ•Ø¯Û•Ú¯ Ù¾ÛŽÙˆÛŒØ³ØªÛ•' });
       }
 
       const filePath = path.join(process.cwd(), 'src', 'App.tsx');
       const content = await fs.readFile(filePath, 'utf-8');
-      
+
       const newSnapshot = {
         id: 'snap_' + Date.now(),
         name: String(name).trim(),
@@ -2417,41 +2888,41 @@ async function startServer() {
       if (!db.appSnapshots) db.appSnapshots = [];
       db.appSnapshots.unshift(newSnapshot);
 
-      await addAuditLog(db, adminName || "Admin", "Create Code Snapshot", `کۆپی یەدەگی نوێ دروستکرا بۆ App.tsx بە ناوی: ${name}`);
+      await addAuditLog(db, adminName || "Admin", "Create Code Snapshot", `Ú©Û†Ù¾ÛŒ ÛŒÛ•Ø¯Û•Ú¯ÛŒ Ù†ÙˆÛŽ Ø¯Ø±ÙˆØ³ØªÚ©Ø±Ø§ Ø¨Û† App.tsx Ø¨Û• Ù†Ø§ÙˆÛŒ: ${name}`);
       await saveDB(db);
 
       res.json({ success: true, snapshots: db.appSnapshots });
     } catch (err: any) {
-      res.status(500).json({ error: `شکست لە دروستکردنی کۆپی یەدەگی App.tsx: ${err.message}` });
+      res.status(500).json({ error: `Ø´Ú©Ø³Øª Ù„Û• Ø¯Ø±ÙˆØ³ØªÚ©Ø±Ø¯Ù†ÛŒ Ú©Û†Ù¾ÛŒ ÛŒÛ•Ø¯Û•Ú¯ÛŒ App.tsx: ${err.message}` });
     }
   });
 
   // Restore an App snapshot
   app.post('/api/admin/snapshots/restore', async (req, res) => {
     if (process.env.NODE_ENV === 'production') { // Added
-      return res.status(403).json({ error: 'بۆ پاراستنی ئەمنییەتی سێرڤەر، گەڕاندنەوەی کۆپی یەدەگی کۆد لە ژینگەی بەرهەمهێنان (Production) بلۆک کراوە.' }); // Added
+      return res.status(403).json({ error: 'Ø¨Û† Ù¾Ø§Ø±Ø§Ø³ØªÙ†ÛŒ Ø¦Û•Ù…Ù†ÛŒÛŒÛ•ØªÛŒ Ø³ÛŽØ±Ú¤Û•Ø±ØŒ Ú¯Û•Ú•Ø§Ù†Ø¯Ù†Û•ÙˆÛ•ÛŒ Ú©Û†Ù¾ÛŒ ÛŒÛ•Ø¯Û•Ú¯ÛŒ Ú©Û†Ø¯ Ù„Û• Ú˜ÛŒÙ†Ú¯Û•ÛŒ Ø¨Û•Ø±Ù‡Û•Ù…Ù‡ÛŽÙ†Ø§Ù† (Production) Ø¨Ù„Û†Ú© Ú©Ø±Ø§ÙˆÛ•.' }); // Added
     } // Added
     try {
       const { snapshotId, adminName } = req.body;
       if (!snapshotId) {
-        return res.status(400).json({ error: 'کۆدی ناسنامەی کۆپی یەدەگ پێویستە' });
+        return res.status(400).json({ error: 'Ú©Û†Ø¯ÛŒ Ù†Ø§Ø³Ù†Ø§Ù…Û•ÛŒ Ú©Û†Ù¾ÛŒ ÛŒÛ•Ø¯Û•Ú¯ Ù¾ÛŽÙˆÛŒØ³ØªÛ•' });
       }
 
       const snapshots = db.appSnapshots || [];
       const snapshot = snapshots.find((s: any) => s.id === snapshotId);
       if (!snapshot) {
-        return res.status(404).json({ error: 'ئەم کۆپییە یەدەگە بوونی نییە لە سیستەمدا!' });
+        return res.status(404).json({ error: 'Ø¦Û•Ù… Ú©Û†Ù¾ÛŒÛŒÛ• ÛŒÛ•Ø¯Û•Ú¯Û• Ø¨ÙˆÙˆÙ†ÛŒ Ù†ÛŒÛŒÛ• Ù„Û• Ø³ÛŒØ³ØªÛ•Ù…Ø¯Ø§!' });
       }
 
       const filePath = path.join(process.cwd(), 'src', 'App.tsx');
-      
+
       // Auto pre-restore system safety backup of current state
       try {
         const currentContent = await fs.readFile(filePath, 'utf-8');
         const autoBackup = {
           id: 'snap_auto_' + Date.now(),
-          name: `سیستەمی خۆکار (پێش گەڕاندنەوەی ${snapshot.name})`,
-          description: "سیستەمی خۆکار بە شێوەیەکی خۆکارانە پێش گەڕاندنەوە جێگریکرد.",
+          name: `Ø³ÛŒØ³ØªÛ•Ù…ÛŒ Ø®Û†Ú©Ø§Ø± (Ù¾ÛŽØ´ Ú¯Û•Ú•Ø§Ù†Ø¯Ù†Û•ÙˆÛ•ÛŒ ${snapshot.name})`,
+          description: "Ø³ÛŒØ³ØªÛ•Ù…ÛŒ Ø®Û†Ú©Ø§Ø± Ø¨Û• Ø´ÛŽÙˆÛ•ÛŒÛ•Ú©ÛŒ Ø®Û†Ú©Ø§Ø±Ø§Ù†Û• Ù¾ÛŽØ´ Ú¯Û•Ú•Ø§Ù†Ø¯Ù†Û•ÙˆÛ• Ø¬ÛŽÚ¯Ø±ÛŒÚ©Ø±Ø¯.",
           content: currentContent,
           size: (currentContent.length / 1024).toFixed(2) + " KB",
           adminName: "SYSTEM_AUTO",
@@ -2465,41 +2936,41 @@ async function startServer() {
       // Write snapshot content to file
       await fs.writeFile(filePath, snapshot.content, 'utf-8');
 
-      await addAuditLog(db, adminName || "Admin", "Restore Code Snapshot", `کۆپی پێشووی گەڕێندرایەوە بۆ App.tsx لە ڕێگەی لۆگی: ${snapshot.name}`);
+      await addAuditLog(db, adminName || "Admin", "Restore Code Snapshot", `Ú©Û†Ù¾ÛŒ Ù¾ÛŽØ´ÙˆÙˆÛŒ Ú¯Û•Ú•ÛŽÙ†Ø¯Ø±Ø§ÛŒÛ•ÙˆÛ• Ø¨Û† App.tsx Ù„Û• Ú•ÛŽÚ¯Û•ÛŒ Ù„Û†Ú¯ÛŒ: ${snapshot.name}`);
       await saveDB(db);
 
-      res.json({ success: true, message: 'کۆپی یەدەگ بە سەرکەوتوویی گەڕێندرایەوە، سیستەمەکە دەستپێدەکاتەوە' });
+      res.json({ success: true, message: 'Ú©Û†Ù¾ÛŒ ÛŒÛ•Ø¯Û•Ú¯ Ø¨Û• Ø³Û•Ø±Ú©Û•ÙˆØªÙˆÙˆÛŒÛŒ Ú¯Û•Ú•ÛŽÙ†Ø¯Ø±Ø§ÛŒÛ•ÙˆÛ•ØŒ Ø³ÛŒØ³ØªÛ•Ù…Û•Ú©Û• Ø¯Û•Ø³ØªÙ¾ÛŽØ¯Û•Ú©Ø§ØªÛ•ÙˆÛ•' });
     } catch (err: any) {
-      res.status(500).json({ error: `شکست لە گەڕاندنەوەی کۆپی یەدەگی App.tsx: ${err.message}` });
+      res.status(500).json({ error: `Ø´Ú©Ø³Øª Ù„Û• Ú¯Û•Ú•Ø§Ù†Ø¯Ù†Û•ÙˆÛ•ÛŒ Ú©Û†Ù¾ÛŒ ÛŒÛ•Ø¯Û•Ú¯ÛŒ App.tsx: ${err.message}` });
     }
   });
 
   // Delete an App snapshot
   app.post('/api/admin/snapshots/delete', async (req, res) => {
     if (process.env.NODE_ENV === 'production') { // Added
-      return res.status(403).json({ error: 'بۆ پاراستنی ئەمنییەتی سێرڤەر، گەڕاندنەوەی کۆپی یەدەگی کۆد لە ژینگەی بەرهەمهێنان (Production) بلۆک کراوە.' }); // Added
+      return res.status(403).json({ error: 'Ø¨Û† Ù¾Ø§Ø±Ø§Ø³ØªÙ†ÛŒ Ø¦Û•Ù…Ù†ÛŒÛŒÛ•ØªÛŒ Ø³ÛŽØ±Ú¤Û•Ø±ØŒ Ú¯Û•Ú•Ø§Ù†Ø¯Ù†Û•ÙˆÛ•ÛŒ Ú©Û†Ù¾ÛŒ ÛŒÛ•Ø¯Û•Ú¯ÛŒ Ú©Û†Ø¯ Ù„Û• Ú˜ÛŒÙ†Ú¯Û•ÛŒ Ø¨Û•Ø±Ù‡Û•Ù…Ù‡ÛŽÙ†Ø§Ù† (Production) Ø¨Ù„Û†Ú© Ú©Ø±Ø§ÙˆÛ•.' }); // Added
     } // Added
     try {
       const { snapshotId, adminName } = req.body;
       if (!snapshotId) {
-        return res.status(400).json({ error: 'کۆدی ناسنامەی کۆپی پێویستە' });
+        return res.status(400).json({ error: 'Ú©Û†Ø¯ÛŒ Ù†Ø§Ø³Ù†Ø§Ù…Û•ÛŒ Ú©Û†Ù¾ÛŒ Ù¾ÛŽÙˆÛŒØ³ØªÛ•' });
       }
 
       if (!db.appSnapshots) db.appSnapshots = [];
       const index = db.appSnapshots.findIndex((s: any) => s.id === snapshotId);
       if (index === -1) {
-        return res.status(404).json({ error: 'کۆپی نادۆزرایەوە یان پێشتر سڕاوەتەوە' });
+        return res.status(404).json({ error: 'Ú©Û†Ù¾ÛŒ Ù†Ø§Ø¯Û†Ø²Ø±Ø§ÛŒÛ•ÙˆÛ• ÛŒØ§Ù† Ù¾ÛŽØ´ØªØ± Ø³Ú•Ø§ÙˆÛ•ØªÛ•ÙˆÛ•' });
       }
 
       const deletedSnap = db.appSnapshots[index];
       db.appSnapshots.splice(index, 1);
 
-      await addAuditLog(db, adminName || "Admin", "Delete Code Snapshot", `کۆپی یەدەگ سڕایەوە: ${deletedSnap.name}`);
+      await addAuditLog(db, adminName || "Admin", "Delete Code Snapshot", `Ú©Û†Ù¾ÛŒ ÛŒÛ•Ø¯Û•Ú¯ Ø³Ú•Ø§ÛŒÛ•ÙˆÛ•: ${deletedSnap.name}`);
       await saveDB(db);
 
       res.json({ success: true, snapshots: db.appSnapshots });
     } catch (err: any) {
-      res.status(500).json({ error: `شکست لە سڕینەوەی کۆپی یەدەگ: ${err.message}` });
+      res.status(500).json({ error: `Ø´Ú©Ø³Øª Ù„Û• Ø³Ú•ÛŒÙ†Û•ÙˆÛ•ÛŒ Ú©Û†Ù¾ÛŒ ÛŒÛ•Ø¯Û•Ú¯: ${err.message}` });
     }
   });
 
@@ -2514,7 +2985,7 @@ async function startServer() {
   app.post('/api/admin/vip/tickets/generate', async (req, res) => {
     const { customerName, customerPhone, videoUrl, adminName } = req.body;
     if (!customerName || !customerPhone) {
-      return res.status(400).json({ error: 'ناوی کڕیار و ژمارەی مۆبایل پێویستە بۆ دروستکردنی تیکێت' });
+      return res.status(400).json({ error: 'Ù†Ø§ÙˆÛŒ Ú©Ú•ÛŒØ§Ø± Ùˆ Ú˜Ù…Ø§Ø±Û•ÛŒ Ù…Û†Ø¨Ø§ÛŒÙ„ Ù¾ÛŽÙˆÛŒØ³ØªÛ• Ø¨Û† Ø¯Ø±ÙˆØ³ØªÚ©Ø±Ø¯Ù†ÛŒ ØªÛŒÚ©ÛŽØª' });
     }
 
     // Generate unique code in format: 10 digit order number + random hex string of size 7
@@ -2538,7 +3009,7 @@ async function startServer() {
     if (!db.vipTickets) db.vipTickets = [];
     db.vipTickets.unshift(newTicket);
 
-    await addAuditLog(db, adminName || "Admin", "Generate VIP Code", `کۆدی نوێی VIP دروستکرا بۆ: ${customerName} (${code})`);
+    await addAuditLog(db, adminName || "Admin", "Generate VIP Code", `Ú©Û†Ø¯ÛŒ Ù†ÙˆÛŽÛŒ VIP Ø¯Ø±ÙˆØ³ØªÚ©Ø±Ø§ Ø¨Û†: ${customerName} (${code})`);
     await saveDB(db);
 
     res.json({ success: true, ticket: newTicket });
@@ -2548,8 +3019,8 @@ async function startServer() {
   app.get('/api/admin/vip/settings', (req, res) => {
     res.json(db.vipSettings || {
       qrCodeUrl: "https://i.ibb.co/3kWy3m9/fastpay-qr-mock.png",
-      paymentDetails: "ژمارەی باڵانسی فاستپەی / زین کاش: 07501234567\nبانکی واڵێت: FIb - 12345678",
-      instructions: "بۆ بەژداریکردن و بینینی پەخشی ڕاستەوخۆی VIP CinemaChat بە شێوەی هەمیشەیی، بڕی پارەی تیکێتەکە بنێرە و پاشان پەیوەندی بە ئەدمینەوە بکە لە تێلیگرام (@cinemasupport) بۆ وەرگرتنی کۆدەکەت.",
+      paymentDetails: "Ú˜Ù…Ø§Ø±Û•ÛŒ Ø¨Ø§ÚµØ§Ù†Ø³ÛŒ ÙØ§Ø³ØªÙ¾Û•ÛŒ / Ø²ÛŒÙ† Ú©Ø§Ø´: 07501234567\nØ¨Ø§Ù†Ú©ÛŒ ÙˆØ§ÚµÛŽØª: FIb - 12345678",
+      instructions: "Ø¨Û† Ø¨Û•Ú˜Ø¯Ø§Ø±ÛŒÚ©Ø±Ø¯Ù† Ùˆ Ø¨ÛŒÙ†ÛŒÙ†ÛŒ Ù¾Û•Ø®Ø´ÛŒ Ú•Ø§Ø³ØªÛ•ÙˆØ®Û†ÛŒ VIP CinemaChat Ø¨Û• Ø´ÛŽÙˆÛ•ÛŒ Ù‡Û•Ù…ÛŒØ´Û•ÛŒÛŒØŒ Ø¨Ú•ÛŒ Ù¾Ø§Ø±Û•ÛŒ ØªÛŒÚ©ÛŽØªÛ•Ú©Û• Ø¨Ù†ÛŽØ±Û• Ùˆ Ù¾Ø§Ø´Ø§Ù† Ù¾Û•ÛŒÙˆÛ•Ù†Ø¯ÛŒ Ø¨Û• Ø¦Û•Ø¯Ù…ÛŒÙ†Û•ÙˆÛ• Ø¨Ú©Û• Ù„Û• ØªÛŽÙ„ÛŒÚ¯Ø±Ø§Ù… (@cinemasupport) Ø¨Û† ÙˆÛ•Ø±Ú¯Ø±ØªÙ†ÛŒ Ú©Û†Ø¯Û•Ú©Û•Øª.",
       paymentLogoUrl: ""
     });
   });
@@ -2564,7 +3035,7 @@ async function startServer() {
       paymentLogoUrl: paymentLogoUrl || ""
     };
 
-    await addAuditLog(db, adminName || "Admin", "Update VIP Settings", "ڕێکخستنەکانی پارەدان و تیکێتی VIP نوێکرایەوە");
+    await addAuditLog(db, adminName || "Admin", "Update VIP Settings", "Ú•ÛŽÚ©Ø®Ø³ØªÙ†Û•Ú©Ø§Ù†ÛŒ Ù¾Ø§Ø±Û•Ø¯Ø§Ù† Ùˆ ØªÛŒÚ©ÛŽØªÛŒ VIP Ù†ÙˆÛŽÚ©Ø±Ø§ÛŒÛ•ÙˆÛ•");
     await saveDB(db);
 
     res.json({ success: true, settings: db.vipSettings });
@@ -2575,13 +3046,13 @@ async function startServer() {
     try {
       const { fileData, fileName, adminName } = req.body;
       if (!fileData) {
-        return res.status(400).json({ success: false, error: "داتای فایل نەنێردراوە!" });
+        return res.status(400).json({ success: false, error: "Ø¯Ø§ØªØ§ÛŒ ÙØ§ÛŒÙ„ Ù†Û•Ù†ÛŽØ±Ø¯Ø±Ø§ÙˆÛ•!" });
       }
 
       // Safe regex match to extract MIME and base64 representation
       const matches = fileData.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
       if (!matches || matches.length !== 3) {
-        return res.status(400).json({ success: false, error: "فۆرماتی وێنەکە دروست نییە (تەنها Base64 Data URL پێشوازیکراوە)" });
+        return res.status(400).json({ success: false, error: "ÙÛ†Ø±Ù…Ø§ØªÛŒ ÙˆÛŽÙ†Û•Ú©Û• Ø¯Ø±ÙˆØ³Øª Ù†ÛŒÛŒÛ• (ØªÛ•Ù†Ù‡Ø§ Base64 Data URL Ù¾ÛŽØ´ÙˆØ§Ø²ÛŒÚ©Ø±Ø§ÙˆÛ•)" });
       }
 
       const mimeType = matches[1];
@@ -2590,13 +3061,13 @@ async function startServer() {
       // Format validation: jpeg/jpg/png/webp
       const allowedMimeTypes = ["image/jpeg", "image/png", "image/jpg", "image/webp", "image/svg+xml"];
       if (!allowedMimeTypes.includes(mimeType)) {
-        return res.status(400).json({ success: false, error: "ڕێگە تەنها بە وێنەی فۆرماتی PNG, JPEG, WEBP و SVG دراوە" });
+        return res.status(400).json({ success: false, error: "Ú•ÛŽÚ¯Û• ØªÛ•Ù†Ù‡Ø§ Ø¨Û• ÙˆÛŽÙ†Û•ÛŒ ÙÛ†Ø±Ù…Ø§ØªÛŒ PNG, JPEG, WEBP Ùˆ SVG Ø¯Ø±Ø§ÙˆÛ•" });
       }
 
       // File size constraint: Max 2MB (2 * 1024 * 1024 bytes)
       const approxSizeBytes = Math.floor((base64Content.length * 3) / 4);
       if (approxSizeBytes > 2 * 1024 * 1024) {
-        return res.status(400).json({ success: false, error: "قەبارەی وێنە ناتوانێت لە ٢ مێگابایت زیاتر بێت!" });
+        return res.status(400).json({ success: false, error: "Ù‚Û•Ø¨Ø§Ø±Û•ÛŒ ÙˆÛŽÙ†Û• Ù†Ø§ØªÙˆØ§Ù†ÛŽØª Ù„Û• Ù¢ Ù…ÛŽÚ¯Ø§Ø¨Ø§ÛŒØª Ø²ÛŒØ§ØªØ± Ø¨ÛŽØª!" });
       }
 
       // Extract extension
@@ -2605,10 +3076,10 @@ async function startServer() {
       else if (mimeType.includes("webp")) extension = "webp";
       else if (mimeType.includes("svg")) extension = "svg";
 
-      const safeBaseName = fileName 
-        ? fileName.replace(/[^a-zA-Z0-9_\-]/g, "_").substring(0, 50) 
+      const safeBaseName = fileName
+        ? fileName.replace(/[^a-zA-Z0-9_\-]/g, "_").substring(0, 50)
         : "vip_asset";
-      
+
       const uniqueFileName = `${safeBaseName}_${Date.now()}_${Math.floor(Math.random() * 100000)}.${extension}`;
       const relativeUploadPath = `/uploads/${uniqueFileName}`;
       const absoluteUploadPath = path.join(process.cwd(), 'uploads', uniqueFileName);
@@ -2618,22 +3089,22 @@ async function startServer() {
       const buffer = Buffer.from(base64Content, 'base64');
       await fs.writeFile(absoluteUploadPath, buffer);
 
-      return res.json({ 
-        success: true, 
+      return res.json({
+        success: true,
         url: relativeUploadPath,
         mimeType
       });
 
     } catch (err: any) {
       console.error("Error in VIP Upload Route:", err);
-      return res.status(500).json({ 
-        success: false, 
-        error: "کێشەیەک ڕوویدا لە بارکردنی فایلەکەدا: " + (err.message || String(err)) 
+      return res.status(500).json({
+        success: false,
+        error: "Ú©ÛŽØ´Û•ÛŒÛ•Ú© Ú•ÙˆÙˆÛŒØ¯Ø§ Ù„Û• Ø¨Ø§Ø±Ú©Ø±Ø¯Ù†ÛŒ ÙØ§ÛŒÙ„Û•Ú©Û•Ø¯Ø§: " + (err.message || String(err))
       });
     }
   });
 
-  // Module 4: Movie & YouTube Publishing — secure poster image upload endpoint.
+  // Module 4: Movie & YouTube Publishing â€” secure poster image upload endpoint.
   // Accepts the Base64 data-URL produced by the client-side canvas compressor,
   // validates MIME + size, writes a durable copy under /uploads and records the
   // upload in db.posterUploads. The returned `url` is the self-contained data-URL
@@ -2643,28 +3114,28 @@ async function startServer() {
     try {
       const { imageData, fileName, adminName } = req.body;
       if (!imageData || typeof imageData !== 'string') {
-        return res.status(400).json({ success: false, error: "داتای وێنە نەنێردراوە (imageData پێویستە)" });
+        return res.status(400).json({ success: false, error: "Ø¯Ø§ØªØ§ÛŒ ÙˆÛŽÙ†Û• Ù†Û•Ù†ÛŽØ±Ø¯Ø±Ø§ÙˆÛ• (imageData Ù¾ÛŽÙˆÛŒØ³ØªÛ•)" });
       }
 
       // Safe regex match to extract MIME and base64 representation
       const matches = imageData.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
       if (!matches || matches.length !== 3) {
-        return res.status(400).json({ success: false, error: "فۆرماتی وێنەکە دروست نییە (تەنها Base64 Data URL پێشوازیکراوە)" });
+        return res.status(400).json({ success: false, error: "ÙÛ†Ø±Ù…Ø§ØªÛŒ ÙˆÛŽÙ†Û•Ú©Û• Ø¯Ø±ÙˆØ³Øª Ù†ÛŒÛŒÛ• (ØªÛ•Ù†Ù‡Ø§ Base64 Data URL Ù¾ÛŽØ´ÙˆØ§Ø²ÛŒÚ©Ø±Ø§ÙˆÛ•)" });
       }
 
       const mimeType = matches[1];
       const base64Content = matches[2];
 
-      // Raster poster formats only (no SVG — keeps the published poster safe)
+      // Raster poster formats only (no SVG â€” keeps the published poster safe)
       const allowedMimeTypes = ["image/jpeg", "image/png", "image/jpg", "image/webp"];
       if (!allowedMimeTypes.includes(mimeType)) {
-        return res.status(400).json({ success: false, error: "ڕێگە تەنها بە وێنەی فۆرماتی PNG, JPEG یان WEBP دراوە" });
+        return res.status(400).json({ success: false, error: "Ú•ÛŽÚ¯Û• ØªÛ•Ù†Ù‡Ø§ Ø¨Û• ÙˆÛŽÙ†Û•ÛŒ ÙÛ†Ø±Ù…Ø§ØªÛŒ PNG, JPEG ÛŒØ§Ù† WEBP Ø¯Ø±Ø§ÙˆÛ•" });
       }
 
       // File size constraint: Max 2MB
       const approxSizeBytes = Math.floor((base64Content.length * 3) / 4);
       if (approxSizeBytes > 2 * 1024 * 1024) {
-        return res.status(400).json({ success: false, error: "قەبارەی وێنە ناتوانێت لە ٢ مێگابایت زیاتر بێت!" });
+        return res.status(400).json({ success: false, error: "Ù‚Û•Ø¨Ø§Ø±Û•ÛŒ ÙˆÛŽÙ†Û• Ù†Ø§ØªÙˆØ§Ù†ÛŽØª Ù„Û• Ù¢ Ù…ÛŽÚ¯Ø§Ø¨Ø§ÛŒØª Ø²ÛŒØ§ØªØ± Ø¨ÛŽØª!" });
       }
 
       let extension = "png";
@@ -2693,7 +3164,7 @@ async function startServer() {
       });
       if (db.posterUploads.length > 200) db.posterUploads = db.posterUploads.slice(0, 200);
 
-      await addAuditLog(db, String(adminName || 'Admin'), "Upload Poster", `پۆستەری فیلم بارکرا: "${safeBaseName}.${extension}"`);
+      await addAuditLog(db, String(adminName || 'Admin'), "Upload Poster", `Ù¾Û†Ø³ØªÛ•Ø±ÛŒ ÙÛŒÙ„Ù… Ø¨Ø§Ø±Ú©Ø±Ø§: "${safeBaseName}.${extension}"`);
       await saveDB(db);
 
       return res.json({
@@ -2708,7 +3179,7 @@ async function startServer() {
       console.error("Error in Movie Poster Upload Route:", err);
       return res.status(500).json({
         success: false,
-        error: "کێشەیەک ڕوویدا لە بارکردنی پۆستەرەکەدا: " + (err.message || String(err))
+        error: "Ú©ÛŽØ´Û•ÛŒÛ•Ú© Ú•ÙˆÙˆÛŒØ¯Ø§ Ù„Û• Ø¨Ø§Ø±Ú©Ø±Ø¯Ù†ÛŒ Ù¾Û†Ø³ØªÛ•Ø±Û•Ú©Û•Ø¯Ø§: " + (err.message || String(err))
       });
     }
   });
@@ -2727,7 +3198,7 @@ async function startServer() {
     try {
       const { customerName, customerPhone, bankScreenshot } = req.body;
       if (!customerName || !customerPhone || !bankScreenshot) {
-        return res.status(400).json({ success: false, error: 'تکایە سەرجەم خانەکان پڕبکەرەوە و وێنەی پێبڵاوکردن باربکە!' });
+        return res.status(400).json({ success: false, error: 'ØªÚ©Ø§ÛŒÛ• Ø³Û•Ø±Ø¬Û•Ù… Ø®Ø§Ù†Û•Ú©Ø§Ù† Ù¾Ú•Ø¨Ú©Û•Ø±Û•ÙˆÛ• Ùˆ ÙˆÛŽÙ†Û•ÛŒ Ù¾ÛŽØ¨ÚµØ§ÙˆÚ©Ø±Ø¯Ù† Ø¨Ø§Ø±Ø¨Ú©Û•!' });
       }
 
       const newRequest = {
@@ -2754,17 +3225,17 @@ async function startServer() {
     try {
       const { requestId, videoUrl, adminName } = req.body;
       if (!requestId) {
-        return res.status(400).json({ success: false, error: 'ناسنامەی داواکاری نادیارە.' });
+        return res.status(400).json({ success: false, error: 'Ù†Ø§Ø³Ù†Ø§Ù…Û•ÛŒ Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ Ù†Ø§Ø¯ÛŒØ§Ø±Û•.' });
       }
 
       if (!db.vipRequests) db.vipRequests = [];
       const reqIndex = db.vipRequests.findIndex((r: any) => r.id === requestId);
       if (reqIndex === -1) {
-        return res.status(404).json({ success: false, error: 'ئەم داواکارییە نەدۆزرایەوە.' });
+        return res.status(404).json({ success: false, error: 'Ø¦Û•Ù… Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒÛŒÛ• Ù†Û•Ø¯Û†Ø²Ø±Ø§ÛŒÛ•ÙˆÛ•.' });
       }
 
       const reqData = db.vipRequests[reqIndex];
-      
+
       // Generate unique VIP ticket code
       const orderNum = String(Math.floor(1000000000 + Math.random() * 9000000000));
       const randomHex = Math.random().toString(16).substring(2, 9);
@@ -2790,7 +3261,7 @@ async function startServer() {
       reqData.status = "Approved";
       reqData.approvedCode = code;
 
-      await addAuditLog(db, adminName || "Admin", "Approve VIP Request", `داواکاری VIP پەسەندکرا بۆ: ${reqData.customerName} و کۆد دروستکرا (${code})`);
+      await addAuditLog(db, adminName || "Admin", "Approve VIP Request", `Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ VIP Ù¾Û•Ø³Û•Ù†Ø¯Ú©Ø±Ø§ Ø¨Û†: ${reqData.customerName} Ùˆ Ú©Û†Ø¯ Ø¯Ø±ÙˆØ³ØªÚ©Ø±Ø§ (${code})`);
       await saveDB(db);
 
       res.json({ success: true, ticket: newTicket });
@@ -2804,19 +3275,19 @@ async function startServer() {
     try {
       const { requestId, adminName } = req.body;
       if (!requestId) {
-        return res.status(400).json({ success: false, error: 'ناسنامەی داواکاری نادیارە.' });
+        return res.status(400).json({ success: false, error: 'Ù†Ø§Ø³Ù†Ø§Ù…Û•ÛŒ Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ Ù†Ø§Ø¯ÛŒØ§Ø±Û•.' });
       }
 
       if (!db.vipRequests) db.vipRequests = [];
       const index = db.vipRequests.findIndex((r: any) => r.id === requestId);
       if (index === -1) {
-        return res.status(404).json({ success: false, error: 'داواکاری نەدۆزرایەوە.' });
+        return res.status(404).json({ success: false, error: 'Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ Ù†Û•Ø¯Û†Ø²Ø±Ø§ÛŒÛ•ÙˆÛ•.' });
       }
 
       const deletedReq = db.vipRequests[index];
       db.vipRequests.splice(index, 1);
 
-      await addAuditLog(db, adminName || "Admin", "Decline VIP Request", `داواکاری ڕەتکرایەوە یان سڕایەوە بۆ: ${deletedReq.customerName}`);
+      await addAuditLog(db, adminName || "Admin", "Decline VIP Request", `Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ Ú•Û•ØªÚ©Ø±Ø§ÛŒÛ•ÙˆÛ• ÛŒØ§Ù† Ø³Ú•Ø§ÛŒÛ•ÙˆÛ• Ø¨Û†: ${deletedReq.customerName}`);
       await saveDB(db);
 
       res.json({ success: true });
@@ -2832,7 +3303,7 @@ async function startServer() {
   app.post('/api/vip/verify', async (req, res) => {
     // Determine user client IP
     const clientIp = ((req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || "Unknown").trim();
-    
+
     // Rate Limiter logic: max 5 requests per 1 minute per IP
     const nowLocal = Date.now();
     const limitTimeFrameLocal = 60 * 1000; // 1 minute
@@ -2848,9 +3319,9 @@ async function startServer() {
       } else {
         record.attempts += 1;
         if (record.attempts > maxAttemptsLocal) {
-          return res.status(429).json({ 
-            success: false, 
-            message: 'سیستەمی چاودێری سوودوەرگرتنی نادروست و هەوڵی توندڕەوی دۆزییەوە! تکایە دوای خولەکێک تاقی بکەرەوە (Rate Limited).' 
+          return res.status(429).json({
+            success: false,
+            message: 'Ø³ÛŒØ³ØªÛ•Ù…ÛŒ Ú†Ø§ÙˆØ¯ÛŽØ±ÛŒ Ø³ÙˆÙˆØ¯ÙˆÛ•Ø±Ú¯Ø±ØªÙ†ÛŒ Ù†Ø§Ø¯Ø±ÙˆØ³Øª Ùˆ Ù‡Û•ÙˆÚµÛŒ ØªÙˆÙ†Ø¯Ú•Û•ÙˆÛŒ Ø¯Û†Ø²ÛŒÛŒÛ•ÙˆÛ•! ØªÚ©Ø§ÛŒÛ• Ø¯ÙˆØ§ÛŒ Ø®ÙˆÙ„Û•Ú©ÛŽÚ© ØªØ§Ù‚ÛŒ Ø¨Ú©Û•Ø±Û•ÙˆÛ• (Rate Limited).'
           });
         }
       }
@@ -2858,23 +3329,23 @@ async function startServer() {
 
     const { code } = req.body;
     if (!code) {
-      return res.status(400).json({ success: false, message: 'کۆدی تیکێتی VIP پێویستە.' });
+      return res.status(400).json({ success: false, message: 'Ú©Û†Ø¯ÛŒ ØªÛŒÚ©ÛŽØªÛŒ VIP Ù¾ÛŽÙˆÛŒØ³ØªÛ•.' });
     }
 
     const cleanCode = String(code).trim();
     if (!db.vipTickets) db.vipTickets = [];
-    
+
     const ticketIndex = db.vipTickets.findIndex((t: any) => t.code === cleanCode);
     if (ticketIndex === -1) {
-      return res.status(404).json({ success: false, message: 'ئەم کۆدی VIPیە نادروستە یان بوونی نییە لە سیستەمدا!' });
+      return res.status(404).json({ success: false, message: 'Ø¦Û•Ù… Ú©Û†Ø¯ÛŒ VIPÛŒÛ• Ù†Ø§Ø¯Ø±ÙˆØ³ØªÛ• ÛŒØ§Ù† Ø¨ÙˆÙˆÙ†ÛŒ Ù†ÛŒÛŒÛ• Ù„Û• Ø³ÛŒØ³ØªÛ•Ù…Ø¯Ø§!' });
     }
 
     const ticket = db.vipTickets[ticketIndex];
 
     if (ticket.status === "Expired") {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'ئەم بلیتە بەسەرچووە و لەلایەن بەڕێوبەرەوە یان بەهۆی تێپەڕاندنی ڕێژەی ئامێرەکان ڕاگیراوە!' 
+      return res.status(400).json({
+        success: false,
+        message: 'Ø¦Û•Ù… Ø¨Ù„ÛŒØªÛ• Ø¨Û•Ø³Û•Ø±Ú†ÙˆÙˆÛ• Ùˆ Ù„Û•Ù„Ø§ÛŒÛ•Ù† Ø¨Û•Ú•ÛŽÙˆØ¨Û•Ø±Û•ÙˆÛ• ÛŒØ§Ù† Ø¨Û•Ù‡Û†ÛŒ ØªÛŽÙ¾Û•Ú•Ø§Ù†Ø¯Ù†ÛŒ Ú•ÛŽÚ˜Û•ÛŒ Ø¦Ø§Ù…ÛŽØ±Û•Ú©Ø§Ù† Ú•Ø§Ú¯ÛŒØ±Ø§ÙˆÛ•!'
       });
     }
 
@@ -2890,22 +3361,22 @@ async function startServer() {
       if (ticket.verifiedDevices.length >= 2) {
         ticket.status = "Expired";
         await saveDB(db);
-        return res.status(400).json({ 
-          success: false, 
-          message: 'ئەم تیکێتە پێشتر لەسەر کەسی جیاواز چالاککراوە و تەنها ڕێگە بە ٢ ئامێری جیاواز دەدرێت لەسەر لۆگی داتابەیس!' 
+        return res.status(400).json({
+          success: false,
+          message: 'Ø¦Û•Ù… ØªÛŒÚ©ÛŽØªÛ• Ù¾ÛŽØ´ØªØ± Ù„Û•Ø³Û•Ø± Ú©Û•Ø³ÛŒ Ø¬ÛŒØ§ÙˆØ§Ø² Ú†Ø§Ù„Ø§Ú©Ú©Ø±Ø§ÙˆÛ• Ùˆ ØªÛ•Ù†Ù‡Ø§ Ú•ÛŽÚ¯Û• Ø¨Û• Ù¢ Ø¦Ø§Ù…ÛŽØ±ÛŒ Ø¬ÛŒØ§ÙˆØ§Ø² Ø¯Û•Ø¯Ø±ÛŽØª Ù„Û•Ø³Û•Ø± Ù„Û†Ú¯ÛŒ Ø¯Ø§ØªØ§Ø¨Û•ÛŒØ³!'
         });
       }
       ticket.verifiedDevices.push(clientIp);
     }
 
     const userAgent = req.headers['user-agent'] || "Unknown Device";
-    
+
     // Parse simplified user agent device info
-    let deviceInfo = "کارپێکەری ئاسایی (PC/Web)";
-    if (/android/i.test(userAgent)) deviceInfo = "مۆبایل (Android)";
-    else if (/iphone|ipad/i.test(userAgent)) deviceInfo = "مۆبایل (iOS / iPhone)";
-    else if (/macintosh/i.test(userAgent)) deviceInfo = "کۆمپیوتەر (Apple macOS)";
-    else if (/windows/i.test(userAgent)) deviceInfo = "کۆمپیوتەر (MS Windows)";
+    let deviceInfo = "Ú©Ø§Ø±Ù¾ÛŽÚ©Û•Ø±ÛŒ Ø¦Ø§Ø³Ø§ÛŒÛŒ (PC/Web)";
+    if (/android/i.test(userAgent)) deviceInfo = "Ù…Û†Ø¨Ø§ÛŒÙ„ (Android)";
+    else if (/iphone|ipad/i.test(userAgent)) deviceInfo = "Ù…Û†Ø¨Ø§ÛŒÙ„ (iOS / iPhone)";
+    else if (/macintosh/i.test(userAgent)) deviceInfo = "Ú©Û†Ù…Ù¾ÛŒÙˆØªÛ•Ø± (Apple macOS)";
+    else if (/windows/i.test(userAgent)) deviceInfo = "Ú©Û†Ù…Ù¾ÛŒÙˆØªÛ•Ø± (MS Windows)";
 
     ticket.usedCount = (ticket.usedCount || 0) + 1;
     ticket.lastIp = clientIp;
@@ -2917,10 +3388,10 @@ async function startServer() {
 
     await saveDB(db);
 
-    res.json({ 
-      success: true, 
-      ticket, 
-      settings: db.vipSettings 
+    res.json({
+      success: true,
+      ticket,
+      settings: db.vipSettings
     });
   });
 
@@ -2928,7 +3399,7 @@ async function startServer() {
   app.post('/api/vip/check-validity', (req, res) => {
     const { code } = req.body;
     if (!code) {
-      return res.status(400).json({ success: false, message: 'کۆدی تیکێتی VIP پێویستە.' });
+      return res.status(400).json({ success: false, message: 'Ú©Û†Ø¯ÛŒ ØªÛŒÚ©ÛŽØªÛŒ VIP Ù¾ÛŽÙˆÛŒØ³ØªÛ•.' });
     }
 
     const cleanCode = String(code).trim();
@@ -2936,11 +3407,11 @@ async function startServer() {
 
     const ticket = db.vipTickets.find((t: any) => t.code === cleanCode);
     if (!ticket) {
-      return res.json({ success: false, message: 'ئەم بلیتە بوونی نییە!' });
+      return res.json({ success: false, message: 'Ø¦Û•Ù… Ø¨Ù„ÛŒØªÛ• Ø¨ÙˆÙˆÙ†ÛŒ Ù†ÛŒÛŒÛ•!' });
     }
 
     if (ticket.status === "Expired") {
-      return res.json({ success: false, message: 'ئەم بلیتە بەسەرچووە!' });
+      return res.json({ success: false, message: 'Ø¦Û•Ù… Ø¨Ù„ÛŒØªÛ• Ø¨Û•Ø³Û•Ø±Ú†ÙˆÙˆÛ•!' });
     }
 
     res.json({ success: true, ticket });
@@ -2955,7 +3426,7 @@ async function startServer() {
   app.post('/api/admin/vip/videos/add', async (req, res) => {
     const { title, videoUrl, adminName } = req.body;
     if (!title || !videoUrl) {
-      return res.status(400).json({ error: 'ناوی ڤیدیۆ و لینکی ڤیدیۆ پێویستن' });
+      return res.status(400).json({ error: 'Ù†Ø§ÙˆÛŒ Ú¤ÛŒØ¯ÛŒÛ† Ùˆ Ù„ÛŒÙ†Ú©ÛŒ Ú¤ÛŒØ¯ÛŒÛ† Ù¾ÛŽÙˆÛŒØ³ØªÙ†' });
     }
 
     const newVideo = {
@@ -2968,21 +3439,455 @@ async function startServer() {
     if (!db.vipVideos) db.vipVideos = [];
     db.vipVideos.push(newVideo);
 
-    await addAuditLog(db, adminName || "Admin", "Add VIP Video", `ڤیدیۆی نوێی VIP زیادکرا: "${title}"`);
+    await addAuditLog(db, adminName || "Admin", "Add VIP Video", `Ú¤ÛŒØ¯ÛŒÛ†ÛŒ Ù†ÙˆÛŽÛŒ VIP Ø²ÛŒØ§Ø¯Ú©Ø±Ø§: "${title}"`);
     await saveDB(db);
 
     res.json({ success: true, video: newVideo });
   });
 
+  // =====================================================
+  // CINEMA WINDOW MODULE
+  // =====================================================
+
+  // Rate limiter for Cinema Window access code verification
+  const cinemaWindowRateLimits: Record<string, { attempts: number; resetTime: number }> = {};
+
+  // Helper: Generate a secure random access code
+  const generateAccessCode = (): string => {
+    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    const bytes = crypto.randomBytes(16);
+    let code = '';
+    for (let i = 0; i < 16; i++) {
+      code += characters.charAt(bytes[i] % characters.length);
+    }
+    return code;
+  };
+
+  // Helper: Check Cinema Window rate limit
+  const checkCinemaWindowRateLimit = (clientIp: string): boolean => {
+    const nowLocal = Date.now();
+    const limitTimeFrameLocal = 60 * 1000; // 1 minute
+    const maxAttemptsLocal = 5;
+
+    if (!cinemaWindowRateLimits[clientIp]) {
+      cinemaWindowRateLimits[clientIp] = { attempts: 1, resetTime: nowLocal + limitTimeFrameLocal };
+      return true;
+    } else {
+      const record = cinemaWindowRateLimits[clientIp];
+      if (nowLocal > record.resetTime) {
+        cinemaWindowRateLimits[clientIp] = { attempts: 1, resetTime: nowLocal + limitTimeFrameLocal };
+        return true;
+      } else {
+        record.attempts += 1;
+        if (record.attempts > maxAttemptsLocal) {
+          return false;
+        }
+        return true;
+      }
+    }
+  };
+
+  const getCurrentCinemaWindowRoom = () => {
+    if (!db.cinemaWindows) db.cinemaWindows = {};
+    if (!db.cinemaWindows.cinema_1) {
+      const now = new Date().toISOString();
+      db.cinemaWindows.cinema_1 = {
+        id: "cinema_1",
+        type: "CINEMA_WINDOW",
+        name: "Cinema Window",
+        description: "Premium VIP cinema preview with paid full-room access.",
+        movieId: "movie_1",
+        previewUrl: "",
+        fullVideoReference: "",
+        posterUrl: "",
+        price: 1.99,
+        currency: "USD",
+        accessDurationHours: 24,
+        status: "ACTIVE",
+        paymentSettings: {
+          qrCodeUrl: db.vipSettings?.qrCodeUrl || "",
+          paymentLogoUrl: db.vipSettings?.paymentLogoUrl || "",
+          paymentDetails: db.vipSettings?.paymentDetails || "",
+          instructions: db.vipSettings?.instructions || ""
+        },
+        createdAt: now,
+        updatedAt: now
+      };
+    }
+    return db.cinemaWindows.cinema_1;
+  };
+
+  const publicCinemaWindowRoom = (room: any) => {
+    if (!room) return null;
+    return {
+      id: room.id,
+      type: room.type,
+      name: room.name,
+      description: room.description,
+      movieId: room.movieId,
+      previewUrl: room.fullVideoReference || room.previewUrl || room.streamingUrl || room.videoUrl || "",
+      posterUrl: room.posterUrl,
+      price: room.price,
+      currency: room.currency,
+      accessDurationHours: room.accessDurationHours,
+      status: room.status,
+      createdAt: room.createdAt,
+      updatedAt: room.updatedAt,
+      paymentSettings: {
+        qrCodeUrl: room.paymentSettings?.qrCodeUrl || "",
+        paymentLogoUrl: room.paymentSettings?.paymentLogoUrl || "",
+        paymentDetails: room.paymentSettings?.paymentDetails || "",
+        instructions: room.paymentSettings?.instructions || ""
+      }
+    };
+  };
+
+  const normalizeCinemaWindowUpdate = (body: any, existing: any) => {
+    const pickString = (key: string, fallback = "") =>
+      typeof body[key] === "string" ? body[key].trim() : fallback;
+
+    const price = Number(body.price);
+    const accessDurationHours = Number(body.accessDurationHours);
+    const allowedStatuses = new Set(["ACTIVE", "DRAFT", "DISABLED", "EXPIRED"]);
+
+    return {
+      ...existing,
+      id: "cinema_1",
+      type: "CINEMA_WINDOW",
+      name: pickString("name", existing.name || "Cinema Window"),
+      description: pickString("description", existing.description || ""),
+      movieId: pickString("movieId", existing.movieId || "movie_1"),
+      previewUrl: pickString("previewUrl", existing.previewUrl || ""),
+      posterUrl: pickString("posterUrl", existing.posterUrl || ""),
+      fullVideoReference: pickString("fullVideoReference", existing.fullVideoReference || ""),
+      price: Number.isFinite(price) && price >= 0 ? price : Number(existing.price) || 0,
+      currency: pickString("currency", existing.currency || "USD").toUpperCase().slice(0, 12),
+      accessDurationHours:
+        Number.isFinite(accessDurationHours) && accessDurationHours > 0
+          ? accessDurationHours
+          : Number(existing.accessDurationHours) || 24,
+      status: allowedStatuses.has(body.status) ? body.status : existing.status || "ACTIVE",
+      paymentSettings: {
+        qrCodeUrl: pickString("qrCodeUrl", existing.paymentSettings?.qrCodeUrl || ""),
+        paymentLogoUrl: pickString("paymentLogoUrl", existing.paymentSettings?.paymentLogoUrl || ""),
+        paymentDetails: pickString("paymentDetails", existing.paymentSettings?.paymentDetails || ""),
+        instructions: pickString("instructions", existing.paymentSettings?.instructions || "")
+      },
+      updatedAt: new Date().toISOString()
+    };
+  };
+
+  app.get('/api/cinema-window/current', (req, res) => {
+    res.json({ success: true, room: publicCinemaWindowRoom(getCurrentCinemaWindowRoom()) });
+  });
+
+  app.get('/api/admin/cinema-window/current', (req, res) => {
+    res.json({ success: true, room: getCurrentCinemaWindowRoom() });
+  });
+
+  app.put('/api/admin/cinema-window/current', async (req, res) => {
+    const adminName = String(req.query.adminName || req.headers['x-admin-username'] || req.body?.adminName || 'Admin');
+    const existing = getCurrentCinemaWindowRoom();
+    db.cinemaWindows.cinema_1 = normalizeCinemaWindowUpdate(req.body || {}, existing);
+
+    if (!db.vipSettings) db.vipSettings = {};
+    db.vipSettings = {
+      ...db.vipSettings,
+      qrCodeUrl: db.cinemaWindows.cinema_1.paymentSettings.qrCodeUrl,
+      paymentLogoUrl: db.cinemaWindows.cinema_1.paymentSettings.paymentLogoUrl,
+      paymentDetails: db.cinemaWindows.cinema_1.paymentSettings.paymentDetails,
+      instructions: db.cinemaWindows.cinema_1.paymentSettings.instructions
+    };
+
+    await addAuditLog(db, adminName, "Update Cinema Window", "Cinema Window room, movie link, price, and admin payment settings were updated.");
+    await saveDB(db);
+
+    res.json({ success: true, room: db.cinemaWindows.cinema_1 });
+  });
+
+  // --- Endpoint: List Cinema Window rooms ---
+  app.get('/api/cinema-windows', (req, res) => {
+    // In production, these would come from Firestore
+    // For now, return empty - admin creates rooms via /api/admin/cinema-windows/create
+    res.json({ cinemaWindows: [publicCinemaWindowRoom(getCurrentCinemaWindowRoom())] });
+  });
+
+  // --- Endpoint: Get Cinema Window room details ---
+  app.get('/api/cinema-windows/:id', (req, res) => {
+    const { id } = req.params;
+    if (!db.cinemaWindows) db.cinemaWindows = {};
+    const room = db.cinemaWindows[id];
+    if (!room) return res.status(404).json({ error: 'ئەم کە киноوەنی کەفاوە نەدرێتەوە!' });
+    res.json({ room: publicCinemaWindowRoom(room) });
+  });
+
+  // --- Endpoint: Admin create Cinema Window room ---
+  app.post('/api/admin/cinema-windows/create', async (req, res) => {
+    const { name, description, movieId, previewUrl, posterUrl, price, currency, accessDurationHours, status } = req.body;
+
+    if (!name || !price || !currency) {
+      return res.status(400).json({ error: 'ناوی ڕۆڕە و پارەکە پێویستن' });
+    }
+
+    if (!db.cinemaWindows) db.cinemaWindows = {};
+
+    const newRoom = {
+      id: 'cinema_' + Date.now(),
+      type: 'CINEMA_WINDOW',
+      name,
+      description: description || '',
+      movieId: movieId || '',
+      previewUrl: previewUrl || '',
+      posterUrl: posterUrl || '',
+      price: price,
+      currency: currency,
+      accessDurationHours: accessDurationHours || 24,
+      status: status || 'ACTIVE',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    db.cinemaWindows[newRoom.id] = newRoom;
+    await saveDB(db);
+
+    res.json({ success: true, room: newRoom });
+  });
+
+  // --- Endpoint: Admin update Cinema Window room ---
+  app.post('/api/admin/cinema-windows/:id/update', async (req, res) => {
+    const { id } = req.params;
+    const updates = req.body;
+
+    if (!db.cinemaWindows) db.cinemaWindows = {};
+    if (!db.cinemaWindows[id]) return res.status(404).json({ error: 'ئەم کە Kinooەنی نەدرێتەوە!' });
+
+    db.cinemaWindows[id] = { ...db.cinemaWindows[id], ...updates, updatedAt: new Date().toISOString() };
+    await saveDB(db);
+
+    res.json({ success: true, room: db.cinemaWindows[id] });
+  });
+
+  // --- Endpoint: Admin delete Cinema Window room ---
+  app.post('/api/admin/cinema-windows/:id/delete', async (req, res) => {
+    const { id } = req.params;
+
+    if (!db.cinemaWindows) db.cinemaWindows = {};
+    if (!db.cinemaWindows[id]) return res.status(404).json({ error: 'ئەم کە Kinooەنی نەدرێتەوە!' });
+
+    delete db.cinemaWindows[id];
+    await saveDB(db);
+
+    res.json({ success: true });
+  });
+
+  // --- Endpoint: Create payment record ---
+  app.post('/api/payments', async (req, res) => {
+    const { roomId, userId, provider, providerPaymentId } = req.body;
+    const paymentProvider = String(provider || '').trim() || 'mock';
+    const isProductionPaymentRequest = process.env.NODE_ENV === 'production';
+
+    if (!roomId) {
+      return res.status(400).json({ error: 'roomId پێویستە' });
+    }
+
+    if (isProductionPaymentRequest && paymentProvider === 'mock') {
+      return res.status(400).json({
+        error: 'Mock payments are disabled in production. Configure a real payment provider first.'
+      });
+    }
+
+    if (!db.payments) db.payments = [];
+    if (!db.cinemaWindows) db.cinemaWindows = {};
+
+    const room = db.cinemaWindows[roomId];
+    if (!room || room.status !== 'ACTIVE') {
+      return res.status(404).json({ error: 'Cinema Window room is not available' });
+    }
+
+    const newPayment = {
+      id: 'pay_' + Date.now(),
+      roomId,
+      userId: userId || 'anonymous',
+      amount: Number(room.price) || 0,
+      currency: room.currency || 'USD',
+      provider: paymentProvider,
+      providerPaymentId: providerPaymentId || '',
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+      confirmedAt: null
+    };
+
+    db.payments.push(newPayment);
+    await saveDB(db);
+
+    res.json({ success: true, payment: newPayment });
+  });
+
+  // --- Endpoint: Confirm payment (webhook endpoint) ---
+  app.post('/api/payments/confirm', async (req, res) => {
+    const { paymentId } = req.body;
+
+    if (!paymentId) {
+      return res.status(400).json({ error: 'ID_payment پێویستە' });
+    }
+
+    if (!db.payments) db.payments = [];
+
+    const paymentIndex = db.payments.findIndex((p: any) => p.id === paymentId);
+    if (paymentIndex === -1) return res.status(404).json({ error: 'پەیازەیەکە نەدرێتەوە!' });
+
+    // Idempotency: if already confirmed, do nothing
+    const payment = db.payments[paymentIndex];
+    if (process.env.NODE_ENV === 'production' && payment.provider === 'mock') {
+      return res.status(400).json({
+        error: 'Mock payment confirmation is disabled in production.'
+      });
+    }
+
+    if (payment.status === 'confirmed') {
+      return res.json({ success: true, alreadyConfirmed: true, payment });
+    }
+
+    payment.status = 'confirmed';
+    payment.confirmedAt = new Date().toISOString();
+    await saveDB(db);
+
+    // After confirmed payment, generate access code
+    // Find the associated Cinema Window room
+    if (!db.cinemaWindows) db.cinemaWindows = {};
+
+    const room = db.cinemaWindows[payment.roomId];
+    if (!room) {
+      return res.json({ success: true, payment, message: 'پارە ڕۆڕەدا نەبووە' });
+    }
+
+    // Generate access code tied to this room and payment
+    const accessCode = generateAccessCode();
+
+    if (!db.accessCodes) db.accessCodes = [];
+
+    const newAccessCode = {
+      id: accessCode,
+      codeHash: crypto.createHash('sha256').update(accessCode).digest('hex'),
+      roomId: payment.roomId,
+      userId: payment.userId,
+      paymentId: payment.id,
+      paymentMethod: payment.provider,
+      amount: payment.amount,
+      status: 'ACTIVE',
+      expiresAt: new Date(Date.now() + (room.accessDurationHours || 24) * 60 * 60 * 1000).toISOString(),
+      createdAt: new Date().toISOString(),
+      usedAt: null
+    };
+
+    db.accessCodes.push(newAccessCode);
+    await saveDB(db);
+
+    res.json({ success: true, payment, accessCode, codeLength: 16 });
+  });
+
+  // --- Endpoint: Verify access code ---
+  app.post('/api/cinema/access/verify', async (req, res) => {
+    // Rate limiting
+    const clientIp = ((req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || 'Unknown').trim();
+
+    if (!checkCinemaWindowRateLimit(clientIp)) {
+      return res.status(429).json({ success: false, message: 'هەوڵەکانی چوونەژوورەوەت زۆر بوون. تکایە بۆ ماوەیەک چاوەڕێ بکە پێش هەوڵدانەوە.' });
+    }
+
+    const { roomId, accessCode } = req.body;
+
+    if (!roomId || !accessCode) {
+      return res.status(400).json({ success: false, message: 'roomId و accessCode پێویستن' });
+    }
+
+    if (!db.accessCodes) db.accessCodes = [];
+
+    // Find the code - search by codeHash (secure lookup)
+    const codeIndex = db.accessCodes.findIndex((c: any) => c.id === accessCode || (c.codeHash && c.codeHash === crypto.createHash('sha256').update(accessCode).digest('hex')));
+
+    if (codeIndex === -1) {
+      // Don't reveal if code exists or not - generic error
+      return res.status(400).json({ success: false, message: 'کۆدی ئەنجامی نییە یان ئەم کۆدی لە ئەو ڕۆڕە بەەوە نەやくات!' });
+    }
+
+    const code = db.accessCodes[codeIndex];
+
+    // Check if code is active
+    if (code.status !== 'ACTIVE') {
+      if (code.status === 'USED') {
+        return res.status(400).json({ success: false, message: 'ئەم کۆدە پێشوەرهێ stretchedە یان دوێنەوەیە کارایەتی' });
+      }
+      if (code.status === 'EXPIRED') {
+        return res.status(400).json({ success: false, message: 'ئەم کۆدە هەیە بەسەرچووە' });
+      }
+      if (code.status === 'REVOKED') {
+        return res.status(400).json({ success: false, message: 'ئەم کۆدە ڕاگیرایەوە' });
+      }
+      return res.status(400).json({ success: false, message: 'کۆدی ئەنجامی نییە!' });
+    }
+
+    // Check expiration
+    const expiresAt = new Date(code.expiresAt);
+    const now = new Date();
+    if (now > expiresAt) {
+      code.status = 'EXPIRED';
+      await saveDB(db);
+      return res.status(400).json({ success: false, message: 'ئەم کۆدە هاتووە بەسەرچووە' });
+    }
+
+    // Check if already used
+    if (code.usedAt) {
+      code.status = 'USED';
+      await saveDB(db);
+      return res.status(400).json({ success: false, message: 'ئەم کۆدە لە کێشەیەکی دیکە سەرکەوتووە' });
+    }
+
+    // Check room association
+    if (code.roomId !== roomId) {
+      return res.status(400).json({ success: false, message: 'ئەم کۆدیە نەکەوە بۆ ئەم ڕۆڕە!' });
+    }
+
+    // Mark code as used
+    code.usedAt = new Date().toISOString();
+    code.status = 'USED';
+    await saveDB(db);
+
+    // Mark payment as used if not already
+    if (!db.payments) db.payments = [];
+    const paymentIndex = db.payments.findIndex((p: any) => p.id === code.paymentId);
+    if (paymentIndex !== -1 && db.payments[paymentIndex].status !== 'confirmed') {
+      db.payments[paymentIndex].status = 'confirmed';
+      db.payments[paymentIndex].confirmedAt = new Date().toISOString();
+      await saveDB(db);
+    }
+
+    // Find the room details
+    if (!db.cinemaWindows) db.cinemaWindows = {};
+    const room = db.cinemaWindows[roomId];
+
+    res.json({
+      success: true,
+      room,
+      accessCode: code.id,
+      expiresAt: code.expiresAt,
+      message: 'چوونەژوورەوەی کۆدەکەت successful!'
+    });
+  });
+
+  // =====================================================
+  // END CINEMA WINDOW MODULE
+  // =====================================================
+
   // Delete VIP Video
   app.post('/api/admin/vip/videos/delete', async (req, res) => {
     const { id, adminName } = req.body;
-    if (!id) return res.status(400).json({ error: 'کۆدی ڤیدیۆ پێویستە' });
-    
+    if (!id) return res.status(400).json({ error: 'Ú©Û†Ø¯ÛŒ Ú¤ÛŒØ¯ÛŒÛ† Ù¾ÛŽÙˆÛŒØ³ØªÛ•' });
+
     if (!db.vipVideos) db.vipVideos = [];
     db.vipVideos = db.vipVideos.filter((v: any) => v.id !== id);
 
-    await addAuditLog(db, adminName || "Admin", "Delete VIP Video", `ڤیدیۆی VIP سڕایەوە: ${id}`);
+    await addAuditLog(db, adminName || "Admin", "Delete VIP Video", `Ú¤ÛŒØ¯ÛŒÛ†ÛŒ VIP Ø³Ú•Ø§ÛŒÛ•ÙˆÛ•: ${id}`);
     await saveDB(db);
 
     res.json({ success: true, videos: db.vipVideos });
@@ -3000,7 +3905,7 @@ async function startServer() {
     const vipUsedCount = Array.isArray(db.vipTickets) ? db.vipTickets.filter((t: any) => t.usedCount > 0).length : 0;
 
     // Build some elegant aggregations or time graphs
-    const sampleTimelineDays = ["شەممە", "یەکشەممە", "دووشەممە", "سێشەممە", "چوارشەممە", "پێنجشەممە", "هەینی"];
+    const sampleTimelineDays = ["Ø´Û•Ù…Ù…Û•", "ÛŒÛ•Ú©Ø´Û•Ù…Ù…Û•", "Ø¯ÙˆÙˆØ´Û•Ù…Ù…Û•", "Ø³ÛŽØ´Û•Ù…Ù…Û•", "Ú†ÙˆØ§Ø±Ø´Û•Ù…Ù…Û•", "Ù¾ÛŽÙ†Ø¬Ø´Û•Ù…Ù…Û•", "Ù‡Û•ÛŒÙ†ÛŒ"];
     const trafficByDay = sampleTimelineDays.map((day, idx) => {
       // seed custom ratios
       const base = 250 + (idx * 45) % 180;
@@ -3032,10 +3937,10 @@ async function startServer() {
   });
 
   app.get('/api/health', (req, res) => {
-    res.json({ 
-      status: 'ok', 
-      time: new Date().toISOString(), 
-      server: 'CinemaChat', 
+    res.json({
+      status: 'ok',
+      time: new Date().toISOString(),
+      server: 'CinemaChat',
       node: process.version,
       platform: process.platform,
       memory: process.memoryUsage().rss
@@ -3053,7 +3958,7 @@ async function startServer() {
       if (!videoId) {
         return res.status(400).json({ ok: false, error: 'Invalid YouTube URL' });
       }
-      const streams = await resolveYoutubeDirectStreams(videoId);
+      const streams = await resolveYoutubeDirectStreams(videoId, Boolean((req.body as any)?.refresh));
       res.json({ ok: true, videoId, streams, expiresIn: YT_STREAM_CACHE_TTL_MS });
     } catch (err: any) {
       const msg = err?.message || String(err);
@@ -3110,7 +4015,7 @@ async function startServer() {
     try {
       const movieId = String((req.params as any).movieId || '').trim();
       const session = String((req.body as any)?.session || '').trim();
-      // Device identity (persistent, same across tabs) — used ONLY to dedupe
+      // Device identity (persistent, same across tabs) â€” used ONLY to dedupe
       // lifetime `views`. Live concurrent viewers are keyed by `session` so two
       // tabs of the same device count as two live viewers.
       const deviceId = String((req.body as any)?.deviceId || '').trim();
@@ -3209,7 +4114,7 @@ async function startServer() {
   // --- USER RATINGS (CinemaChat rating) ---
   // Persists a per-user score (1-10) on a movie and returns the aggregated
   // CinemaChat rating + how many users rated it. Ratings never overwrite the
-  // movie's IMDb `rating` field — they are stored separately and displayed
+  // movie's IMDb `rating` field â€” they are stored separately and displayed
   // alongside it on every card.
   app.post('/api/movies/:movieId/rate', async (req, res) => {
     try {
@@ -3347,8 +4252,8 @@ async function startServer() {
   });
 
   app.get('/api/status', (req, res) => {
-    res.json({ 
-      connected: true, 
+    res.json({
+      connected: true,
       uptime: process.uptime(),
       dbSize: moviesCache.length,
       lastSync: lastFetchTime,
@@ -3378,7 +4283,7 @@ async function startServer() {
       if (!db.invitations) {
         db.invitations = [];
       }
-      const userInvites = db.invitations.filter((inv: any) => 
+      const userInvites = db.invitations.filter((inv: any) =>
         inv.toUserCode === cleanCode && inv.status === 'pending'
       );
       res.json(userInvites);
@@ -3391,9 +4296,9 @@ async function startServer() {
   app.post('/api/notifications/send', async (req, res) => {
     try {
       const { fromUserCode, fromUserName, targetCodeOrName, roomId, roomName } = req.body;
-      
+
       if (!targetCodeOrName || !fromUserCode || !roomId) {
-        return res.status(400).json({ error: 'داخڵکراوەکان ناتەواون' });
+        return res.status(400).json({ error: 'Ø¯Ø§Ø®ÚµÚ©Ø±Ø§ÙˆÛ•Ú©Ø§Ù† Ù†Ø§ØªÛ•ÙˆØ§ÙˆÙ†' });
       }
 
       const cleanTarget = targetCodeOrName.trim().toUpperCase();
@@ -3410,7 +4315,7 @@ async function startServer() {
       });
 
       if (!targetUser) {
-        return res.status(404).json({ error: 'بەکارھێنەرەکە نەدۆزرایەوە! تکایە ناوی بەکارهێنەر یان کۆدی بێهاوتا بە دروستی بنووسە.' });
+        return res.status(404).json({ error: 'Ø¨Û•Ú©Ø§Ø±Ú¾ÛŽÙ†Û•Ø±Û•Ú©Û• Ù†Û•Ø¯Û†Ø²Ø±Ø§ÛŒÛ•ÙˆÛ•! ØªÚ©Ø§ÛŒÛ• Ù†Ø§ÙˆÛŒ Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø± ÛŒØ§Ù† Ú©Û†Ø¯ÛŒ Ø¨ÛŽÙ‡Ø§ÙˆØªØ§ Ø¨Û• Ø¯Ø±ÙˆØ³ØªÛŒ Ø¨Ù†ÙˆÙˆØ³Û•.' });
       }
 
       const targetUserCode = (targetUser.uniqueCode || '').toUpperCase();
@@ -3420,16 +4325,16 @@ async function startServer() {
       }
 
       if (cleanFromCode === targetUserCode) {
-        return res.status(400).json({ error: 'ناتوانیت خۆت بانگهێشت بکەیت!' });
+        return res.status(400).json({ error: 'Ù†Ø§ØªÙˆØ§Ù†ÛŒØª Ø®Û†Øª Ø¨Ø§Ù†Ú¯Ù‡ÛŽØ´Øª Ø¨Ú©Û•ÛŒØª!' });
       }
 
       const newInvitation = {
         id: crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 9),
         fromUserCode: cleanFromCode,
-        fromUserName: fromUserName || 'هاوڕێیەک',
+        fromUserName: fromUserName || 'Ù‡Ø§ÙˆÚ•ÛŽÛŒÛ•Ú©',
         toUserCode: targetUserCode,
         roomId,
-        roomName: roomName || 'ژووری هاوڕێیان',
+        roomName: roomName || 'Ú˜ÙˆÙˆØ±ÛŒ Ù‡Ø§ÙˆÚ•ÛŽÛŒØ§Ù†',
         status: 'pending',
         timestamp: new Date().toISOString()
       };
@@ -3455,7 +4360,7 @@ async function startServer() {
 
       const inviteIndex = db.invitations.findIndex((inv: any) => inv.id === id);
       if (inviteIndex === -1) {
-        return res.status(404).json({ error: 'بانگهێشتنامەکە نەدۆزرایەوە' });
+        return res.status(404).json({ error: 'Ø¨Ø§Ù†Ú¯Ù‡ÛŽØ´ØªÙ†Ø§Ù…Û•Ú©Û• Ù†Û•Ø¯Û†Ø²Ø±Ø§ÛŒÛ•ÙˆÛ•' });
       }
 
       db.invitations[inviteIndex].status = status;
@@ -3474,14 +4379,14 @@ async function startServer() {
     try {
       const { userCode } = req.params;
       const cleanCode = userCode.trim().toUpperCase();
-      
+
       if (!db.directMessages) {
         db.directMessages = [];
       }
 
       // Filter messages sent by or received by this user
-      const userDms = db.directMessages.filter((dm: any) => 
-        (dm.senderCode || '').toUpperCase() === cleanCode || 
+      const userDms = db.directMessages.filter((dm: any) =>
+        (dm.senderCode || '').toUpperCase() === cleanCode ||
         (dm.receiverCode || '').toUpperCase() === cleanCode
       );
 
@@ -3497,7 +4402,7 @@ async function startServer() {
       const { senderCode, senderName, targetCodeOrName, message } = req.body;
 
       if (!senderCode || !targetCodeOrName || !message || !message.trim()) {
-        return res.status(400).json({ error: 'داخڵکراوەکان ناتەواون' });
+        return res.status(400).json({ error: 'Ø¯Ø§Ø®ÚµÚ©Ø±Ø§ÙˆÛ•Ú©Ø§Ù† Ù†Ø§ØªÛ•ÙˆØ§ÙˆÙ†' });
       }
 
       const cleanSenderCode = senderCode.trim().toUpperCase();
@@ -3515,14 +4420,14 @@ async function startServer() {
       });
 
       if (!targetUser) {
-        return res.status(404).json({ error: 'وەرگرەکە نەدۆزرایەوە! تکایە ناوی بەکارهێنەر یان کۆدی بێهاوتا بە دروستی بنووسە.' });
+        return res.status(404).json({ error: 'ÙˆÛ•Ø±Ú¯Ø±Û•Ú©Û• Ù†Û•Ø¯Û†Ø²Ø±Ø§ÛŒÛ•ÙˆÛ•! ØªÚ©Ø§ÛŒÛ• Ù†Ø§ÙˆÛŒ Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø± ÛŒØ§Ù† Ú©Û†Ø¯ÛŒ Ø¨ÛŽÙ‡Ø§ÙˆØªØ§ Ø¨Û• Ø¯Ø±ÙˆØ³ØªÛŒ Ø¨Ù†ÙˆÙˆØ³Û•.' });
       }
 
       const receiverCode = (targetUser.uniqueCode || '').toUpperCase();
-      const receiverName = targetUser.username || targetUser.name || 'بەکارھێنەر';
+      const receiverName = targetUser.username || targetUser.name || 'Ø¨Û•Ú©Ø§Ø±Ú¾ÛŽÙ†Û•Ø±';
 
       if (cleanSenderCode === receiverCode) {
-        return res.status(400).json({ error: 'ناتوانیت نامەی دایرێکت بۆ خۆت بنێریت!' });
+        return res.status(400).json({ error: 'Ù†Ø§ØªÙˆØ§Ù†ÛŒØª Ù†Ø§Ù…Û•ÛŒ Ø¯Ø§ÛŒØ±ÛŽÚ©Øª Ø¨Û† Ø®Û†Øª Ø¨Ù†ÛŽØ±ÛŒØª!' });
       }
 
       if (!db.directMessages) {
@@ -3532,7 +4437,7 @@ async function startServer() {
       const newDm = {
         id: crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 9),
         senderCode: cleanSenderCode,
-        senderName: senderName || 'هاوڕێیەک',
+        senderName: senderName || 'Ù‡Ø§ÙˆÚ•ÛŽÛŒÛ•Ú©',
         receiverCode: receiverCode,
         receiverName: receiverName,
         message: message.trim(),
@@ -3557,7 +4462,7 @@ async function startServer() {
     try {
       const { name, hostCode, currentMovieUrl } = req.body;
       if (!name || !hostCode) {
-        return res.status(400).json({ success: false, error: 'ناو و کۆدی خانەخوێ پێویستە' });
+        return res.status(400).json({ success: false, error: 'Ù†Ø§Ùˆ Ùˆ Ú©Û†Ø¯ÛŒ Ø®Ø§Ù†Û•Ø®ÙˆÛŽ Ù¾ÛŽÙˆÛŒØ³ØªÛ•' });
       }
 
       if (!db.syncGroups) db.syncGroups = {};
@@ -3567,7 +4472,7 @@ async function startServer() {
       // is protected: normal room creation must NEVER rename, overwrite or clear
       // it. Only the server startup guard may touch its identity/name.
       if (roomId === 'MAIN_BROADCAST_ROOM' || roomId === 'ADMIN_BROADCAST' || roomId === 'CINEMACHAT') {
-        return res.status(400).json({ success: false, error: 'ئەم ژوورە ژووری هەمیشەییە (CinemaChat) و دەپارێزرێت — ناکرێت گۆڕانکاری بەسەردا بکرێت' });
+        return res.status(400).json({ success: false, error: 'Ø¦Û•Ù… Ú˜ÙˆÙˆØ±Û• Ú˜ÙˆÙˆØ±ÛŒ Ù‡Û•Ù…ÛŒØ´Û•ÛŒÛŒÛ• (CinemaChat) Ùˆ Ø¯Û•Ù¾Ø§Ø±ÛŽØ²Ø±ÛŽØª â€” Ù†Ø§Ú©Ø±ÛŽØª Ú¯Û†Ú•Ø§Ù†Ú©Ø§Ø±ÛŒ Ø¨Û•Ø³Û•Ø±Ø¯Ø§ Ø¨Ú©Ø±ÛŽØª' });
       }
       const newRoom = { // New room object
         id: roomId,
@@ -3608,10 +4513,10 @@ async function startServer() {
       if (id === 'global_room_official') {
         room = { ...INITIAL_GLOBAL_ROOM };
       } else if (id === 'main_broadcast_room') {
-        // Fresh copy — never hand out (and never mutate) the shared constant.
+        // Fresh copy â€” never hand out (and never mutate) the shared constant.
         room = { ...INITIAL_BROADCAST_ROOM };
       } else { // Room not found
-        return res.status(404).json({ error: 'ژوور بەردەست نییە' }); // Return 404
+        return res.status(404).json({ error: 'Ú˜ÙˆÙˆØ± Ø¨Û•Ø±Ø¯Û•Ø³Øª Ù†ÛŒÛŒÛ•' }); // Return 404
       }
     }
 
@@ -3625,7 +4530,7 @@ async function startServer() {
         userObj.lastSeen = new Date().toISOString();
       } else {
         room.activeUsers.push({
-          username: cleanCode === room.hostCode ? 'خانەخوێ (Host)' : `بینەر-${cleanCode.substring(0, 5)}`,
+          username: cleanCode === room.hostCode ? 'Ø®Ø§Ù†Û•Ø®ÙˆÛŽ (Host)' : `Ø¨ÛŒÙ†Û•Ø±-${cleanCode.substring(0, 5)}`,
           uniqueCode: cleanCode,
           joinedAt: new Date().toISOString(),
           lastSeen: new Date().toISOString()
@@ -3647,7 +4552,7 @@ async function startServer() {
 
       const roomId = id.trim().toUpperCase();
       if (!db.syncGroups[roomId]) {
-        return res.status(404).json({ error: 'ژوور بەردەست نییە' }); // Room not found
+        return res.status(404).json({ error: 'Ú˜ÙˆÙˆØ± Ø¨Û•Ø±Ø¯Û•Ø³Øª Ù†ÛŒÛŒÛ•' }); // Room not found
       } // End if room not found
 
       // Update room data
@@ -3662,7 +4567,7 @@ async function startServer() {
           userObj.lastSeen = new Date().toISOString();
         } else {
           room.activeUsers.push({
-            username: cleanCode === room.hostCode ? 'خانەخوێ (Host)' : `بینەر-${cleanCode.substring(0, 5)}`,
+            username: cleanCode === room.hostCode ? 'Ø®Ø§Ù†Û•Ø®ÙˆÛŽ (Host)' : `Ø¨ÛŒÙ†Û•Ø±-${cleanCode.substring(0, 5)}`,
             uniqueCode: cleanCode,
             joinedAt: new Date().toISOString(),
             lastSeen: new Date().toISOString()
@@ -3737,7 +4642,7 @@ async function startServer() {
       const isVipTicketCode = db.vipTickets && db.vipTickets.some((t: any) => (t.code || '').trim().toUpperCase() === cleanCode);
 
       if (!cleanCode && !isBroadcastRoom) { // Only require code if not broadcast room
-        return res.status(400).json({ error: 'پێویستە کۆدی خۆت بنەخشێنیت' });
+        return res.status(400).json({ error: 'Ù¾ÛŽÙˆÛŒØ³ØªÛ• Ú©Û†Ø¯ÛŒ Ø®Û†Øª Ø¨Ù†Û•Ø®Ø´ÛŽÙ†ÛŒØª' });
       }
 
       // Initialize broadcast room if it doesn't exist
@@ -3748,11 +4653,11 @@ async function startServer() {
       }
 
       if (!db.syncGroups[roomId]) { // If room still not found
-        return res.status(404).json({ error: 'ژوور بەردەست نییە' }); // Return 404
+        return res.status(404).json({ error: 'Ú˜ÙˆÙˆØ± Ø¨Û•Ø±Ø¯Û•Ø³Øª Ù†ÛŒÛŒÛ•' }); // Return 404
       }
 
       if (!isBroadcastRoom && !userExists && !isGlobalHost && !isRoomHost && !isVipTicketCode && cleanCode !== 'ADMIN') {
-        return res.status(403).json({ error: 'ژمارەی چوونەژوورە نادروستە یان تۆمار نەکراوە!' });
+        return res.status(403).json({ error: 'Ú˜Ù…Ø§Ø±Û•ÛŒ Ú†ÙˆÙˆÙ†Û•Ú˜ÙˆÙˆØ±Û• Ù†Ø§Ø¯Ø±ÙˆØ³ØªÛ• ÛŒØ§Ù† ØªÛ†Ù…Ø§Ø± Ù†Û•Ú©Ø±Ø§ÙˆÛ•!' });
       }
 
       if (!room.activeUsers) room.activeUsers = [];
@@ -3761,7 +4666,7 @@ async function startServer() {
       const alreadyIn = room.activeUsers.some((u: any) => u.uniqueCode === cleanCode);
       if (!alreadyIn) {
         room.activeUsers.push({
-          username: username || `بینەر-${cleanCode.substring(0, 5)}`,
+          username: username || `Ø¨ÛŒÙ†Û•Ø±-${cleanCode.substring(0, 5)}`,
           uniqueCode: cleanCode,
           joinedAt: new Date().toISOString(),
           lastSeen: new Date().toISOString()
@@ -3776,7 +4681,7 @@ async function startServer() {
 
       room.updatedAt = new Date().toISOString();
       const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || "Unknown";
-      logUserActivity(db, cleanCode, "Join Room", `چووە ناو ژووری تەلەفزیۆنی "${room.name || id}"`, clientIp); // Log user activity
+      logUserActivity(db, cleanCode, "Join Room", `Ú†ÙˆÙˆÛ• Ù†Ø§Ùˆ Ú˜ÙˆÙˆØ±ÛŒ ØªÛ•Ù„Û•ÙØ²ÛŒÛ†Ù†ÛŒ "${room.name || id}"`, clientIp); // Log user activity
       db.syncGroups[roomId] = room; // Persist changes to the room object
       await saveDB(db);
 
@@ -3828,7 +4733,7 @@ async function startServer() {
   app.get('/api/drama-rooms/:id', (req, res) => {
     try {
       const room = (db.dramaRooms || {})[req.params.id];
-      if (!room) return res.status(404).json({ error: 'ئەم ژوورە بەردەست نییە' });
+      if (!room) return res.status(404).json({ error: 'Ø¦Û•Ù… Ú˜ÙˆÙˆØ±Û• Ø¨Û•Ø±Ø¯Û•Ø³Øª Ù†ÛŒÛŒÛ•' });
       res.json({
         success: true,
         room: { ...room, liveViewers: getRoomLiveViewers(room), rating: getRoomRating(room.id) }
@@ -3872,7 +4777,7 @@ async function startServer() {
     try {
       const { title, description, coverUrl, dramas } = req.body || {};
       if (!title || !String(title).trim()) {
-        return res.status(400).json({ success: false, error: 'ناونیشانی ژوورەکە پێویستە' });
+        return res.status(400).json({ success: false, error: 'Ù†Ø§ÙˆÙ†ÛŒØ´Ø§Ù†ÛŒ Ú˜ÙˆÙˆØ±Û•Ú©Û• Ù¾ÛŽÙˆÛŒØ³ØªÛ•' });
       }
       if (!db.dramaRooms) db.dramaRooms = {};
       const now = new Date().toISOString();
@@ -3901,10 +4806,10 @@ async function startServer() {
       const { id } = req.params;
       const { title, description, coverUrl, dramas } = req.body || {};
       if (!db.dramaRooms) db.dramaRooms = {};
-      if (!db.dramaRooms[id]) return res.status(404).json({ success: false, error: 'ئەم ژوورە بەردەست نییە' });
+      if (!db.dramaRooms[id]) return res.status(404).json({ success: false, error: 'Ø¦Û•Ù… Ú˜ÙˆÙˆØ±Û• Ø¨Û•Ø±Ø¯Û•Ø³Øª Ù†ÛŒÛŒÛ•' });
       const existing = db.dramaRooms[id];
       if (title !== undefined) {
-        if (!String(title).trim()) return res.status(400).json({ success: false, error: 'ناونیشانی ژوورەکە پێویستە' });
+        if (!String(title).trim()) return res.status(400).json({ success: false, error: 'Ù†Ø§ÙˆÙ†ÛŒØ´Ø§Ù†ÛŒ Ú˜ÙˆÙˆØ±Û•Ú©Û• Ù¾ÛŽÙˆÛŒØ³ØªÛ•' });
         existing.title = String(title).trim();
       }
       if (description !== undefined) existing.description = String(description || '').trim();
@@ -3924,7 +4829,7 @@ async function startServer() {
     try {
       const { id } = req.params;
       if (!db.dramaRooms) db.dramaRooms = {};
-      if (!db.dramaRooms[id]) return res.status(404).json({ success: false, error: 'ئەم ژوورە بەردەست نییە' });
+      if (!db.dramaRooms[id]) return res.status(404).json({ success: false, error: 'Ø¦Û•Ù… Ú˜ÙˆÙˆØ±Û• Ø¨Û•Ø±Ø¯Û•Ø³Øª Ù†ÛŒÛŒÛ•' });
       const removed = db.dramaRooms[id];
       delete db.dramaRooms[id];
       await saveDB(db);
@@ -3975,7 +4880,7 @@ async function startServer() {
 
   app.get('/api/admin/imdb-fetch', async (req, res) => {
     const { url, imdbId } = req.query;
-    
+
     let targetUrl = url as string;
     if (imdbId) {
       const ttId = String(imdbId).startsWith('tt') ? imdbId : `tt${imdbId}`;
@@ -3983,23 +4888,23 @@ async function startServer() {
     }
 
     if (!targetUrl || typeof targetUrl !== 'string') {
-      return res.status(400).json({ error: 'لینک یان کۆدی پێویستە' });
+      return res.status(400).json({ error: 'Ù„ÛŒÙ†Ú© ÛŒØ§Ù† Ú©Û†Ø¯ÛŒ Ù¾ÛŽÙˆÛŒØ³ØªÛ•' });
     }
 
     try {
       console.log(`[Proxy Fetch] Fetching raw content for client-side AI: ${targetUrl}`);
-      
+
       const response = await fetchWithTimeout(targetUrl, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         }
-      }, 15000); 
+      }, 15000);
 
       if (!response.ok) {
         // Log details but don't crash
         console.warn(`[Proxy Fetch] Failed: ${response.status} ${response.statusText}`);
-        return res.json({ success: false, error: `نەتوانرا پەڕەی ${targetUrl} باربکرێت (${response.status})` });
+        return res.json({ success: false, error: `Ù†Û•ØªÙˆØ§Ù†Ø±Ø§ Ù¾Û•Ú•Û•ÛŒ ${targetUrl} Ø¨Ø§Ø±Ø¨Ú©Ø±ÛŽØª (${response.status})` });
       }
 
       const html = await response.text();
@@ -4012,7 +4917,7 @@ async function startServer() {
       res.json({ success: true, html: smallHtml.substring(0, 150000) });
     } catch (err: any) {
       console.error('[Proxy Fetch Error]', err.message || err);
-      res.status(200).json({ success: false, error: 'هەڵەیەک ڕوویدا لە کاتی هێنانی زانیارییەکان' });
+      res.status(200).json({ success: false, error: 'Ù‡Û•ÚµÛ•ÛŒÛ•Ú© Ú•ÙˆÙˆÛŒØ¯Ø§ Ù„Û• Ú©Ø§ØªÛŒ Ù‡ÛŽÙ†Ø§Ù†ÛŒ Ø²Ø§Ù†ÛŒØ§Ø±ÛŒÛŒÛ•Ú©Ø§Ù†' });
     }
   });
 
@@ -4022,11 +4927,11 @@ async function startServer() {
 
   app.post('/api/admin/categories', async (req, res) => {
     const { name, adminName } = req.body;
-    if (!name) return res.status(400).json({ error: 'ناوی پۆلێن پێویستە' });
+    if (!name) return res.status(400).json({ error: 'Ù†Ø§ÙˆÛŒ Ù¾Û†Ù„ÛŽÙ† Ù¾ÛŽÙˆÛŒØ³ØªÛ•' });
     if (!db.categories) db.categories = [];
-    if (db.categories.includes(name)) return res.status(400).json({ error: 'ئەم پۆلێنە پێشتر هەبووە' });
+    if (db.categories.includes(name)) return res.status(400).json({ error: 'Ø¦Û•Ù… Ù¾Û†Ù„ÛŽÙ†Û• Ù¾ÛŽØ´ØªØ± Ù‡Û•Ø¨ÙˆÙˆÛ•' });
     db.categories.push(name);
-    await addAuditLog(db, adminName, "Add Category", `کاڵا/پۆلێنی نوێ زیادکرا: "${name}"`);
+    await addAuditLog(db, adminName, "Add Category", `Ú©Ø§ÚµØ§/Ù¾Û†Ù„ÛŽÙ†ÛŒ Ù†ÙˆÛŽ Ø²ÛŒØ§Ø¯Ú©Ø±Ø§: "${name}"`);
     await saveDB(db);
     res.json({ success: true, categories: db.categories });
   });
@@ -4034,17 +4939,17 @@ async function startServer() {
   app.delete('/api/admin/categories/:name', async (req, res) => {
     const { name } = req.params;
     const adminName = req.query.adminName as string;
-    
+
     const adminRecord = db.admins.find((a: any) => a.username?.toLowerCase() === adminName?.trim().toLowerCase());
     const requesterRole = adminRecord?.role || (adminName?.trim().toLowerCase() === 'dekan@123' ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
     const canDelete = adminName?.trim().toLowerCase() === 'dekan@123' || adminName?.trim().toLowerCase() === 'admin' || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'owner';
     if (!canDelete) {
-      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! کارمەند (Staff) ناتوانێت پۆلێنەکان بسڕێتەوە.' });
+      return res.status(403).json({ error: 'Ø´Ø§ÛŒØ³ØªÛ•ÛŒ Ø¯Û•Ø³Û•ÚµØ§ØªÛŒ Ù¾ÛŽÙˆÛŒØ³Øª Ù†ÛŒÛŒÛ•! Ú©Ø§Ø±Ù…Û•Ù†Ø¯ (Staff) Ù†Ø§ØªÙˆØ§Ù†ÛŽØª Ù¾Û†Ù„ÛŽÙ†Û•Ú©Ø§Ù† Ø¨Ø³Ú•ÛŽØªÛ•ÙˆÛ•.' });
     }
 
     if (!db.categories) db.categories = [];
     db.categories = db.categories.filter((c: string) => c !== name);
-    await addAuditLog(db, adminName, "Delete Category", `پۆلێن سڕایەوە: "${name}"`);
+    await addAuditLog(db, adminName, "Delete Category", `Ù¾Û†Ù„ÛŽÙ† Ø³Ú•Ø§ÛŒÛ•ÙˆÛ•: "${name}"`);
     await saveDB(db);
     res.json({ success: true, categories: db.categories });
   });
@@ -4274,7 +5179,7 @@ async function startServer() {
       const usersRef = adminDb.collection('users'); // Uses MockFirestoreCollection
       const querySnapshot = await usersRef.where('uniqueCode', '==', uniqueCode).get();
       if (!querySnapshot.empty) {
-        return res.status(400).json({ success: false, error: 'ئەم بەکارهێنەرە پێشتر هەیە!' });
+        return res.status(400).json({ success: false, error: 'Ø¦Û•Ù… Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø±Û• Ù¾ÛŽØ´ØªØ± Ù‡Û•ÛŒÛ•!' });
       }
 
       // Create Firebase Auth user
@@ -4303,7 +5208,7 @@ async function startServer() {
       // Save locally to db.users in db.json for admin view with credentials
       if (!db.users) db.users = [];
       const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || "Unknown";
-      
+
       const existsIdx = db.users.findIndex((u: any) => u.uid === userRecord.uid || (u.uniqueCode && u.uniqueCode.toUpperCase() === uniqueCode.toUpperCase()));
       const newUserObj = {
         uid: userRecord.uid,
@@ -4331,12 +5236,12 @@ async function startServer() {
         db.users.push(newUserObj);
       }
 
-      logUserActivity(db, uniqueCode, "Register", `هەژمارێکی نوێی تۆمارکرد بەناوی "${name}"`, clientIp);
+      logUserActivity(db, uniqueCode, "Register", `Ù‡Û•Ú˜Ù…Ø§Ø±ÛŽÚ©ÛŒ Ù†ÙˆÛŽÛŒ ØªÛ†Ù…Ø§Ø±Ú©Ø±Ø¯ Ø¨Û•Ù†Ø§ÙˆÛŒ "${name}"`, clientIp);
       await saveDB(db);
 
       // Create Custom Token
       const customToken = await adminAuth.createCustomToken(userRecord.uid);
-      
+
       return res.json({ success: true, customToken });
     } catch (err: any) {
       console.error("[ID Register] Failed details:", err);
@@ -4347,7 +5252,7 @@ async function startServer() {
   app.post('/api/auth/login-by-id', async (req, res) => {
     const { uniqueCode } = req.body;
     if (!uniqueCode || typeof uniqueCode !== 'string') {
-      return res.status(400).json({ success: false, error: 'ناسنامەی چوونە ژوورەوە پێویستە' });
+      return res.status(400).json({ success: false, error: 'Ù†Ø§Ø³Ù†Ø§Ù…Û•ÛŒ Ú†ÙˆÙˆÙ†Û• Ú˜ÙˆÙˆØ±Û•ÙˆÛ• Ù¾ÛŽÙˆÛŒØ³ØªÛ•' });
     }
 
     try {
@@ -4395,7 +5300,7 @@ async function startServer() {
 
       if (querySnapshot.empty) {
         console.warn(`[ID Auth] User not found for code: "${uniqueCode}"`);
-        return res.status(404).json({ success: false, error: 'ئەم کۆدەی ID-یە هەڵەیە، تکایە جارێکی تر هەوڵ بدە' });
+        return res.status(404).json({ success: false, error: 'Ø¦Û•Ù… Ú©Û†Ø¯Û•ÛŒ ID-ÛŒÛ• Ù‡Û•ÚµÛ•ÛŒÛ•ØŒ ØªÚ©Ø§ÛŒÛ• Ø¬Ø§Ø±ÛŽÚ©ÛŒ ØªØ± Ù‡Û•ÙˆÚµ Ø¨Ø¯Û•' });
       }
 
       const userDoc = querySnapshot.docs[0];
@@ -4408,7 +5313,7 @@ async function startServer() {
       console.log(`[ID Auth] Successfully authenticated user: ${userData.name || uid} via uniqueCode: ${userData.uniqueCode}`);
 
       const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || "Unknown";
-      logUserActivity(db, userData.uniqueCode, "Login", `کۆدی بێهاوتا بە سەرکەوتوویی داخل کرا و چوونە ژوورەوە ئەنجامدرا`, clientIp);
+      logUserActivity(db, userData.uniqueCode, "Login", `Ú©Û†Ø¯ÛŒ Ø¨ÛŽÙ‡Ø§ÙˆØªØ§ Ø¨Û• Ø³Û•Ø±Ú©Û•ÙˆØªÙˆÙˆÛŒÛŒ Ø¯Ø§Ø®Ù„ Ú©Ø±Ø§ Ùˆ Ú†ÙˆÙˆÙ†Û• Ú˜ÙˆÙˆØ±Û•ÙˆÛ• Ø¦Û•Ù†Ø¬Ø§Ù…Ø¯Ø±Ø§`, clientIp);
       await saveDB(db);
 
       return res.json({
@@ -4424,17 +5329,17 @@ async function startServer() {
       });
     } catch (err: any) {
       console.error("[ID Auth] Login by ID logic failed with error:", err);
-      return res.status(500).json({ success: false, error: `هەڵەی کاتی سێرڤەر: ${err.message || err}`, code: err.code });
+      return res.status(500).json({ success: false, error: `Ù‡Û•ÚµÛ•ÛŒ Ú©Ø§ØªÛŒ Ø³ÛŽØ±Ú¤Û•Ø±: ${err.message || err}`, code: err.code });
     }
   });
 
   app.post('/api/admin/verify-secret-login', async (req, res) => {
     const { phone, password, name } = req.body;
     const sysSecret = process.env.ADMIN_SECRET_KEY || "RebarSarkawtAdmin2026!";
-    
-    const inputMatchesSecret = 
-      (phone && String(phone).trim() === sysSecret) || 
-      (password && String(password).trim() === sysSecret) || 
+
+    const inputMatchesSecret =
+      (phone && String(phone).trim() === sysSecret) ||
+      (password && String(password).trim() === sysSecret) ||
       (name && String(name).trim() === sysSecret);
 
     if (!inputMatchesSecret) {
@@ -4448,7 +5353,7 @@ async function startServer() {
       // Return isSecret: true status, directing client-side code to perform the registration/login safely
       // and call the Firestore direct update promotion endpoint (/api/admin/promote-with-secret)
       const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || "Unknown";
-      await addAuditLog(db, displayName, "Login Secret Match Tried", `هەوڵی چوونەژوورەوەی ئەدمین بە کۆدی نهێنی.`);
+      await addAuditLog(db, displayName, "Login Secret Match Tried", `Ù‡Û•ÙˆÚµÛŒ Ú†ÙˆÙˆÙ†Û•Ú˜ÙˆÙˆØ±Û•ÙˆÛ•ÛŒ Ø¦Û•Ø¯Ù…ÛŒÙ† Ø¨Û• Ú©Û†Ø¯ÛŒ Ù†Ù‡ÛŽÙ†ÛŒ.`);
       await saveDB(db);
 
       res.json({
@@ -4460,22 +5365,22 @@ async function startServer() {
       });
     } catch (err: any) {
       console.error("Secret login verification failed:", err);
-      res.status(500).json({ success: false, message: `هەڵەیەک ڕوویدا: ${err.message || err}` });
+      res.status(500).json({ success: false, message: `Ù‡Û•ÚµÛ•ÛŒÛ•Ú© Ú•ÙˆÙˆÛŒØ¯Ø§: ${err.message || err}` });
     }
   });
 
   app.post('/api/admin/promote-with-secret', async (req, res) => {
     const { secret, uid, phone, name } = req.body;
     const sysSecret = process.env.ADMIN_SECRET_KEY || "RebarSarkawtAdmin2026!";
-    
+
     if (secret !== sysSecret) {
-      return res.status(401).json({ success: false, message: "کۆدی نهێنی هەڵەیە!" });
+      return res.status(401).json({ success: false, message: "Ú©Û†Ø¯ÛŒ Ù†Ù‡ÛŽÙ†ÛŒ Ù‡Û•ÚµÛ•ÛŒÛ•!" });
     }
 
     try {
       const dbInstance = getAdminDb();
       if (!dbInstance) {
-        return res.status(500).json({ success: false, message: "داتابەیس بەردەست نییە لە سێرڤەر." });
+        return res.status(500).json({ success: false, message: "Ø¯Ø§ØªØ§Ø¨Û•ÛŒØ³ Ø¨Û•Ø±Ø¯Û•Ø³Øª Ù†ÛŒÛŒÛ• Ù„Û• Ø³ÛŽØ±Ú¤Û•Ø±." });
       }
 
       if (uid) {
@@ -4516,17 +5421,17 @@ async function startServer() {
         hasAdmin.isSuper = true;
       }
 
-      await addAuditLog(db, displayName, "Role Promotion via Key", `سەرکەوتووانە ڕۆڵی یوزەر گۆڕدرا بۆ ئەدمینی گشتی (Super Admin) لە ڕێگەی کۆدی نهێنی.`);
+      await addAuditLog(db, displayName, "Role Promotion via Key", `Ø³Û•Ø±Ú©Û•ÙˆØªÙˆÙˆØ§Ù†Û• Ú•Û†ÚµÛŒ ÛŒÙˆØ²Û•Ø± Ú¯Û†Ú•Ø¯Ø±Ø§ Ø¨Û† Ø¦Û•Ø¯Ù…ÛŒÙ†ÛŒ Ú¯Ø´ØªÛŒ (Super Admin) Ù„Û• Ú•ÛŽÚ¯Û•ÛŒ Ú©Û†Ø¯ÛŒ Ù†Ù‡ÛŽÙ†ÛŒ.`);
       await saveDB(db);
 
       res.json({
         success: true,
-        message: "پلەکەت کرا بە ئەدمینی گشتی بە سەرکەوتوویی!",
+        message: "Ù¾Ù„Û•Ú©Û•Øª Ú©Ø±Ø§ Ø¨Û• Ø¦Û•Ø¯Ù…ÛŒÙ†ÛŒ Ú¯Ø´ØªÛŒ Ø¨Û• Ø³Û•Ø±Ú©Û•ÙˆØªÙˆÙˆÛŒÛŒ!",
         adminUser: { username: displayName, isSuper: true, isOwner: true, role: 'super_admin', ROLE_SUPER_ADMIN: true }
       });
     } catch (err: any) {
       console.error("Admin promotion failed:", err);
-      res.status(500).json({ success: false, message: `خراپ بەڕێوەچوو: ${err.message || err}` });
+      res.status(500).json({ success: false, message: `Ø®Ø±Ø§Ù¾ Ø¨Û•Ú•ÛŽÙˆÛ•Ú†ÙˆÙˆ: ${err.message || err}` });
     }
   });
 
@@ -4552,12 +5457,12 @@ async function startServer() {
               success: false,
               ownerExempt: true,
               unblockAt: new Date(exemption.unblockAt || Date.now()).toISOString(),
-              message: 'ئەم ئامێرە کاتییە بلۆک کراوە بۆ خاوەنی سیستەم — دەکرێتەوە بە خۆکاری دوای ١ خولەک.'
+              message: 'Ø¦Û•Ù… Ø¦Ø§Ù…ÛŽØ±Û• Ú©Ø§ØªÛŒÛŒÛ• Ø¨Ù„Û†Ú© Ú©Ø±Ø§ÙˆÛ• Ø¨Û† Ø®Ø§ÙˆÛ•Ù†ÛŒ Ø³ÛŒØ³ØªÛ•Ù… â€” Ø¯Û•Ú©Ø±ÛŽØªÛ•ÙˆÛ• Ø¨Û• Ø®Û†Ú©Ø§Ø±ÛŒ Ø¯ÙˆØ§ÛŒ Ù¡ Ø®ÙˆÙ„Û•Ú©.'
             });
           }
-          // Auto-unblocked already — fall through and allow the login attempt.
+          // Auto-unblocked already â€” fall through and allow the login attempt.
         } else {
-          return res.status(403).json({ success: false, message: 'تۆ بلۆک کراویت لەم سیستمەدا.' });
+          return res.status(403).json({ success: false, message: 'ØªÛ† Ø¨Ù„Û†Ú© Ú©Ø±Ø§ÙˆÛŒØª Ù„Û•Ù… Ø³ÛŒØ³ØªÙ…Û•Ø¯Ø§.' });
         }
       } else {
         const exemption = evaluateOwnerBlock(cleanIp, false);
@@ -4567,12 +5472,12 @@ async function startServer() {
               success: false,
               ownerExempt: true,
               unblockAt: new Date(exemption.unblockAt || Date.now()).toISOString(),
-              message: 'ئەم ئایپیە کاتییە بلۆک کراوە بۆ خاوەنی سیستەم — دەکرێتەوە بە خۆکاری دوای ١ خولەک.'
+              message: 'Ø¦Û•Ù… Ø¦Ø§ÛŒÙ¾ÛŒÛ• Ú©Ø§ØªÛŒÛŒÛ• Ø¨Ù„Û†Ú© Ú©Ø±Ø§ÙˆÛ• Ø¨Û† Ø®Ø§ÙˆÛ•Ù†ÛŒ Ø³ÛŒØ³ØªÛ•Ù… â€” Ø¯Û•Ú©Ø±ÛŽØªÛ•ÙˆÛ• Ø¨Û• Ø®Û†Ú©Ø§Ø±ÛŒ Ø¯ÙˆØ§ÛŒ Ù¡ Ø®ÙˆÙ„Û•Ú©.'
             });
           }
-          // Auto-unblocked already — fall through and allow the login attempt.
+          // Auto-unblocked already â€” fall through and allow the login attempt.
         } else {
-          return res.status(403).json({ success: false, message: 'تۆ بلۆک کراویت لەم سیستمەدا.' });
+          return res.status(403).json({ success: false, message: 'ØªÛ† Ø¨Ù„Û†Ú© Ú©Ø±Ø§ÙˆÛŒØª Ù„Û•Ù… Ø³ÛŒØ³ØªÙ…Û•Ø¯Ø§.' });
         }
       }
     }
@@ -4583,14 +5488,14 @@ async function startServer() {
     const isSecretPassword = inputPassword === sysSecret;
 
     const cleanLoginUsername = String(username || '').trim().toLowerCase();
-    // Owner usernames — the ONLY identities allowed to fall back to the master
+    // Owner usernames â€” the ONLY identities allowed to fall back to the master
     // secret key. Never grant sub-admin/staff usernames the master bypass.
     const OWNER_USERNAMES = ['admin', 'dekan@123'];
 
     // verifyStoredPassword authenticates a password against a SINGLE account's
     // OWN stored credential only (legacy plaintext, legacy sha256, or bcrypt).
     // This is deliberately strict: once an admin record exists, only its own
-    // unique password can unlock it — the Owner's master secret key must never
+    // unique password can unlock it â€” the Owner's master secret key must never
     // authenticate or elevate another account, otherwise every sub-admin would
     // effectively log in with the Owner's password (or fail with their own).
     const verifyStoredPassword = (storedPassword: string): boolean => {
@@ -4606,21 +5511,21 @@ async function startServer() {
       try {
         return bcrypt.compareSync(inputPassword, storedPassword);
       } catch {
-        // Malformed/legacy hash — never a silent login; treat as mismatch.
+        // Malformed/legacy hash â€” never a silent login; treat as mismatch.
         return false;
       }
     };
 
-    // Step 1 — authenticate against the account's OWN stored password.
+    // Step 1 â€” authenticate against the account's OWN stored password.
     let admin = db.admins.find((a: any) => String(a?.username || '').trim().toLowerCase() === cleanLoginUsername);
 
     if (admin && !verifyStoredPassword(String(admin.password || ''))) {
-      // Wrong password for an existing account — reject. Do NOT fall through to
+      // Wrong password for an existing account â€” reject. Do NOT fall through to
       // the secret-key path: existing accounts can only ever use their own key.
       admin = null;
     }
 
-    // Step 2 — Owner-only master-secret fallback for the platform owner when no
+    // Step 2 â€” Owner-only master-secret fallback for the platform owner when no
     // account record exists yet. Never persists a fake record with an unknown
     // password, and never applies to sub-admin/staff usernames.
     if (!admin && isSecretPassword && OWNER_USERNAMES.includes(cleanLoginUsername)) {
@@ -4639,12 +5544,12 @@ async function startServer() {
         if (cleanDeviceId) whitelistOwnerDevice(cleanDeviceId);
       }
 
-      await addAuditLog(db, admin.username, "Login Successful", `دەستپێکردنی دانیشتن لە ڕێگەی ئایپی ${cleanIp}`);
+      await addAuditLog(db, admin.username, "Login Successful", `Ø¯Û•Ø³ØªÙ¾ÛŽÚ©Ø±Ø¯Ù†ÛŒ Ø¯Ø§Ù†ÛŒØ´ØªÙ† Ù„Û• Ú•ÛŽÚ¯Û•ÛŒ Ø¦Ø§ÛŒÙ¾ÛŒ ${cleanIp}`);
       await saveDB(db);
 
       // The assigned role is ALWAYS derived from the account itself. An owner
       // account resolves to "owner" regardless of stored drift; a sub-admin
-      // keeps exactly the role that was assigned to it at creation time — the
+      // keeps exactly the role that was assigned to it at creation time â€” the
       // secret key can no longer silently upgrade a staff/deputy account.
       let responseRole = admin.role || (admin.isSuper ? "deputy_manager" : "staff");
       if (ownerName === "admin" || ownerName === "dekan@123") {
@@ -4654,18 +5559,18 @@ async function startServer() {
       const isSuperAdmin = responseRole === "ROLE_SUPER_ADMIN" || responseRole === "super_admin" || responseRole === "owner";
       const isOwner = ownerName === "admin" || ownerName === "dekan@123" || responseRole === "owner";
 
-      res.json({ 
-        success: true, 
-        user: { 
-          username: admin.username, 
-          isSuper: admin.isSuper || isSuperAdmin, 
+      res.json({
+        success: true,
+        user: {
+          username: admin.username,
+          isSuper: admin.isSuper || isSuperAdmin,
           isOwner,
           role: responseRole,
           ROLE_SUPER_ADMIN: isSuperAdmin
         },
-        admin: { 
-          username: admin.username, 
-          isSuper: admin.isSuper || isSuperAdmin, 
+        admin: {
+          username: admin.username,
+          isSuper: admin.isSuper || isSuperAdmin,
           isOwner,
           role: responseRole,
           ROLE_SUPER_ADMIN: isSuperAdmin
@@ -4674,7 +5579,7 @@ async function startServer() {
     } else {
       const loc = getIpLocation(cleanIp);
       const timestamp = new Date().toISOString();
-      
+
       // Log to secure audit_security.log file
       logFailedAttempt("Invalid Login Attempt", `Username tried: "${username || 'Unknown'}" from IP: ${cleanIp} (Loc: ${loc})`);
 
@@ -4690,7 +5595,7 @@ async function startServer() {
       }
 
       failedLoginCounts[identity.key] = (failedLoginCounts[identity.key] || 0) + 1;
-      
+
       let bannedStatus = false;
       let ownerTempBan = false;
       if (failedLoginCounts[identity.key] >= 5) {
@@ -4705,7 +5610,7 @@ async function startServer() {
           });
           bannedStatus = true;
           ownerTempBan = isOwnerWhitelisted(cleanDeviceId);
-          await addAuditLog(db, "SYSTEM_AUTO_BAN", "Auto Device Ban", `بلۆکی ئۆتۆماتیکیی ئامێر ${cleanDeviceId} بەهۆی ٥ هەوڵی شکستخواردووی چوونەژوورەوە (IP: ${cleanIp}).`);
+          await addAuditLog(db, "SYSTEM_AUTO_BAN", "Auto Device Ban", `Ø¨Ù„Û†Ú©ÛŒ Ø¦Û†ØªÛ†Ù…Ø§ØªÛŒÚ©ÛŒÛŒ Ø¦Ø§Ù…ÛŽØ± ${cleanDeviceId} Ø¨Û•Ù‡Û†ÛŒ Ù¥ Ù‡Û•ÙˆÚµÛŒ Ø´Ú©Ø³ØªØ®ÙˆØ§Ø±Ø¯ÙˆÙˆÛŒ Ú†ÙˆÙˆÙ†Û•Ú˜ÙˆÙˆØ±Û•ÙˆÛ• (IP: ${cleanIp}).`);
         } else {
           if (!db.bannedIps) db.bannedIps = [];
           if (!db.bannedIps.includes(cleanIp)) {
@@ -4715,32 +5620,32 @@ async function startServer() {
             // Whitelisted owner IPs only get a 1-minute temporary block and
             // auto-unblock afterwards; normal IPs stay permanently banned.
             ownerTempBan = isOwnerWhitelisted(cleanIp);
-            await addAuditLog(db, "SYSTEM_AUTO_BAN", "Auto IP Ban", `بلۆکی ئۆتۆماتیکیی ئایپی ${cleanIp} بەهۆی ٥ هەوڵی شکستخواردووی چوونەژوورەوە.`);
+            await addAuditLog(db, "SYSTEM_AUTO_BAN", "Auto IP Ban", `Ø¨Ù„Û†Ú©ÛŒ Ø¦Û†ØªÛ†Ù…Ø§ØªÛŒÚ©ÛŒÛŒ Ø¦Ø§ÛŒÙ¾ÛŒ ${cleanIp} Ø¨Û•Ù‡Û†ÛŒ Ù¥ Ù‡Û•ÙˆÚµÛŒ Ø´Ú©Ø³ØªØ®ÙˆØ§Ø±Ø¯ÙˆÙˆÛŒ Ú†ÙˆÙˆÙ†Û•Ú˜ÙˆÙˆØ±Û•ÙˆÛ•.`);
           }
         }
       }
-      
+
       await saveDB(db);
-      res.status(401).json({ 
-        success: false, 
-        message: bannedStatus 
+      res.status(401).json({
+        success: false,
+        message: bannedStatus
           ? (ownerTempBan
-              ? 'ئەم ئایپیە بۆ خاوەنی سیستەم کاتییە بلۆک کراوە — دەکرێتەوە بە خۆکاری دوای ١ خولەک.'
-              : 'ئەم ئایپیە بلۆک کرا بە شێوەیەکی کاتی بەهۆی زۆری هەوڵە شکستخواردووەکان (٥ شکست).')
-          : 'ناوی بەکارهێنەر یان وشەی تێپەڕ هەڵەیە' 
+              ? 'Ø¦Û•Ù… Ø¦Ø§ÛŒÙ¾ÛŒÛ• Ø¨Û† Ø®Ø§ÙˆÛ•Ù†ÛŒ Ø³ÛŒØ³ØªÛ•Ù… Ú©Ø§ØªÛŒÛŒÛ• Ø¨Ù„Û†Ú© Ú©Ø±Ø§ÙˆÛ• â€” Ø¯Û•Ú©Ø±ÛŽØªÛ•ÙˆÛ• Ø¨Û• Ø®Û†Ú©Ø§Ø±ÛŒ Ø¯ÙˆØ§ÛŒ Ù¡ Ø®ÙˆÙ„Û•Ú©.'
+              : 'Ø¦Û•Ù… Ø¦Ø§ÛŒÙ¾ÛŒÛ• Ø¨Ù„Û†Ú© Ú©Ø±Ø§ Ø¨Û• Ø´ÛŽÙˆÛ•ÛŒÛ•Ú©ÛŒ Ú©Ø§ØªÛŒ Ø¨Û•Ù‡Û†ÛŒ Ø²Û†Ø±ÛŒ Ù‡Û•ÙˆÚµÛ• Ø´Ú©Ø³ØªØ®ÙˆØ§Ø±Ø¯ÙˆÙˆÛ•Ú©Ø§Ù† (Ù¥ Ø´Ú©Ø³Øª).')
+          : 'Ù†Ø§ÙˆÛŒ Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø± ÛŒØ§Ù† ÙˆØ´Û•ÛŒ ØªÛŽÙ¾Û•Ú• Ù‡Û•ÚµÛ•ÛŒÛ•'
       });
     }
   });
 
   app.get('/api/admin/users', (req, res) => {
-    res.json(db.admins.map((a: any) => ({ 
-      username: a.username, 
+    res.json(db.admins.map((a: any) => ({
+      username: a.username,
       isSuper: !!a.isSuper,
       role: a.role || (a.isSuper ? "deputy_manager" : "staff")
     })));
   });
 
-  // Module 17 role hierarchy — HIGHER number = MORE privilege. Every create /
+  // Module 17 role hierarchy â€” HIGHER number = MORE privilege. Every create /
   // delete / password-change guard below is derived from these levels so a user
   // can never escalate their own privileges or touch accounts at or above their
   // own level (except changing their own password).
@@ -4764,20 +5669,20 @@ async function startServer() {
     const { username, password, isSuper, role } = req.body || {};
     const requester = requesterInfo(req);
     if (requester.level < 2) {
-      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیار (dekan@123 یان بەڕێوەبەری سەرەکی کەنالەکە) دەتوانێت ئەدمین بەڕێوەببات.' });
+      return res.status(403).json({ error: 'Ø´Ø§ÛŒØ³ØªÛ•ÛŒ Ø¯Û•Ø³Û•ÚµØ§ØªÛŒ Ù¾ÛŽÙˆÛŒØ³Øª Ù†ÛŒÛŒÛ•! ØªÛ•Ù†Ù‡Ø§ Ø®Ø§ÙˆÛ•Ù† Ø³Û•Ø±Ù¾Û•Ø±Ø´ØªÛŒØ§Ø± (dekan@123 ÛŒØ§Ù† Ø¨Û•Ú•ÛŽÙˆÛ•Ø¨Û•Ø±ÛŒ Ø³Û•Ø±Û•Ú©ÛŒ Ú©Û•Ù†Ø§Ù„Û•Ú©Û•) Ø¯Û•ØªÙˆØ§Ù†ÛŽØª Ø¦Û•Ø¯Ù…ÛŒÙ† Ø¨Û•Ú•ÛŽÙˆÛ•Ø¨Ø¨Ø§Øª.' });
     }
 
-    // Input validation — strict length + charset, never expose internals
+    // Input validation â€” strict length + charset, never expose internals
     const safeUsername = String(username || '').trim();
     const safePassword = String(password || '');
-    if (!safeUsername || !safePassword) return res.status(400).json({ error: 'ناوی بەکارهێنەر و وشەی تێپەڕ پێویستن' });
-    if (safeUsername.length < 3 || safeUsername.length > 32) return res.status(400).json({ error: 'ناوی بەکارهێنەر دەبێت ٣ بۆ ٣٢ پیت بێت' });
-    if (!/^[a-zA-Z0-9_.-]+$/.test(safeUsername)) return res.status(400).json({ error: 'ناوی بەکارهێنەر تەنها پیتی ئینگلیزی، ژمارە و _ . - پەسەندە' });
-    if (safePassword.length < 6) return res.status(400).json({ error: 'وشەی تێپەڕ دەبێت لە کەمتر نەبێت لە ٦ هێما' });
-    if (safePassword.length > 128) return res.status(400).json({ error: 'وشەی تێپەڕ زۆر درێژە' });
+    if (!safeUsername || !safePassword) return res.status(400).json({ error: 'Ù†Ø§ÙˆÛŒ Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø± Ùˆ ÙˆØ´Û•ÛŒ ØªÛŽÙ¾Û•Ú• Ù¾ÛŽÙˆÛŒØ³ØªÙ†' });
+    if (safeUsername.length < 3 || safeUsername.length > 32) return res.status(400).json({ error: 'Ù†Ø§ÙˆÛŒ Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø± Ø¯Û•Ø¨ÛŽØª Ù£ Ø¨Û† Ù£Ù¢ Ù¾ÛŒØª Ø¨ÛŽØª' });
+    if (!/^[a-zA-Z0-9_.-]+$/.test(safeUsername)) return res.status(400).json({ error: 'Ù†Ø§ÙˆÛŒ Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø± ØªÛ•Ù†Ù‡Ø§ Ù¾ÛŒØªÛŒ Ø¦ÛŒÙ†Ú¯Ù„ÛŒØ²ÛŒØŒ Ú˜Ù…Ø§Ø±Û• Ùˆ _ . - Ù¾Û•Ø³Û•Ù†Ø¯Û•' });
+    if (safePassword.length < 6) return res.status(400).json({ error: 'ÙˆØ´Û•ÛŒ ØªÛŽÙ¾Û•Ú• Ø¯Û•Ø¨ÛŽØª Ù„Û• Ú©Û•Ù…ØªØ± Ù†Û•Ø¨ÛŽØª Ù„Û• Ù¦ Ù‡ÛŽÙ…Ø§' });
+    if (safePassword.length > 128) return res.status(400).json({ error: 'ÙˆØ´Û•ÛŒ ØªÛŽÙ¾Û•Ú• Ø²Û†Ø± Ø¯Ø±ÛŽÚ˜Û•' });
 
     if (db.admins.some((a: any) => a.username?.toLowerCase() === safeUsername.toLowerCase())) {
-      return res.status(400).json({ error: 'ئەم ناوە پێشتر بەکارهاتووە' });
+      return res.status(400).json({ error: 'Ø¦Û•Ù… Ù†Ø§ÙˆÛ• Ù¾ÛŽØ´ØªØ± Ø¨Û•Ú©Ø§Ø±Ù‡Ø§ØªÙˆÙˆÛ•' });
     }
 
     // Map the requested role onto a safe allow-list and enforce hierarchy: you
@@ -4785,14 +5690,14 @@ async function startServer() {
     const requestedRole = VALID_ROLES.includes(role) ? role : (isSuper ? 'deputy_manager' : 'staff');
     const requestedLevel = ROLE_LEVEL[requestedRole] || 1;
     if (requestedLevel >= requester.level) {
-      return res.status(403).json({ error: 'ناتوانیت ئەدمین بە ئاستی یەکسان یان بەرزتر لە خۆت دروست بکەیت' });
+      return res.status(403).json({ error: 'Ù†Ø§ØªÙˆØ§Ù†ÛŒØª Ø¦Û•Ø¯Ù…ÛŒÙ† Ø¨Û• Ø¦Ø§Ø³ØªÛŒ ÛŒÛ•Ú©Ø³Ø§Ù† ÛŒØ§Ù† Ø¨Û•Ø±Ø²ØªØ± Ù„Û• Ø®Û†Øª Ø¯Ø±ÙˆØ³Øª Ø¨Ú©Û•ÛŒØª' });
     }
 
     const secureHashedPassword = bcrypt.hashSync(safePassword, 10);
 
-    db.admins.push({ 
-      username: safeUsername, 
-      password: secureHashedPassword, 
+    db.admins.push({
+      username: safeUsername,
+      password: secureHashedPassword,
       isSuper: requestedRole === 'deputy_manager' || requestedRole === 'super_admin',
       role: requestedRole
     });
@@ -4801,12 +5706,12 @@ async function startServer() {
     if (!db.ownerNotifications) db.ownerNotifications = [];
     db.ownerNotifications.unshift({
       id: `notif-${Date.now()}`,
-      message: `🔔 ئاگاداری گرنگ: خۆکارانە ئەکاونتی ئەدمینی نوێ بە ناوی [${safeUsername}] وەک [${requestedRole}] لەلایەن [${requester.name || "خاوەنکار"}] دروستکرا لە بەگی داتابەیس.`,
+      message: `ðŸ”” Ø¦Ø§Ú¯Ø§Ø¯Ø§Ø±ÛŒ Ú¯Ø±Ù†Ú¯: Ø®Û†Ú©Ø§Ø±Ø§Ù†Û• Ø¦Û•Ú©Ø§ÙˆÙ†ØªÛŒ Ø¦Û•Ø¯Ù…ÛŒÙ†ÛŒ Ù†ÙˆÛŽ Ø¨Û• Ù†Ø§ÙˆÛŒ [${safeUsername}] ÙˆÛ•Ú© [${requestedRole}] Ù„Û•Ù„Ø§ÛŒÛ•Ù† [${requester.name || "Ø®Ø§ÙˆÛ•Ù†Ú©Ø§Ø±"}] Ø¯Ø±ÙˆØ³ØªÚ©Ø±Ø§ Ù„Û• Ø¨Û•Ú¯ÛŒ Ø¯Ø§ØªØ§Ø¨Û•ÛŒØ³.`,
       timestamp: new Date().toISOString(),
       read: false
     });
 
-    await addAuditLog(db, requester.name || 'system', "Create Admin", `ئەدمینی نوێ دروستکرا: "${safeUsername}" وەک "${requestedRole}"`);
+    await addAuditLog(db, requester.name || 'system', "Create Admin", `Ø¦Û•Ø¯Ù…ÛŒÙ†ÛŒ Ù†ÙˆÛŽ Ø¯Ø±ÙˆØ³ØªÚ©Ø±Ø§: "${safeUsername}" ÙˆÛ•Ú© "${requestedRole}"`);
     await saveDB(db);
     res.json({ success: true });
   });
@@ -4815,23 +5720,23 @@ async function startServer() {
     const { username } = req.params;
     const requester = requesterInfo(req);
     if (requester.level < 2) {
-      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیار (dekan@123 یان بەڕێوەبەر) دەتوانێت ئەدمین بسڕێتەوە.' });
+      return res.status(403).json({ error: 'Ø´Ø§ÛŒØ³ØªÛ•ÛŒ Ø¯Û•Ø³Û•ÚµØ§ØªÛŒ Ù¾ÛŽÙˆÛŒØ³Øª Ù†ÛŒÛŒÛ•! ØªÛ•Ù†Ù‡Ø§ Ø®Ø§ÙˆÛ•Ù† Ø³Û•Ø±Ù¾Û•Ø±Ø´ØªÛŒØ§Ø± (dekan@123 ÛŒØ§Ù† Ø¨Û•Ú•ÛŽÙˆÛ•Ø¨Û•Ø±) Ø¯Û•ØªÙˆØ§Ù†ÛŽØª Ø¦Û•Ø¯Ù…ÛŒÙ† Ø¨Ø³Ú•ÛŽØªÛ•ÙˆÛ•.' });
     }
 
     const targetName = String(username || '').trim().toLowerCase();
     const target = db.admins.find((a: any) => a.username?.toLowerCase() === targetName);
-    if (!target) return res.status(404).json({ error: 'ئەم ئەدمینە نەدۆزرایەوە' });
+    if (!target) return res.status(404).json({ error: 'Ø¦Û•Ù… Ø¦Û•Ø¯Ù…ÛŒÙ†Û• Ù†Û•Ø¯Û†Ø²Ø±Ø§ÛŒÛ•ÙˆÛ•' });
 
-    if (requester.name === targetName) return res.status(400).json({ error: 'تۆ ناتوانیت ئەکاونتی خۆت بسڕیتەوە' });
-    if (targetName === 'admin' || targetName === 'dekan@123') return res.status(400).json({ error: 'ناتوانرێت ئەدمینی سەرەکی بسڕدرێتەوە' });
+    if (requester.name === targetName) return res.status(400).json({ error: 'ØªÛ† Ù†Ø§ØªÙˆØ§Ù†ÛŒØª Ø¦Û•Ú©Ø§ÙˆÙ†ØªÛŒ Ø®Û†Øª Ø¨Ø³Ú•ÛŒØªÛ•ÙˆÛ•' });
+    if (targetName === 'admin' || targetName === 'dekan@123') return res.status(400).json({ error: 'Ù†Ø§ØªÙˆØ§Ù†Ø±ÛŽØª Ø¦Û•Ø¯Ù…ÛŒÙ†ÛŒ Ø³Û•Ø±Û•Ú©ÛŒ Ø¨Ø³Ú•Ø¯Ø±ÛŽØªÛ•ÙˆÛ•' });
 
     // Can never delete an account at or above your own privilege level
     if (roleLevel(target) >= requester.level) {
-      return res.status(403).json({ error: 'ناتوانیت ئەدمین بە ئاستی یەکسان یان بەرزتر لە خۆت بسڕیتەوە' });
+      return res.status(403).json({ error: 'Ù†Ø§ØªÙˆØ§Ù†ÛŒØª Ø¦Û•Ø¯Ù…ÛŒÙ† Ø¨Û• Ø¦Ø§Ø³ØªÛŒ ÛŒÛ•Ú©Ø³Ø§Ù† ÛŒØ§Ù† Ø¨Û•Ø±Ø²ØªØ± Ù„Û• Ø®Û†Øª Ø¨Ø³Ú•ÛŒØªÛ•ÙˆÛ•' });
     }
 
     db.admins = db.admins.filter((a: any) => a.username?.toLowerCase() !== targetName);
-    await addAuditLog(db, requester.name || 'system', "Delete Admin", `ئەدمینی سڕایەوە: "${target.username}"`);
+    await addAuditLog(db, requester.name || 'system', "Delete Admin", `Ø¦Û•Ø¯Ù…ÛŒÙ†ÛŒ Ø³Ú•Ø§ÛŒÛ•ÙˆÛ•: "${target.username}"`);
     await saveDB(db);
     res.json({ success: true });
   });
@@ -4839,13 +5744,13 @@ async function startServer() {
   // --- ADMIN MODULE 17: MULTI-LEVEL ADMIN AUTHORIZATION SYSTEM ENDPOINTS ---
   app.get('/api/admin/m17/status', async (req, res) => {
     const requester = (req.query.adminName as string || req.headers['x-admin-username'] as string || '').trim().toLowerCase();
-    
+
     // Strict Route Guard for Module 17
     const adminRecord = db.admins.find((a: any) => a.username?.toLowerCase() === requester);
     const requesterRole = adminRecord?.role || (requester === 'dekan@123' ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
     const isAuthorized = requester === 'dekan@123' || requester === 'admin' || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'owner';
     if (!isAuthorized) {
-      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیاری باڵا (dekan@123 یان بەڕێوەبەر) دەتوانێت بچێتە ناو بەشی ڕێگەپێدانی ئاستەکان.' });
+      return res.status(403).json({ error: 'Ø´Ø§ÛŒØ³ØªÛ•ÛŒ Ø¯Û•Ø³Û•ÚµØ§ØªÛŒ Ù¾ÛŽÙˆÛŒØ³Øª Ù†ÛŒÛŒÛ•! ØªÛ•Ù†Ù‡Ø§ Ø®Ø§ÙˆÛ•Ù† Ø³Û•Ø±Ù¾Û•Ø±Ø´ØªÛŒØ§Ø±ÛŒ Ø¨Ø§ÚµØ§ (dekan@123 ÛŒØ§Ù† Ø¨Û•Ú•ÛŽÙˆÛ•Ø¨Û•Ø±) Ø¯Û•ØªÙˆØ§Ù†ÛŽØª Ø¨Ú†ÛŽØªÛ• Ù†Ø§Ùˆ Ø¨Û•Ø´ÛŒ Ú•ÛŽÚ¯Û•Ù¾ÛŽØ¯Ø§Ù†ÛŒ Ø¦Ø§Ø³ØªÛ•Ú©Ø§Ù†.' });
     }
 
     res.json({
@@ -4869,7 +5774,7 @@ async function startServer() {
   app.post('/api/admin/m17/admins/password', async (req, res) => {
     const requester = requesterInfo(req);
     if (requester.level < 2) {
-      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیاری باڵا (dekan@123 یان super_admin) دەتوانێت وشەی تێپەڕی ئەدمینەکان بگۆڕێت.' });
+      return res.status(403).json({ error: 'Ø´Ø§ÛŒØ³ØªÛ•ÛŒ Ø¯Û•Ø³Û•ÚµØ§ØªÛŒ Ù¾ÛŽÙˆÛŒØ³Øª Ù†ÛŒÛŒÛ•! ØªÛ•Ù†Ù‡Ø§ Ø®Ø§ÙˆÛ•Ù† Ø³Û•Ø±Ù¾Û•Ø±Ø´ØªÛŒØ§Ø±ÛŒ Ø¨Ø§ÚµØ§ (dekan@123 ÛŒØ§Ù† super_admin) Ø¯Û•ØªÙˆØ§Ù†ÛŽØª ÙˆØ´Û•ÛŒ ØªÛŽÙ¾Û•Ú•ÛŒ Ø¦Û•Ø¯Ù…ÛŒÙ†Û•Ú©Ø§Ù† Ø¨Ú¯Û†Ú•ÛŽØª.' });
     }
 
     const { targetUsername, newPassword, isSuper } = req.body || {};
@@ -4877,26 +5782,26 @@ async function startServer() {
     const adminIndex = db.admins.findIndex((a: any) => a.username?.toLowerCase() === targetName);
 
     if (adminIndex === -1) {
-      return res.status(404).json({ error: 'ئەم ئەدمینە نەدۆزرایەوە.' });
+      return res.status(404).json({ error: 'Ø¦Û•Ù… Ø¦Û•Ø¯Ù…ÛŒÙ†Û• Ù†Û•Ø¯Û†Ø²Ø±Ø§ÛŒÛ•ÙˆÛ•.' });
     }
 
     const target = db.admins[adminIndex];
     // You may always reset your own password, or the password of an account
-    // with strictly less privilege — never the platform owner's password.
+    // with strictly less privilege â€” never the platform owner's password.
     if (requester.name !== targetName) {
       if (targetName === 'admin' || targetName === 'dekan@123') {
-        return res.status(403).json({ error: 'ناتوانیت وشەی تێپەڕی خاوەن پلاتفۆرم بگۆڕیت' });
+        return res.status(403).json({ error: 'Ù†Ø§ØªÙˆØ§Ù†ÛŒØª ÙˆØ´Û•ÛŒ ØªÛŽÙ¾Û•Ú•ÛŒ Ø®Ø§ÙˆÛ•Ù† Ù¾Ù„Ø§ØªÙÛ†Ø±Ù… Ø¨Ú¯Û†Ú•ÛŒØª' });
       }
       if (roleLevel(target) >= requester.level) {
-        return res.status(403).json({ error: 'ناتوانیت وشەی تێپەڕی ئەدمین بە ئاستی یەکسان یان بەرزتر لە خۆت بگۆڕیت' });
+        return res.status(403).json({ error: 'Ù†Ø§ØªÙˆØ§Ù†ÛŒØª ÙˆØ´Û•ÛŒ ØªÛŽÙ¾Û•Ú•ÛŒ Ø¦Û•Ø¯Ù…ÛŒÙ† Ø¨Û• Ø¦Ø§Ø³ØªÛŒ ÛŒÛ•Ú©Ø³Ø§Ù† ÛŒØ§Ù† Ø¨Û•Ø±Ø²ØªØ± Ù„Û• Ø®Û†Øª Ø¨Ú¯Û†Ú•ÛŒØª' });
       }
     }
 
     // Securely hash the password if provided (bcrypt)
     const safeNewPassword = String(newPassword || '');
     if (safeNewPassword) {
-      if (safeNewPassword.length < 6) return res.status(400).json({ error: 'وشەی تێپەڕ دەبێت لە کەمتر نەبێت لە ٦ هێما' });
-      if (safeNewPassword.length > 128) return res.status(400).json({ error: 'وشەی تێپەڕ زۆر درێژە' });
+      if (safeNewPassword.length < 6) return res.status(400).json({ error: 'ÙˆØ´Û•ÛŒ ØªÛŽÙ¾Û•Ú• Ø¯Û•Ø¨ÛŽØª Ù„Û• Ú©Û•Ù…ØªØ± Ù†Û•Ø¨ÛŽØª Ù„Û• Ù¦ Ù‡ÛŽÙ…Ø§' });
+      if (safeNewPassword.length > 128) return res.status(400).json({ error: 'ÙˆØ´Û•ÛŒ ØªÛŽÙ¾Û•Ú• Ø²Û†Ø± Ø¯Ø±ÛŽÚ˜Û•' });
       db.admins[adminIndex].password = bcrypt.hashSync(safeNewPassword, 10);
     }
 
@@ -4905,31 +5810,31 @@ async function startServer() {
       db.admins[adminIndex].isSuper = !!isSuper;
     }
 
-    await addAuditLog(db, requester.name || 'system', "Modify Admin Credentials", `دەسەڵات یان پاسوۆرد گۆڕدرا بۆ ئەدمینی "${target.username}"`);
+    await addAuditLog(db, requester.name || 'system', "Modify Admin Credentials", `Ø¯Û•Ø³Û•ÚµØ§Øª ÛŒØ§Ù† Ù¾Ø§Ø³ÙˆÛ†Ø±Ø¯ Ú¯Û†Ú•Ø¯Ø±Ø§ Ø¨Û† Ø¦Û•Ø¯Ù…ÛŒÙ†ÛŒ "${target.username}"`);
     await saveDB(db);
-    res.json({ success: true, message: 'ڕێکخستنەکان بە سەرکەوتوویی نوێکرانەوە ✓' });
+    res.json({ success: true, message: 'Ú•ÛŽÚ©Ø®Ø³ØªÙ†Û•Ú©Ø§Ù† Ø¨Û• Ø³Û•Ø±Ú©Û•ÙˆØªÙˆÙˆÛŒÛŒ Ù†ÙˆÛŽÚ©Ø±Ø§Ù†Û•ÙˆÛ• âœ“' });
   });
 
   app.post('/api/admin/m17/notifications/clear', async (req, res) => {
     const requester = requesterInfo(req);
     if (requester.level < 3) {
-      return res.status(403).json({ error: 'کردارەکە ڕەتکرایەوە چونکە دەسەڵاتی پێویستت نییە!' });
+      return res.status(403).json({ error: 'Ú©Ø±Ø¯Ø§Ø±Û•Ú©Û• Ú•Û•ØªÚ©Ø±Ø§ÛŒÛ•ÙˆÛ• Ú†ÙˆÙ†Ú©Û• Ø¯Û•Ø³Û•ÚµØ§ØªÛŒ Ù¾ÛŽÙˆÛŒØ³ØªØª Ù†ÛŒÛŒÛ•!' });
     }
 
     db.ownerNotifications = [];
     await saveDB(db);
-    res.json({ success: true, message: 'ئاگادارییەکان پاککرانەوە ✓' });
+    res.json({ success: true, message: 'Ø¦Ø§Ú¯Ø§Ø¯Ø§Ø±ÛŒÛŒÛ•Ú©Ø§Ù† Ù¾Ø§Ú©Ú©Ø±Ø§Ù†Û•ÙˆÛ• âœ“' });
   });
 
   // --- NEW USER MANAGEMENT ENDPOINTS ---
-  
+
   app.post('/api/users/sync', async (req, res) => {
     const userData = req.body;
     if (!userData || !userData.uid) return res.status(400).json({ error: 'Data required' });
-    
+
     // Capture IP precisely
     const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || "Unknown";
-    
+
     // Rate Limiting Guard (Point 1: Ensure max 3 submits/syncs per minute)
     const now = Date.now();
     if (!syncRateLimits[clientIp]) {
@@ -4938,7 +5843,7 @@ async function startServer() {
     syncRateLimits[clientIp] = syncRateLimits[clientIp].filter(ts => now - ts < 60000);
     if (syncRateLimits[clientIp].length >= 3) {
       console.warn(`[Sync Rate Limit] Rate limited request from IP: ${clientIp}`);
-      return res.status(429).json({ error: 'چاوەڕوان بە! ناتوانیت لە خولەکێکدا زیاتر لە ٣ جار داخڵکردن یان هاوکاتکردن بکەیت.' });
+      return res.status(429).json({ error: 'Ú†Ø§ÙˆÛ•Ú•ÙˆØ§Ù† Ø¨Û•! Ù†Ø§ØªÙˆØ§Ù†ÛŒØª Ù„Û• Ø®ÙˆÙ„Û•Ú©ÛŽÚ©Ø¯Ø§ Ø²ÛŒØ§ØªØ± Ù„Û• Ù£ Ø¬Ø§Ø± Ø¯Ø§Ø®ÚµÚ©Ø±Ø¯Ù† ÛŒØ§Ù† Ù‡Ø§ÙˆÚ©Ø§ØªÚ©Ø±Ø¯Ù† Ø¨Ú©Û•ÛŒØª.' });
     }
     syncRateLimits[clientIp].push(now);
 
@@ -4948,11 +5853,11 @@ async function startServer() {
     }
 
     if (!db.users) db.users = [];
-    
+
     const index = db.users.findIndex((u: any) => u.uid === userData.uid);
-    const updatedUser = { 
-      ...userData, 
-      deviceIp: clientIp, 
+    const updatedUser = {
+      ...userData,
+      deviceIp: clientIp,
       lastActive: new Date().toISOString()
     };
 
@@ -4969,7 +5874,7 @@ async function startServer() {
       db.users.push(updatedUser);
     }
 
-    logUserActivity(db, userData.uniqueCode || "", "Sync Session", `چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر`, clientIp);
+    logUserActivity(db, userData.uniqueCode || "", "Sync Session", `Ú†ÙˆÙˆÙ†Û•Ù†Ø§Ùˆ Ùˆ Ù‡Ø§ÙˆÚ©Ø§ØªÚ©Ø±Ø¯Ù†ÛŒ Ø¯Ø§ØªØ§Ú©Ø§Ù†ÛŒ Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø± Ù„Û•Ú¯Û•Úµ Ø³ÛŽØ±Ú¤Û•Ø±`, clientIp);
     await saveDB(db);
     res.json({ success: true, user: index !== -1 ? db.users[index] : updatedUser });
   });
@@ -4984,10 +5889,10 @@ async function startServer() {
       const adminName = (req.query.adminName || req.headers['x-admin-username'] || "") as string;
       const adminRecord = db.admins.find((a: any) => a.username?.toLowerCase() === adminName?.trim().toLowerCase());
       const requesterRole = adminRecord?.role || (adminName?.trim().toLowerCase() === 'dekan@123' ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
-      
+
       const isAuthorized = adminName?.trim().toLowerCase() === 'dekan@123' || adminName?.trim().toLowerCase() === 'admin' || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'staff' || requesterRole === 'owner';
       if (!isAuthorized) {
-        return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! ناتوانیت ئەم زانیارییە ببینی چونکە ئەکاونتەکەت ئەدمین نییە.' });
+        return res.status(403).json({ error: 'Ø´Ø§ÛŒØ³ØªÛ•ÛŒ Ø¯Û•Ø³Û•ÚµØ§ØªÛŒ Ù¾ÛŽÙˆÛŒØ³Øª Ù†ÛŒÛŒÛ•! Ù†Ø§ØªÙˆØ§Ù†ÛŒØª Ø¦Û•Ù… Ø²Ø§Ù†ÛŒØ§Ø±ÛŒÛŒÛ• Ø¨Ø¨ÛŒÙ†ÛŒ Ú†ÙˆÙ†Ú©Û• Ø¦Û•Ú©Ø§ÙˆÙ†ØªÛ•Ú©Û•Øª Ø¦Û•Ø¯Ù…ÛŒÙ† Ù†ÛŒÛŒÛ•.' });
       }
 
       if (!db.users) db.users = [];
@@ -5001,7 +5906,7 @@ async function startServer() {
           password: fallbackPass,
           ip: devIp,
           deviceIp: devIp,
-          username: user.username || user.name || "بەکارهێنەر"
+          username: user.username || user.name || "Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø±"
         };
       });
 
@@ -5019,7 +5924,7 @@ async function startServer() {
       const adminName = (req.query.adminName || req.headers['x-admin-username'] || "") as string;
       const adminRecord = db.admins.find((a: any) => a.username?.toLowerCase() === adminName?.trim().toLowerCase());
       const requesterRole = adminRecord?.role || (adminName?.trim().toLowerCase() === 'dekan@123' ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
-      
+
       const isAuthorized = adminName?.trim().toLowerCase() === 'dekan@123' || adminName?.trim().toLowerCase() === 'admin' || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'staff' || requesterRole === 'owner';
       if (!isAuthorized) {
         return res.status(403).json({ error: 'Access Denied' });
@@ -5029,7 +5934,7 @@ async function startServer() {
       if (!db.users) db.users = [];
       const user = db.users.find((u: any) => (u.uniqueCode || '').trim().toUpperCase() === cleanCode);
       if (!user) {
-        return res.status(404).json({ error: 'بەکارهێنەرەکە نەدۆزرایەوە' });
+        return res.status(404).json({ error: 'Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø±Û•Ú©Û• Ù†Û•Ø¯Û†Ø²Ø±Ø§ÛŒÛ•ÙˆÛ•' });
       }
 
       // 1. Full history of all messages sent by that user (DMs and Room Messages)
@@ -5059,7 +5964,7 @@ async function startServer() {
         ...sentDms.map((dm: any) => ({
           id: dm.id,
           type: 'Direct Message',
-          destination: `${dm.receiverName || 'بەکارھێنەر'} (${dm.receiverCode || ''})`,
+          destination: `${dm.receiverName || 'Ø¨Û•Ú©Ø§Ø±Ú¾ÛŽÙ†Û•Ø±'} (${dm.receiverCode || ''})`,
           text: dm.message,
           timestamp: dm.timestamp
         })),
@@ -5082,12 +5987,12 @@ async function startServer() {
         registeredIp: user.deviceIp || user.ip || "Unknown",
         lastActive: user.lastActive || "Unknown",
         registrationDetails: {
-          phone: user.phone || "بێ مۆبایل",
-          email: user.email || "بێ ئیمەیڵ",
-          age: user.age || "دیاری نەکراوە",
-          gender: user.gender || "دیاری نەکراوە",
-          residence: user.residence || "دیاری نەکراوە",
-          country: user.country || "دیاری نەکراوە",
+          phone: user.phone || "Ø¨ÛŽ Ù…Û†Ø¨Ø§ÛŒÙ„",
+          email: user.email || "Ø¨ÛŽ Ø¦ÛŒÙ…Û•ÛŒÚµ",
+          age: user.age || "Ø¯ÛŒØ§Ø±ÛŒ Ù†Û•Ú©Ø±Ø§ÙˆÛ•",
+          gender: user.gender || "Ø¯ÛŒØ§Ø±ÛŒ Ù†Û•Ú©Ø±Ø§ÙˆÛ•",
+          residence: user.residence || "Ø¯ÛŒØ§Ø±ÛŒ Ù†Û•Ú©Ø±Ø§ÙˆÛ•",
+          country: user.country || "Ø¯ÛŒØ§Ø±ÛŒ Ù†Û•Ú©Ø±Ø§ÙˆÛ•",
         }
       };
 
@@ -5117,7 +6022,7 @@ async function startServer() {
     const requesterRole = adminRecord?.role || (adminName?.trim().toLowerCase() === 'dekan@123' ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
     const canDelete = adminName?.trim().toLowerCase() === 'dekan@123' || adminName?.trim().toLowerCase() === 'admin' || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'owner';
     if (!canDelete) {
-      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! کارمەند (Staff) ناتوانێت بەکارهێنەران بسڕێتەوە.' });
+      return res.status(403).json({ error: 'Ø´Ø§ÛŒØ³ØªÛ•ÛŒ Ø¯Û•Ø³Û•ÚµØ§ØªÛŒ Ù¾ÛŽÙˆÛŒØ³Øª Ù†ÛŒÛŒÛ•! Ú©Ø§Ø±Ù…Û•Ù†Ø¯ (Staff) Ù†Ø§ØªÙˆØ§Ù†ÛŽØª Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø±Ø§Ù† Ø¨Ø³Ú•ÛŽØªÛ•ÙˆÛ•.' });
     }
 
     if (!db.users) db.users = [];
@@ -5158,12 +6063,12 @@ async function startServer() {
   app.delete('/api/admin/movies/:id', async (req, res) => {
     const { id } = req.params;
     const adminName = (req.query.adminName || req.body.adminName || "Admin") as string;
-    
+
     const adminRecord = db.admins.find((a: any) => a.username?.toLowerCase() === adminName?.trim().toLowerCase());
     const requesterRole = adminRecord?.role || (adminName?.trim().toLowerCase() === 'dekan@123' ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
     const canDelete = adminName?.trim().toLowerCase() === 'dekan@123' || adminName?.trim().toLowerCase() === 'admin' || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'owner';
     if (!canDelete) {
-      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! کارمەند (Staff) ناتوانێت فیلمەکان بسڕێتەوە.' });
+      return res.status(403).json({ error: 'Ø´Ø§ÛŒØ³ØªÛ•ÛŒ Ø¯Û•Ø³Û•ÚµØ§ØªÛŒ Ù¾ÛŽÙˆÛŒØ³Øª Ù†ÛŒÛŒÛ•! Ú©Ø§Ø±Ù…Û•Ù†Ø¯ (Staff) Ù†Ø§ØªÙˆØ§Ù†ÛŽØª ÙÛŒÙ„Ù…Û•Ú©Ø§Ù† Ø¨Ø³Ú•ÛŽØªÛ•ÙˆÛ•.' });
     }
 
     const targetMovie = db.manualMovies.find((m: any) => m.id === id);
@@ -5183,10 +6088,10 @@ async function startServer() {
     // doc and db.json entry are already gone.
     delete firestoreMoviesCache[id];
 
-    await addAuditLog(db, adminName, "Delete Movie", `فیلمی پۆستکراو سڕایەوە: "${movieTitle}"`);
+    await addAuditLog(db, adminName, "Delete Movie", `ÙÛŒÙ„Ù…ÛŒ Ù¾Û†Ø³ØªÚ©Ø±Ø§Ùˆ Ø³Ú•Ø§ÛŒÛ•ÙˆÛ•: "${movieTitle}"`);
     await saveDB(db);
     setMoviesCache(prev => prev.filter(m => m.id !== id));
-    
+
     res.json({ success: true });
   });
 
@@ -5199,7 +6104,7 @@ async function startServer() {
 
     // Firestore is the durable source of truth the client reads (movies/{id}),
     // so persist the category change there FIRST. If that write fails, do not
-    // pretend success — the client keeps the previous selection on the grid.
+    // pretend success â€” the client keeps the previous selection on the grid.
     try {
       await saveMovieTagsToFirestore(id, tags);
     } catch (err: any) {
@@ -5237,7 +6142,7 @@ async function startServer() {
     if (!db.syncGroups[id]) {
       db.syncGroups[id] = {
         id,
-        name: id === 'global_room_official' ? 'ژووری سەرەکی' : 'ژووری تایبەت',
+        name: id === 'global_room_official' ? 'Ú˜ÙˆÙˆØ±ÛŒ Ø³Û•Ø±Û•Ú©ÛŒ' : 'Ú˜ÙˆÙˆØ±ÛŒ ØªØ§ÛŒØ¨Û•Øª',
         playback: { isPlaying: false, currentTime: 0, updatedAt: new Date().toISOString() }
       };
     }
@@ -5264,7 +6169,7 @@ async function startServer() {
     if (playlist && Array.isArray(playlist)) {
       db.heroConfig.heroPlaylist = playlist.filter(Boolean);
       db.heroConfig.heroVideoUrl = playlist[0] || '';
-      await addAuditLog(db, adminName, "Update Hero Playlist", `پلیلیستی ڤیدیۆ نوێکرایەوە`);
+      await addAuditLog(db, adminName, "Update Hero Playlist", `Ù¾Ù„ÛŒÙ„ÛŒØ³ØªÛŒ Ú¤ÛŒØ¯ÛŒÛ† Ù†ÙˆÛŽÚ©Ø±Ø§ÛŒÛ•ÙˆÛ•`);
       await saveDB(db);
     }
     res.json({ success: true, config: db.heroConfig });
@@ -5285,24 +6190,24 @@ async function startServer() {
 
   app.post('/api/admin/post-movie', async (req, res) => {
     if (!req.body) {
-      return res.status(400).json({ success: false, error: "Body is empty — check Content-Type header (use application/json or text/plain)" });
+      return res.status(400).json({ success: false, error: "Body is empty â€” check Content-Type header (use application/json or text/plain)" });
     }
     const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, mainTrailerUrl, streamingSourceUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, quality, tags, category, rating, year, type, duration, postType, subtitleText } = req.body;
-    
+
     // VALIDATION: Detailed error reporting as requested
-    if (!title) return res.status(400).json({ success: false, error: "ناونیشان پێویستە (Title is required)" });
-    if (!category) return res.status(400).json({ success: false, error: "پۆلێن پێویستە (Category is required)" });
-    
+    if (!title) return res.status(400).json({ success: false, error: "Ù†Ø§ÙˆÙ†ÛŒØ´Ø§Ù† Ù¾ÛŽÙˆÛŒØ³ØªÛ• (Title is required)" });
+    if (!category) return res.status(400).json({ success: false, error: "Ù¾Û†Ù„ÛŽÙ† Ù¾ÛŽÙˆÛŒØ³ØªÛ• (Category is required)" });
+
     // Primary video source - accept ANY valid URL
     const activeVideoSource = streamingUrl || videoUrl || req.body.external_link;
-    if (!activeVideoSource) return res.status(400).json({ success: false, error: "لینکی ڤیدیۆ پێویستە (Video source is required)" });
+    if (!activeVideoSource) return res.status(400).json({ success: false, error: "Ù„ÛŒÙ†Ú©ÛŒ Ú¤ÛŒØ¯ÛŒÛ† Ù¾ÛŽÙˆÛŒØ³ØªÛ• (Video source is required)" });
 
     const finalPoster = decodeStoredUrl(posterUrl || image || 'https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800');
 
     console.log(`[Admin] Posting movie: ${title} | Source: ${activeVideoSource}`);
-    
+
     const ytRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
-    
+
     // Check if the main source is YouTube
     const ytMatch = activeVideoSource?.match(ytRegex);
     const ytEmbedUrl = ytMatch ? `https://www.youtube.com/embed/${ytMatch[1]}` : null;
@@ -5331,15 +6236,15 @@ async function startServer() {
       quality: quality || 'HD',
       date: new Date().toISOString(),
       isNetflixOriginal: title?.toLowerCase().includes('netflix'),
-      tags: Array.isArray(tags) ? tags : [category || "هەمووی"],
-      category: category || "هەمووی",
+      tags: Array.isArray(tags) ? tags : [category || "Ù‡Û•Ù…ÙˆÙˆÛŒ"],
+      category: category || "Ù‡Û•Ù…ÙˆÙˆÛŒ",
       rating: rating || "",
       year: year || "",
       duration: typeof duration === 'string' ? duration.trim() : "",
       type: type || "movie",
-      // Explicit Film/Drama post type ("جۆری پۆست"). Primary way to tell
-      // dramas from films for Drama Rooms. Missing/non-drama → "فیلم".
-      postType: postType === "دراما" ? "دراما" : "فیلم",
+      // Explicit Film/Drama post type ("Ø¬Û†Ø±ÛŒ Ù¾Û†Ø³Øª"). Primary way to tell
+      // dramas from films for Drama Rooms. Missing/non-drama â†’ "ÙÛŒÙ„Ù…".
+      postType: postType === "Ø¯Ø±Ø§Ù…Ø§" ? "Ø¯Ø±Ø§Ù…Ø§" : "ÙÛŒÙ„Ù…",
       // Raw pasted .srt/.vtt subtitle content from the admin movie form
       subtitleText: typeof subtitleText === "string" ? subtitleText.trim() : "",
       likes: 0,
@@ -5356,7 +6261,7 @@ async function startServer() {
 
     const adminName = req.body.adminName || "Admin";
     db.manualMovies.push(newMovie);
-    await addAuditLog(db, adminName, "Post Movie", `فیلمی نوێ زیادکرا: "${newMovie.title}"`);
+    await addAuditLog(db, adminName, "Post Movie", `ÙÛŒÙ„Ù…ÛŒ Ù†ÙˆÛŽ Ø²ÛŒØ§Ø¯Ú©Ø±Ø§: "${newMovie.title}"`);
     await saveDB(db);
     // Add to cache while preventing duplicates
     setMoviesCache(prev => [newMovie, ...prev.filter(m => m.id !== newMovie.id)]);
@@ -5390,13 +6295,13 @@ async function startServer() {
       const ytRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/|v\/|u\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
       const vimeoRegex = /(?:https?:\/\/)?(?:www\.)?(?:vimeo\.com\/)([0-9]+)/;
       const directRegex = /(https?:\/\/[^\s]+\.(mp4|mkv|mov|avi))/i;
-      
+
       const ytMatch = text.match(ytRegex);
       const vimeoMatch = text.match(vimeoRegex);
       const directMatch = text.match(directRegex);
 
       let videoUrl = null;
-      let title = "فیلمی نوێ (بە وەتسئەپ)";
+      let title = "ÙÛŒÙ„Ù…ÛŒ Ù†ÙˆÛŽ (Ø¨Û• ÙˆÛ•ØªØ³Ø¦Û•Ù¾)";
       let thumbnail = 'https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800';
       let isYouTube = false;
       let videoId = null;
@@ -5406,7 +6311,7 @@ async function startServer() {
         videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
         isYouTube = true;
         thumbnail = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
-        
+
         try {
           const ytRes = await fetchWithTimeout(`https://www.youtube.com/oembed?url=${videoUrl}&format=json`, {}, 3000);
           if (ytRes.ok) {
@@ -5438,7 +6343,7 @@ async function startServer() {
       const newMovie = {
         id: `wa-auto-${Date.now()}`,
         title,
-        description: `بڵاوکراوەی ئۆتۆماتیکی لە ڕێگەی گرووپی واتسئەپەوە.\n\nOriginal Text excerpt:\n${text.substring(0, 200)}`,
+        description: `Ø¨ÚµØ§ÙˆÚ©Ø±Ø§ÙˆÛ•ÛŒ Ø¦Û†ØªÛ†Ù…Ø§ØªÛŒÚ©ÛŒ Ù„Û• Ú•ÛŽÚ¯Û•ÛŒ Ú¯Ø±ÙˆÙˆÙ¾ÛŒ ÙˆØ§ØªØ³Ø¦Û•Ù¾Û•ÙˆÛ•.\n\nOriginal Text excerpt:\n${text.substring(0, 200)}`,
         image: thumbnail,
         embedUrl: isYouTube ? `https://www.youtube.com/embed/${videoId}` : videoUrl,
         isYouTube,
@@ -5586,7 +6491,7 @@ async function startServer() {
       // and trending scores without a separate request. Live counts live in
       // memory; likes/views/ratings/favorites persist in db.json.
       results = results.map((m: any) => enrichMovie(m));
-      
+
       const ytRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
       const heroUrl = db.heroConfig.heroVideoUrl;
       const ytMatch = heroUrl ? heroUrl.match(ytRegex) : null;
@@ -5596,8 +6501,8 @@ async function startServer() {
       const heroPlaylist = db.heroConfig.heroPlaylist || [];
       const heroMovie: any = {
         id: 'hero-promo',
-        title: 'پرۆمۆی تایبەت',
-        description: 'نوێترین بەرهەمی CinamaChat ببینە لێرە دەتوانیت زانیاری زیاتر وەربگریت.',
+        title: 'Ù¾Ø±Û†Ù…Û†ÛŒ ØªØ§ÛŒØ¨Û•Øª',
+        description: 'Ù†ÙˆÛŽØªØ±ÛŒÙ† Ø¨Û•Ø±Ù‡Û•Ù…ÛŒ CinamaChat Ø¨Ø¨ÛŒÙ†Û• Ù„ÛŽØ±Û• Ø¯Û•ØªÙˆØ§Ù†ÛŒØª Ø²Ø§Ù†ÛŒØ§Ø±ÛŒ Ø²ÛŒØ§ØªØ± ÙˆÛ•Ø±Ø¨Ú¯Ø±ÛŒØª.',
         image: isYouTube ? `https://img.youtube.com/vi/${ytMatch![1]}/maxresdefault.jpg` : 'https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800',
         embedUrl: embedUrl,
         isYouTube: isYouTube,
@@ -5620,7 +6525,7 @@ async function startServer() {
       const uniqueResults = Array.from(
         new Map([heroMovie, ...results].map(m => [m.id, m])).values()
       );
-      
+
       console.log(`[${new Date().toISOString()}] SUCCESS: Returning ${uniqueResults.length} movies from local DB`);
       res.json({
         status: 'ok',
@@ -5745,7 +6650,7 @@ async function startServer() {
         const movieTags = (Array.isArray(m.tags) ? m.tags : [])
           .concat(m.category ? [m.category] : [])
           .map((t: any) => normalizeSearch(String(t)));
-        // Genre filter (multi-select OR) — always applied when provided.
+        // Genre filter (multi-select OR) â€” always applied when provided.
         if (genreSet.size > 0) {
           const hasGenre = movieTags.some((t) => genreSet.has(t)) ||
             (genreSet.size === 1 && movieTags.some((t) => t.includes([...genreSet][0])));
@@ -5835,7 +6740,7 @@ async function startServer() {
         .map(([term, count]) => ({ term, count }));
       // Fall back to popular genre names when there is no recorded history yet.
       const fallback = top.length === 0
-        ? ['ئاکشن', 'دراما', 'کۆمیدی', 'ترسناک', 'New Releases'].map((term) => ({ term, count: 0 }))
+        ? ['Ø¦Ø§Ú©Ø´Ù†', 'Ø¯Ø±Ø§Ù…Ø§', 'Ú©Û†Ù…ÛŒØ¯ÛŒ', 'ØªØ±Ø³Ù†Ø§Ú©', 'New Releases'].map((term) => ({ term, count: 0 }))
         : [];
       res.json({ status: 'ok', results: top.length ? top : fallback });
     } catch (err: any) {
@@ -5891,7 +6796,7 @@ async function startServer() {
       `1. "keywords": up to 8 topical keywords that describe the film (e.g. space survival, zombies, time travel).\n` +
       `2. "genres": up to 4 matching genres (use standard genre names like Action, Drama, Comedy, Animation, Sci-Fi, Romance, Adventure, Crime, Fantasy, Thriller, Horror, Documentary, Family, Mystery, War).\n` +
       `3. "titles": up to 4 real movie/tv titles this description most likely refers to (their exact common English names).\n` +
-      `Respond with STRICT JSON only — no markdown, no commentary — in this exact shape:\n` +
+      `Respond with STRICT JSON only â€” no markdown, no commentary â€” in this exact shape:\n` +
       `{"keywords":[],"genres":[],"titles":[]}\n` +
       `User description: ${query.slice(0, 500)}`;
 
@@ -6059,15 +6964,15 @@ async function startServer() {
 
 
   // Generates SRT subtitles for a movie source on the server (ffmpeg + Whisper +
-  // optional Gemini translation). Used by the player's "درستکردنی وەرگێڕان" button.
+  // optional Gemini translation). Used by the player's "Ø¯Ø±Ø³ØªÚ©Ø±Ø¯Ù†ÛŒ ÙˆÛ•Ø±Ú¯ÛŽÚ•Ø§Ù†" button.
   // YouTube / streaming-source URLs use pure web caption extraction (timedtext +
   // player-response track discovery) without yt-dlp.
   // direct .mp4/.webm file URLs are downloaded with a plain HTTP fetch instead.
   app.post('/api/subtitle/generate', async (req, res) => {
-    const { url, subtitleUrl, lang } = req.body || {};
+    const { url, subtitleUrl, lang, startSeconds, windowSeconds } = req.body || {};
 
     // Fast path: the movie already has a subtitle file attached (movie.subtitleUrl).
-    // Fetch that file and translate it with Gemini directly — no audio download, no
+    // Fetch that file and translate it with Gemini directly â€” no audio download, no
     // ffmpeg, no Whisper transcription. This is much faster and is used whenever the
     // caller provides a subtitleUrl. Whisper is only a fallback for movies WITHOUT
     // an existing subtitle file (see below).
@@ -6120,6 +7025,10 @@ async function startServer() {
     }
     const targetLang =
       typeof lang === 'string' && /^[a-z]{2,3}$/i.test(lang) ? lang.toLowerCase() : 'en';
+    const subtitleWindowStart =
+      Number.isFinite(Number(startSeconds)) ? Math.max(0, Number(startSeconds)) : null;
+    const subtitleWindowDuration =
+      Number.isFinite(Number(windowSeconds)) ? Math.min(Math.max(Number(windowSeconds), 10), 600) : null;
     const sourceUrl = sanitizeUrl(url);
     if (!/^https?:\/\//i.test(sourceUrl)) {
       return res.status(400).json({ error: 'Source must be a valid http(s) URL' });
@@ -6170,14 +7079,67 @@ let videoDownloaded = false;
         // is unavailable or returns nothing.
         const videoId = extractYoutubeVideoId(sourceUrl);
         if (!videoId) {
-          return res.status(400).json({ error: 'Unsupported URL — only direct video files and YouTube links are supported' });
+          return res.status(400).json({ error: 'Unsupported URL â€” only direct video files and YouTube links are supported' });
         }
+        const youtubeWatchUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
         stepLog(`fetching YouTube captions for video ${videoId} via yt-dlp`);
+
+        if (targetLang === 'ckb') {
+          const soraniSourceLangs = ['ku', 'en', 'ar', 'es', 'tr', 'fa'];
+          for (const soraniSourceLang of soraniSourceLangs) {
+            try {
+              stepLog(`Sorani requested; fetching ${soraniSourceLang} captions first, then translating to ckb`);
+              const sourceCaptionResult = await fetchYoutubeCaptionsViaYtDlp(
+                youtubeWatchUrl,
+                workDir,
+                soraniSourceLang,
+              );
+              const sourceSrtForSorani =
+                subtitleWindowStart !== null && subtitleWindowDuration !== null
+                  ? trimSubtitleToTimeWindow(
+                      sourceCaptionResult.srt,
+                      Math.max(0, subtitleWindowStart - 10),
+                      subtitleWindowDuration + 20,
+                    )
+                  : trimSubtitleToMaxStartSeconds(
+                      sourceCaptionResult.srt,
+                      Number(process.env.CINEMA_WINDOW_SORANI_PREVIEW_SECONDS) || 300,
+                    );
+              if (!sourceSrtForSorani.trim()) {
+                throw new Error(`No ${soraniSourceLang} captions found in the requested time window`);
+              }
+              const translatedSrt = await translateSubtitleWithFallback(
+                sourceSrtForSorani,
+                targetLang,
+                sourceCaptionResult.lang || soraniSourceLang,
+              );
+              stepLog(
+                `translated ${sourceCaptionResult.lang} captions to Sorani (${translatedSrt.length} chars, source=${sourceCaptionResult.mode})`,
+              );
+              res.json({
+                success: true,
+                srt: translatedSrt,
+                lang: targetLang,
+                source: `youtube-captions-${sourceCaptionResult.mode}-sorani-translate`,
+              });
+              return;
+            } catch (soraniErr: any) {
+              stepLog(`stable ${soraniSourceLang}-to-Sorani path failed: ${soraniErr?.message || soraniErr}`);
+            }
+          }
+        }
 
         // 1) yt-dlp (primary). Returns exact target-language captions when they
         //    exist, otherwise English/auto captions that still need translating.
+        let ytDlpResult: { srt: string; mode: string; lang: string } | null = null;
         try {
-          const ytDlpResult = await fetchYoutubeCaptionsViaYtDlp(sourceUrl, workDir, targetLang);
+          ytDlpResult = await fetchYoutubeCaptionsViaYtDlp(youtubeWatchUrl, workDir, targetLang);
+        } catch (ytDlpErr: any) {
+          stepLog(`yt-dlp caption fetch failed: ${ytDlpErr?.message || ytDlpErr}`);
+          stepLog(`trying timedtext/web extractors for video ${videoId}`);
+        }
+
+        if (ytDlpResult) {
           if (ytDlpResult.lang === targetLang) {
             stepLog(
               `returned YouTube captions via yt-dlp (${ytDlpResult.mode}, ${ytDlpResult.srt.length} chars)`,
@@ -6190,19 +7152,60 @@ let videoDownloaded = false;
             });
             return;
           }
-          stepLog(`yt-dlp got ${ytDlpResult.lang} captions for target ${targetLang}; translating via Gemini`);
-          const translatedSrt = await translateSrtViaGemini(ytDlpResult.srt, targetLang);
-          stepLog(`translated yt-dlp captions via Gemini (${translatedSrt.length} chars, mode=${ytDlpResult.mode})`);
-          res.json({
-            success: true,
-            srt: translatedSrt,
-            lang: targetLang,
-            source: `youtube-captions-${ytDlpResult.mode}-gemini`,
-          });
+          if (targetLang !== 'en') {
+            try {
+              stepLog(`yt-dlp got ${ytDlpResult.lang} captions; trying YouTube auto-translate to ${targetLang}`);
+              const webTranslatedResult = await fetchYouTubeCaptionsFromWeb(videoId, targetLang);
+              if (webTranslatedResult.lang === targetLang) {
+                stepLog(
+                  `returned YouTube auto-translated captions (${webTranslatedResult.source}, ${webTranslatedResult.srt.length} chars)`,
+                );
+                res.json({
+                  success: true,
+                  srt: webTranslatedResult.srt,
+                  lang: targetLang,
+                  source: `youtube-captions-web-${webTranslatedResult.source}`,
+                });
+                return;
+              }
+              stepLog(
+                `YouTube web captions returned ${webTranslatedResult.lang}; using public translation to ${targetLang}`,
+              );
+              const webTranslatedSrt = await translateSubtitleWithFallback(
+                webTranslatedResult.srt,
+                targetLang,
+                webTranslatedResult.lang || 'auto',
+              );
+              res.json({
+                success: true,
+                srt: webTranslatedSrt,
+                lang: targetLang,
+                source: `youtube-captions-web-${webTranslatedResult.source}-translate`,
+              });
+              return;
+            } catch (webTranslateErr: any) {
+              stepLog(`YouTube auto-translate path failed: ${webTranslateErr?.message || webTranslateErr}`);
+            }
+          }
+
+          stepLog(`yt-dlp got ${ytDlpResult.lang} captions for target ${targetLang}; translating via public fallback`);
+          try {
+            const translatedSrt = await translateSubtitleWithFallback(ytDlpResult.srt, targetLang, ytDlpResult.lang || 'auto');
+            stepLog(`translated yt-dlp captions via public fallback (${translatedSrt.length} chars, mode=${ytDlpResult.mode})`);
+            res.json({
+              success: true,
+              srt: translatedSrt,
+              lang: targetLang,
+              source: `youtube-captions-${ytDlpResult.mode}-translate`,
+            });
+          } catch (translateErr: any) {
+            const message = translateErr?.message || 'Subtitle translation failed';
+            stepLog(`caption fetch succeeded but public translation failed: ${message}`);
+            res.status(500).json({
+              error: `Captions were found, but subtitle translation failed: ${message}`,
+            });
+          }
           return;
-        } catch (ytDlpErr: any) {
-          stepLog(`yt-dlp caption fetch failed: ${ytDlpErr?.message || ytDlpErr}`);
-          stepLog(`trying timedtext/web extractors for video ${videoId}`);
         }
 
         // 2) Web timedtext extractors (fallback when yt-dlp is unavailable).
@@ -6211,6 +7214,30 @@ let videoDownloaded = false;
           stepLog(
             `returned YouTube captions via web extractor (${webCaptionResult.source}, ${webCaptionResult.srt.length} chars)`,
           );
+          if (webCaptionResult.lang !== targetLang) {
+            try {
+              const translatedSrt = await translateSubtitleWithFallback(
+                webCaptionResult.srt,
+                targetLang,
+                webCaptionResult.lang || 'auto',
+              );
+              stepLog(
+                `translated web captions ${webCaptionResult.lang} to ${targetLang} via public fallback (${translatedSrt.length} chars, source=${webCaptionResult.source})`,
+              );
+              res.json({
+                success: true,
+                srt: translatedSrt,
+                lang: targetLang,
+                source: `youtube-captions-web-${webCaptionResult.source}-translate`,
+              });
+            } catch (translateErr: any) {
+              const message = translateErr?.message || 'Subtitle translation failed';
+              res.status(500).json({
+                error: `Captions were found, but subtitle translation failed: ${message}`,
+              });
+            }
+            return;
+          }
           res.json({
             success: true,
             srt: webCaptionResult.srt,
@@ -6220,19 +7247,65 @@ let videoDownloaded = false;
           return;
         } catch (webErr: any) {
           stepLog(`timedtext/web caption fetch failed: ${webErr?.message || webErr}`);
-          if (targetLang !== 'en') {
-            stepLog(`trying English caption fallback + Gemini translation for video ${videoId}`);
+
+          const bridgeCaptionLangs = ['ar', 'en', 'ku', 'es', 'tr', 'fa'].filter(
+            (captionLang) => captionLang !== targetLang,
+          );
+          for (const bridgeLang of bridgeCaptionLangs) {
             try {
-              const enCaptionResult = await fetchYouTubeCaptionsFromWeb(videoId, 'en');
-              const translatedSrt = await translateSrtViaGemini(enCaptionResult.srt, targetLang);
+              stepLog(`trying yt-dlp bridge captions (${bridgeLang}) + public translation to ${targetLang}`);
+              const bridgeResult = await fetchYoutubeCaptionsViaYtDlp(youtubeWatchUrl, workDir, bridgeLang);
+              if (bridgeResult.lang === targetLang) {
+                res.json({
+                  success: true,
+                  srt: bridgeResult.srt,
+                  lang: targetLang,
+                  source: `youtube-captions-bridge-${bridgeResult.mode}`,
+                });
+                return;
+              }
+              const translatedSrt = await translateSubtitleWithFallback(
+                bridgeResult.srt,
+                targetLang,
+                bridgeResult.lang || bridgeLang,
+              );
               stepLog(
-                `translated fallback English captions via Gemini (${translatedSrt.length} chars, source=${enCaptionResult.source})`,
+                `translated bridge captions (${bridgeResult.lang}/${bridgeResult.mode}) to ${targetLang} (${translatedSrt.length} chars)`,
               );
               res.json({
                 success: true,
                 srt: translatedSrt,
                 lang: targetLang,
-                source: `youtube-captions-web-en-gemini-${enCaptionResult.source}`,
+                source: `youtube-captions-bridge-${bridgeResult.mode}-translate`,
+              });
+              return;
+            } catch (bridgeErr: any) {
+              stepLog(`bridge ${bridgeLang} failed: ${bridgeErr?.message || bridgeErr}`);
+            }
+          }
+
+          if (targetLang !== 'en') {
+            stepLog(`trying English caption fallback + public translation for video ${videoId}`);
+            try {
+              const enCaptionResult = await fetchYouTubeCaptionsFromWeb(videoId, 'en');
+              let translatedSrt = '';
+              try {
+                translatedSrt = await translateSubtitleWithFallback(enCaptionResult.srt, targetLang, 'en');
+              } catch (translateErr: any) {
+                const message = translateErr?.message || 'Subtitle translation failed';
+                res.status(500).json({
+                  error: `Captions were found, but subtitle translation failed: ${message}`,
+                });
+                return;
+              }
+              stepLog(
+                `translated fallback English captions via public fallback (${translatedSrt.length} chars, source=${enCaptionResult.source})`,
+              );
+              res.json({
+                success: true,
+                srt: translatedSrt,
+                lang: targetLang,
+                source: `youtube-captions-web-en-translate-${enCaptionResult.source}`,
               });
               return;
             } catch (geminiFallbackErr: any) {
@@ -6267,11 +7340,39 @@ let videoDownloaded = false;
     }
   });
 
+  app.post('/api/subtitle/translate', async (req, res) => {
+    const { srt, lang, sourceLang } = req.body || {};
+    if (typeof srt !== 'string' || !srt.trim()) {
+      return res.status(400).json({ error: 'Missing subtitle text' });
+    }
+    const targetLang =
+      typeof lang === 'string' && /^[a-z]{2,3}$/i.test(lang) ? lang.toLowerCase() : 'ckb';
+    const fromLang =
+      typeof sourceLang === 'string' && /^[a-z]{2,3}$/i.test(sourceLang) ? sourceLang.toLowerCase() : 'auto';
+
+    try {
+      const normalized = normalizeSubtitleText(srt);
+      if (normalized.length > 15 * 1024 * 1024) {
+        return res.status(413).json({ error: 'Subtitle text is too large' });
+      }
+      const translatedSrt =
+        targetLang === fromLang ? normalized : await translateSubtitleWithFallback(normalized, targetLang, fromLang);
+      res.json({
+        success: true,
+        srt: translatedSrt,
+        lang: targetLang,
+        source: `subtitle-translate-${fromLang}-to-${targetLang}`,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Subtitle translation failed' });
+    }
+  });
+
   app.all('/api/*', (req, res, next) => {
     if (res.headersSent) return next();
     console.warn(`[${new Date().toISOString()}] 404 API: ${req.method} ${req.url}`);
-    res.status(404).json({ 
-       status: 'error', 
+    res.status(404).json({
+       status: 'error',
        error: 'API route not found',
        path: req.url,
        method: req.method
@@ -6339,7 +7440,7 @@ let videoDownloaded = false;
           const group = db.syncGroups[groupId];
           // Use playback.updatedAt if available, otherwise updatedAt, otherwise createdAt
           const updatedAtStr = group?.playback?.updatedAt || group?.updatedAt || group?.createdAt;
-          
+
           // If no timestamp, or if it's older than 5 hours, delete the group
           if (!updatedAtStr || new Date(updatedAtStr) < fiveHoursAgo) {
             delete db.syncGroups[groupId];
@@ -6368,10 +7469,10 @@ let videoDownloaded = false;
       if (!db || !db.syncGroups) return;
       const now = new Date();
       let changed = false;
-      
+
       for (const roomId of Object.keys(db.syncGroups)) {
         if (roomId === 'global_room_official' || roomId === 'main_broadcast_room') continue; // Always keep global and broadcast rooms
-        
+
         const room = db.syncGroups[roomId];
         if (!room) continue; // Should not happen, but for safety
 
@@ -6421,7 +7522,7 @@ let videoDownloaded = false;
       console.error("Error in empty room cleanup setInterval:", e);
     }
   }, 10000);
-  
+
   app.listen(PORT, '0.0.0.0', () => {
     console.log('==================================================');
     console.log(`CinemaChat Server started on http://0.0.0.0:${PORT}`);

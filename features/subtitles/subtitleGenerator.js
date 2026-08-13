@@ -18,7 +18,7 @@ const path = require("path");
 
 const VIDEO_EXTENSIONS = [".mp4", ".mkv", ".avi"];
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-flash-latest";
-const GEMINI_MAX_SUBTITLE_CHARS = Number(process.env.SUBTITLE_GEMINI_MAX_CHARS) || 6000;
+const GEMINI_MAX_SUBTITLE_CHARS = Number(process.env.SUBTITLE_GEMINI_MAX_CHARS) || 30000;
 
 // Per-step timeouts (ms). Tune via env if needed.
 const TIMEOUTS = {
@@ -153,14 +153,26 @@ async function runWhisper(wavFilePath, outputDir) {
 // file structure (cue numbers, identifiers, timestamps) identical so the
 // subtitles never go out of sync. Works for both SRT and WebVTT input, and
 // returns the file in the exact same format it was given.
+function subtitleTargetLanguageName(targetLang) {
+  const code = String(targetLang || "").toLowerCase();
+  if (code === "ckb") return `Kurdish Sorani (Central Kurdish, Arabic script; language code "${targetLang}")`;
+  if (code === "ku") return `Kurdish (language code "${targetLang}")`;
+  if (code === "ar") return `Arabic (language code "${targetLang}")`;
+  if (code === "fa") return `Persian (language code "${targetLang}")`;
+  if (code === "tr") return `Turkish (language code "${targetLang}")`;
+  if (code === "en") return `English (language code "${targetLang}")`;
+  return `the language code "${targetLang}"`;
+}
+
 async function translateSrtViaGemini(srtText, targetLang) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY is not set; cannot translate subtitles");
 
   const translateChunk = async (subtitleChunk) => {
+    const targetLanguageName = subtitleTargetLanguageName(targetLang);
     const prompt =
       `Translate ONLY the spoken-dialogue text lines in the subtitle file below into ` +
-      `the language code "${targetLang}". The file may be SRT or WebVTT. Keep the ` +
+      `${targetLanguageName}. The file may be SRT or WebVTT. Keep the ` +
       `file's structure and every cue number, cue identifier and timestamp EXACTLY ` +
       `the same. Return the complete file in the exact same format, adding or ` +
       `removing no lines.\n\n${subtitleChunk}`;

@@ -34,12 +34,17 @@ import {
   UserPlus,
   UserCircle2,
   AtSign,
+  Camera,
+  ImageUp,
+  ScanLine,
+  BadgeCheck,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import jsQR from "jsqr";
-import { Movie } from "../../types";
+import { Movie, SocialUser } from "../../types";
 import YouTubeResilientPlayer from "../Player/YouTubeResilientPlayer";
 import ImmersiveShieldedPlayer from "../Player/ImmersiveShieldedPlayer";
+import { ProfileCard } from "./ProfileCard";
 import {
   CINEMA_CHAT_ROOM_ID,
   CINEMA_CHAT_ROOM_NAME,
@@ -166,6 +171,42 @@ const ChatUnreadBadge = ({ text, voice }: { text: number; voice: number }) => {
       {voice > 0 && <Mic className="w-2.5 h-2.5" />}
       {total}
     </span>
+  );
+};
+
+const WizardProgress = ({ activeStep }: { activeStep: number }) => {
+  const steps = [
+    { n: 1, label: "Friend" },
+    { n: 2, label: "Connect" },
+    { n: 3, label: "Ready" },
+    { n: 4, label: "Movie" },
+  ];
+  return (
+    <div className="px-5 py-3 bg-black/30 border-b border-white/10">
+      <div className="grid grid-cols-4 gap-2">
+        {steps.map((step) => {
+          const active = step.n === activeStep;
+          const done = step.n < activeStep;
+          return (
+            <div
+              key={step.n}
+              className={`h-10 rounded-xl border flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-widest transition-all ${
+                active
+                  ? "bg-brand-primary text-white border-brand-primary"
+                  : done
+                    ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/25"
+                    : "bg-white/5 text-gray-500 border-white/10"
+              }`}
+            >
+              <span className="w-5 h-5 rounded-full bg-black/25 flex items-center justify-center">
+                {done ? <CheckCircle2 className="w-3 h-3" /> : step.n}
+              </span>
+              <span className="hidden sm:inline">{step.label}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 };
 
@@ -1023,6 +1064,17 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
 
   const showDisconnectedOverlay =
     isParticipant && state.sessionState === SESSION_STATES.DISCONNECTED;
+  const wizardStep =
+    state.sessionState === SESSION_STATES.PAIRING
+      ? 2
+      : state.sessionState === SESSION_STATES.WAITING_FOR_APPROVAL
+        ? 4
+        : state.sessionState === SESSION_STATES.READY ||
+            state.sessionState === SESSION_STATES.PLAYING ||
+            state.sessionState === SESSION_STATES.PAUSED ||
+            state.sessionState === SESSION_STATES.DISCONNECTED
+          ? 4
+          : 1;
 
   // ---------------------------------------------------------------------------
 
@@ -1099,6 +1151,8 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
             </div>
 
             {/* ── Body ─────────────────────────────────────────────────── */}
+            <WizardProgress activeStep={wizardStep} />
+
             <div className="flex-1 flex overflow-hidden">
               {/* Main area */}
               <div
@@ -2074,6 +2128,23 @@ const Lobby = ({
     state.joinCode || "",
   )}`;
 
+  const showStepOneWizard = state.sessionState !== SESSION_STATES.PAIRING;
+  if (showStepOneWizard) {
+    return (
+      <div className="flex-1 overflow-y-auto custom-scrollbar p-4 sm:p-8">
+        <div className="w-full max-w-3xl mx-auto">
+          <FriendIdentityPanel
+            identity={identity}
+            hasAccount={hasAccount}
+            accountName={accountName}
+            accountCode={accountCode}
+            onRequestAccount={onRequestAccount}
+          />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex-1 flex items-center justify-center p-8 overflow-y-auto custom-scrollbar">
       <div className="w-full max-w-3xl grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -2291,7 +2362,13 @@ const Lobby = ({
         {/* Optional phone-number invite (UI contract — SMS not wired) */}
         {meIsHost && state.sessionState === SESSION_STATES.WAITING_FOR_PARTNER && (
           <div className="md:col-span-2">
-            <PhoneInvitePanel code={state.joinCode} safeLink={safeLink} />
+            <FriendIdentityPanel
+              identity={identity}
+              hasAccount={hasAccount}
+              accountName={accountName}
+              accountCode={accountCode}
+              onRequestAccount={onRequestAccount}
+            />
           </div>
         )}
 
@@ -2483,6 +2560,636 @@ const CodeCopy = ({
         </span>
       )}
     </button>
+  );
+};
+
+const extractInviteIdentity = (raw: string): string => {
+  const value = (raw || "").trim();
+  if (!value) return "";
+  if (value.startsWith("cinemachat://cinema-room")) {
+    const params = new URLSearchParams(value.split("?")[1] || "");
+    return params.get("code") || value;
+  }
+  try {
+    const url = new URL(value);
+    return url.searchParams.get("code") || url.searchParams.get("user") || value;
+  } catch {
+    return value;
+  }
+};
+
+const FriendIdentityPanel = ({
+  identity,
+  hasAccount,
+  accountName,
+  accountCode,
+  onRequestAccount,
+}: {
+  identity: CinemaChatParticipant;
+  hasAccount: boolean;
+  accountName?: string;
+  accountCode?: string;
+  onRequestAccount?: () => void;
+}) => {
+  const [input, setInput] = useState("");
+  const [target, setTarget] = useState<Awaited<ReturnType<typeof resolveInviteTarget>>>(null);
+  const [status, setStatus] = useState<"idle" | "scanning" | "resolving" | "found" | "error">(
+    "idle",
+  );
+  const [message, setMessage] = useState<string | null>(null);
+  const [showBarcode, setShowBarcode] = useState(false);
+  const [cameraActive, setCameraActive] = useState(false);
+  const [method, setMethod] = useState<"scan" | "upload" | "phone">("scan");
+  const qrImageInputRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const frameRef = useRef<number | null>(null);
+
+  const myCode = accountCode || identity.code;
+  const myProfile = useMemo<SocialUser>(
+    () => ({
+      uid: identity.id,
+      name: accountName || identity.name,
+      phone: "",
+      uniqueCode: myCode,
+      avatarUrl: identity.avatarUrl,
+    }),
+    [accountName, identity.avatarUrl, identity.id, identity.name, myCode],
+  );
+  const maskedPhone = target?.phone
+    ? target.phone.replace(/(\d{3})\d+(\d{2})$/, "$1*****$2")
+    : "";
+
+  const chooseAnother = () => {
+    stopCamera();
+    setInput("");
+    setTarget(null);
+    setStatus("idle");
+    setMessage(null);
+  };
+
+  const stopCamera = useCallback(() => {
+    if (frameRef.current !== null) {
+      window.cancelAnimationFrame(frameRef.current);
+      frameRef.current = null;
+    }
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+    setCameraActive(false);
+    setStatus((current) => (current === "scanning" ? "idle" : current));
+  }, []);
+
+  useEffect(() => stopCamera, [stopCamera]);
+
+  const resolveFriend = useCallback(
+    async (rawValue: string) => {
+      const lookup = extractInviteIdentity(rawValue);
+      if (!lookup) {
+        setTarget(null);
+        setStatus("error");
+        setMessage("کۆد، ژمارە یان QR ـێکی دروست بنووسە");
+        return;
+      }
+
+      setInput(lookup);
+      setTarget(null);
+      setStatus("resolving");
+      setMessage(null);
+      try {
+        const found = await resolveInviteTarget(lookup);
+        if (!found) {
+          setStatus("error");
+          setMessage("هیچ ئەکاونتێک بەو کۆد/ژمارەیە نەدۆزرایەوە");
+          return;
+        }
+        if (
+          normalizeJoinCode(found.uniqueCode) === normalizeJoinCode(myCode) ||
+          found.uid === identity.id
+        ) {
+          setStatus("error");
+          setMessage("ئەم بارکۆدە هی خۆتە؛ بارکۆد یان ژمارەی هاوڕێکەت بەکاربهێنە");
+          return;
+        }
+        setTarget(found);
+        setStatus("found");
+        setMessage("هاوڕێکەت دۆزرایەوە؛ هەنگاوی داهاتوو ناردنی بانگهێشتە");
+      } catch {
+        setStatus("error");
+        setMessage("دۆزینەوە سەرکەوتوو نەبوو؛ دووبارە هەوڵبدە");
+      }
+    },
+    [identity.id, myCode],
+  );
+
+  const decodeImageFile = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new window.Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx.drawImage(img, 0, 0);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = jsQR(imageData.data, imageData.width, imageData.height);
+        if (code?.data) void resolveFriend(code.data);
+        else {
+          setTarget(null);
+          setStatus("error");
+          setMessage("لە وێنەکەدا QR/بارکۆدی خوێندراو نەدۆزرایەوە");
+        }
+      };
+      img.src = String(event.target?.result || "");
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const startCamera = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setStatus("error");
+      setMessage("کامێرای browser لەم ئامێرەدا بەردەست نییە");
+      return;
+    }
+    setTarget(null);
+    setMessage(null);
+    setStatus("scanning");
+    setCameraActive(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: "environment" },
+      });
+      streamRef.current = stream;
+      const video = videoRef.current;
+      if (!video) return;
+      video.srcObject = stream;
+      await video.play();
+
+      const scan = () => {
+        const canvas = canvasRef.current;
+        const ctx = canvas?.getContext("2d");
+        if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && canvas && ctx) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const code = jsQR(imageData.data, imageData.width, imageData.height);
+          if (code?.data) {
+            stopCamera();
+            void resolveFriend(code.data);
+            return;
+          }
+        }
+        frameRef.current = window.requestAnimationFrame(scan);
+      };
+      scan();
+    } catch {
+      stopCamera();
+      setStatus("error");
+      setMessage("ڕێگەدان بە کامێرا نەدرا یان کامێرا نەدۆزرایەوە");
+    }
+  };
+
+  if (target) {
+    return (
+      <div className="bg-zinc-900 border border-white/10 rounded-[2rem] p-5" dir="rtl">
+        <div className="flex items-center justify-between gap-3 mb-5">
+          <div>
+            <h3 className="text-base font-black text-white kurdish-text">
+              هاوڕێکەت دۆزرایەوە
+            </h3>
+            <p className="text-[11px] text-gray-500 kurdish-text mt-1">
+              پێش ناردنی بانگهێشت دڵنیابە ئەمە هەمان کەسە.
+            </p>
+          </div>
+          <BadgeCheck className="w-6 h-6 text-emerald-400 flex-shrink-0" />
+        </div>
+
+        <div className="rounded-3xl border border-emerald-500/25 bg-emerald-500/10 p-4 flex items-center gap-4">
+          <div className="w-14 h-14 rounded-full bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-white text-lg font-black overflow-hidden">
+            {(target.name || "?").slice(0, 1).toUpperCase()}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-base font-black text-white kurdish-text truncate">
+              {target.name}
+            </p>
+            <p className="text-[11px] text-emerald-300 font-mono truncate">
+              {target.uniqueCode}
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {maskedPhone && (
+                <span className="px-2 py-1 rounded-lg bg-black/30 border border-white/10 text-[10px] text-gray-300 font-mono">
+                  {maskedPhone}
+                </span>
+              )}
+              <span className="px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-[10px] text-gray-400 kurdish-text">
+                Online status: not verified
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {message && (
+          <p className="mt-3 flex items-center gap-2 text-[11px] font-bold text-amber-400 kurdish-text">
+            <AlertCircle className="w-4 h-4 flex-shrink-0" />
+            {message}
+          </p>
+        )}
+
+        <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() =>
+              setMessage("ناردنی بانگهێشت و چاوەڕوانی وەڵام لە Milestone 2 دەبەسترێتەوە.")
+            }
+            className="px-5 py-3 rounded-2xl bg-brand-primary hover:bg-red-700 text-white text-xs font-black kurdish-text flex items-center justify-center gap-2 transition-all"
+          >
+            <Send className="w-4 h-4" />
+            SEND INVITATION
+          </button>
+          <button
+            type="button"
+            onClick={chooseAnother}
+            className="px-5 py-3 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 text-xs font-black kurdish-text transition-all"
+          >
+            CHOOSE ANOTHER PERSON
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-zinc-900 border border-white/10 rounded-[2rem] p-5" dir="rtl">
+      <div className="flex flex-col lg:flex-row gap-5">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between gap-3 mb-4">
+            <div>
+              <h3 className="text-base font-black text-white kurdish-text">
+                Invite a Friend
+              </h3>
+              <p className="text-[11px] text-gray-500 kurdish-text mt-1">
+                یەک ڕێگا هەڵبژێرە: سکانی QR، وێنەی QR، یان ژمارەی مۆبایل.
+              </p>
+            </div>
+            <ScanLine className="w-5 h-5 text-brand-primary flex-shrink-0" />
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 mb-4">
+            {[
+              { id: "scan" as const, label: "Scan QR", icon: Camera },
+              { id: "upload" as const, label: "Upload QR", icon: ImageUp },
+              { id: "phone" as const, label: "Phone", icon: Phone },
+            ].map((item) => {
+              const Icon = item.icon;
+              const active = method === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    stopCamera();
+                    setMethod(item.id);
+                    setMessage(null);
+                    setStatus("idle");
+                  }}
+                  className={`min-h-[72px] rounded-2xl border flex flex-col items-center justify-center gap-2 text-[10px] font-black transition-all ${
+                    active
+                      ? "bg-brand-primary text-white border-brand-primary shadow-lg shadow-red-600/20"
+                      : "bg-black/30 text-gray-400 border-white/10 hover:bg-white/5"
+                  }`}
+                >
+                  <Icon className="w-5 h-5" />
+                  {item.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {method === "scan" && (
+            <div className="rounded-3xl border border-white/10 bg-black/30 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-black text-white kurdish-text">سکانی زیندووی QR</p>
+                  <p className="text-[10px] text-gray-500 kurdish-text mt-1">
+                    کامێرا دەکرێتەوە و دوای دۆزینەوەی کۆد خۆکار دادەخرێت.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={cameraActive ? stopCamera : startCamera}
+                  className="px-4 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 text-[11px] font-black kurdish-text flex items-center gap-2 transition-all"
+                >
+                  <Camera className="w-4 h-4" />
+                  {cameraActive ? "Cancel" : "Open Camera"}
+                </button>
+              </div>
+              {cameraActive && (
+                <div className="mt-3 overflow-hidden rounded-2xl border border-brand-primary/30 bg-black">
+                  <video ref={videoRef} muted playsInline className="w-full max-h-64 object-cover" />
+                  <canvas ref={canvasRef} className="hidden" />
+                </div>
+              )}
+            </div>
+          )}
+
+          {method === "upload" && (
+            <div className="rounded-3xl border border-white/10 bg-black/30 p-4">
+              <button
+                type="button"
+                onClick={() => qrImageInputRef.current?.click()}
+                className="w-full min-h-[120px] rounded-2xl border border-dashed border-white/15 bg-white/5 hover:bg-white/10 text-gray-300 flex flex-col items-center justify-center gap-3 transition-all"
+              >
+                <ImageUp className="w-7 h-7 text-brand-primary" />
+                <span className="text-xs font-black kurdish-text">وێنەی QR هەڵبژێرە</span>
+                <span className="text-[10px] text-gray-500 kurdish-text">
+                  QR لە ناو وێنەکەدا client-side دەخوێندرێتەوە.
+                </span>
+              </button>
+              <input
+                ref={qrImageInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) decodeImageFile(file);
+                  e.currentTarget.value = "";
+                }}
+              />
+            </div>
+          )}
+
+          {method === "phone" && (
+            <div className="rounded-3xl border border-white/10 bg-black/30 p-4">
+              <label className="text-[10px] text-gray-500 font-black kurdish-text">
+                ژمارەی مۆبایلی هاوڕێکەت
+              </label>
+              <div className="mt-2 grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2">
+                <input
+                  type="tel"
+                  inputMode="tel"
+                  value={input}
+                  onChange={(e) => {
+                    setInput(e.target.value);
+                    setMessage(null);
+                    setStatus("idle");
+                  }}
+                  onKeyDown={(e) => e.key === "Enter" && resolveFriend(input)}
+                  placeholder="+964 750 000 0000"
+                  className="w-full bg-black/50 border-2 border-white/10 focus:border-brand-primary rounded-2xl px-4 py-3 text-white text-sm font-mono outline-none transition-all"
+                />
+                <button
+                  type="button"
+                  onClick={() => resolveFriend(input)}
+                  disabled={status === "resolving" || !input.trim()}
+                  className="px-5 py-3 rounded-2xl bg-brand-primary hover:bg-red-700 text-white text-xs font-black kurdish-text flex items-center justify-center gap-2 transition-all disabled:opacity-50"
+                >
+                  {status === "resolving" ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Search className="w-4 h-4" />
+                  )}
+                  دۆزینەوە
+                </button>
+              </div>
+            </div>
+          )}
+
+          {message && (
+            <p
+              className={`mt-3 flex items-center gap-2 text-[11px] font-bold kurdish-text ${
+                status === "found" ? "text-emerald-400" : "text-amber-400"
+              }`}
+            >
+              {status === "found" ? (
+                <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+              ) : (
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              )}
+              {message}
+            </p>
+          )}
+        </div>
+
+        <div className="lg:w-64 flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={onRequestAccount}
+            className="w-full px-4 py-3 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 text-xs font-black kurdish-text flex items-center justify-center gap-2 transition-all"
+          >
+            <UserPlus className="w-4 h-4" />
+            CREATE ACCOUNT
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowBarcode((v) => !v)}
+            className="w-full px-4 py-3 rounded-2xl bg-amber-400/10 hover:bg-amber-400/20 border border-amber-400/30 text-amber-300 text-xs font-black kurdish-text flex items-center justify-center gap-2 transition-all"
+          >
+            <QrCode className="w-4 h-4" />
+            SHOW MY QR
+          </button>
+          <div className="rounded-2xl border border-white/10 bg-black/30 p-3">
+            <p className="text-[10px] text-gray-500 kurdish-text">ناسنامەی تۆ</p>
+            <p className="mt-1 text-xs text-white font-black kurdish-text truncate">
+              {accountName || identity.name}
+            </p>
+            <p className="mt-1 text-[10px] text-brand-primary font-mono truncate">
+              {myCode}
+            </p>
+          </div>
+          {!hasAccount && (
+            <p className="text-[10px] text-gray-500 kurdish-text leading-relaxed">
+              بۆ وەرگرتنی بانگهێشتی ڕاستەوخۆ، ئەکاونتێک دروست بکە یان بچۆ ژوورەوە.
+            </p>
+          )}
+        </div>
+      </div>
+
+      <AnimatePresence>
+        {showBarcode && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            className="mt-4 overflow-hidden"
+          >
+            <ProfileCard user={myProfile} onClose={() => setShowBarcode(false)} />
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+
+  return (
+    <div className="bg-zinc-900 border border-white/10 rounded-[2rem] p-5" dir="rtl">
+      <div className="flex flex-col lg:flex-row gap-5">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between gap-3 mb-4">
+            <div>
+              <h3 className="text-base font-black text-white kurdish-text">
+                هاوڕێکەت بدۆزەوە
+              </h3>
+              <p className="text-[11px] text-gray-500 kurdish-text mt-1">
+                بە بارکۆد، وێنەی QR، کۆدی ئەکاونت، یان ژمارەی مۆبایل.
+              </p>
+            </div>
+            <ScanLine className="w-5 h-5 text-brand-primary flex-shrink-0" />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2">
+            <div className="relative">
+              <input
+                type="text"
+                inputMode="text"
+                value={input}
+                onChange={(e) => {
+                  setInput(e.target.value);
+                  setMessage(null);
+                  setTarget(null);
+                  setStatus("idle");
+                }}
+                onKeyDown={(e) => e.key === "Enter" && resolveFriend(input)}
+                placeholder="CC-CC-9803 یان 0750..."
+                className="w-full bg-black/40 border-2 border-white/10 focus:border-brand-primary rounded-2xl px-4 py-3 text-white text-sm font-mono outline-none transition-all"
+              />
+              {status === "resolving" && (
+                <Loader2 className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-brand-primary animate-spin" />
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => resolveFriend(input)}
+              disabled={status === "resolving" || !input.trim()}
+              className="px-5 py-3 rounded-2xl bg-brand-primary hover:bg-red-700 text-white text-xs font-black kurdish-text flex items-center justify-center gap-2 transition-all disabled:opacity-50"
+            >
+              <Search className="w-4 h-4" />
+              دۆزینەوە
+            </button>
+          </div>
+
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={cameraActive ? stopCamera : startCamera}
+              className="px-4 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 text-[11px] font-black kurdish-text flex items-center justify-center gap-2 transition-all"
+            >
+              <Camera className="w-4 h-4" />
+              {cameraActive ? "وەستاندنی کامێرا" : "سکانی زیندوو"}
+            </button>
+            <button
+              type="button"
+              onClick={() => qrImageInputRef.current?.click()}
+              className="px-4 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 text-[11px] font-black kurdish-text flex items-center justify-center gap-2 transition-all"
+            >
+              <ImageUp className="w-4 h-4" />
+              وێنەی QR
+            </button>
+            <input
+              ref={qrImageInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) decodeImageFile(file);
+                e.currentTarget.value = "";
+              }}
+            />
+          </div>
+
+          {cameraActive && (
+            <div className="mt-3 overflow-hidden rounded-2xl border border-brand-primary/30 bg-black">
+              <video ref={videoRef} muted playsInline className="w-full max-h-56 object-cover" />
+              <canvas ref={canvasRef} className="hidden" />
+            </div>
+          )}
+
+          {message && (
+            <p
+              className={`mt-3 flex items-center gap-2 text-[11px] font-bold kurdish-text ${
+                status === "found" ? "text-emerald-400" : "text-amber-400"
+              }`}
+            >
+              {status === "found" ? (
+                <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+              ) : (
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              )}
+              {message}
+            </p>
+          )}
+
+          {target && (
+            <div className="mt-3 rounded-2xl border border-emerald-500/25 bg-emerald-500/10 p-3 flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-white font-black">
+                {(target.name || "?").slice(0, 1).toUpperCase()}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-black text-white kurdish-text truncate">
+                  {target.name}
+                </p>
+                <p className="text-[10px] text-emerald-300 font-mono truncate">
+                  {target.uniqueCode || target.phone}
+                </p>
+              </div>
+              <BadgeCheck className="w-5 h-5 text-emerald-400 flex-shrink-0" />
+            </div>
+          )}
+        </div>
+
+        <div className="lg:w-64 flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={onRequestAccount}
+            className="w-full px-4 py-3 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 text-xs font-black kurdish-text flex items-center justify-center gap-2 transition-all"
+          >
+            <UserPlus className="w-4 h-4" />
+            دروستکردنی ئەکاونت
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowBarcode((v) => !v)}
+            className="w-full px-4 py-3 rounded-2xl bg-amber-400/10 hover:bg-amber-400/20 border border-amber-400/30 text-amber-300 text-xs font-black kurdish-text flex items-center justify-center gap-2 transition-all"
+          >
+            <QrCode className="w-4 h-4" />
+            بارکۆدی من
+          </button>
+          <div className="rounded-2xl border border-white/10 bg-black/30 p-3">
+            <p className="text-[10px] text-gray-500 kurdish-text">ناسنامەی تۆ</p>
+            <p className="mt-1 text-xs text-white font-black kurdish-text truncate">
+              {accountName || identity.name}
+            </p>
+            <p className="mt-1 text-[10px] text-brand-primary font-mono truncate">
+              {myCode}
+            </p>
+          </div>
+          {!hasAccount && (
+            <p className="text-[10px] text-gray-500 kurdish-text leading-relaxed">
+              بۆ وەرگرتنی بانگهێشتی ڕاستەوخۆ، ئەکاونتێک دروست بکە یان بە ئەکاونتەکەت
+              بچۆ ژوورەوە.
+            </p>
+          )}
+        </div>
+      </div>
+
+      <AnimatePresence>
+        {showBarcode && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            className="mt-4 overflow-hidden"
+          >
+            <ProfileCard user={myProfile} onClose={() => setShowBarcode(false)} />
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 };
 

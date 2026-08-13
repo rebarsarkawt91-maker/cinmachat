@@ -20,6 +20,7 @@ import {
   TrendingUp,
   Ghost,
   Clock,
+  Lock,
   Star,
   Calendar,
   Sword,
@@ -167,6 +168,7 @@ const MultiLevelAdminModule = React.lazy(() =>
   })),
 );
 import { VIPRoomModal } from "./components/Social/VIPRoomModal";
+import { CinemaWindowModal } from "./components/Social/CinemaWindowModal";
 import { ProfileCard } from "./components/Social/ProfileCard";
 import { WatchPartyManager } from "./components/Social/WatchPartyManager";
 import { SyncRoom } from "./components/Social/SyncRoom";
@@ -5822,7 +5824,9 @@ const HeroSection: React.FC<{
         </div>
       </div>
 
-      {/* Strict delayed-mount loading screen: solid black until showPlayer=true */}
+      {/* Keep the delayed-mount buffer behind the hero UI. If YouTube or timers
+          lag in a browser, the first viewport still shows usable page chrome
+          instead of looking like a blank black screen. */}
       <AnimatePresence>
         {!showPlayer && (
           <motion.div
@@ -5831,7 +5835,7 @@ const HeroSection: React.FC<{
             exit={{ opacity: 0 }}
             transition={{ duration: 0.4, ease: "easeOut" }}
             className="absolute inset-0 bg-black flex items-center justify-center pointer-events-none"
-            style={{ zIndex: 300 }}
+            style={{ zIndex: 1 }}
           >
             <div className="w-10 h-10 rounded-full border-2 border-t-brand-primary border-white/10 animate-spin" />
           </motion.div>
@@ -5851,7 +5855,7 @@ const RoomSection: React.FC<{
   config: any;
   setShowJoinCodeModal: React.Dispatch<React.SetStateAction<boolean>>;
   setShowVipModal: React.Dispatch<React.SetStateAction<boolean>>;
-  setSocialTab: (tab: "movies" | "party" | "profile" | "broadcast") => void;
+  setSocialTab: (tab: "movies" | "party" | "profile" | "broadcast" | "cinema_window") => void;
   socialProfile?: any;
 }> = ({
   activeFeaturedMovie,
@@ -6318,6 +6322,351 @@ const CinemaChatCard = ({ onOpen }: any) => (
   </div>
 );
 
+const SimpleCinemaChatCard = ({ onOpen }: any) => (
+  <div className="group relative flex-shrink-0 w-[220px] md:w-[280px] bg-zinc-900 border border-brand-primary/25 rounded-3xl overflow-hidden transition-all hover:border-brand-primary/60 hover:scale-[1.02]">
+    <div className="p-5 flex flex-col min-h-[260px]">
+      <div className="flex items-start justify-between gap-3">
+        <div className="w-12 h-12 rounded-2xl bg-brand-primary/15 border border-brand-primary/25 flex items-center justify-center">
+          <Tv className="w-6 h-6 text-brand-primary" />
+        </div>
+        <div className="flex flex-col items-end gap-2">
+          <span className="px-2 py-0.5 bg-brand-primary text-white text-[8px] font-black rounded-full flex items-center gap-1 uppercase tracking-widest">
+            <ShieldCheck className="w-2.5 h-2.5" />
+            Official
+          </span>
+          <span className="px-2.5 py-1 bg-black/50 border border-white/10 text-white text-[10px] font-black rounded-full flex items-center gap-1">
+            <Users className="w-3 h-3" />
+            2 کەس
+          </span>
+        </div>
+      </div>
+
+      <div className="mt-5 flex-1">
+        <h3 className="text-lg font-black text-white kurdish-text leading-snug flex items-center gap-2">
+          <Film className="w-4 h-4 text-brand-primary" />
+          CinemaChat
+        </h3>
+        <p className="mt-2 text-[12px] text-gray-400 kurdish-text leading-relaxed">
+          ژووری فەرمی بۆ بینینی فیلم پێکەوە، چاتی تایبەت، و پەخشکردنی هاوکات.
+        </p>
+      </div>
+
+      <button
+        type="button"
+        onClick={onOpen}
+        className="mt-5 w-full px-4 py-3 rounded-2xl bg-brand-primary hover:bg-red-700 text-white text-[11px] font-black kurdish-text flex items-center justify-center gap-2 transition-all shadow-xl shadow-red-600/20"
+      >
+        <Play className="w-4 h-4 fill-current" />
+        OPEN WATCH-TOGETHER
+      </button>
+    </div>
+  </div>
+);
+
+const toCinemaWindowPlaybackUrl = (
+  url: string | undefined,
+  options: { autoplay?: boolean; muted?: boolean; loop?: boolean; controls?: boolean } = {},
+) => {
+  const cleanUrl = String(url || "").trim();
+  if (!cleanUrl) return "";
+
+  const youtubeId = extractYouTubeId(cleanUrl);
+  if (!youtubeId) return cleanUrl;
+
+  const params = new URLSearchParams({
+    autoplay: options.autoplay ? "1" : "0",
+    mute: options.muted ? "1" : "0",
+    controls: options.controls === false ? "0" : "1",
+    rel: "0",
+    modestbranding: "1",
+    playsinline: "1",
+  });
+
+  if (options.loop) {
+    params.set("loop", "1");
+    params.set("playlist", youtubeId);
+  }
+
+  if (typeof window !== "undefined") {
+    params.set("origin", window.location.origin);
+  }
+
+  return `https://www.youtube.com/embed/${youtubeId}?${params.toString()}`;
+};
+
+const getCinemaWindowRoomVideoUrl = (room: any) =>
+  String(
+    room?.fullVideoReference ||
+      room?.streamingUrl ||
+      room?.videoUrl ||
+      room?.embedUrl ||
+      room?.previewUrl ||
+      "",
+  ).trim();
+
+type CinemaWindowSubtitlePayload = {
+  rawText: string;
+  vttText: string;
+  sourceLang: string;
+  source: string;
+};
+
+const cinemaWindowSubtitleCache = new Map<string, CinemaWindowSubtitlePayload>();
+
+const subtitleTextToVtt = (subtitleText: string) => {
+  const cleanText = String(subtitleText || "").replace(/^\uFEFF/, "").trim();
+  if (!cleanText) return "";
+  if (/^WEBVTT/i.test(cleanText)) return cleanText;
+  return `WEBVTT\n\n${cleanText.replace(/\r+/g, "").replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, "$1.$2")}\n`;
+};
+
+const CINEMA_WINDOW_SUBTITLE_LANGUAGES = [
+  { code: "ckb", label: "کوردی ناوەڕاست (سۆرانی)", shortLabel: "کوردی ناوەڕاست CC" },
+  { code: "en", label: "English", shortLabel: "English CC" },
+  { code: "ar", label: "العربية", shortLabel: "Arabic CC" },
+  { code: "fa", label: "فارسی", shortLabel: "Persian CC" },
+  { code: "tr", label: "Turkce", shortLabel: "Turkish CC" },
+];
+
+const getCinemaWindowSubtitleLanguage = (code: string) =>
+  CINEMA_WINDOW_SUBTITLE_LANGUAGES.find((language) => language.code === code) ||
+  CINEMA_WINDOW_SUBTITLE_LANGUAGES[0];
+
+type CinemaWindowSubtitleCue = {
+  start: number;
+  end: number;
+  text: string;
+};
+
+const parseCinemaWindowSubtitleTime = (value: string) => {
+  const normalized = value.trim().replace(",", ".");
+  const parts = normalized.split(":");
+  if (parts.length < 3) return 0;
+  const hours = Number(parts[0]) || 0;
+  const minutes = Number(parts[1]) || 0;
+  const seconds = Number(parts[2]) || 0;
+  return hours * 3600 + minutes * 60 + seconds;
+};
+
+const decodeCinemaWindowSubtitleText = (value: string) => {
+  const withoutTags = value
+    .replace(/<\d{2}:\d{2}:\d{2}\.\d{3}>/g, "")
+    .replace(/<\/?c[^>]*>/g, "")
+    .replace(/<[^>]+>/g, "");
+
+  if (typeof document === "undefined") {
+    return withoutTags
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'");
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.innerHTML = withoutTags;
+  return textarea.value;
+};
+
+const parseCinemaWindowSubtitleCues = (subtitleText: string): CinemaWindowSubtitleCue[] => {
+  const lines = subtitleText.replace(/^\uFEFF/, "").split(/\r?\n/);
+  const cues: CinemaWindowSubtitleCue[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const timingMatch = lines[index].match(
+      /(\d{2}:\d{2}:\d{2}[\.,]\d{3})\s+-->\s+(\d{2}:\d{2}:\d{2}[\.,]\d{3})/,
+    );
+    if (!timingMatch) continue;
+
+    const textLines: string[] = [];
+    index += 1;
+    while (index < lines.length && lines[index].trim()) {
+      const line = lines[index].trim();
+      if (!/^(Kind|Language):/i.test(line)) textLines.push(line);
+      index += 1;
+    }
+
+    const text = decodeCinemaWindowSubtitleText(textLines.join("\n")).trim();
+    if (text) {
+      cues.push({
+        start: parseCinemaWindowSubtitleTime(timingMatch[1]),
+        end: parseCinemaWindowSubtitleTime(timingMatch[2]),
+        text,
+      });
+    }
+  }
+
+  return cues;
+};
+
+const requestCinemaWindowSubtitle = async (
+  sourceUrl: string,
+  lang: string,
+  signal?: AbortSignal,
+  windowOptions?: { startSeconds?: number; windowSeconds?: number },
+) => {
+  const response = await fetch("/api/subtitle/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url: sourceUrl, lang, ...windowOptions }),
+    signal,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data?.success) {
+    throw new Error(data?.error || "Subtitle generation failed");
+  }
+  const rawText = String(data?.srt || "");
+  const vttText = subtitleTextToVtt(rawText);
+  if (!vttText) throw new Error("Subtitle file is empty");
+  return {
+    rawText,
+    vttText,
+    sourceLang: String(data?.lang || lang),
+    source: String(data?.source || ""),
+  };
+};
+
+const translateCinemaWindowSubtitle = async (
+  subtitleText: string,
+  targetLang: string,
+  sourceLang: string,
+  signal?: AbortSignal,
+) => {
+  const response = await fetch("/api/subtitle/translate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ srt: subtitleText, lang: targetLang, sourceLang }),
+    signal,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data?.success) {
+    throw new Error(data?.error || "Subtitle translation failed");
+  }
+  const rawText = String(data?.srt || "");
+  const vttText = subtitleTextToVtt(rawText);
+  if (!vttText) throw new Error("Translated subtitle file is empty");
+  return {
+    rawText,
+    vttText,
+    sourceLang: String(data?.lang || targetLang),
+    source: String(data?.source || ""),
+  };
+};
+
+const CinemaWindowCard = ({ onOpen, room }: any) => {
+  const cardPreviewSourceUrl =
+    room?.previewUrl ||
+    room?.fullVideoReference ||
+    room?.streamingUrl ||
+    room?.videoUrl ||
+    "";
+  const [directCardPreviewUrl, setDirectCardPreviewUrl] = useState("");
+  const [cardPreviewFailed, setCardPreviewFailed] = useState(false);
+  const cardPreviewUrl = toCinemaWindowPlaybackUrl(cardPreviewSourceUrl, {
+    autoplay: true,
+    muted: true,
+    loop: true,
+    controls: false,
+  });
+  const cardPreviewYoutubeId = extractYouTubeId(cardPreviewSourceUrl);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCardPreviewFailed(false);
+    setDirectCardPreviewUrl("");
+
+    if (!cardPreviewSourceUrl) return;
+    if (!cardPreviewYoutubeId) {
+      setDirectCardPreviewUrl(cardPreviewSourceUrl);
+      return;
+    }
+
+    fetch("/api/resolve-stream", {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({ url: cardPreviewSourceUrl }),
+    })
+      .then((response) => response.json())
+      .then((data) => {
+        const streamUrl = Array.isArray(data?.streams) && typeof data.streams[0]?.url === "string"
+          ? data.streams[0].url
+          : "";
+        if (!cancelled) {
+          if (streamUrl) setDirectCardPreviewUrl(streamUrl);
+          else setCardPreviewFailed(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setCardPreviewFailed(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [cardPreviewSourceUrl, cardPreviewYoutubeId]);
+
+  return (
+  <div className="group relative flex-shrink-0 w-[200px] md:w-[260px] bg-gradient-to-br from-zinc-950 via-amber-950/20 to-zinc-950 border border-amber-500/35 rounded-3xl overflow-hidden transition-all hover:border-amber-400/70 hover:shadow-2xl hover:shadow-amber-500/10 hover:scale-[1.02] cursor-pointer">
+    <button
+      type="button"
+      onClick={onOpen}
+      className="block w-full text-right focus:outline-none"
+    >
+      <div className="aspect-video w-full bg-gradient-to-br from-black via-zinc-950 to-amber-950/30 overflow-hidden relative">
+        {directCardPreviewUrl ? (
+          <video
+            src={directCardPreviewUrl}
+            poster={room?.posterUrl}
+            autoPlay
+            muted
+            loop
+            playsInline
+            preload="auto"
+            className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+            onError={() => setCardPreviewFailed(true)}
+          />
+        ) : room?.posterUrl && (
+          <img src={room.posterUrl} alt={room?.name || "Cinema Window"} className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover:scale-105 transition-transform duration-300" referrerPolicy="no-referrer" />
+        )}
+        {!directCardPreviewUrl && cardPreviewUrl && !cardPreviewFailed && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/30">
+            <Loader2 className="w-5 h-5 text-amber-300 animate-spin" />
+          </div>
+        )}
+        {!directCardPreviewUrl && !room?.posterUrl && (
+          <>
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(245,158,11,0.22),transparent_42%)]" />
+            <div className="absolute inset-x-8 top-6 h-16 rounded-b-3xl bg-gradient-to-r from-transparent via-red-600/80 to-transparent blur-sm opacity-70" />
+          </>
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-transparent to-black/20" />
+        <span className="absolute top-3 right-3 px-2 py-0.5 bg-amber-400 text-black text-[8px] font-black rounded-full uppercase tracking-widest">
+          VIP
+        </span>
+      </div>
+      <div className="p-4">
+        <h3 className="text-sm font-black text-white kurdish-text leading-snug flex items-center gap-2">
+          <Film className="w-3.5 h-3.5 text-amber-400" />
+          {room?.name || "Cinema Window"}
+        </h3>
+        <p className="mt-1.5 text-[11px] text-gray-400 kurdish-text leading-relaxed line-clamp-2">
+          ژووری VIP بۆ بینینی preview و کردنەوەی فیلمی تەواو بە کۆدی تایبەت.
+        </p>
+        <div className="mt-3 flex items-center justify-between">
+          <span className="text-[10px] font-black text-amber-300">
+            {room?.price ?? 1.99} {room?.currency || "USD"}
+          </span>
+          <span className="inline-flex items-center gap-1 text-[10px] font-black text-emerald-400">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+            {room?.status || "ACTIVE"}
+          </span>
+        </div>
+      </div>
+    </button>
+  </div>
+  );
+};
+
 const DramaRoomDetailModal = ({ room, resolvedMovies, openMovie, onClose, rating, ratingCount, userRating, onRate }: any) => {
   // Resolve each stored drama id to its movie, keeping the room's stored order
   // so the per-room numbering ("Drama 1", "Drama 2", ...) is automatic — only
@@ -6690,6 +7039,8 @@ const DramaRoomsHub = ({
   liveViewersMap,
   ratingsMap,
   onOpenCinemaChat,
+  onOpenCinemaWindow,
+  cinemaWindowRoom,
 }: any) => {
   const canManage = systemVerified && !!currentUser;
   return (
@@ -6737,7 +7088,7 @@ const DramaRoomsHub = ({
         )}
         <div className="flex gap-5 overflow-x-auto no-scrollbar pb-6 pr-1">
           {/* Permanent official two-person watch room — always first. */}
-          <CinemaChatCard onOpen={onOpenCinemaChat} />
+          <SimpleCinemaChatCard onOpen={onOpenCinemaChat} />
           {rooms.map((room: any) => (
             <DramaRoomCard
               key={room.id}
@@ -6751,6 +7102,7 @@ const DramaRoomsHub = ({
               ratingCount={ratingsMap?.[room.id]?.ratingCount ?? 0}
             />
           ))}
+          <CinemaWindowCard onOpen={onOpenCinemaWindow} room={cinemaWindowRoom} />
         </div>
       </div>
     </section>
@@ -9342,9 +9694,24 @@ export default function App() {
   }, [activeSyncGroup]);
 
   const [showIdentityCard, setShowIdentityCard] = useState(false);
-  const [socialTab, setSocialTab] = useState<"movies" | "party" | "profile" | "broadcast">(
+  const [socialTab, setSocialTab] = useState<"movies" | "party" | "profile" | "broadcast" | "cinema_window">(
     "movies",
   );
+
+  const [showCinemaWindowModal, setShowCinemaWindowModal] = useState(false);
+  const [activeCinemaWindowRoom, setActiveCinemaWindowRoom] = useState<any | null>(null);
+  const [cinemaWindowPublicRoom, setCinemaWindowPublicRoom] = useState<any | null>(null);
+  const [cinemaWindowDirectVideoUrl, setCinemaWindowDirectVideoUrl] = useState("");
+  const cinemaWindowVideoRef = useRef<HTMLVideoElement | null>(null);
+  const [cinemaWindowStreamRefreshKey, setCinemaWindowStreamRefreshKey] = useState(0);
+  const [cinemaWindowNativeFailureCount, setCinemaWindowNativeFailureCount] = useState(0);
+  const [cinemaWindowVideoStatus, setCinemaWindowVideoStatus] = useState<"idle" | "loading" | "ready" | "fallback">("idle");
+  const [cinemaWindowSubtitleUrl, setCinemaWindowSubtitleUrl] = useState("");
+  const [cinemaWindowSubtitleCues, setCinemaWindowSubtitleCues] = useState<CinemaWindowSubtitleCue[]>([]);
+  const [cinemaWindowPlaybackTime, setCinemaWindowPlaybackTime] = useState(0);
+  const [cinemaWindowSubtitleLang, setCinemaWindowSubtitleLang] = useState("ckb");
+  const [cinemaWindowSubtitleStatus, setCinemaWindowSubtitleStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [cinemaWindowSubtitleMessage, setCinemaWindowSubtitleMessage] = useState("");
 
   const [dashboardRooms, setDashboardRooms] = useState<any[]>([]);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
@@ -9354,6 +9721,270 @@ export default function App() {
   const [dashboardIsLoading, setDashboardIsLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState("");
   const [dashboardSuccess, setDashboardSuccess] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/cinema-window/current")
+      .then((response) => response.json())
+      .then((data) => {
+        if (!cancelled) setCinemaWindowPublicRoom(data?.room || null);
+      })
+      .catch(() => {
+        if (!cancelled) setCinemaWindowPublicRoom(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const activeCinemaWindowSourceUrl = useMemo(
+    () => getCinemaWindowRoomVideoUrl(activeCinemaWindowRoom),
+    [activeCinemaWindowRoom],
+  );
+
+  const cinemaWindowActiveSubtitleText = useMemo(() => {
+    if (!cinemaWindowSubtitleCues.length) return "";
+    const activeCue = cinemaWindowSubtitleCues.find(
+      (cue) => cinemaWindowPlaybackTime >= cue.start && cinemaWindowPlaybackTime <= cue.end,
+    );
+    return activeCue?.text || "";
+  }, [cinemaWindowPlaybackTime, cinemaWindowSubtitleCues]);
+
+  const cinemaWindowSubtitleWindowIndex =
+    cinemaWindowSubtitleLang === "ckb" ? Math.floor(cinemaWindowPlaybackTime / 90) : 0;
+
+  useEffect(() => {
+    setCinemaWindowStreamRefreshKey(0);
+    setCinemaWindowNativeFailureCount(0);
+    setCinemaWindowPlaybackTime(0);
+  }, [socialTab, activeCinemaWindowSourceUrl]);
+
+  const handleCinemaWindowNativeVideoFailure = useCallback(() => {
+    if (!extractYouTubeId(activeCinemaWindowSourceUrl)) {
+      setCinemaWindowVideoStatus("fallback");
+      return;
+    }
+
+    setCinemaWindowNativeFailureCount((failureCount) => {
+      if (failureCount < 1) {
+        setCinemaWindowVideoStatus("loading");
+        setCinemaWindowDirectVideoUrl("");
+        setCinemaWindowStreamRefreshKey((key) => key + 1);
+        return failureCount + 1;
+      }
+
+      setCinemaWindowDirectVideoUrl("");
+      setCinemaWindowVideoStatus("fallback");
+      return failureCount + 1;
+    });
+  }, [activeCinemaWindowSourceUrl]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCinemaWindowDirectVideoUrl("");
+    setCinemaWindowVideoStatus("idle");
+
+    if (socialTab !== "cinema_window" || !activeCinemaWindowRoom || !activeCinemaWindowSourceUrl) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const youtubeId = extractYouTubeId(activeCinemaWindowSourceUrl);
+    if (!youtubeId) {
+      setCinemaWindowDirectVideoUrl(activeCinemaWindowSourceUrl);
+      setCinemaWindowVideoStatus("ready");
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setCinemaWindowVideoStatus("loading");
+    fetch("/api/resolve-stream", {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({
+        url: activeCinemaWindowSourceUrl,
+        refresh: cinemaWindowStreamRefreshKey > 0,
+      }),
+    })
+      .then((response) => response.json())
+      .then((data) => {
+        const streamUrl =
+          Array.isArray(data?.streams) && typeof data.streams[0]?.url === "string"
+            ? data.streams[0].url
+            : "";
+        if (!cancelled) {
+          setCinemaWindowDirectVideoUrl(streamUrl);
+          setCinemaWindowVideoStatus(streamUrl ? "loading" : "fallback");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setCinemaWindowVideoStatus("fallback");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [socialTab, activeCinemaWindowRoom, activeCinemaWindowSourceUrl, cinemaWindowStreamRefreshKey]);
+
+  useEffect(() => {
+    if (socialTab !== "cinema_window" || !cinemaWindowDirectVideoUrl) return;
+
+    const timer = window.setTimeout(() => {
+      const player = cinemaWindowVideoRef.current;
+      if (!player || player.readyState < 2) {
+        handleCinemaWindowNativeVideoFailure();
+      }
+    }, 9000);
+
+    return () => window.clearTimeout(timer);
+  }, [socialTab, cinemaWindowDirectVideoUrl, handleCinemaWindowNativeVideoFailure]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl = "";
+    setCinemaWindowSubtitleUrl("");
+    setCinemaWindowSubtitleCues([]);
+    setCinemaWindowSubtitleStatus("idle");
+    setCinemaWindowSubtitleMessage("");
+
+    if (socialTab !== "cinema_window" || !activeCinemaWindowRoom || !activeCinemaWindowSourceUrl) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const selectedSubtitleLanguage = getCinemaWindowSubtitleLanguage(cinemaWindowSubtitleLang);
+    const subtitleWindowOptions =
+      selectedSubtitleLanguage.code === "ckb"
+        ? {
+            startSeconds: Math.max(0, cinemaWindowSubtitleWindowIndex * 90 - 10),
+            windowSeconds: 130,
+          }
+        : undefined;
+    const subtitleWindowKey = subtitleWindowOptions
+      ? `::${subtitleWindowOptions.startSeconds}-${subtitleWindowOptions.windowSeconds}`
+      : "";
+    const cacheKey = `${activeCinemaWindowSourceUrl}::${selectedSubtitleLanguage.code}${subtitleWindowKey}`;
+    const cachedSubtitle = cinemaWindowSubtitleCache.get(cacheKey);
+    if (cachedSubtitle?.vttText) {
+      objectUrl = URL.createObjectURL(new Blob([cachedSubtitle.vttText], { type: "text/vtt" }));
+      setCinemaWindowSubtitleUrl(objectUrl);
+      setCinemaWindowSubtitleCues(parseCinemaWindowSubtitleCues(cachedSubtitle.vttText));
+      setCinemaWindowSubtitleStatus("ready");
+      setCinemaWindowSubtitleMessage(`${selectedSubtitleLanguage.label} ئامادەیە`);
+      return () => {
+        cancelled = true;
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+      };
+    }
+
+    setCinemaWindowSubtitleStatus("loading");
+    setCinemaWindowSubtitleMessage(`وەرگێڕانی ژێرنوس بۆ ${selectedSubtitleLanguage.label}...`);
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 180000);
+
+    const loadSubtitle = async () => {
+      try {
+        return await requestCinemaWindowSubtitle(
+          activeCinemaWindowSourceUrl,
+          selectedSubtitleLanguage.code,
+          controller.signal,
+          subtitleWindowOptions,
+        );
+      } catch (targetErr) {
+        if (selectedSubtitleLanguage.code === "en") throw targetErr;
+
+        const fallbackLangs = ["en", "ar", "es", "ku", "tr", "fa"].filter(
+          (fallbackLang) => fallbackLang !== selectedSubtitleLanguage.code,
+        );
+        let lastFallbackError = targetErr;
+
+        for (const fallbackLang of fallbackLangs) {
+          const fallbackCacheKey = `${activeCinemaWindowSourceUrl}::${fallbackLang}${subtitleWindowKey}`;
+          let fallbackSubtitle = cinemaWindowSubtitleCache.get(fallbackCacheKey);
+          let fallbackSourceLang = fallbackLang;
+
+          if (!fallbackSubtitle?.rawText) {
+            try {
+              fallbackSubtitle = await requestCinemaWindowSubtitle(
+                activeCinemaWindowSourceUrl,
+                fallbackLang,
+                controller.signal,
+                subtitleWindowOptions,
+              );
+              fallbackSourceLang = fallbackSubtitle.sourceLang || fallbackLang;
+              cinemaWindowSubtitleCache.set(fallbackCacheKey, fallbackSubtitle);
+            } catch (fallbackErr) {
+              lastFallbackError = fallbackErr;
+              continue;
+            }
+          } else {
+            fallbackSourceLang = fallbackSubtitle.sourceLang || fallbackLang;
+          }
+
+          try {
+            return await translateCinemaWindowSubtitle(
+              fallbackSubtitle.rawText,
+              selectedSubtitleLanguage.code,
+              fallbackSourceLang,
+              controller.signal,
+            );
+          } catch (translateErr) {
+            lastFallbackError = translateErr;
+          }
+        }
+
+        throw lastFallbackError;
+      }
+    };
+
+    loadSubtitle()
+      .then((subtitle) => {
+        const { vttText } = subtitle;
+        cinemaWindowSubtitleCache.set(cacheKey, subtitle);
+        objectUrl = URL.createObjectURL(new Blob([vttText], { type: "text/vtt" }));
+        if (cancelled) {
+          URL.revokeObjectURL(objectUrl);
+          return;
+        }
+        if (!cancelled) {
+          setCinemaWindowSubtitleUrl(objectUrl);
+          setCinemaWindowSubtitleCues(parseCinemaWindowSubtitleCues(vttText));
+          setCinemaWindowSubtitleStatus("ready");
+          setCinemaWindowSubtitleMessage(`${selectedSubtitleLanguage.label} ئامادەیە`);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setCinemaWindowSubtitleCues([]);
+          setCinemaWindowSubtitleStatus("error");
+          setCinemaWindowSubtitleMessage(
+            err?.name === "AbortError"
+              ? "وەرگێڕانی ژێرنوس کاتی تەواو بوو"
+              : err?.message || "وەرگێڕانی ژێرنوس سەرکەوتوو نەبوو",
+          );
+        }
+      })
+      .finally(() => {
+        window.clearTimeout(timeoutId);
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+      window.clearTimeout(timeoutId);
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [
+    socialTab,
+    activeCinemaWindowRoom,
+    activeCinemaWindowSourceUrl,
+    cinemaWindowSubtitleLang,
+    cinemaWindowSubtitleWindowIndex,
+  ]);
 
   // Sync dashboardCreateHostCode with socialProfile when defined
   useEffect(() => {
@@ -11342,6 +11973,8 @@ export default function App() {
       liveViewersMap={roomLiveViewers}
       ratingsMap={roomRatingsMap}
       onOpenCinemaChat={() => setShowCinemaChatRoom(true)}
+      onOpenCinemaWindow={() => setShowCinemaWindowModal(true)}
+      cinemaWindowRoom={cinemaWindowPublicRoom}
     />
   );
 
@@ -11596,6 +12229,232 @@ export default function App() {
             socialProfile={socialProfile}
             onBackToMovies={() => setSocialTab("movies")}
           />
+        )}
+
+        {socialTab === "cinema_window" && (
+          <section className="max-w-6xl mx-auto px-4 md:px-8 py-8 md:py-12">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.2em] text-amber-400">
+                  Cinema Window
+                </p>
+                <h1 className="mt-2 text-2xl md:text-4xl font-black text-white kurdish-text">
+                  {activeCinemaWindowRoom?.name || "Cinema Window"}
+                </h1>
+                {activeCinemaWindowRoom?.description && (
+                  <p className="mt-2 text-sm md:text-base text-zinc-400 kurdish-text max-w-2xl">
+                    {activeCinemaWindowRoom.description}
+                  </p>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowCinemaWindowModal(true)}
+                  className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-500 text-black text-sm font-black hover:bg-amber-400 transition-colors active:scale-95"
+                >
+                  <Key className="w-4 h-4" />
+                  Access
+                </button>
+                <button
+                  onClick={() => setSocialTab("movies")}
+                  className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white text-sm font-bold hover:bg-white/10 transition-colors active:scale-95"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                  Movies
+                </button>
+              </div>
+            </div>
+
+            {activeCinemaWindowRoom ? (
+              <div className="grid lg:grid-cols-[minmax(0,1fr)_320px] gap-5">
+                <div className="bg-black border border-white/10 rounded-2xl overflow-hidden min-h-[280px] md:min-h-[520px]">
+                  {(() => {
+                    const roomVideoUrl = activeCinemaWindowSourceUrl;
+                    const playableRoomVideoUrl = toCinemaWindowPlaybackUrl(roomVideoUrl, {
+                      autoplay: true,
+                      muted: false,
+                      loop: false,
+                      controls: true,
+                    });
+                    const isYoutubeRoomVideo = Boolean(extractYouTubeId(roomVideoUrl));
+                    const nativeRoomVideoUrl = isYoutubeRoomVideo ? cinemaWindowDirectVideoUrl : playableRoomVideoUrl;
+
+                    if (!playableRoomVideoUrl) {
+                      return (
+                        <div className="h-full min-h-[280px] md:min-h-[520px] flex flex-col items-center justify-center text-center p-8">
+                          <Video className="w-10 h-10 text-white/30 mb-3" />
+                          <p className="text-zinc-400 kurdish-text">
+                            No Cinema Window video is available yet.
+                          </p>
+                        </div>
+                      );
+                    }
+
+                    if (nativeRoomVideoUrl) {
+                      return (
+                        <div className="relative w-full aspect-video min-h-[280px] md:min-h-[520px] bg-black">
+                          <video
+                            ref={cinemaWindowVideoRef}
+                            key={nativeRoomVideoUrl}
+                            src={nativeRoomVideoUrl}
+                            controls
+                            autoPlay
+                            preload="auto"
+                            playsInline
+                            className="absolute inset-0 w-full h-full bg-black"
+                            onCanPlay={(event) => {
+                              setCinemaWindowVideoStatus("ready");
+                              event.currentTarget.play().catch(() => {
+                                /* Browser may require the user to press play. */
+                              });
+                            }}
+                            onLoadedMetadata={(event) => {
+                              setCinemaWindowPlaybackTime(event.currentTarget.currentTime || 0);
+                            }}
+                            onTimeUpdate={(event) => {
+                              setCinemaWindowPlaybackTime(event.currentTarget.currentTime || 0);
+                            }}
+                            onSeeking={(event) => {
+                              setCinemaWindowPlaybackTime(event.currentTarget.currentTime || 0);
+                            }}
+                            onError={handleCinemaWindowNativeVideoFailure}
+                            onStalled={handleCinemaWindowNativeVideoFailure}
+                          />
+                          {cinemaWindowActiveSubtitleText && (
+                            <div className="pointer-events-none absolute inset-x-3 bottom-16 z-10 flex justify-center">
+                              <div
+                                dir="auto"
+                                className="max-w-[92%] whitespace-pre-line rounded-lg bg-black/70 px-3 py-2 text-center text-lg md:text-2xl font-bold leading-snug text-white shadow-[0_2px_14px_rgba(0,0,0,0.55)]"
+                              >
+                                {cinemaWindowActiveSubtitleText}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }
+
+                    if (isYoutubeRoomVideo && cinemaWindowVideoStatus === "loading") {
+                      return (
+                        <div className="h-full min-h-[280px] md:min-h-[520px] flex flex-col items-center justify-center gap-3 text-center p-8">
+                          <Loader2 className="w-8 h-8 text-amber-300 animate-spin" />
+                          <p className="text-zinc-400 kurdish-text text-sm">
+                            Preparing the Cinema Window video...
+                          </p>
+                        </div>
+                      );
+                    }
+
+                    if (/youtube\.com|youtu\.be/i.test(playableRoomVideoUrl)) {
+                      return (
+                        <iframe
+                          title={activeCinemaWindowRoom.name || "Cinema Window Player"}
+                          src={playableRoomVideoUrl}
+                          className="w-full aspect-video min-h-[280px] md:min-h-[520px]"
+                          allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+                          allowFullScreen
+                        />
+                      );
+                    }
+
+                    return null;
+                  })()}
+                </div>
+
+                <aside className="bg-[#0b0c10] border border-white/10 rounded-2xl p-5 h-fit">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-xl bg-amber-500/15 flex items-center justify-center">
+                      <Tv className="w-5 h-5 text-amber-400" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-black text-white kurdish-text">
+                        {activeCinemaWindowRoom.name}
+                      </p>
+                      <p className="text-xs text-zinc-500">
+                        {activeCinemaWindowRoom.accessDurationHours || 24} hour access
+                      </p>
+                    </div>
+                  </div>
+                  <div className="space-y-3 text-sm">
+                    <div className="flex items-center justify-between border-t border-white/10 pt-3">
+                      <span className="text-zinc-500">دۆخ</span>
+                      <span className="font-bold text-emerald-400">
+                        {activeCinemaWindowRoom.status || "ACTIVE"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-500">نرخ</span>
+                      <span className="font-bold text-white">
+                        {activeCinemaWindowRoom.price ?? 0} {activeCinemaWindowRoom.currency || "USD"}
+                      </span>
+                    </div>
+                    <label className="block border-t border-white/10 pt-3">
+                      <span className="mb-2 flex items-center gap-1.5 text-zinc-500">
+                        <Globe className="w-4 h-4" />
+                        زمانی ژێرنوس
+                      </span>
+                      <select
+                        value={cinemaWindowSubtitleLang}
+                        onChange={(event) => setCinemaWindowSubtitleLang(event.target.value)}
+                        className="w-full rounded-xl border border-white/10 bg-black/50 px-3 py-2 text-sm font-bold text-white outline-none focus:border-amber-400"
+                      >
+                        {CINEMA_WINDOW_SUBTITLE_LANGUAGES.map((language) => (
+                          <option key={language.code} value={language.code}>
+                            {language.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="flex items-start justify-between gap-3 border-t border-white/10 pt-3">
+                      <span className="text-zinc-500 inline-flex items-center gap-1.5">
+                        <Captions className="w-4 h-4" />
+                        ژێرنوس
+                      </span>
+                      <span
+                        className={`text-right text-xs font-bold ${
+                          cinemaWindowSubtitleStatus === "ready"
+                            ? "text-emerald-400"
+                            : cinemaWindowSubtitleStatus === "error"
+                              ? "text-amber-300"
+                              : "text-zinc-300"
+                        }`}
+                      >
+                        {cinemaWindowSubtitleStatus === "loading"
+                          ? "وەردەگێڕدرێت..."
+                          : cinemaWindowSubtitleStatus === "ready"
+                            ? getCinemaWindowSubtitleLanguage(cinemaWindowSubtitleLang).shortLabel
+                            : cinemaWindowSubtitleStatus === "error"
+                              ? "بەردەست نییە"
+                              : "چاوەڕوان"}
+                      </span>
+                    </div>
+                    {cinemaWindowSubtitleMessage && (
+                      <p className="text-[11px] leading-relaxed text-zinc-500 kurdish-text">
+                        {cinemaWindowSubtitleMessage}
+                      </p>
+                    )}
+                  </div>
+                </aside>
+              </div>
+            ) : (
+              <div className="min-h-[360px] rounded-2xl border border-white/10 bg-white/[0.03] flex flex-col items-center justify-center text-center p-8">
+                <Lock className="w-10 h-10 text-amber-400 mb-4" />
+                <h2 className="text-xl font-black text-white kurdish-text mb-2">
+                  Cinema Window is locked
+                </h2>
+                <p className="text-zinc-400 max-w-md mb-5 kurdish-text">
+                  Enter an access code or complete the payment flow to open this room.
+                </p>
+                <button
+                  onClick={() => setShowCinemaWindowModal(true)}
+                  className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-amber-500 text-black text-sm font-black hover:bg-amber-400 transition-colors active:scale-95"
+                >
+                  <Key className="w-4 h-4" />
+                  Open Access
+                </button>
+              </div>
+            )}
+          </section>
         )}
 
         {socialTab === "movies" && (
@@ -13459,6 +14318,17 @@ export default function App() {
             setActiveServerUrl(getMovieSourceUrl(virtualMovie));
             setShowPlayer(true);
           }
+        }}
+      />
+
+      {/* Cinema Window Room Modal */}
+      <CinemaWindowModal
+        isOpen={showCinemaWindowModal}
+        onClose={() => setShowCinemaWindowModal(false)}
+        onJoinCinemaWindow={(room) => {
+          // Set the active room and switch to cinema window tab
+          setActiveCinemaWindowRoom(room);
+          setSocialTab("cinema_window"); // Switch to cinema window tab
         }}
       />
 

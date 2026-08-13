@@ -44,6 +44,24 @@ interface VIPSetting {
   paymentLogoUrl?: string;
 }
 
+interface CinemaWindowAdminRoom {
+  id: string;
+  type: string;
+  name: string;
+  description: string;
+  movieId: string;
+  previewUrl: string;
+  posterUrl: string;
+  fullVideoReference: string;
+  price: number;
+  currency: string;
+  accessDurationHours: number;
+  status: "ACTIVE" | "DRAFT" | "DISABLED" | "EXPIRED";
+  paymentSettings?: VIPSetting;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 interface FileUploaderInputProps {
   label: string;
   value: string;
@@ -264,7 +282,7 @@ interface TicketVIPModuleProps {
 }
 
 export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser }) => {
-  const [activeSubTab, setActiveSubTab] = useState<"tickets" | "settings" | "video" | "requests">("tickets");
+  const [activeSubTab, setActiveSubTab] = useState<"tickets" | "requests" | "cinema" | "settings" | "video">("tickets");
   
   // States
   const [tickets, setTickets] = useState<VIPOrder[]>([]);
@@ -289,6 +307,17 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
   const [formDetails, setFormDetails] = useState("");
   const [formInst, setFormInst] = useState("");
   const [formLogo, setFormLogo] = useState("");
+  const [cinemaRoom, setCinemaRoom] = useState<CinemaWindowAdminRoom | null>(null);
+  const [cinemaName, setCinemaName] = useState("");
+  const [cinemaDescription, setCinemaDescription] = useState("");
+  const [cinemaMovieId, setCinemaMovieId] = useState("movie_1");
+  const [cinemaPreviewUrl, setCinemaPreviewUrl] = useState("");
+  const [cinemaPosterUrl, setCinemaPosterUrl] = useState("");
+  const [cinemaFullVideoReference, setCinemaFullVideoReference] = useState("");
+  const [cinemaPrice, setCinemaPrice] = useState("1.99");
+  const [cinemaCurrency, setCinemaCurrency] = useState("USD");
+  const [cinemaAccessHours, setCinemaAccessHours] = useState("24");
+  const [cinemaStatus, setCinemaStatus] = useState<CinemaWindowAdminRoom["status"]>("ACTIVE");
 
   const [isLoading, setIsLoading] = useState(false);
   const [errorText, setErrorText] = useState("");
@@ -309,6 +338,38 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
   const generateTicketCode = () => {
     const rand = Math.random().toString(36).substring(2, 10) + Date.now().toString(36);
     return `VIP-${rand.toUpperCase()}`;
+  };
+
+  const syncCinemaForm = (room: CinemaWindowAdminRoom) => {
+    setCinemaRoom(room);
+    setCinemaName(room.name || "");
+    setCinemaDescription(room.description || "");
+    setCinemaMovieId(room.movieId || "movie_1");
+    setCinemaPreviewUrl(room.previewUrl || "");
+    setCinemaPosterUrl(room.posterUrl || "");
+    setCinemaFullVideoReference(room.fullVideoReference || "");
+    setCinemaPrice(String(room.price ?? 0));
+    setCinemaCurrency(room.currency || "USD");
+    setCinemaAccessHours(String(room.accessDurationHours || 24));
+    setCinemaStatus(room.status || "ACTIVE");
+
+    if (room.paymentSettings) {
+      setFormQr(room.paymentSettings.qrCodeUrl || "");
+      setFormLogo(room.paymentSettings.paymentLogoUrl || "");
+      setFormDetails(room.paymentSettings.paymentDetails || "");
+      setFormInst(room.paymentSettings.instructions || "");
+    }
+  };
+
+  const loadCinemaWindowRoom = async () => {
+    const response = await fetch(`/api/admin/cinema-window/current?adminName=${encodeURIComponent(adminName)}`);
+    const data = await response.json();
+
+    if (!response.ok || !data.success || !data.room) {
+      throw new Error(data.error || data.message || "Cinema Window room could not be loaded.");
+    }
+
+    syncCinemaForm(data.room as CinemaWindowAdminRoom);
   };
 
   const loadVIPData = async () => {
@@ -342,6 +403,8 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
       const rList = mapDocs(requestsSnap);
       rList.sort((a: any, b: any) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
       setVipRequests(rList);
+
+      await loadCinemaWindowRoom();
     } catch (err) {
       console.error("Error loading VIP module:", err);
       setErrorText("کێشە لە بارکردنی داتاکانی VIP (Firestore).");
@@ -492,6 +555,69 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
     }
   };
 
+  const handleSaveCinemaWindow = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorText("");
+    setSuccessText("");
+
+    if (!cinemaName.trim()) {
+      setErrorText("Cinema Window name is required.");
+      return;
+    }
+
+    if (!cinemaFullVideoReference.trim()) {
+      setErrorText("Full movie link is required for the current Cinema Window room.");
+      return;
+    }
+
+    try {
+      setIsLoading(true);
+      const response = await fetch(`/api/admin/cinema-window/current?adminName=${encodeURIComponent(adminName)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: cinemaName,
+          description: cinemaDescription,
+          movieId: cinemaMovieId,
+          previewUrl: cinemaPreviewUrl,
+          posterUrl: cinemaPosterUrl,
+          fullVideoReference: cinemaFullVideoReference,
+          price: Number(cinemaPrice),
+          currency: cinemaCurrency,
+          accessDurationHours: Number(cinemaAccessHours),
+          status: cinemaStatus,
+          qrCodeUrl: formQr,
+          paymentLogoUrl: formLogo,
+          paymentDetails: formDetails,
+          instructions: formInst,
+        }),
+      });
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || data.message || "Cinema Window could not be saved.");
+      }
+
+      syncCinemaForm(data.room as CinemaWindowAdminRoom);
+      await setDoc(
+        doc(db, "vip_settings", "default"),
+        {
+          qrCodeUrl: formQr,
+          paymentDetails: formDetails,
+          instructions: formInst,
+          paymentLogoUrl: formLogo,
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true },
+      );
+      setSuccessText("✓ Cinema Window room has been saved and linked to the current VIP room.");
+    } catch (err) {
+      setErrorText(err instanceof Error ? err.message : "Cinema Window save failed.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // Approve User-Submitted Request
   const handleApproveRequest = async (requestId: string) => {
     setErrorText("");
@@ -620,6 +746,18 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
           {vipRequests.filter(r => r.status === "Pending").length > 0 && (
             <span className="absolute -top-1 -left-1 w-2 h-2 bg-red-500 rounded-full animate-ping" />
           )}
+        </button>
+
+        <button
+          onClick={() => { setActiveSubTab("cinema"); setErrorText(""); setSuccessText(""); loadCinemaWindowRoom().catch((err) => setErrorText(err.message)); }}
+          className={`px-4 py-2 text-xs font-black rounded-xl kurdish-text flex items-center gap-2 transition duration-200 ${
+            activeSubTab === "cinema"
+              ? "bg-amber-500 text-black shadow-lg"
+              : "text-gray-400 hover:text-white hover:bg-white/5"
+          }`}
+        >
+          <Ticket className="w-3.5 h-3.5" />
+          Cinema Window
         </button>
 
         <button
@@ -954,7 +1092,212 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
           </motion.div>
         )}
 
-        {/* TAB 3: VIP WALLET & QR CONFIGURATION */}
+        {/* TAB 3: CURRENT CINEMA WINDOW ROOM */}
+        {activeSubTab === "cinema" && (
+          <motion.div key="cinema" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="bg-[#0f1013] border border-white/5 rounded-3xl p-6 space-y-6">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+              <div>
+                <h3 className="text-sm font-black text-white kurdish-text flex items-center gap-2">
+                  <Ticket className="w-5 h-5 text-amber-400" />
+                  Cinema Window - Current VIP Room
+                </h3>
+                <p className="mt-1 text-xs text-gray-400 kurdish-text">
+                  Manage the exact Cinema Window room shown in the highlighted yellow slot. This updates only cinema_1.
+                </p>
+              </div>
+              <div className="px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[10px] font-black">
+                Room ID: {cinemaRoom?.id || "cinema_1"}
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveCinemaWindow} className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_420px] gap-6">
+              <div className="space-y-5">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-gray-300 kurdish-text font-bold">Room title</label>
+                    <input
+                      type="text"
+                      value={cinemaName}
+                      onChange={(e) => setCinemaName(e.target.value)}
+                      className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white kurdish-text outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-gray-300 kurdish-text font-bold">Movie ID / admin reference</label>
+                    <input
+                      type="text"
+                      value={cinemaMovieId}
+                      onChange={(e) => setCinemaMovieId(e.target.value)}
+                      className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white font-mono outline-none"
+                      dir="ltr"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs text-gray-300 kurdish-text font-bold">Description</label>
+                  <textarea
+                    value={cinemaDescription}
+                    rows={3}
+                    onChange={(e) => setCinemaDescription(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white kurdish-text outline-none resize-none"
+                  />
+                </div>
+
+                <FileUploaderInput
+                  label="Poster / cover image for this Cinema Window"
+                  value={cinemaPosterUrl}
+                  onChange={setCinemaPosterUrl}
+                  description="This poster appears on the public Cinema Window card and payment modal."
+                  placeholder="https://domain.com/poster.jpg"
+                  adminName={adminName}
+                  onError={(err) => setErrorText(err)}
+                />
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-gray-300 kurdish-text font-bold">Preview / trailer URL</label>
+                    <input
+                      type="text"
+                      value={cinemaPreviewUrl}
+                      onChange={(e) => setCinemaPreviewUrl(e.target.value)}
+                      placeholder="https://youtube.com/embed/..."
+                      className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white font-mono outline-none"
+                      dir="ltr"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-gray-300 kurdish-text font-bold">Private full movie link</label>
+                    <input
+                      type="text"
+                      value={cinemaFullVideoReference}
+                      onChange={(e) => setCinemaFullVideoReference(e.target.value)}
+                      placeholder="https://domain.com/full-movie.mp4"
+                      className="w-full px-4 py-2.5 bg-black/40 border border-amber-500/20 focus:border-amber-500/60 rounded-xl text-xs text-white font-mono outline-none"
+                      dir="ltr"
+                    />
+                    <p className="text-[10px] text-amber-300/80 kurdish-text">
+                      This link is returned only after a valid Cinema Window access code is verified.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-gray-300 kurdish-text font-bold">Price</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={cinemaPrice}
+                      onChange={(e) => setCinemaPrice(e.target.value)}
+                      className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white font-mono outline-none"
+                      dir="ltr"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-gray-300 kurdish-text font-bold">Currency</label>
+                    <input
+                      type="text"
+                      value={cinemaCurrency}
+                      onChange={(e) => setCinemaCurrency(e.target.value)}
+                      className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white font-mono outline-none"
+                      dir="ltr"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-gray-300 kurdish-text font-bold">Access hours</label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={cinemaAccessHours}
+                      onChange={(e) => setCinemaAccessHours(e.target.value)}
+                      className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white font-mono outline-none"
+                      dir="ltr"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-gray-300 kurdish-text font-bold">Status</label>
+                    <select
+                      value={cinemaStatus}
+                      onChange={(e) => setCinemaStatus(e.target.value as CinemaWindowAdminRoom["status"])}
+                      className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white outline-none"
+                    >
+                      <option value="ACTIVE">ACTIVE</option>
+                      <option value="DRAFT">DRAFT</option>
+                      <option value="DISABLED">DISABLED</option>
+                      <option value="EXPIRED">EXPIRED</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-5">
+                <div className="p-4 rounded-2xl bg-amber-500/5 border border-amber-500/15">
+                  <h4 className="text-xs font-black text-amber-300 kurdish-text mb-2">
+                    Admin payment receiving account
+                  </h4>
+                  <p className="text-[10px] text-zinc-400 kurdish-text leading-relaxed">
+                    These payment details are stored on the current Cinema Window room and also mirrored to VIP settings.
+                  </p>
+                </div>
+
+                <FileUploaderInput
+                  label="QR code for payment"
+                  value={formQr}
+                  onChange={setFormQr}
+                  description="FastPay, bank, wallet, or manual transfer QR."
+                  placeholder="https://domain.com/payment-qr.png"
+                  adminName={adminName}
+                  onError={(err) => setErrorText(err)}
+                />
+
+                <FileUploaderInput
+                  label="Bank / wallet logo"
+                  value={formLogo}
+                  onChange={setFormLogo}
+                  description="Optional logo shown with the admin payment account."
+                  placeholder="https://domain.com/payment-logo.png"
+                  adminName={adminName}
+                  onError={(err) => setErrorText(err)}
+                />
+
+                <div className="space-y-1.5">
+                  <label className="text-xs text-gray-300 kurdish-text font-bold">Bank / wallet account details</label>
+                  <textarea
+                    value={formDetails}
+                    rows={4}
+                    onChange={(e) => setFormDetails(e.target.value)}
+                    placeholder="FastPay: 0750xxxxxxx&#10;Bank account: ..."
+                    className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white kurdish-text outline-none resize-none"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs text-gray-300 kurdish-text font-bold">Customer payment instructions</label>
+                  <textarea
+                    value={formInst}
+                    rows={4}
+                    onChange={(e) => setFormInst(e.target.value)}
+                    placeholder="Tell customers how to pay and send receipt."
+                    className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white kurdish-text outline-none resize-none"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full py-3 bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-black font-black text-xs rounded-xl transition duration-150 flex items-center justify-center gap-2 shadow-lg shadow-amber-500/15"
+                >
+                  <Check className="w-4 h-4" />
+                  Save current Cinema Window room
+                </button>
+              </div>
+            </form>
+          </motion.div>
+        )}
+
+        {/* TAB 4: VIP WALLET & QR CONFIGURATION */}
         {activeSubTab === "settings" && (
           <motion.div key="settings" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-2xl bg-[#0f1013] border border-white/5 rounded-3xl p-6 space-y-6">
             <h3 className="text-sm font-black text-white kurdish-text flex items-center gap-2">

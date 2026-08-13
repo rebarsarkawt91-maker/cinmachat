@@ -652,8 +652,8 @@ export const resolveInviteTarget = async (
       const snap = await getDocs(q);
       if (!snap.empty) {
         const d = snap.docs[0].data() as any;
-        return {
-          uid: snap.docs[0].id,
+          return {
+            uid: snap.docs[0].id,
           name: d?.name || "بەکارهێنەر",
           uniqueCode: d?.uniqueCode || c,
           phone: typeof d?.phone === "string" ? d.phone : undefined,
@@ -666,24 +666,33 @@ export const resolveInviteTarget = async (
 
   const digits = raw.replace(/\D/g, "");
   if (digits.length >= 6) {
-    try {
-      const q = query(
-        collection(db, "users"),
-        where("phone", "==", raw),
-        limit(1),
-      );
-      const snap = await getDocs(q);
-      if (!snap.empty) {
-        const d = snap.docs[0].data() as any;
-        return {
-          uid: snap.docs[0].id,
+    const phoneCandidates = [
+      raw,
+      raw.replace(/\s+/g, ""),
+      digits,
+      `+${digits}`,
+    ].filter((p, i, arr) => p && arr.indexOf(p) === i);
+
+    for (const phone of phoneCandidates) {
+      try {
+        const q = query(
+          collection(db, "users"),
+          where("phone", "==", phone),
+          limit(1),
+        );
+        const snap = await getDocs(q);
+        if (!snap.empty) {
+          const d = snap.docs[0].data() as any;
+          return {
+            uid: snap.docs[0].id,
           name: d?.name || "بەکارهێنەر",
-          uniqueCode: d?.uniqueCode || "",
-          phone: typeof d?.phone === "string" ? d.phone : undefined,
-        };
+            uniqueCode: d?.uniqueCode || "",
+            phone: typeof d?.phone === "string" ? d.phone : undefined,
+          };
+        }
+      } catch {
+        /* keep trying phone spellings */
       }
-    } catch {
-      /* not found by phone */
     }
   }
   return null;
