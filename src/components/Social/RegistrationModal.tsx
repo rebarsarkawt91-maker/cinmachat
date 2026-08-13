@@ -17,7 +17,7 @@ import {
   query, 
   where
 } from '../../lib/firebase';
-import { X, User, Phone, Lock, Sparkles, LogIn, Calendar, Users, MapPin, Globe, Mail, QrCode } from 'lucide-react';
+import { X, User, Phone, Lock, Sparkles, LogIn, Calendar, Users, MapPin, Globe, Mail, QrCode, Eye, EyeOff, ArrowLeft, KeyRound } from 'lucide-react';
 import { handleFirestoreError, OperationType } from '../../lib/firestoreUtils';
 import { motion, AnimatePresence } from 'motion/react';
 import jsQR from 'jsqr';
@@ -25,11 +25,15 @@ import jsQR from 'jsqr';
 interface RegistrationModalProps {
   isOpen: boolean;
   onClose: () => void;
-  initialMode?: "login" | "signup";
+  initialMode?: "landing" | "login" | "signup";
 }
 
 export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, onClose, initialMode }) => {
-  const [isLogin, setIsLogin] = useState(initialMode === "login");
+  const [isLogin, setIsLogin] = useState(initialMode !== "signup");
+  const [authStep, setAuthStep] = useState<"landing" | "form">(initialMode && initialMode !== "landing" ? "form" : "landing");
+  const [authMethod, setAuthMethod] = useState<"email" | "phone">("email");
+  const [showPasswordRecovery, setShowPasswordRecovery] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
     phone: '',
@@ -44,12 +48,19 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
   // Update isLogin when initialMode changes and modal opens
   React.useEffect(() => {
     if (isOpen && initialMode) {
-      setIsLogin(initialMode === "login");
+      setIsLogin(initialMode !== "signup");
+      setAuthStep(initialMode === "landing" ? "landing" : "form");
+      setAuthMethod("email");
+      setShowPasswordRecovery(false);
+      setShowPassword(false);
+      setError(null);
+      setSuccessMessage(null);
     }
   }, [isOpen, initialMode]);
 
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [showAdminBypass, setShowAdminBypass] = useState(false);
 
   const qrInputRef = React.useRef<HTMLInputElement>(null);
@@ -137,6 +148,137 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
   };
 
   if (!isOpen) return null;
+
+  const recoveryMessage = "If the information matches an account, password reset instructions will be sent to the registered email.";
+
+  const handlePasswordRecovery = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setError(null);
+    setSuccessMessage(null);
+
+    try {
+      const response = await fetch("/api/auth/password-recovery/request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: formData.email,
+          phone: formData.phone,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      setSuccessMessage(data?.message || recoveryMessage);
+    } catch {
+      setSuccessMessage(recoveryMessage);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const resetAuthView = (nextLogin: boolean, method: "email" | "phone" = "email") => {
+    setIsLogin(nextLogin);
+    setAuthMethod(method);
+    setAuthStep("form");
+    setShowPasswordRecovery(false);
+    setShowAdminBypass(false);
+    setShowPassword(false);
+    setError(null);
+    setSuccessMessage(null);
+  };
+
+  const inputBaseClass =
+    "peer h-12 w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 pt-5 pb-1 text-sm font-bold text-white outline-none transition placeholder:text-transparent focus:border-red-500/70 focus:bg-white/[0.06] focus:ring-2 focus:ring-red-500/15 disabled:opacity-60";
+
+  const FloatingInput = ({
+    id,
+    label,
+    icon,
+    type = "text",
+    value,
+    onChange,
+    placeholder,
+    required = false,
+    autoComplete,
+    inputMode,
+    dir = "rtl",
+    className = "",
+    trailing,
+  }: {
+    id: string;
+    label: string;
+    icon: React.ReactNode;
+    type?: string;
+    value: string;
+    onChange: (value: string) => void;
+    placeholder: string;
+    required?: boolean;
+    autoComplete?: string;
+    inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
+    dir?: "rtl" | "ltr";
+    className?: string;
+    trailing?: React.ReactNode;
+  }) => (
+    <label htmlFor={id} className="group relative block">
+      <span className="pointer-events-none absolute right-4 top-1/2 z-10 -translate-y-1/2 text-zinc-500 transition group-focus-within:text-red-400">
+        {icon}
+      </span>
+      <input
+        id={id}
+        type={type}
+        required={required}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        autoComplete={autoComplete}
+        inputMode={inputMode}
+        dir={dir}
+        aria-label={label}
+        className={`${inputBaseClass} pr-11 ${trailing ? "pl-12" : "pl-4"} ${dir === "ltr" ? "text-left" : "text-right kurdish-text"} ${className}`}
+      />
+      <span className="pointer-events-none absolute right-11 top-1.5 text-[10px] font-black text-zinc-500 transition group-focus-within:text-red-300 kurdish-text">
+        {label}
+      </span>
+      {trailing && (
+        <div className="absolute left-2 top-1/2 -translate-y-1/2">
+          {trailing}
+        </div>
+      )}
+    </label>
+  );
+
+  const AuthChoiceButton = ({
+    icon,
+    label,
+    helper,
+    onClick,
+    tone = "default",
+  }: {
+    icon: React.ReactNode;
+    label: string;
+    helper: string;
+    onClick: () => void;
+    tone?: "default" | "primary";
+  }) => (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`group flex min-h-[58px] w-full items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-right transition-all hover:-translate-y-0.5 active:scale-[0.98] focus:outline-none focus:ring-2 focus:ring-red-500/30 ${
+        tone === "primary"
+          ? "border-red-500/35 bg-red-600 text-white shadow-lg shadow-red-950/30 hover:bg-red-700"
+          : "border-white/10 bg-white/[0.04] text-white hover:border-white/20 hover:bg-white/[0.07]"
+      }`}
+      aria-label={label}
+    >
+      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-black/25 text-white/90">
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-black kurdish-text">{label}</span>
+        <span className="mt-0.5 block truncate text-[10px] font-bold text-white/55 kurdish-text">{helper}</span>
+      </span>
+      <ArrowLeft className="h-4 w-4 shrink-0 text-white/40 transition group-hover:-translate-x-0.5 group-hover:text-white" />
+    </button>
+  );
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -339,6 +481,8 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
           isOnline: true,
           createdAt: new Date().toISOString(),
           role: 'user',
+          provider: 'google',
+          authProvider: 'google',
         }, { merge: true });
 
         await setDoc(doc(db, 'syncGroups', user.uid), {
@@ -362,165 +506,281 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-3 bg-black/95 backdrop-blur-md">
-      <motion.div 
-        initial={{ opacity: 0, scale: 0.95 }}
-        animate={{ opacity: 1, scale: 1 }}
-        exit={{ opacity: 0, scale: 0.95 }}
-        className="w-full max-w-[310px] mx-auto bg-[#08080a] border border-gray-800/40 rounded-xl shadow-2xl text-right select-none overflow-hidden"
+    <div className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-black/95 p-3 backdrop-blur-md sm:p-5">
+      <motion.div
+        initial={{ opacity: 0, y: 12, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 12, scale: 0.98 }}
+        transition={{ duration: 0.18 }}
+        className="my-auto w-full max-w-[min(94vw,430px)] overflow-hidden rounded-3xl border border-white/10 bg-[#08080a] text-right shadow-2xl shadow-black/60"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="cinemachat-auth-title"
       >
-        {/* Header Section */}
-        <div className="p-3.5 pb-1 text-center relative">
-          <button 
+        <div className="relative border-b border-white/10 bg-[radial-gradient(circle_at_top_right,rgba(229,9,20,0.20),transparent_36%),linear-gradient(180deg,rgba(255,255,255,0.06),transparent)] px-4 pb-4 pt-5 text-center sm:px-6">
+          <button
             type="button"
             onClick={onClose}
-            className="absolute top-3 left-3 p-1 hover:bg-white/5 rounded-md text-gray-500 transition-colors cursor-pointer"
+            aria-label="Close authentication"
+            className="absolute left-4 top-4 flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-zinc-400 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-red-500/30"
           >
-            <X className="w-3.5 h-3.5" />
+            <X className="h-4 w-4" />
           </button>
-          
-          <div className="w-8 h-8 rounded-full bg-red-500/10 flex items-center justify-center border border-red-500/20 mx-auto mb-1.5">
-            <span className="text-red-500 text-sm">{isLogin ? '🔑' : '✨'}</span>
+
+          {(authStep !== "landing" || showPasswordRecovery) && (
+            <button
+              type="button"
+              onClick={() => {
+                setAuthStep("landing");
+                setShowPasswordRecovery(false);
+                setShowAdminBypass(false);
+                setError(null);
+                setSuccessMessage(null);
+              }}
+              aria-label="Back"
+              className="absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-zinc-400 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-red-500/30"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </button>
+          )}
+
+          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl border border-red-500/20 bg-red-500/10 text-red-400">
+            {showPasswordRecovery ? <KeyRound className="h-6 w-6" /> : isLogin ? <LogIn className="h-6 w-6" /> : <Sparkles className="h-6 w-6" />}
           </div>
-          <h2 className="text-sm font-black text-white tracking-wide kurdish-text">
-            {isLogin ? 'چوونەژوورەوەی ئەندام' : 'تۆمارکردنی خێرا'}
+          <h2 id="cinemachat-auth-title" className="text-xl font-black text-white kurdish-text sm:text-2xl">
+            {showPasswordRecovery
+              ? "گەڕاندنەوەی وشەی تێپەڕ"
+              : authStep === "landing"
+                ? "چۆنە ژوورەوە یان خۆتۆمارکردن؟"
+                : isLogin
+                  ? "چوونەژوورەوە"
+                  : "خۆتۆمارکردن"}
           </h2>
-          <p className="text-[10px] text-gray-400 mt-0.5 kurdish-text">
-            {isLogin ? 'تکایە زانیارییەکانت بنووسە بۆ چوونەژوورەوە' : 'بۆ چوونە ژوورەوە زانیارییەکانی خوارەوە پڕ بکەرەوە'}
+          <p className="mx-auto mt-1 max-w-[300px] text-xs leading-6 text-zinc-500 kurdish-text">
+            {showPasswordRecovery
+              ? "ئیمەیڵ و ژمارەی مۆبایلی تۆمارکراو بنووسە."
+              : authStep === "landing"
+                ? "ڕێگای گونجاو هەڵبژێرە و بە ئارامی بەردەوام بە."
+                : isLogin
+                  ? authMethod === "email" ? "بە ئیمەیڵ و وشەی تێپەڕ بچۆ ژوورەوە." : "بە ژمارەی مۆبایل یان CC-ID و وشەی تێپەڕ بچۆ ژوورەوە."
+                  : authMethod === "email" ? "ئەکاونت بە ئیمەیڵ دروست بکە." : "ئەکاونت بە ژمارەی مۆبایل دروست بکە."}
           </p>
         </div>
 
-        <div className="p-3.5 pt-1">
-          <form onSubmit={handleSubmit} className="space-y-2.5">
-            {isLogin && showAdminBypass ? (
-              <>
-                <div id="admin-bypass-name-group">
-                  <label className="block text-[10px] font-bold text-gray-400 mb-1 mr-1 kurdish-text">ناوی بەکارهێنەری سەرپەرشتیار (Admin Name)</label>
-                  <div className="relative">
-                    <input
-                      type="text"
-                      required
-                      value={formData.name}
-                      onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                      className="w-full bg-[#101014] border border-gray-800/50 focus:border-red-500/40 text-white rounded-lg py-1 px-2.5 text-[11px] text-right outline-none transition-all placeholder:text-gray-600 kurdish-text"
-                      placeholder="ناوەکەت بنووسە"
-                      id="admin-bypass-name-input"
-                    />
-                  </div>
+        <div className="max-h-[min(78vh,720px)] overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
+          {authStep === "landing" && !showPasswordRecovery ? (
+            <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <AuthChoiceButton
+                  icon={<LogIn className="h-5 w-5" />}
+                  label="چوونەژوورەوە"
+                  helper="ئەکاونتت هەیە"
+                  tone="primary"
+                  onClick={() => resetAuthView(true, "email")}
+                />
+                <AuthChoiceButton
+                  icon={<User className="h-5 w-5" />}
+                  label="خۆتۆمارکردن"
+                  helper="ئەکاونتی نوێ"
+                  onClick={() => resetAuthView(false, "email")}
+                />
+              </div>
+              <button
+                type="button"
+                onClick={handleGoogleSignIn}
+                disabled={isLoading}
+                className="flex h-12 w-full items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 text-sm font-black text-white transition hover:bg-white/[0.08] active:scale-[0.98] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-500/30"
+              >
+                <Globe className="h-4 w-4" />
+                Continue with Google
+              </button>
+            </div>
+          ) : showPasswordRecovery ? (
+            <form onSubmit={handlePasswordRecovery} className="space-y-3">
+              <div className="rounded-2xl border border-amber-500/15 bg-amber-500/10 p-3 text-[11px] font-bold leading-6 text-amber-100/85 kurdish-text">
+                هیچ SMS یان OTP نانێردرێت. ئەگەر زانیارییەکان بگونجێن، Firebase ئیمەیڵی فەرمی گەڕاندنەوەی وشەی تێپەڕ دەنێرێت.
+              </div>
+              <FloatingInput
+                id="recovery-email"
+                label="ئیمەیڵی تۆمارکراو"
+                icon={<Mail className="h-4 w-4" />}
+                type="email"
+                value={formData.email}
+                onChange={(value) => setFormData({ ...formData, email: value })}
+                placeholder="name@example.com"
+                autoComplete="email"
+                required
+                dir="ltr"
+              />
+              <FloatingInput
+                id="recovery-phone"
+                label="ژمارەی مۆبایلی تۆمارکراو"
+                icon={<Phone className="h-4 w-4" />}
+                type="tel"
+                value={formData.phone}
+                onChange={(value) => setFormData({ ...formData, phone: value })}
+                placeholder="+9647700000000"
+                autoComplete="tel"
+                inputMode="tel"
+                required
+                dir="ltr"
+              />
+              {successMessage && (
+                <p className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-center text-[11px] font-bold leading-6 text-emerald-300 kurdish-text">
+                  {successMessage}
+                </p>
+              )}
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-red-600 px-4 text-sm font-black text-white shadow-lg shadow-red-950/30 transition hover:bg-red-700 active:scale-[0.98] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-500/30 kurdish-text"
+              >
+                {isLoading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/20 border-t-white" /> : "ناردنی ئیمەیڵی گەڕاندنەوە"}
+              </button>
+            </form>
+          ) : (
+            <form onSubmit={handleSubmit} className="space-y-3">
+              {!showAdminBypass && (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    onClick={() => resetAuthView(isLogin, "email")}
+                    className={`h-11 rounded-2xl border px-3 text-xs font-black transition focus:outline-none focus:ring-2 focus:ring-red-500/30 kurdish-text ${authMethod === "email" ? "border-red-500/50 bg-red-600 text-white" : "border-white/10 bg-white/[0.04] text-zinc-400 hover:text-white"}`}
+                  >
+                    {isLogin ? "Login with Email" : "Register using Email"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => resetAuthView(isLogin, "phone")}
+                    className={`h-11 rounded-2xl border px-3 text-xs font-black transition focus:outline-none focus:ring-2 focus:ring-red-500/30 kurdish-text ${authMethod === "phone" ? "border-red-500/50 bg-red-600 text-white" : "border-white/10 bg-white/[0.04] text-zinc-400 hover:text-white"}`}
+                  >
+                    {isLogin ? "Login with Mobile" : "Register using Mobile"}
+                  </button>
                 </div>
+              )}
 
-                <div id="admin-bypass-secret-group">
-                  <label className="block text-[10px] font-bold text-gray-400 mb-1 mr-1 kurdish-text">کۆدی نهێنی سەرپەرشتیار (Admin Secret Key)</label>
-                  <div className="relative">
-                    <input
-                      type="password"
-                      required
-                      value={formData.password}
-                      onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                      className="w-full bg-[#101014] border border-gray-800/50 focus:border-red-500/40 text-white rounded-lg py-1 px-2.5 text-[11px] text-center outline-none transition-all placeholder:text-gray-600 font-mono"
-                      placeholder="••••••••"
-                      id="admin-bypass-secret-input"
-                    />
-                  </div>
-                </div>
-              </>
-            ) : (
-              <>
-                {!isLogin && (
-                  <>
-                    <div>
-                      <label className="block text-[10px] font-bold text-gray-400 mb-1 mr-1 kurdish-text">ناوی بەکارهێنەر (Username) <span className="text-red-500">*</span></label>
-                      <div className="relative">
-                        <input
-                          type="text"
-                          required
-                          value={formData.name}
-                          onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                          className="w-full bg-[#101014] border border-gray-800/50 focus:border-red-500/40 text-white rounded-lg py-1 px-2.5 text-[11px] text-right outline-none transition-all placeholder:text-gray-600 kurdish-text"
-                          placeholder="dekan"
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-[10px] font-bold text-gray-400 mb-1 mr-1 kurdish-text">ئیمەیڵ (Email) <span className="text-red-500">*</span></label>
-                      <div className="relative">
-                        <input
-                          type="email"
-                          required
-                          value={formData.email}
-                          onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                          className="w-full bg-[#101014] border border-gray-800/50 focus:border-red-500/40 text-white rounded-lg py-1"
-                          placeholder="username@example.com"
-                        />
-                      </div>
-                    </div>
-                  </>
-                )}
-
-                <div>
-                  <label className="block text-[10px] font-bold text-gray-400 mb-1 mr-1 kurdish-text flex items-center justify-between">
-                    <span>
-                      {isLogin ? "ناسنامەی CC-ID یان ئیمەیڵ یان مۆبایل" : "ژمارەی مۆبایل (دڵخواز)"}
-                    </span>
-                    {isLogin && (
-                      <button
-                        type="button"
-                        onClick={() => qrInputRef.current?.click()}
-                        className="text-[9px] text-red-500 hover:text-red-400 font-bold flex items-center gap-1 cursor-pointer transition-colors"
-                        title="سکانکردنی کۆدی QRی کارتی ئەندامێتی"
-                      >
-                        <QrCode className="w-3 h-3 text-red-500" />
-                        سکانکردنی QR کارت
+              {isLogin && showAdminBypass ? (
+                <>
+                  <FloatingInput
+                    id="admin-bypass-name-input"
+                    label="ناوی سەرپەرشتیار"
+                    icon={<User className="h-4 w-4" />}
+                    value={formData.name}
+                    onChange={(value) => setFormData({ ...formData, name: value })}
+                    placeholder="admin"
+                    autoComplete="username"
+                    required
+                  />
+                  <FloatingInput
+                    id="admin-bypass-secret-input"
+                    label="کلیلی نهێنی"
+                    icon={<Lock className="h-4 w-4" />}
+                    type={showPassword ? "text" : "password"}
+                    value={formData.password}
+                    onChange={(value) => setFormData({ ...formData, password: value })}
+                    placeholder="password"
+                    autoComplete="current-password"
+                    required
+                    dir="ltr"
+                    trailing={
+                      <button type="button" onClick={() => setShowPassword((value) => !value)} aria-label="Show or hide password" className="flex h-8 w-8 items-center justify-center rounded-xl text-zinc-500 hover:bg-white/10 hover:text-white">
+                        {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                       </button>
-                    )}
-                  </label>
-                  
-                  {isLogin && (
-                    <input
-                      type="file"
-                      ref={qrInputRef}
-                      className="hidden"
-                      accept="image/*"
-                      onChange={handleLoginQRUpload}
+                    }
+                  />
+                </>
+              ) : (
+                <>
+                  {!isLogin && (
+                    <FloatingInput
+                      id="register-name"
+                      label="ناوی بەکارهێنەر"
+                      icon={<User className="h-4 w-4" />}
+                      value={formData.name}
+                      onChange={(value) => setFormData({ ...formData, name: value })}
+                      placeholder="CinemaChat"
+                      autoComplete="name"
+                      required
                     />
                   )}
 
-                  <div className={`relative ${!isLogin || formData.phone.includes('@') ? 'dir-ltr' : 'dir-rtl'}`}>
-                    <input
-                      type="text"
-                      required={isLogin}
-                      value={formData.phone}
-                      onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                      className="w-full bg-[#101014] border border-gray-800/50 focus:border-red-500/40 text-white rounded-lg py-1 px-2.5 text-[11px] outline-none transition-all placeholder:text-gray-600 text-center"
-                      placeholder={isLogin ? "بۆ نموونە: CC-ADM-001 یان ئیمەیڵ" : "07700000000"}
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-bold text-gray-400 mb-1 mr-1 kurdish-text">وشەی تێپەڕ (Password) <span className="text-red-500">*</span></label>
-                  <div className="relative">
-                    <input
-                      type="password"
+                  {authMethod === "email" ? (
+                    <FloatingInput
+                      id={isLogin ? "login-email" : "register-email"}
+                      label="ئیمەیڵ"
+                      icon={<Mail className="h-4 w-4" />}
+                      type="email"
+                      value={isLogin ? formData.phone : formData.email}
+                      onChange={(value) => setFormData(isLogin ? { ...formData, phone: value } : { ...formData, email: value })}
+                      placeholder="name@example.com"
+                      autoComplete="email"
                       required
-                      value={formData.password}
-                      onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                      className="w-full bg-[#101014] border border-gray-800/50 focus:border-red-500/40 text-white rounded-lg py-1 px-2.5 text-[11px] text-center outline-none transition-all placeholder:text-gray-600"
-                      placeholder="••••••••"
+                      dir="ltr"
                     />
-                  </div>
-                </div>
-              </>
-            )}
+                  ) : (
+                    <>
+                      {isLogin && (
+                        <input
+                          type="file"
+                          ref={qrInputRef}
+                          className="hidden"
+                          accept="image/*"
+                          onChange={handleLoginQRUpload}
+                        />
+                      )}
+                      <FloatingInput
+                        id={isLogin ? "login-phone" : "register-phone"}
+                        label={isLogin ? "مۆبایل یان CC-ID" : "ژمارەی مۆبایل"}
+                        icon={<Phone className="h-4 w-4" />}
+                        type="tel"
+                        value={formData.phone}
+                        onChange={(value) => setFormData({ ...formData, phone: value })}
+                        placeholder={isLogin ? "CC-ADM-001 / 07700000000" : "07700000000"}
+                        autoComplete="tel"
+                        inputMode="tel"
+                        required={isLogin || authMethod === "phone"}
+                        dir="ltr"
+                        trailing={isLogin ? (
+                          <button
+                            type="button"
+                            onClick={() => qrInputRef.current?.click()}
+                            aria-label="Scan QR card"
+                            className="flex h-8 w-8 items-center justify-center rounded-xl text-zinc-500 hover:bg-white/10 hover:text-white"
+                          >
+                            <QrCode className="h-4 w-4" />
+                          </button>
+                        ) : undefined}
+                      />
+                    </>
+                  )}
 
-            {isLogin && (
-              <div className="text-center pt-0.5" id="admin-bypass-toggle-container">
+                  <FloatingInput
+                    id={isLogin ? "login-password" : "register-password"}
+                    label="وشەی تێپەڕ"
+                    icon={<Lock className="h-4 w-4" />}
+                    type={showPassword ? "text" : "password"}
+                    value={formData.password}
+                    onChange={(value) => setFormData({ ...formData, password: value })}
+                    placeholder="password"
+                    autoComplete={isLogin ? "current-password" : "new-password"}
+                    required
+                    dir="ltr"
+                    trailing={
+                      <button type="button" onClick={() => setShowPassword((value) => !value)} aria-label="Show or hide password" className="flex h-8 w-8 items-center justify-center rounded-xl text-zinc-500 hover:bg-white/10 hover:text-white">
+                        {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
+                    }
+                  />
+                </>
+              )}
+
+              {isLogin && (
                 <button
                   type="button"
                   onClick={() => {
                     setShowAdminBypass(!showAdminBypass);
                     setError(null);
+                    setShowPassword(false);
                     setFormData({
                       name: '',
                       phone: '',
@@ -532,89 +792,77 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                       country: 'کوردستان',
                     });
                   }}
-                  className="text-[9px] text-red-500 hover:text-red-400 font-bold kurdish-text transition-colors flex items-center justify-center gap-1 mx-auto cursor-pointer"
-                  id="admin-bypass-toggle-btn"
+                  className="mx-auto flex min-h-9 items-center justify-center gap-1 rounded-xl px-3 text-[11px] font-bold text-red-400 transition hover:bg-red-500/10 hover:text-red-300 focus:outline-none focus:ring-2 focus:ring-red-500/30 kurdish-text"
                 >
-                  <span>{showAdminBypass ? "↩ چوونەژوورەوەی ئاسایی ئەندامان" : "🔐 چوونەژوورەوەی سەرپەرشتیار بە کلیل"}</span>
+                  {showAdminBypass ? "گەڕانەوە بۆ چوونەژوورەوەی ئاسایی" : "چوونەژوورەوەی سەرپەرشتیار"}
                 </button>
-              </div>
-            )}
-
-            {!isLogin && (
-              <div className="bg-red-500/5 border border-red-500/10 rounded-lg p-2 text-center">
-                <p className="text-[9px] text-gray-400 leading-relaxed kurdish-text">
-                  🔒 ناسنامەی بەستنەوەی ژوورەکەت (<span className="text-red-500 font-mono font-bold">CC-ID</span>) بە ئۆتۆماتیکی دروست دەبێت.
-                </p>
-              </div>
-            )}
-
-            {error && (
-              <p className="text-red-500 text-[9px] font-bold kurdish-text text-center px-1">{error}</p>
-            )}
-
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="w-full bg-red-600 hover:bg-red-700 text-white text-[11px] font-bold py-1.5 px-3 rounded-lg shadow-lg shadow-red-600/10 transition-all mt-1 flex items-center justify-center gap-1.5 active:scale-[0.98] disabled:opacity-50 cursor-pointer"
-            >
-              {isLoading ? (
-                <div className="w-3 h-3 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-              ) : (
-                <>
-                  <span>{isLogin ? '🔑' : '🚀'}</span>
-                  <span className="kurdish-text font-black">
-                    {isLogin ? 'چوونەژوورەوە' : 'تۆمارکردن و بینین'}
-                  </span>
-                </>
               )}
-            </button>
 
-            <div className="flex items-center my-2.5">
-              <div className="flex-1 border-t border-gray-800/60"></div>
-              <span className="px-2 text-[8px] text-gray-500 font-black uppercase tracking-wider font-mono">OR</span>
-              <div className="flex-1 border-t border-gray-800/60"></div>
+              {!isLogin && (
+                <div className="rounded-2xl border border-red-500/10 bg-red-500/5 p-3 text-center text-[11px] font-bold leading-5 text-zinc-400 kurdish-text">
+                  ناسنامەی بەستنەوەی ژوورەکەت <span className="font-mono text-red-400">CC-ID</span> بە ئۆتۆماتیکی دروست دەبێت.
+                </div>
+              )}
+
+              {error && (
+                <p className="rounded-2xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-center text-[11px] font-bold leading-5 text-red-300 kurdish-text">
+                  {error}
+                </p>
+              )}
+
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-red-600 px-4 text-sm font-black text-white shadow-lg shadow-red-950/30 transition hover:bg-red-700 active:scale-[0.98] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-500/30 kurdish-text"
+              >
+                {isLoading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/20 border-t-white" /> : isLogin ? "چوونەژوورەوە" : "دروستکردنی ئەکاونت"}
+              </button>
+
+              <div className="flex items-center gap-3 py-1">
+                <div className="h-px flex-1 bg-white/10" />
+                <span className="text-[10px] font-black text-zinc-600">OR</span>
+                <div className="h-px flex-1 bg-white/10" />
+              </div>
+
+              <button
+                type="button"
+                onClick={handleGoogleSignIn}
+                disabled={isLoading}
+                className="flex h-12 w-full items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 text-sm font-black text-white transition hover:bg-white/[0.08] active:scale-[0.98] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-500/30"
+              >
+                <Globe className="h-4 w-4" />
+                Continue with Google
+              </button>
+
+              {isLogin && !showAdminBypass && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowPasswordRecovery(true);
+                    setShowAdminBypass(false);
+                    setError(null);
+                    setSuccessMessage(null);
+                    setFormData((prev) => ({ ...prev, password: '' }));
+                  }}
+                  className="block w-full rounded-xl px-3 py-2 text-center text-[11px] font-bold text-red-400 transition hover:bg-red-500/10 hover:text-red-300 focus:outline-none focus:ring-2 focus:ring-red-500/30 kurdish-text"
+                >
+                  وشەی تێپەڕت لەبیر کردووە؟
+                </button>
+              )}
+            </form>
+          )}
+
+          {authStep !== "landing" && !showPasswordRecovery && (
+            <div className="mt-4 border-t border-white/10 pt-4 text-center">
+              <button
+                type="button"
+                onClick={() => resetAuthView(!isLogin, "email")}
+                className="rounded-xl px-3 py-2 text-[11px] font-bold text-zinc-400 transition hover:bg-white/5 hover:text-white focus:outline-none focus:ring-2 focus:ring-red-500/30 kurdish-text"
+              >
+                {isLogin ? "ئەکاونتت نییە؟ خۆتۆمارکردن" : "پێشتر ئەکاونتت هەیە؟ چوونەژوورەوە"}
+              </button>
             </div>
-
-            <button
-              type="button"
-              onClick={handleGoogleSignIn}
-              disabled={isLoading}
-              className="w-full bg-[#101014]/60 hover:bg-white/5 text-white text-[10px] font-black py-1.5 px-3 rounded-lg border border-gray-800/60 transition-all flex items-center justify-center gap-1.5 active:scale-[0.98] disabled:opacity-50 cursor-pointer shadow-sm"
-            >
-              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24">
-                <path
-                  fill="currentColor"
-                  d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                />
-                <path
-                  fill="currentColor"
-                  d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                />
-                <path
-                  fill="currentColor"
-                  d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l3.66-2.85z"
-                />
-                <path
-                  fill="currentColor"
-                  d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.85c.87-2.6 3.3-4.53 6.16-4.53z"
-                />
-              </svg>
-              <span className="font-mono">Continue with Google</span>
-            </button>
-          </form>
-
-          <div className="mt-3 pt-3 border-t border-gray-900/60 text-center">
-            <button 
-              type="button"
-              onClick={() => {
-                setIsLogin(!isLogin);
-                setError(null);
-              }}
-              className="text-gray-500 hover:text-white text-[10px] font-bold kurdish-text transition-colors cursor-pointer"
-            >
-              {isLogin ? 'ئەکاونتت نییە؟ تۆمارکردنی نوێ' : 'پێشتر ئەکاونتت هەیە؟ بچۆ ژوورەوە'}
-            </button>
-          </div>
+          )}
         </div>
       </motion.div>
     </div>

@@ -1237,6 +1237,21 @@ async function fetchWithTimeout(url: string, options: any = {}, timeout = 5000) 
   }
 }
 
+const normalizeRecoveryEmail = (value: unknown) =>
+  String(value || '').trim().toLowerCase();
+
+const normalizeRecoveryPhone = (value: unknown) =>
+  String(value || '')
+    .trim()
+    .replace(/[()\-\s]/g, '')
+    .replace(/^00/, '+');
+
+const maskRecoveryEmail = (value: string) => {
+  const [name, domain] = value.split('@');
+  if (!name || !domain) return 'email';
+  return `${name.slice(0, 2)}***@${domain}`;
+};
+
 // --- Durable movie view counts (Firestore) ---
 // Render's ephemeral filesystem resets db.json on every deploy/restart, which
 // wiped the lifetime view counters in production. These helpers persist
@@ -1669,6 +1684,9 @@ async function startServer() {
   // State
   const syncRateLimits: Record<string, number[]> = {};
   const failedLoginCounts: Record<string, number> = {};
+  const passwordRecoveryIpRate: Record<string, number[]> = {};
+  const passwordRecoveryAccountRate: Record<string, number[]> = {};
+  const passwordRecoveryCooldown: Record<string, number> = {};
 
   // Super Admin (Owner) temporary-block exemption: a whitelisted owner IP/device
   // that gets blocked (testing wrong credentials, security rules, etc.) is
@@ -5203,6 +5221,8 @@ async function startServer() {
         residence,
         country,
         role: 'user',
+        provider: 'password',
+        authProvider: 'password',
       });
 
       // Save locally to db.users in db.json for admin view with credentials
@@ -5222,6 +5242,8 @@ async function startServer() {
         ip: clientIp,
         password: password || "Cc_CinemaChat123",
         role: 'user',
+        provider: 'password',
+        authProvider: 'password',
         active: true,
         kicked: false,
         age: age || "",
@@ -5330,6 +5352,96 @@ async function startServer() {
     } catch (err: any) {
       console.error("[ID Auth] Login by ID logic failed with error:", err);
       return res.status(500).json({ success: false, error: `Ù‡Û•ÚµÛ•ÛŒ Ú©Ø§ØªÛŒ Ø³ÛŽØ±Ú¤Û•Ø±: ${err.message || err}`, code: err.code });
+    }
+  });
+
+  app.post('/api/auth/password-recovery/request', async (req, res) => {
+    const genericMessage = 'If the information matches an account, password reset instructions will be sent to the registered email.';
+    const clientIp = ((req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || 'unknown').trim();
+    const now = Date.now();
+    const email = normalizeRecoveryEmail(req.body?.email);
+    const phone = normalizeRecoveryPhone(req.body?.phone || req.body?.phoneNumber);
+
+    const genericOk = () => res.json({ success: true, message: genericMessage });
+
+    const ipWindowMs = 15 * 60 * 1000;
+    const accountWindowMs = 60 * 60 * 1000;
+    const resendCooldownMs = 5 * 60 * 1000;
+    const accountKey = crypto.createHash('sha256').update(`${email}|${phone}`).digest('hex');
+
+    passwordRecoveryIpRate[clientIp] = (passwordRecoveryIpRate[clientIp] || []).filter((ts) => now - ts < ipWindowMs);
+    passwordRecoveryAccountRate[accountKey] = (passwordRecoveryAccountRate[accountKey] || []).filter((ts) => now - ts < accountWindowMs);
+
+    if (passwordRecoveryIpRate[clientIp].length >= 5 || passwordRecoveryAccountRate[accountKey].length >= 3) {
+      return genericOk();
+    }
+
+    passwordRecoveryIpRate[clientIp].push(now);
+    passwordRecoveryAccountRate[accountKey].push(now);
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !/^\+?\d{8,15}$/.test(phone)) {
+      return genericOk();
+    }
+
+    if (passwordRecoveryCooldown[accountKey] && now - passwordRecoveryCooldown[accountKey] < resendCooldownMs) {
+      return genericOk();
+    }
+
+    try {
+      if (!db.users) db.users = [];
+      const matchedUser = db.users.find((user: any) => {
+        const userEmail = normalizeRecoveryEmail(user.email);
+        const phones = [
+          normalizeRecoveryPhone(user.phone),
+          normalizeRecoveryPhone(user.phoneNumber),
+        ].filter(Boolean);
+        return userEmail === email && phones.includes(phone);
+      });
+
+      if (!matchedUser) {
+        return genericOk();
+      }
+
+      const provider = String(matchedUser.provider || matchedUser.authProvider || '').toLowerCase();
+      const hasPasswordProvider =
+        !provider ||
+        provider === 'password' ||
+        provider === 'email' ||
+        Boolean(matchedUser.password);
+
+      if (!hasPasswordProvider && provider.includes('google')) {
+        return res.json({
+          success: true,
+          message: 'If this account uses Google sign-in, please continue with Google.',
+        });
+      }
+
+      const firebaseApiKey = process.env.FIREBASE_API_KEY || process.env.VITE_FIREBASE_API_KEY || FIREBASE_API_KEY;
+      const resetResponse = await fetchWithTimeout(
+        `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${encodeURIComponent(firebaseApiKey)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            requestType: 'PASSWORD_RESET',
+            email,
+            continueUrl: process.env.PASSWORD_RESET_CONTINUE_URL || 'https://www.cinamachat.com/?auth=login&passwordReset=success',
+          }),
+        },
+        15000,
+      );
+
+      if (!resetResponse.ok) {
+        const errorText = await resetResponse.text().catch(() => '');
+        console.error(`[Password Recovery] Firebase reset email failed for ${maskRecoveryEmail(email)}: HTTP ${resetResponse.status} ${errorText.slice(0, 180)}`);
+        return genericOk();
+      }
+
+      passwordRecoveryCooldown[accountKey] = now;
+      return genericOk();
+    } catch (err: any) {
+      console.error(`[Password Recovery] Request failed for ${maskRecoveryEmail(email)} from ${clientIp}: ${err?.message || err}`);
+      return genericOk();
     }
   });
 

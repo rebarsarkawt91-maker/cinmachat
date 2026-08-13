@@ -58,14 +58,35 @@ export interface Movie {
 export interface SocialUser {
   uid: string;
   name: string;
+  displayName?: string;
   username?: string;
   phone: string;
+  phoneNumber?: string;
+  email?: string;
   uniqueCode: string;
   avatarUrl?: string;
   avatar?: string;
+  cover?: string;
+  bio?: string;
+  birthday?: string;
+  city?: string;
+  address?: string;
+  location?: {
+    latitude?: number;
+    longitude?: number;
+    region?: string;
+    address?: string;
+  };
+  language?: string;
+  theme?: string;
+  accent?: string;
+  notificationSettings?: Record<string, boolean>;
+  privacySettings?: Record<string, boolean>;
+  socialConnections?: Record<string, unknown>;
   currentRoomId?: string;
   isOnline?: boolean;
   createdAt?: string;
+  updatedAt?: string;
   age?: string;
   gender?: string;
   residence?: string;

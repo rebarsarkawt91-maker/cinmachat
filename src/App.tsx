@@ -169,6 +169,7 @@ const MultiLevelAdminModule = React.lazy(() =>
 );
 import { VIPRoomModal } from "./components/Social/VIPRoomModal";
 import { CinemaWindowModal } from "./components/Social/CinemaWindowModal";
+import { AccountCenter } from "./components/Social/AccountCenter";
 import { ProfileCard } from "./components/Social/ProfileCard";
 import { WatchPartyManager } from "./components/Social/WatchPartyManager";
 import { SyncRoom } from "./components/Social/SyncRoom";
@@ -8271,9 +8272,10 @@ export default function App() {
     currentUser: fbUser,
     socialProfile,
     logout: fbLogout,
+    updateSocialProfile,
   } = useSocialAuth();
   const [showSocialModal, setShowSocialModal] = useState(false);
-  const [modalMode, setModalMode] = useState<"login" | "signup">("signup");
+  const [modalMode, setModalMode] = useState<"landing" | "login" | "signup">("landing");
 
   // ============ Favorites / Likes / Live-metrics (movie card enhancements) ============
   // The Firebase uid drives persistence; guests use localStorage instead.
@@ -12074,96 +12076,21 @@ export default function App() {
                 {tr("authorizedOnly")}
               </span>
               </div> {/* Secure Connection Indicator */}
-            {/* Social Protocol Buttons */}
-            <div className="flex items-center gap-1.5 md:gap-2">
-              {!socialProfile ? (
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => {
-                      setModalMode("login");
-                      setShowSocialModal(true);
-                    }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-primary border border-brand-primary/20 rounded-lg hover:bg-red-700 transition-all text-white active:scale-95 text-[9px] font-black uppercase tracking-widest kurdish-text shadow-md shadow-red-600/20"
-                  >
-                    <User className="w-3 h-3" />
-                    {tr("loginRegister")}
-                  </button>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2 md:gap-3">
-                  {/* Point 34: Compact User Profile Info */}
-                  <div className="hidden md:flex flex-col items-end px-3 py-1 border-r border-white/10">
-                    <span className="text-sm font-black text-white kurdish-text leading-tight">
-                      {socialProfile.name}
-                    </span>
-                    <span className="text-[9px] font-mono text-gray-400 tracking-wider leading-none mt-0.5">
-                      {socialProfile?.phone || "---"}
-                    </span>
-                  </div>
-
-                  <button
-                    onClick={() => setShowIdentityCard(true)}
-                    className="w-10 h-10 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl flex items-center justify-center transition-all group/idbtn relative flex-shrink-0"
-                  >
-                    <div className="flex flex-col items-center">
-                      <span className="text-[8px] font-black text-brand-primary uppercase tracking-[0.1em]">
-                        ID
-                      </span>
-                      <div className="w-6 h-6 bg-brand-primary/10 rounded-lg flex items-center justify-center mt-0.5 group-hover/idbtn:bg-brand-primary transition-colors">
-                        <ExternalLink className="w-3.5 h-3.5 text-brand-primary group-hover/idbtn:text-white" />
-                      </div>
-                    </div>
-
-                    {/* Tooltip */}
-                    <div className="absolute -bottom-10 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-zinc-900 border border-white/10 rounded-lg opacity-0 group-hover/idbtn:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50">
-                      <span className="text-[10px] font-black text-white kurdish-text">
-                        {tr("myId")}
-                      </span>
-                    </div>
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      setSocialTab("broadcast");
-                      window.scrollTo({ top: 0, behavior: "smooth" });
-                    }}
-                    className={`flex items-center gap-1.5 p-1.5 md:p-2 rounded-lg transition-all active:scale-95 ${
-                      socialTab === "broadcast"
-                        ? "bg-purple-600 text-white"
-                        : "bg-purple-950/25 border border-purple-500/20 text-purple-300 hover:text-purple-100"
-                    }`}
-                  >
-                    <Tv className="w-4 h-4 md:w-5 md:h-5" />
-                    <span className="hidden lg:block text-[9px] font-black uppercase tracking-widest kurdish-text">
-                      {tr("broadcast")}
-                    </span>
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      setShowDirectMessagesModal(true);
-                    }}
-                    className={`flex items-center gap-1.5 p-1.5 md:p-2 rounded-lg transition-all active:scale-95 ${
-                      showDirectMessagesModal
-                        ? "bg-teal-500/25 text-teal-400 border border-teal-500/30"
-                        : "bg-white/5 border border-white/10 text-gray-400 hover:text-white"
-                    }`}
-                  >
-                    <MessageSquare className="w-4 h-4 md:w-5 md:h-5" />
-                    <span className="hidden lg:block text-[9px] font-black uppercase tracking-widest kurdish-text">
-                      {tr("dms")}
-                    </span>
-                  </button>
-
-                  <button
-                    onClick={fbLogout}
-                    className="p-1.5 md:p-2 bg-red-600/10 border border-red-600/20 rounded-lg text-red-500 hover:bg-red-600/20 transition-all active:scale-95"
-                  >
-                    <LogOut className="w-4 h-4 md:w-5 md:h-5" />
-                  </button>
-                </div>
-              )}
-            </div>
+            <AccountCenter
+              socialProfile={socialProfile}
+              onLogin={() => {
+                setModalMode("landing");
+                setShowSocialModal(true);
+              }}
+              onSignup={() => {
+                setModalMode("landing");
+                setShowSocialModal(true);
+              }}
+              onLogout={fbLogout}
+              onOpenIdentityCard={() => setShowIdentityCard(true)}
+              onOpenMessages={() => setShowDirectMessagesModal(true)}
+              onUpdateProfile={updateSocialProfile}
+            />
 
             <button
               onClick={handleAdminClick}
