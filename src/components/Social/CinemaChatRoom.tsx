@@ -69,6 +69,11 @@ import {
   PHONE_INVITE_NOT_CONFIGURED,
   resolveInviteTarget,
   sendCinemaChatInvitation,
+  subscribeInviteTargetPresence,
+  formatInvitePhoneInput,
+  maskInvitePhone,
+  normalizeInvitePhoneInput,
+  validateInvitePhoneInput,
   PRESENCE_STALE_MS,
   PRESENCE_HEARTBEAT_MS,
 } from "../../services/cinemaChat";
@@ -107,6 +112,9 @@ interface CinemaChatRoomProps {
    *  Account users can invite others by account code/phone and receive real
    *  persisted invitations; device-only guests can still join via code/QR. */
   hasAccount?: boolean;
+  /** True while auth/profile state is still resolving; prevents account CTAs
+   *  from flashing for users who already have a valid profile. */
+  accountLoading?: boolean;
   /** Display name of the connected account (defaults to identity.name). */
   accountName?: string;
   /** Unique member code (CC-ID) of the connected account, if any. */
@@ -174,7 +182,13 @@ const ChatUnreadBadge = ({ text, voice }: { text: number; voice: number }) => {
   );
 };
 
-const WizardProgress = ({ activeStep }: { activeStep: number }) => {
+const WizardProgress = ({
+  activeStep,
+  onNext,
+}: {
+  activeStep: number;
+  onNext?: () => void;
+}) => {
   const steps = [
     { n: 1, label: "Friend" },
     { n: 2, label: "Connect" },
@@ -183,28 +197,40 @@ const WizardProgress = ({ activeStep }: { activeStep: number }) => {
   ];
   return (
     <div className="px-5 py-3 bg-black/30 border-b border-white/10">
-      <div className="grid grid-cols-4 gap-2">
-        {steps.map((step) => {
-          const active = step.n === activeStep;
-          const done = step.n < activeStep;
-          return (
-            <div
-              key={step.n}
-              className={`h-10 rounded-xl border flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-widest transition-all ${
-                active
-                  ? "bg-brand-primary text-white border-brand-primary"
-                  : done
-                    ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/25"
-                    : "bg-white/5 text-gray-500 border-white/10"
-              }`}
-            >
-              <span className="w-5 h-5 rounded-full bg-black/25 flex items-center justify-center">
-                {done ? <CheckCircle2 className="w-3 h-3" /> : step.n}
-              </span>
-              <span className="hidden sm:inline">{step.label}</span>
-            </div>
-          );
-        })}
+      <div className="flex flex-col sm:flex-row gap-2">
+        <div className="grid grid-cols-4 gap-2 flex-1">
+          {steps.map((step) => {
+            const active = step.n === activeStep;
+            const done = step.n < activeStep;
+            return (
+              <div
+                key={step.n}
+                className={`h-10 rounded-xl border flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-widest transition-all ${
+                  active
+                    ? "bg-brand-primary text-white border-brand-primary"
+                    : done
+                      ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/25"
+                      : "bg-white/5 text-gray-500 border-white/10"
+                }`}
+              >
+                <span className="w-5 h-5 rounded-full bg-black/25 flex items-center justify-center">
+                  {done ? <CheckCircle2 className="w-3 h-3" /> : step.n}
+                </span>
+                <span className="hidden sm:inline">{step.label}</span>
+              </div>
+            );
+          })}
+        </div>
+        {onNext && (
+          <button
+            type="button"
+            onClick={onNext}
+            className="h-10 px-4 rounded-xl bg-amber-400 hover:bg-amber-300 text-black text-xs font-black kurdish-text flex items-center justify-center gap-2 transition-all shadow-lg shadow-amber-500/15"
+          >
+            دواتر
+            <SkipForward className="w-4 h-4" />
+          </button>
+        )}
       </div>
     </div>
   );
@@ -216,6 +242,7 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
   identity,
   movies,
   hasAccount = false,
+  accountLoading = false,
   accountName,
   accountCode,
   onRequestAccount,
@@ -1065,16 +1092,26 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
   const showDisconnectedOverlay =
     isParticipant && state.sessionState === SESSION_STATES.DISCONNECTED;
   const wizardStep =
-    state.sessionState === SESSION_STATES.PAIRING
+    state.sessionState === SESSION_STATES.PAIRING ||
+    state.sessionState === SESSION_STATES.WAITING_FOR_APPROVAL
       ? 2
-      : state.sessionState === SESSION_STATES.WAITING_FOR_APPROVAL
-        ? 4
-        : state.sessionState === SESSION_STATES.READY ||
-            state.sessionState === SESSION_STATES.PLAYING ||
+      : state.sessionState === SESSION_STATES.READY
+        ? 3
+        : state.sessionState === SESSION_STATES.PLAYING ||
             state.sessionState === SESSION_STATES.PAUSED ||
             state.sessionState === SESSION_STATES.DISCONNECTED
           ? 4
           : 1;
+  const canAdvanceFromConnect =
+    isParticipant &&
+    state.sessionState === SESSION_STATES.WAITING_FOR_APPROVAL &&
+    state.hostApproved &&
+    state.guestApproved &&
+    !movieData;
+  const goToMovieStep = useCallback(() => {
+    if (!canAdvanceFromConnect) return;
+    setShowMoviePicker(true);
+  }, [canAdvanceFromConnect]);
 
   // ---------------------------------------------------------------------------
 
@@ -1151,7 +1188,10 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
             </div>
 
             {/* ── Body ─────────────────────────────────────────────────── */}
-            <WizardProgress activeStep={wizardStep} />
+            <WizardProgress
+              activeStep={wizardStep}
+              onNext={canAdvanceFromConnect ? goToMovieStep : undefined}
+            />
 
             <div className="flex-1 flex overflow-hidden">
               {/* Main area */}
@@ -1166,6 +1206,7 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                 {state.sessionState === SESSION_STATES.EMPTY ||
                 state.sessionState === SESSION_STATES.WAITING_FOR_PARTNER ||
                 state.sessionState === SESSION_STATES.PAIRING ||
+                (state.sessionState === SESSION_STATES.WAITING_FOR_APPROVAL && !movieData) ||
                 !isParticipant ? (
                   <Lobby
                     state={state}
@@ -1189,9 +1230,11 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                     onApproveGuest={approveGuest}
                     onDeclineGuest={declineGuest}
                     hasAccount={hasAccount}
+                    accountLoading={accountLoading}
                     accountName={accountName}
                     accountCode={accountCode}
                     onRequestAccount={onRequestAccount}
+                    onNextToMovie={goToMovieStep}
                   />
                 ) : (
                   <div ref={fsRef} className="flex-1 flex flex-col relative">
@@ -2093,9 +2136,11 @@ const Lobby = ({
   onApproveGuest,
   onDeclineGuest,
   hasAccount,
+  accountLoading,
   accountName,
   accountCode,
   onRequestAccount,
+  onNextToMovie,
 }: {
   state: CinemaChatRoomState;
   meIsHost: boolean;
@@ -2118,24 +2163,38 @@ const Lobby = ({
   onApproveGuest: () => void;
   onDeclineGuest: () => void;
   hasAccount: boolean;
+  accountLoading: boolean;
   accountName?: string;
   accountCode?: string;
   onRequestAccount?: () => void;
+  onNextToMovie: () => void;
 }) => {
+  const hasValidAccount = hasAccount && !!accountCode && !accountCode.startsWith("DEV-");
   const sessionWaiting =
     !!state.sessionId && !!state.host && !state.guest && meIsHost === false && !isParticipant;
   const safeLink = `cinemachat://cinema-room?room=${CINEMA_CHAT_ROOM_ID}&code=${encodeURIComponent(
     state.joinCode || "",
   )}`;
 
-  const showStepOneWizard = state.sessionState !== SESSION_STATES.PAIRING;
+  const showStepOneWizard =
+    state.sessionState !== SESSION_STATES.PAIRING &&
+    state.sessionState !== SESSION_STATES.WAITING_FOR_APPROVAL;
+  const connectedPartner = meIsHost ? state.guest : meIsGuest ? state.host : null;
+  const showConnectedPanel =
+    isParticipant &&
+    state.sessionState === SESSION_STATES.WAITING_FOR_APPROVAL &&
+    state.hostApproved &&
+    state.guestApproved &&
+    !!connectedPartner;
   if (showStepOneWizard) {
     return (
       <div className="flex-1 overflow-y-auto custom-scrollbar p-4 sm:p-8">
         <div className="w-full max-w-3xl mx-auto">
           <FriendIdentityPanel
             identity={identity}
+            state={state}
             hasAccount={hasAccount}
+            accountLoading={accountLoading}
             accountName={accountName}
             accountCode={accountCode}
             onRequestAccount={onRequestAccount}
@@ -2148,6 +2207,40 @@ const Lobby = ({
   return (
     <div className="flex-1 flex items-center justify-center p-8 overflow-y-auto custom-scrollbar">
       <div className="w-full max-w-3xl grid grid-cols-1 md:grid-cols-2 gap-6">
+        {showConnectedPanel && connectedPartner && (
+          <div className="md:col-span-2 bg-emerald-500/10 border border-emerald-500/35 rounded-[2rem] p-6 shadow-xl shadow-emerald-950/20">
+            <div className="flex flex-col md:flex-row items-center gap-5">
+              <div className="w-16 h-16 rounded-2xl bg-emerald-500/15 border border-emerald-500/40 flex items-center justify-center text-2xl font-black text-white">
+                {(connectedPartner.name || "?").substring(0, 1).toUpperCase()}
+              </div>
+              <div className="flex-1 text-center md:text-right">
+                <div className="flex items-center justify-center md:justify-start gap-2 text-emerald-400 text-[10px] font-black uppercase tracking-widest">
+                  <CheckCircle2 className="w-4 h-4" />
+                  Connected
+                </div>
+                <h3 className="mt-1 text-2xl font-black text-white kurdish-text">
+                  {connectedPartner.name}
+                </h3>
+                <p className="mt-1 flex items-center justify-center md:justify-start gap-2 text-xs text-emerald-300 font-mono">
+                  {connectedPartner.code}
+                  <CodeCopy code={connectedPartner.code} />
+                </p>
+                <p className="mt-2 text-xs text-gray-300 kurdish-text">
+                  پەیوەندیەکە دروست بوو. ئێستا دەتوانیت بچیتە هەنگاوی فیلم و
+                  فیلمێک بۆ بینین هەڵبژێریت.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onNextToMovie}
+                className="w-full md:w-auto px-7 py-4 rounded-2xl bg-amber-400 hover:bg-amber-300 text-black text-sm font-black kurdish-text flex items-center justify-center gap-2 transition-all shadow-xl shadow-amber-500/15"
+              >
+                دواتر بۆ فیلم
+                <Film className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
         {/* Start a session — only when no session is active yet */}
         {!state.sessionId && (
         <div className="bg-zinc-900 border border-white/10 rounded-[2rem] p-7 flex flex-col items-center text-center gap-5">
@@ -2260,7 +2353,15 @@ const Lobby = ({
         {/* Account status — with an account you can invite by code/phone and be
             invited; without one you can still join via code/QR */}
         <div className="md:col-span-2 bg-zinc-900 border border-white/10 rounded-[2rem] p-6">
-          {hasAccount ? (
+          {accountLoading ? (
+            <div className="flex flex-col md:flex-row items-center gap-4 animate-pulse">
+              <div className="w-12 h-12 rounded-2xl bg-white/10 border border-white/10 flex-shrink-0" />
+              <div className="flex-1 w-full space-y-2">
+                <div className="h-4 rounded bg-white/10 w-40 mx-auto md:mx-0" />
+                <div className="h-3 rounded bg-white/5 w-full max-w-md mx-auto md:mx-0" />
+              </div>
+            </div>
+          ) : hasValidAccount ? (
             <div className="flex flex-col md:flex-row items-center gap-4">
               <div className="w-12 h-12 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center flex-shrink-0">
                 <UserCircle2 className="w-6 h-6 text-emerald-400" />
@@ -2273,7 +2374,7 @@ const Lobby = ({
                 <p className="text-xs text-gray-400 kurdish-text mt-1 leading-relaxed">
                   {accountName || identity.name} ·{" "}
                   <span className="font-mono text-emerald-400">
-                    {accountCode || identity.code}
+                    {accountCode}
                   </span>{" "}
                   — بەکارهێنەرەکانی تر دەتوانن بەم کۆدە بانگهێشتت بکەن و تۆش
                   دەتوانیت بانگهێشتیان بکەیت
@@ -2364,7 +2465,9 @@ const Lobby = ({
           <div className="md:col-span-2">
             <FriendIdentityPanel
               identity={identity}
-              hasAccount={hasAccount}
+              state={state}
+              hasAccount={hasValidAccount}
+              accountLoading={accountLoading}
               accountName={accountName}
               accountCode={accountCode}
               onRequestAccount={onRequestAccount}
@@ -2379,7 +2482,8 @@ const Lobby = ({
             <AccountInvitePanel
               identity={identity}
               state={state}
-              hasAccount={hasAccount}
+              hasAccount={hasValidAccount}
+              accountLoading={accountLoading}
               accountName={accountName}
               accountCode={accountCode}
               onRequestAccount={onRequestAccount}
@@ -2580,13 +2684,17 @@ const extractInviteIdentity = (raw: string): string => {
 
 const FriendIdentityPanel = ({
   identity,
+  state,
   hasAccount,
+  accountLoading,
   accountName,
   accountCode,
   onRequestAccount,
 }: {
   identity: CinemaChatParticipant;
+  state: CinemaChatRoomState;
   hasAccount: boolean;
+  accountLoading: boolean;
   accountName?: string;
   accountCode?: string;
   onRequestAccount?: () => void;
@@ -2600,6 +2708,8 @@ const FriendIdentityPanel = ({
   const [showBarcode, setShowBarcode] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
   const [method, setMethod] = useState<"scan" | "upload" | "phone">("scan");
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const [presenceLoading, setPresenceLoading] = useState(false);
   const qrImageInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -2617,17 +2727,45 @@ const FriendIdentityPanel = ({
     }),
     [accountName, identity.avatarUrl, identity.id, identity.name, myCode],
   );
-  const maskedPhone = target?.phone
-    ? target.phone.replace(/(\d{3})\d+(\d{2})$/, "$1*****$2")
-    : "";
+  const maskedPhone = maskInvitePhone(target?.phone);
+  const presenceStatus = presenceLoading ? "checking" : target?.presenceStatus || "offline";
+  const presenceClass =
+    presenceStatus === "online"
+      ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-300"
+      : presenceStatus === "offline"
+        ? "bg-white/5 border-white/10 text-gray-400"
+        : "bg-amber-400/10 border-amber-400/25 text-amber-300";
+  const canSendInvite = hasAccount && !!state.sessionId && !!state.joinCode;
 
   const chooseAnother = () => {
     stopCamera();
     setInput("");
     setTarget(null);
+    setPresenceLoading(false);
     setStatus("idle");
     setMessage(null);
   };
+
+  useEffect(() => {
+    if (!target?.uid) {
+      setPresenceLoading(false);
+      return;
+    }
+    setPresenceLoading(true);
+    const unsub = subscribeInviteTargetPresence(
+      target.uid,
+      (presence) => {
+        setTarget((current) =>
+          current && current.uid === target.uid ? { ...current, ...presence } : current,
+        );
+        setPresenceLoading(false);
+      },
+      () => {
+        setPresenceLoading(false);
+      },
+    );
+    return unsub;
+  }, [target?.uid]);
 
   const stopCamera = useCallback(() => {
     if (frameRef.current !== null) {
@@ -2645,7 +2783,20 @@ const FriendIdentityPanel = ({
 
   const resolveFriend = useCallback(
     async (rawValue: string) => {
-      const lookup = extractInviteIdentity(rawValue);
+      const lookup =
+        method === "phone"
+          ? normalizeInvitePhoneInput(rawValue)
+          : extractInviteIdentity(rawValue);
+      if (method === "phone") {
+        const phoneError = validateInvitePhoneInput(lookup);
+        if (phoneError) {
+          setTarget(null);
+          setStatus("error");
+          setMessage(phoneError);
+          setInput(formatInvitePhoneInput(lookup));
+          return;
+        }
+      }
       if (!lookup) {
         setTarget(null);
         setStatus("error");
@@ -2653,7 +2804,7 @@ const FriendIdentityPanel = ({
         return;
       }
 
-      setInput(lookup);
+      setInput(method === "phone" ? formatInvitePhoneInput(lookup) : lookup);
       setTarget(null);
       setStatus("resolving");
       setMessage(null);
@@ -2672,6 +2823,7 @@ const FriendIdentityPanel = ({
           setMessage("ئەم بارکۆدە هی خۆتە؛ بارکۆد یان ژمارەی هاوڕێکەت بەکاربهێنە");
           return;
         }
+        setPresenceLoading(true);
         setTarget(found);
         setStatus("found");
         setMessage("هاوڕێکەت دۆزرایەوە؛ هەنگاوی داهاتوو ناردنی بانگهێشتە");
@@ -2680,7 +2832,7 @@ const FriendIdentityPanel = ({
         setMessage("دۆزینەوە سەرکەوتوو نەبوو؛ دووبارە هەوڵبدە");
       }
     },
-    [identity.id, myCode],
+    [identity.id, method, myCode],
   );
 
   const decodeImageFile = (file: File) => {
@@ -2754,6 +2906,38 @@ const FriendIdentityPanel = ({
     }
   };
 
+  const handleSendInvitation = async () => {
+    if (!target || inviteBusy) return;
+    if (!hasAccount) {
+      setStatus("error");
+      setMessage("بۆ ناردنی بانگهێشت پێویستە ئەکاونتی CinemaChat هەبێت");
+      onRequestAccount?.();
+      return;
+    }
+    if (!canSendInvite) {
+      setStatus("error");
+      setMessage("یەکەم session ـی CinemaChat دەست پێبکە تا بتوانیت بانگهێشت بنێریت");
+      return;
+    }
+    setInviteBusy(true);
+    setStatus("resolving");
+    setMessage(null);
+    try {
+      const { duplicate } = await sendCinemaChatInvitation({ identity, target, state });
+      setStatus("found");
+      setMessage(
+        duplicate
+          ? `بانگهێشت پێشتر نێردراوە بۆ ${target.name}`
+          : `بانگهێشت نێردرا بۆ ${target.name}`,
+      );
+    } catch {
+      setStatus("error");
+      setMessage("ناردنی بانگهێشت سەرکەوتوو نەبوو؛ دووبارە هەوڵ بدە");
+    } finally {
+      setInviteBusy(false);
+    }
+  };
+
   if (target) {
     return (
       <div className="bg-zinc-900 border border-white/10 rounded-[2rem] p-5" dir="rtl">
@@ -2771,7 +2955,16 @@ const FriendIdentityPanel = ({
 
         <div className="rounded-3xl border border-emerald-500/25 bg-emerald-500/10 p-4 flex items-center gap-4">
           <div className="w-14 h-14 rounded-full bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-white text-lg font-black overflow-hidden">
-            {(target.name || "?").slice(0, 1).toUpperCase()}
+            {target.avatarUrl ? (
+              <img
+                src={target.avatarUrl}
+                alt={target.name}
+                className="w-full h-full object-cover"
+                referrerPolicy="no-referrer"
+              />
+            ) : (
+              (target.name || "?").slice(0, 1).toUpperCase()
+            )}
           </div>
           <div className="min-w-0 flex-1">
             <p className="text-base font-black text-white kurdish-text truncate">
@@ -2786,8 +2979,8 @@ const FriendIdentityPanel = ({
                   {maskedPhone}
                 </span>
               )}
-              <span className="px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-[10px] text-gray-400 kurdish-text">
-                Online status: not verified
+              <span className={`px-2 py-1 rounded-lg border text-[10px] font-bold kurdish-text ${presenceClass}`}>
+                {presenceLoading ? "Checking status..." : target.presenceLabel || "Offline"}
               </span>
             </div>
           </div>
@@ -2800,7 +2993,7 @@ const FriendIdentityPanel = ({
           </p>
         )}
 
-        <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <div className="hidden">
           <button
             type="button"
             onClick={() =>
@@ -2815,6 +3008,37 @@ const FriendIdentityPanel = ({
             type="button"
             onClick={chooseAnother}
             className="px-5 py-3 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 text-xs font-black kurdish-text transition-all"
+          >
+            CHOOSE ANOTHER PERSON
+          </button>
+        </div>
+        <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={handleSendInvitation}
+            disabled={inviteBusy || !canSendInvite}
+            className="px-5 py-3 rounded-2xl bg-brand-primary hover:bg-red-700 text-white text-xs font-black kurdish-text flex items-center justify-center gap-2 transition-all disabled:opacity-50"
+          >
+            {inviteBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+            SEND INVITATION
+          </button>
+          <button
+            type="button"
+            disabled
+            title={
+              presenceStatus === "online"
+                ? "Voice call لە Milestone 2 چالاک دەکرێت"
+                : "Voice call تەنها کاتێک چالاک دەبێت کە هاوڕێکەت Online بێت"
+            }
+            className="px-5 py-3 rounded-2xl bg-white/5 border border-white/10 text-gray-500 text-xs font-black kurdish-text flex items-center justify-center gap-2 cursor-not-allowed"
+          >
+            <Phone className="w-4 h-4" />
+            VOICE CALL
+          </button>
+          <button
+            type="button"
+            onClick={chooseAnother}
+            className="px-5 py-3 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 text-xs font-black kurdish-text transition-all sm:col-span-2"
           >
             CHOOSE ANOTHER PERSON
           </button>
@@ -2930,19 +3154,38 @@ const FriendIdentityPanel = ({
                 ژمارەی مۆبایلی هاوڕێکەت
               </label>
               <div className="mt-2 grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2">
-                <input
-                  type="tel"
-                  inputMode="tel"
-                  value={input}
-                  onChange={(e) => {
-                    setInput(e.target.value);
-                    setMessage(null);
-                    setStatus("idle");
-                  }}
-                  onKeyDown={(e) => e.key === "Enter" && resolveFriend(input)}
-                  placeholder="+964 750 000 0000"
-                  className="w-full bg-black/50 border-2 border-white/10 focus:border-brand-primary rounded-2xl px-4 py-3 text-white text-sm font-mono outline-none transition-all"
-                />
+                <div className="relative">
+                  <input
+                    type="tel"
+                    inputMode="tel"
+                    autoComplete="tel"
+                    value={input}
+                    onChange={(e) => {
+                      setInput(formatInvitePhoneInput(e.target.value));
+                      setMessage(null);
+                      setStatus("idle");
+                    }}
+                    onKeyDown={(e) => e.key === "Enter" && resolveFriend(input)}
+                    placeholder="0770 000 0000"
+                    dir="ltr"
+                    className="w-full bg-black/50 border-2 border-white/10 focus:border-brand-primary rounded-2xl px-4 py-3 pl-11 text-white text-sm font-mono outline-none transition-all"
+                  />
+                  {input && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setInput("");
+                        setTarget(null);
+                        setMessage(null);
+                        setStatus("idle");
+                      }}
+                      className="absolute left-3 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full bg-white/10 hover:bg-white/15 text-gray-300 flex items-center justify-center"
+                      title="پاککردنەوە"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
                 <button
                   type="button"
                   onClick={() => resolveFriend(input)}
@@ -2977,22 +3220,29 @@ const FriendIdentityPanel = ({
         </div>
 
         <div className="lg:w-64 flex flex-col gap-2">
-          <button
-            type="button"
-            onClick={onRequestAccount}
-            className="w-full px-4 py-3 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 text-xs font-black kurdish-text flex items-center justify-center gap-2 transition-all"
-          >
-            <UserPlus className="w-4 h-4" />
-            CREATE ACCOUNT
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowBarcode((v) => !v)}
-            className="w-full px-4 py-3 rounded-2xl bg-amber-400/10 hover:bg-amber-400/20 border border-amber-400/30 text-amber-300 text-xs font-black kurdish-text flex items-center justify-center gap-2 transition-all"
-          >
-            <QrCode className="w-4 h-4" />
-            SHOW MY QR
-          </button>
+          {!accountLoading && !hasAccount && (
+            <button
+              type="button"
+              onClick={onRequestAccount}
+              className="w-full px-4 py-3 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 text-xs font-black kurdish-text flex items-center justify-center gap-2 transition-all"
+            >
+              <UserPlus className="w-4 h-4" />
+              CREATE ACCOUNT
+            </button>
+          )}
+          {accountLoading && (
+            <div className="h-11 rounded-2xl bg-white/10 border border-white/10 animate-pulse" />
+          )}
+          {!accountLoading && hasAccount && (
+            <button
+              type="button"
+              onClick={() => setShowBarcode((v) => !v)}
+              className="w-full px-4 py-3 rounded-2xl bg-amber-400/10 hover:bg-amber-400/20 border border-amber-400/30 text-amber-300 text-xs font-black kurdish-text flex items-center justify-center gap-2 transition-all"
+            >
+              <QrCode className="w-4 h-4" />
+              SHOW MY QR
+            </button>
+          )}
           <div className="rounded-2xl border border-white/10 bg-black/30 p-3">
             <p className="text-[10px] text-gray-500 kurdish-text">ناسنامەی تۆ</p>
             <p className="mt-1 text-xs text-white font-black kurdish-text truncate">
@@ -3002,7 +3252,7 @@ const FriendIdentityPanel = ({
               {myCode}
             </p>
           </div>
-          {!hasAccount && (
+          {!accountLoading && !hasAccount && (
             <p className="text-[10px] text-gray-500 kurdish-text leading-relaxed">
               بۆ وەرگرتنی بانگهێشتی ڕاستەوخۆ، ئەکاونتێک دروست بکە یان بچۆ ژوورەوە.
             </p>
@@ -3011,7 +3261,7 @@ const FriendIdentityPanel = ({
       </div>
 
       <AnimatePresence>
-        {showBarcode && (
+        {showBarcode && hasAccount && (
           <motion.div
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: "auto" }}
@@ -3294,6 +3544,7 @@ const AccountInvitePanel = ({
   identity,
   state,
   hasAccount,
+  accountLoading,
   accountName,
   accountCode,
   onRequestAccount,
@@ -3301,6 +3552,7 @@ const AccountInvitePanel = ({
   identity: CinemaChatParticipant;
   state: CinemaChatRoomState;
   hasAccount: boolean;
+  accountLoading: boolean;
   accountName?: string;
   accountCode?: string;
   onRequestAccount?: () => void;
@@ -3312,7 +3564,7 @@ const AccountInvitePanel = ({
   >("idle");
   const [message, setMessage] = useState<string | null>(null);
 
-  const canInvite = !!hasAccount;
+  const canInvite = hasAccount && !accountLoading;
 
   const handleSend = async () => {
     const raw = input.trim();
@@ -3356,13 +3608,15 @@ const AccountInvitePanel = ({
       <button
         type="button"
         onClick={() => {
+          if (accountLoading) return;
           if (!canInvite) {
             onRequestAccount?.();
             return;
           }
           setOpen((v) => !v);
         }}
-        className="w-full flex items-center justify-between gap-3 text-right"
+        disabled={accountLoading}
+        className="w-full flex items-center justify-between gap-3 text-right disabled:opacity-60"
       >
         <span className="flex items-center gap-2 text-sm font-black text-gray-300 kurdish-text">
           <UserPlus className="w-4 h-4 text-brand-primary" />
@@ -3375,7 +3629,11 @@ const AccountInvitePanel = ({
         />
       </button>
 
-      {!canInvite && (
+      {accountLoading && (
+        <div className="mt-4 h-10 rounded-2xl bg-white/5 border border-white/10 animate-pulse" />
+      )}
+
+      {!accountLoading && !canInvite && (
         <p className="mt-4 text-[10px] text-gray-500 kurdish-text leading-relaxed">
           بۆ بانگهێشتکردنی بەکارهێنەر بە کۆد یان ژمارە پێویستە هەژمارێک
           هەبێت. کرتە لە سەرەوە بکە بۆ دروستکردن یان بەستنەوەی هەژمار.

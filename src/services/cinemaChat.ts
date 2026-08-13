@@ -627,7 +627,155 @@ export interface ResolvedInviteTarget {
   name: string;
   uniqueCode: string;
   phone?: string;
+  avatarUrl?: string;
+  isOnline?: boolean;
+  lastActive?: unknown;
+  presenceStatus?: "online" | "offline" | "checking";
+  presenceLabel?: string;
 }
+
+const LOCALIZED_DIGIT_MAP: Record<string, string> = {
+  "٠": "0",
+  "۰": "0",
+  "١": "1",
+  "۱": "1",
+  "٢": "2",
+  "۲": "2",
+  "٣": "3",
+  "۳": "3",
+  "٤": "4",
+  "۴": "4",
+  "٥": "5",
+  "۵": "5",
+  "٦": "6",
+  "۶": "6",
+  "٧": "7",
+  "۷": "7",
+  "٨": "8",
+  "۸": "8",
+  "٩": "9",
+  "۹": "9",
+};
+
+export const normalizeInvitePhoneInput = (value: string): string =>
+  String(value || "")
+    .replace(/[٠-٩۰-۹]/g, (digit) => LOCALIZED_DIGIT_MAP[digit] || "")
+    .replace(/[^\d+]/g, "")
+    .replace(/(?!^)\+/g, "");
+
+export const formatInvitePhoneInput = (value: string): string => {
+  const normalized = normalizeInvitePhoneInput(value);
+  const prefix = normalized.startsWith("+") ? "+" : "";
+  const digits = normalized.replace(/\D/g, "");
+  const grouped = digits.replace(/(\d{4})(?=\d)/g, "$1 ").trim();
+  return `${prefix}${grouped}`.trim();
+};
+
+export const validateInvitePhoneInput = (value: string): string | null => {
+  const normalized = normalizeInvitePhoneInput(value);
+  const digits = normalized.replace(/\D/g, "");
+  if (!digits) return "ژمارەی مۆبایل بنووسە";
+  if (digits.length < 8) return "ژمارەی مۆبایل زۆر کورتە";
+  if (digits.length > 15) return "ژمارەی مۆبایل زۆر درێژە";
+  if (/^(\d)\1{7,}$/.test(digits)) return "ژمارەی مۆبایل دروست نییە";
+  return null;
+};
+
+export const maskInvitePhone = (value?: string): string => {
+  const normalized = normalizeInvitePhoneInput(value || "");
+  const digits = normalized.replace(/\D/g, "");
+  if (digits.length < 7) return "";
+  const head = digits.slice(0, Math.min(4, digits.length - 3));
+  const tail = digits.slice(-2);
+  return `${normalized.startsWith("+") ? "+" : ""}${head} *** **${tail}`;
+};
+
+const toDateMs = (value: any): number | null => {
+  if (!value) return null;
+  if (typeof value === "number") return value;
+  if (typeof value === "string") {
+    const ms = Date.parse(value);
+    return Number.isFinite(ms) ? ms : null;
+  }
+  if (typeof value?.toDate === "function") return value.toDate().getTime();
+  if (typeof value?.seconds === "number") return value.seconds * 1000;
+  return null;
+};
+
+const getInvitePresence = (data: any): Pick<
+  ResolvedInviteTarget,
+  "isOnline" | "lastActive" | "presenceStatus" | "presenceLabel"
+> => {
+  const lastActive = data?.lastActive || data?.lastSeen || data?.lastLoginAt || null;
+  const lastMs = toDateMs(lastActive);
+  if (data?.isOnline === true) {
+    return { isOnline: true, lastActive, presenceStatus: "online", presenceLabel: "Online" };
+  }
+  if (typeof lastMs === "number") {
+    const diffMs = Math.max(0, Date.now() - lastMs);
+    const minutes = Math.max(1, Math.round(diffMs / 60000));
+    const label =
+      minutes < 60
+        ? `Offline · last active ${minutes}m ago`
+        : `Offline · last active ${Math.round(minutes / 60)}h ago`;
+    return { isOnline: false, lastActive, presenceStatus: "offline", presenceLabel: label };
+  }
+  return { isOnline: false, lastActive, presenceStatus: "offline", presenceLabel: "Offline" };
+};
+
+const userAllowsPhoneLookup = (data: any): boolean => {
+  const privacy = data?.privacySettings || {};
+  if (privacy.allowPhoneLookup === false) return false;
+  if (privacy.lookupByPhone === false) return false;
+  if (privacy.phoneLookup === false) return false;
+  if (String(privacy.phoneLookupVisibility || "").toLowerCase() === "nobody") return false;
+  return true;
+};
+
+const toInviteTarget = (
+  uid: string,
+  data: any,
+  fallbackCode: string,
+): ResolvedInviteTarget => ({
+  uid,
+  name: data?.name || data?.displayName || "بەکارهێنەر",
+  uniqueCode: data?.uniqueCode || fallbackCode,
+  phone: typeof data?.phone === "string" ? data.phone : typeof data?.phoneNumber === "string" ? data.phoneNumber : undefined,
+  avatarUrl: typeof data?.avatarUrl === "string" ? data.avatarUrl : typeof data?.avatar === "string" ? data.avatar : undefined,
+  ...getInvitePresence(data),
+});
+
+export const subscribeInviteTargetPresence = (
+  uid: string,
+  onChange: (
+    presence: Pick<
+      ResolvedInviteTarget,
+      "isOnline" | "lastActive" | "presenceStatus" | "presenceLabel"
+    >,
+  ) => void,
+  onError?: (err: unknown) => void,
+): (() => void) => {
+  if (!uid) return () => {};
+  return onSnapshot(
+    doc(db, "users", uid),
+    (snap) => {
+      if (!snap.exists()) {
+        onChange({
+          isOnline: false,
+          lastActive: null,
+          presenceStatus: "offline",
+          presenceLabel: "Offline",
+        });
+        return;
+      }
+      onChange(getInvitePresence(snap.data()));
+    },
+    (err) => {
+      console.warn("invite target presence listener failed:", err);
+      onError?.(err);
+    },
+  );
+};
 
 /** Resolve a host-typed invite target (account code CC-ID or phone) to a
  *  registered CinemaChat user. Tries the normalized uniqueCode first (a few
@@ -652,6 +800,7 @@ export const resolveInviteTarget = async (
       const snap = await getDocs(q);
       if (!snap.empty) {
         const d = snap.docs[0].data() as any;
+        return toInviteTarget(snap.docs[0].id, d, c);
           return {
             uid: snap.docs[0].id,
           name: d?.name || "بەکارهێنەر",
@@ -664,7 +813,39 @@ export const resolveInviteTarget = async (
     }
   }
 
-  const digits = raw.replace(/\D/g, "");
+  const normalizedPhone = normalizeInvitePhoneInput(raw);
+  const normalizedPhoneDigits = normalizedPhone.replace(/\D/g, "");
+  if (normalizedPhoneDigits.length >= 6) {
+    const normalizedPhoneCandidates = [
+      normalizedPhone,
+      normalizedPhoneDigits,
+      `+${normalizedPhoneDigits}`,
+      normalizedPhoneDigits.startsWith("0") ? `+964${normalizedPhoneDigits.slice(1)}` : "",
+      normalizedPhoneDigits.startsWith("964") ? `+${normalizedPhoneDigits}` : "",
+    ].filter((p, i, arr) => p && arr.indexOf(p) === i);
+
+    for (const phone of normalizedPhoneCandidates) {
+      for (const field of ["phone", "phoneNumber"]) {
+        try {
+          const q = query(
+            collection(db, "users"),
+            where(field, "==", phone),
+            limit(1),
+          );
+          const snap = await getDocs(q);
+          if (!snap.empty) {
+            const d = snap.docs[0].data() as any;
+            if (!userAllowsPhoneLookup(d)) return null;
+            return toInviteTarget(snap.docs[0].id, d, "");
+          }
+        } catch {
+          /* keep trying normalized phone spellings */
+        }
+      }
+    }
+  }
+
+  const digits = normalizedPhoneDigits || raw.replace(/\D/g, "");
   if (digits.length >= 6) {
     const phoneCandidates = [
       raw,
@@ -804,16 +985,36 @@ export const subscribeCinemaChatInvitations = (
  *   "error"   — network/rules failure */
 export const joinCinemaChatSession = async (
   identity: CinemaChatParticipant,
-  joinCode: string,
+  joinCodeOrInvite: string | CinemaChatInvitation,
 ): Promise<"joined" | "already" | "full" | "invalid" | "error"> => {
   try {
     const current = await readCinemaChatState();
     if (!current.sessionId || !current.joinCode) return "invalid";
+    const invite =
+      typeof joinCodeOrInvite === "string" ? null : joinCodeOrInvite;
+    const joinCode = invite ? invite.joinCode : String(joinCodeOrInvite);
     const myId = identity.id;
     const meIsHost = !!current.host && current.host.id === myId;
     const meIsGuest = !!current.guest && current.guest.id === myId;
-    if (meIsHost || meIsGuest) return "already";
-    if (current.guest) return "full";
+
+    if (invite) {
+      if (
+        invite.status !== "pending" ||
+        invite.roomId !== CINEMA_CHAT_ROOM_ID ||
+        invite.sessionId !== current.sessionId ||
+        invite.toId !== myId ||
+        !current.host ||
+        current.host.id !== invite.fromId
+      ) {
+        return "invalid";
+      }
+      if (meIsHost) return "already";
+      if (current.guest && current.guest.id !== myId) return "full";
+    } else {
+      if (meIsHost || meIsGuest) return "already";
+      if (current.guest) return "full";
+    }
+
     if (normalizeJoinCode(joinCode) !== normalizeJoinCode(String(current.joinCode))) {
       return "invalid";
     }
@@ -824,12 +1025,20 @@ export const joinCinemaChatSession = async (
       return "invalid";
     }
     await patchCinemaChatState(
-      {
-        guest: identity,
-        guestApproved: true,
-        sessionState: SESSION_STATES.PAIRING,
-        guestLastSeen: Date.now(),
-      },
+      invite
+        ? {
+            guest: current.guest || identity,
+            guestApproved: true,
+            hostApproved: true,
+            sessionState: SESSION_STATES.WAITING_FOR_APPROVAL,
+            guestLastSeen: Date.now(),
+          }
+        : {
+            guest: identity,
+            guestApproved: true,
+            sessionState: SESSION_STATES.PAIRING,
+            guestLastSeen: Date.now(),
+          },
       myId,
     );
     return "joined";

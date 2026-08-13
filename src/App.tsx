@@ -6126,6 +6126,44 @@ const isDramaMovie = (m: any) => {
   return Array.isArray(m?.tags) && m.tags.some((t: any) => String(t).trim() === DRAMA_GENRE_TAG);
 };
 
+const normalizeDramaHubText = (value: any) =>
+  String(value || "")
+    .toLowerCase()
+    .replace(/[يى]/g, "ی")
+    .replace(/ك/g, "ک")
+    .replace(/[ەة]/g, "ه")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const getDramaHubRoomSearchText = (room: any, resolvedMovies: Record<string, any>) => {
+  const pieces = [
+    room?.title,
+    room?.name,
+    room?.description,
+    room?.year,
+    room?.status,
+  ];
+
+  (Array.isArray(room?.dramas) ? room.dramas : []).forEach((id: string, index: number) => {
+    const movie = resolvedMovies?.[id];
+    pieces.push(
+      id,
+      `Drama ${index + 1}`,
+      `دراما ${index + 1}`,
+      `episode ${index + 1}`,
+      `part ${index + 1}`,
+      movie?.title,
+      movie?.description,
+      movie?.year,
+      movie?.releaseDate,
+      ...(Array.isArray(movie?.tags) ? movie.tags : []),
+      ...(Array.isArray(movie?.genres) ? movie.genres : []),
+    );
+  });
+
+  return normalizeDramaHubText(pieces.filter(Boolean).join(" "));
+};
+
 // Blurred, darkened full-bleed poster backdrop placed behind the Drama Room
 // episode preview cards (portrait/poster-focused look). Purely decorative and
 // pointer-transparent so playback and player controls stay fully interactive.
@@ -6322,6 +6360,220 @@ const CinemaChatCard = ({ onOpen }: any) => (
     </button>
   </div>
 );
+
+const DramaHubCard = ({ roomCount, activeCount, onOpen }: any) => (
+  <div className="group relative flex-shrink-0 w-[220px] md:w-[280px] bg-gradient-to-br from-zinc-950 via-red-950/25 to-zinc-950 border border-brand-primary/40 rounded-3xl overflow-hidden transition-all hover:border-brand-primary/70 hover:shadow-2xl hover:shadow-red-600/10 hover:scale-[1.02]">
+    <button type="button" onClick={onOpen} className="block w-full text-right focus:outline-none">
+      <div className="aspect-video w-full bg-gradient-to-br from-red-950/60 via-zinc-950 to-black overflow-hidden relative">
+        <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(239,68,68,0.28),transparent_35%,rgba(255,255,255,0.06)_70%,transparent)]" />
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="w-16 h-16 rounded-3xl bg-brand-primary/15 border border-brand-primary/35 flex items-center justify-center shadow-2xl shadow-red-600/15">
+            <Layers className="w-8 h-8 text-brand-primary" />
+          </div>
+        </div>
+        <span className="absolute top-3 right-3 px-2 py-0.5 bg-brand-primary text-white text-[8px] font-black rounded-full flex items-center gap-1 uppercase tracking-widest">
+          <ShieldCheck className="w-2.5 h-2.5" />
+          Permanent
+        </span>
+        <span className="absolute bottom-3 right-3 px-2.5 py-1 bg-black/70 border border-white/10 text-white text-[10px] font-black rounded-full flex items-center gap-1">
+          <Tv className="w-3 h-3" />
+          {roomCount} rooms
+        </span>
+      </div>
+      <div className="p-4">
+        <h3 className="text-base font-black text-white kurdish-text leading-snug flex items-center gap-2">
+          <Film className="w-3.5 h-3.5 text-brand-primary" />
+          Drama Rooms
+        </h3>
+        <p className="mt-1.5 text-[11px] text-gray-400 kurdish-text leading-relaxed line-clamp-2">
+          کتێبخانەی هەمیشەیی بۆ هەموو ژوورەکانی دراما و ئەڵقەکان.
+        </p>
+        <div className="mt-3 flex items-center justify-between">
+          <span className="text-[10px] font-black text-emerald-400 flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+            {activeCount} active
+          </span>
+          <span className="text-[10px] font-black text-brand-primary uppercase tracking-widest">
+            Open Hub
+          </span>
+        </div>
+      </div>
+    </button>
+  </div>
+);
+
+const DramaHubModal = ({
+  rooms,
+  resolvedMovies,
+  currentUser,
+  systemVerified,
+  canCreateRoom,
+  onOpenRoom,
+  onCreate,
+  onEdit,
+  onDelete,
+  onClose,
+  liveViewersMap,
+  ratingsMap,
+}: any) => {
+  const [query, setQuery] = useState("");
+  const [sortBy, setSortBy] = useState<"newest" | "oldest" | "title" | "episodes" | "active">("newest");
+  const canManage = systemVerified && !!currentUser;
+
+  const filteredRooms = useMemo(() => {
+    const q = normalizeDramaHubText(query);
+    const list = (Array.isArray(rooms) ? rooms : []).filter((room: any) => {
+      if (!q) return true;
+      return getDramaHubRoomSearchText(room, resolvedMovies).includes(q);
+    });
+
+    return [...list].sort((a: any, b: any) => {
+      if (sortBy === "oldest") {
+        return new Date(a?.createdAt || a?.updatedAt || 0).getTime() - new Date(b?.createdAt || b?.updatedAt || 0).getTime();
+      }
+      if (sortBy === "title") {
+        return String(a?.title || "").localeCompare(String(b?.title || ""), "ku");
+      }
+      if (sortBy === "episodes") {
+        return (Array.isArray(b?.dramas) ? b.dramas.length : 0) - (Array.isArray(a?.dramas) ? a.dramas.length : 0);
+      }
+      if (sortBy === "active") {
+        return (Number(liveViewersMap?.[b?.id]) || 0) - (Number(liveViewersMap?.[a?.id]) || 0);
+      }
+      return new Date(b?.updatedAt || b?.createdAt || 0).getTime() - new Date(a?.updatedAt || a?.createdAt || 0).getTime();
+    });
+  }, [rooms, query, resolvedMovies, sortBy, liveViewersMap]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[190] bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-5"
+      onClick={onClose}
+      dir="rtl"
+    >
+      <div
+        className="w-full max-w-6xl max-h-[92vh] overflow-hidden bg-zinc-950 border border-white/10 rounded-[1.75rem] shadow-2xl shadow-black"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="p-4 sm:p-6 border-b border-white/10">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 mb-2">
+                <Tv className="w-4 h-4 text-brand-primary" />
+                <span className="text-[10px] font-black text-brand-primary uppercase tracking-[0.25em] font-mono">
+                  DRAMA HUB
+                </span>
+              </div>
+              <h2 className="text-2xl sm:text-3xl font-black text-white kurdish-text">
+                Drama Rooms
+              </h2>
+              <p className="mt-1 text-xs text-gray-500 kurdish-text">
+                {rooms.length} ژوور لە ناو کتێبخانەی درامادا
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-10 h-10 rounded-2xl bg-white/5 border border-white/10 text-gray-300 hover:text-white hover:bg-white/10 flex items-center justify-center flex-shrink-0"
+              title="داخستن"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          <div className="mt-5 grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-3">
+            <div className="relative">
+              <Search className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+              <input
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                className="w-full h-12 bg-black/45 border border-white/10 rounded-2xl pr-11 pl-12 text-sm text-white kurdish-text outline-none focus:border-brand-primary"
+                placeholder="گەڕان بە ناوی دراما، ژوور، فیلم، Drama 2، ساڵ..."
+              />
+              {query && (
+                <button
+                  type="button"
+                  onClick={() => setQuery("")}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full bg-white/10 text-gray-300 hover:text-white flex items-center justify-center"
+                  title="سڕینەوەی گەڕان"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as any)}
+              className="h-12 bg-black/45 border border-white/10 rounded-2xl px-4 text-sm font-bold text-white kurdish-text outline-none focus:border-brand-primary"
+            >
+              <option value="newest">نوێترین</option>
+              <option value="oldest">کۆنترین</option>
+              <option value="title">ناونیشان</option>
+              <option value="episodes">زۆرترین ئەڵقە</option>
+              <option value="active">چالاکترین</option>
+            </select>
+            {canCreateRoom && (
+              <button
+                type="button"
+                onClick={onCreate}
+                className="h-12 px-5 rounded-2xl bg-brand-primary text-white text-sm font-black kurdish-text hover:opacity-90 flex items-center justify-center gap-2 shadow-xl shadow-red-600/20"
+              >
+                <Plus className="w-4 h-4" />
+                ژووری نوێ
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="p-4 sm:p-6 overflow-y-auto max-h-[calc(92vh-190px)]">
+          {rooms.length === 0 ? (
+            <div className="py-16 text-center bg-white/5 border border-white/10 rounded-[1.5rem]">
+              <Tv className="w-12 h-12 text-white/15 mx-auto mb-4" />
+              <h3 className="text-lg font-black text-gray-400 kurdish-text">
+                هیچ ژووری دراما نییە
+              </h3>
+              {canManage && (
+                <p className="mt-2 text-xs text-gray-500 kurdish-text">
+                  دەتوانیت لێرەوە یەکەم ژووری دراما دروست بکەیت.
+                </p>
+              )}
+            </div>
+          ) : filteredRooms.length === 0 ? (
+            <div className="py-16 text-center bg-white/5 border border-white/10 rounded-[1.5rem]">
+              <Search className="w-12 h-12 text-white/15 mx-auto mb-4" />
+              <h3 className="text-lg font-black text-gray-400 kurdish-text">
+                هیچ ژوورێک بەم گەڕانە نەدۆزرایەوە
+              </h3>
+              <button
+                type="button"
+                onClick={() => setQuery("")}
+                className="mt-4 px-4 py-2 rounded-xl bg-white/10 text-white text-xs font-black kurdish-text hover:bg-white/15"
+              >
+                پاککردنەوەی گەڕان
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 xs:grid-cols-2 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-5 justify-items-center">
+              {filteredRooms.map((room: any) => (
+                <DramaRoomCard
+                  key={room.id}
+                  room={room}
+                  onOpen={onOpenRoom}
+                  onEdit={onEdit}
+                  onDelete={onDelete}
+                  showActions={canManage}
+                  liveViewers={liveViewersMap?.[room.id] ?? 0}
+                  rating={ratingsMap?.[room.id]?.ccRating ?? 0}
+                  ratingCount={ratingsMap?.[room.id]?.ratingCount ?? 0}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const SimpleCinemaChatCard = ({ onOpen }: any) => (
   <div className="group relative flex-shrink-0 w-[220px] md:w-[280px] bg-zinc-900 border border-brand-primary/25 rounded-3xl overflow-hidden transition-all hover:border-brand-primary/60 hover:scale-[1.02]">
@@ -7040,10 +7292,12 @@ const DramaRoomsHub = ({
   liveViewersMap,
   ratingsMap,
   onOpenCinemaChat,
+  onOpenDramaHub,
   onOpenCinemaWindow,
   cinemaWindowRoom,
 }: any) => {
   const canManage = systemVerified && !!currentUser;
+  const activeRoomCount = rooms.filter((room: any) => Number(liveViewersMap?.[room?.id]) > 0).length;
   return (
     <section id="drama-rooms" className="relative z-20 px-8 pb-16 font-sans">
       <div className="max-w-7xl mx-auto">
@@ -7074,7 +7328,7 @@ const DramaRoomsHub = ({
           )}
         </div>
 
-        {rooms.length === 0 && (
+        {false && rooms.length === 0 && (
           <div className="text-center py-16 bg-white/5 border border-white/10 rounded-[2rem] mb-4">
             <Tv className="w-12 h-12 text-white/15 mx-auto mb-4" />
             <h3 className="text-lg font-black text-gray-400 kurdish-text">
@@ -7090,19 +7344,11 @@ const DramaRoomsHub = ({
         <div className="flex gap-5 overflow-x-auto no-scrollbar pb-6 pr-1">
           {/* Permanent official two-person watch room — always first. */}
           <SimpleCinemaChatCard onOpen={onOpenCinemaChat} />
-          {rooms.map((room: any) => (
-            <DramaRoomCard
-              key={room.id}
-              room={room}
-              onOpen={onOpenRoom}
-              onEdit={onEdit}
-              onDelete={onDelete}
-              showActions={canManage}
-              liveViewers={liveViewersMap?.[room.id] ?? 0}
-              rating={ratingsMap?.[room.id]?.ccRating ?? 0}
-              ratingCount={ratingsMap?.[room.id]?.ratingCount ?? 0}
-            />
-          ))}
+          <DramaHubCard
+            roomCount={rooms.length}
+            activeCount={activeRoomCount}
+            onOpen={onOpenDramaHub}
+          />
           <CinemaWindowCard onOpen={onOpenCinemaWindow} room={cinemaWindowRoom} />
         </div>
       </div>
@@ -7152,6 +7398,7 @@ export default function App() {
   const [selectedDramaRoom, setSelectedDramaRoom] = useState<any>(null);
   const [showDramaRoomModal, setShowDramaRoomModal] = useState(false);
   const [editingDramaRoom, setEditingDramaRoom] = useState<any>(null);
+  const [showDramaHubModal, setShowDramaHubModal] = useState(false);
   // The permanent CinemaChat watch room modal (main_broadcast_room).
   const [showCinemaChatRoom, setShowCinemaChatRoom] = useState(false);
 
@@ -8271,6 +8518,7 @@ export default function App() {
   const {
     currentUser: fbUser,
     socialProfile,
+    loading: socialAuthLoading,
     logout: fbLogout,
     updateSocialProfile,
   } = useSocialAuth();
@@ -8307,10 +8555,14 @@ export default function App() {
   // Account status for the CinemaChat room's invitation flow: account users can
   // send AND receive real persisted invitations; device-only guests can still
   // join via code/QR but cannot receive account invitations.
-  const hasCinemaChatAccount = !!fbUser || !!socialProfile;
+  const hasCinemaChatAccount =
+    !!fbUser &&
+    !!socialProfile &&
+    typeof socialProfile.uniqueCode === "string" &&
+    socialProfile.uniqueCode.trim().length > 0;
   const cinemaChatAccountName = socialProfile?.name || cinemaChatIdentity.name;
   const cinemaChatAccountCode =
-    socialProfile?.uniqueCode || cinemaChatIdentity.code;
+    hasCinemaChatAccount ? socialProfile?.uniqueCode : undefined;
 
   // Hydrate the signed-in user's favorites + liked movies in real time from
   // Firestore (users/{uid}). Guests fall back to localStorage.
@@ -11975,6 +12227,7 @@ export default function App() {
       liveViewersMap={roomLiveViewers}
       ratingsMap={roomRatingsMap}
       onOpenCinemaChat={() => setShowCinemaChatRoom(true)}
+      onOpenDramaHub={() => setShowDramaHubModal(true)}
       onOpenCinemaWindow={() => setShowCinemaWindowModal(true)}
       cinemaWindowRoom={cinemaWindowPublicRoom}
     />
@@ -12828,12 +13081,7 @@ export default function App() {
             <div className="relative z-20 space-y-12 pb-12">
               {/* Drama Rooms Gallery — replaces the old Trending Now row */}
               <SafeRender fallbackName="Drama Rooms Gallery">
-                <DramaRoomGallery
-                  rooms={dramaRoomsFiltered}
-                  onOpenRoom={setSelectedDramaRoom}
-                  liveViewersMap={roomLiveViewers}
-                  ratingsMap={roomRatingsMap}
-                />
+                {null}
               </SafeRender>
 
               {/* My Favorites Section — dedicated persistent row of the current
@@ -12925,6 +13173,28 @@ export default function App() {
             </div>
           </SafeRender>
           {/* Drama Room modals — detail view (opens a room's dramas) + CRUD form */}
+          {showDramaHubModal && (
+            <DramaHubModal
+              rooms={dramaRoomsFiltered}
+              resolvedMovies={resolvedMovies}
+              currentUser={currentUser}
+              systemVerified={systemVerified}
+              canCreateRoom={canCreateDramaRoom}
+              onOpenRoom={(room: any) => setSelectedDramaRoom(room)}
+              onCreate={() => {
+                setEditingDramaRoom(null);
+                setShowDramaRoomModal(true);
+              }}
+              onEdit={(room: any) => {
+                setEditingDramaRoom(room);
+                setShowDramaRoomModal(true);
+              }}
+              onDelete={handleDeleteDramaRoom}
+              onClose={() => setShowDramaHubModal(false)}
+              liveViewersMap={roomLiveViewers}
+              ratingsMap={roomRatingsMap}
+            />
+          )}
           {selectedDramaRoom && (
             <DramaRoomDetailModal
               room={selectedDramaRoom}
@@ -12967,6 +13237,7 @@ export default function App() {
             identity={cinemaChatIdentity}
             movies={publicMovies}
             hasAccount={hasCinemaChatAccount}
+            accountLoading={socialAuthLoading}
             accountName={cinemaChatAccountName}
             accountCode={cinemaChatAccountCode}
             onRequestAccount={() => {

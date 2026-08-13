@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Film, UserCheck, X, Loader2, Clapperboard } from "lucide-react";
+import { Bell, Film, UserCheck, X, Loader2, Clapperboard } from "lucide-react";
 import {
   CinemaChatParticipant,
   CinemaChatRoomState,
@@ -159,6 +159,15 @@ export const CinemaChatInviteNotification: React.FC<{
           role="alert"
           className="fixed top-4 right-4 left-4 sm:left-auto sm:w-96 z-[1100] pointer-events-auto"
         >
+          <button
+            type="button"
+            onClick={() => onOpenRoom?.()}
+            className="absolute -top-2 -left-2 z-10 min-w-8 h-8 px-2 rounded-full bg-brand-primary text-white text-xs font-black flex items-center justify-center gap-1 shadow-lg shadow-red-600/30 animate-pulse"
+            title="Watch together invitation"
+          >
+            <Bell className="w-3.5 h-3.5" />
+            1
+          </button>
           <div className="rounded-[1.5rem] bg-zinc-950/95 border border-brand-primary/30 shadow-2xl shadow-black/60 backdrop-blur-2xl overflow-hidden">
             <div className="flex items-start gap-3 p-4">
               {proposedMovie?.image ? (

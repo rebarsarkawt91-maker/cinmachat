@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Clapperboard, UserPlus, X, Loader2, Mail } from "lucide-react";
+import { Bell, Clapperboard, UserPlus, X, Loader2, Mail } from "lucide-react";
 import {
   CinemaChatParticipant,
   CinemaChatInvitation,
@@ -72,7 +72,7 @@ export const RoomInviteNotification: React.FC<{
     setBusy(true);
     setActionError(null);
     try {
-      const result = await joinCinemaChatSession(identity, active.joinCode);
+      const result = await joinCinemaChatSession(identity, active);
       if (result === "joined" || result === "already") {
         await respondToCinemaChatInvitation(active.id!, "accepted");
         onOpenRoom?.();
@@ -111,6 +111,15 @@ export const RoomInviteNotification: React.FC<{
           role="alert"
           className="fixed top-4 right-4 left-4 sm:left-auto sm:w-96 z-[1100] pointer-events-auto"
         >
+          <button
+            type="button"
+            onClick={() => onOpenRoom?.()}
+            className="absolute -top-2 -left-2 z-10 min-w-8 h-8 px-2 rounded-full bg-brand-primary text-white text-xs font-black flex items-center justify-center gap-1 shadow-lg shadow-red-600/30 animate-pulse"
+            title="بانگهێشتی نوێ"
+          >
+            <Bell className="w-3.5 h-3.5" />
+            {invites.length}
+          </button>
           <div className="rounded-[1.5rem] bg-zinc-950/95 border border-brand-primary/30 shadow-2xl shadow-black/60 backdrop-blur-2xl overflow-hidden">
             <div className="flex items-start gap-3 p-4">
               <div className="w-10 h-10 rounded-2xl bg-brand-primary/20 border border-brand-primary/30 flex items-center justify-center flex-shrink-0">
@@ -155,7 +164,11 @@ export const RoomInviteNotification: React.FC<{
                     ) : (
                       <UserPlus className="w-4 h-4" />
                     )}
+                    <span className="sr-only">Accept invitation from </span>
+                    <span className="uppercase">ACCEPT {active.fromName}</span>
+                    <span className="hidden">
                     بەشداری بکە
+                    </span>
                   </button>
                   <button
                     type="button"

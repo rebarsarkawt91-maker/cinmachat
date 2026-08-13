@@ -327,6 +327,49 @@ service cloud.firestore {
       }
     }
 
+    // --- Cinema Window Rooms Collection ---
+    // Dedicated collection for Cinema Window room configurations.
+    // Visitors can view muted previews; full access requires valid access codes.
+    match /cinemaWindows/{cinemaWindowId} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isAdmin() && cinemaWindowId != '_meta';
+    }
+
+    // --- Access Codes Collection ---
+    // Secure access codes generated after successful payment.
+    // Each code grants access to one specific Cinema Window room.
+    match /accessCodes/{accessCodeId} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isAdmin() && accessCodeId != '_meta';
+    }
+
+    // --- Payment Records Collection ---
+    // Payment records linked to Cinema Window access.
+    match /payments/{paymentId} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isAdmin() && paymentId != '_meta';
+    }
+
+    // --- Room Viewers Collection ---
+    // Track current viewers of Cinema Window rooms.
+    match /roomViewers/{viewerId} {
+      allow read: if true;
+      allow create: if isSignedIn();
+      allow update: if isSignedIn();
+      allow delete: if isAdmin();
+    }
+
+    // --- Room Events Collection ---
+    // Log events for Cinema Window rooms (viewing, access, etc.).
+    match /roomEvents/{eventId} {
+      allow read: if true;
+      allow create: if isSignedIn();
+      allow delete: if isAdmin();
+    }
+
     // --- Invitations Collection ---
     match /invitations/{inviteId} {
       allow read, write: if true;
