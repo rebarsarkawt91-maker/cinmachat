@@ -5449,97 +5449,331 @@ async function startServer() {
     return adminAuthInstance;
   }
 
-  app.post('/api/auth/register-by-id', async (req, res) => {
-    const { name, email, password, uniqueCode, phone, age, gender, residence, country } = req.body;
+  // ---------------------------------------------------------------------------
+  // Account registration (email OR mobile) with server-side uniqueness checks,
+  // phone/username/email normalization, atomic profile creation and readable
+  // Kurdish error messages (UTF-8). This is the only place email/mobile accounts
+  // are created.
+  // ---------------------------------------------------------------------------
+  const REGISTER_ERR_INVALID_NAME = 'تکایە ناوێک بنووسە.';
+  const REGISTER_ERR_INVALID_USERNAME =
+    'ناوی بەکارهێنەرەکە نادروستە؛ دەبێت لە ٣ بۆ ٣٢ پیتی ئینگلیزی، ژمارە، یان (. _ -) پێکهاتبێت.';
+  const REGISTER_ERR_DUPLICATE_USERNAME =
+    'ئەم ناوی بەکارهێنەرە پێشتر تۆمار کراوە، ناوێکی تر هەڵبژێرە.';
+  const REGISTER_ERR_DUPLICATE_EMAIL =
+    'ئەم ئیمەیڵە پێشتر بەکارهاتووە. بچۆ ژوورەوە یان پاسۆردەکەت بگۆڕە.';
+  const REGISTER_ERR_DUPLICATE_PHONE =
+    'ئەم ژمارە مۆبایلە پێشتر تۆمار کراوە. بچۆ ژوورەوە یان ژمارەیەکی تر بەکاربهێنە.';
+  const REGISTER_ERR_INVALID_EMAIL = 'تکایە ئیمەیڵێکی دروست بنووسە.';
+  const REGISTER_ERR_INVALID_PHONE =
+    'تکایە ژمارە مۆبایلەکە بە دروستی و بە ژمارەی ئینگلیزی بنووسە.';
+  const REGISTER_ERR_WEAK_PASSWORD =
+    'پاسۆردەکە زۆر لاوازە؛ پاسۆردێکی بەهێزتر بەکاربهێنە.';
+  const REGISTER_ERR_MISSING_CONTACT = 'تکایە ئیمەیڵ یان ژمارەی مۆبایل بنووسە.';
+  const REGISTER_ERR_GENERIC =
+    'خۆتۆمارکردن سەرکەوتوو نەبوو. تکایە دووبارە هەوڵ بدەوە.';
+
+  const sanitizeNameText = (value: unknown, maxLength = 60) =>
+    String(value || '')
+      .replace(/<\/?[^>]+(>|$)/g, '')
+      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+      .trim()
+      .slice(0, maxLength);
+
+  const normalizeUsernameText = (value: unknown) =>
+    String(value || '').trim().toLowerCase().replace(/[^a-z0-9_.-]/g, '');
+
+  const isValidUsernameFormat = (username: string) => /^[a-z0-9_.-]{3,32}$/.test(username);
+
+  const normalizeEmailText = (value: unknown) => String(value || '').trim().toLowerCase();
+
+  const isValidEmailFormat = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+
+  // Converts Kurdish/Arabic digits to English, strips spaces/dashes/parens and
+  // canonicalizes the leading country-code (00 -> +). Returns '' when invalid.
+  const normalizePhoneText = (value: unknown) => {
+    const raw = String(value || '').trim();
+    const converted = raw
+      .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+      .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)));
+    const clean = converted.replace(/[\s\-()]/g, '').replace(/^00/, '+');
+    return /^\+?\d{8,15}$/.test(clean) ? clean : '';
+  };
+
+  const isValidPasswordText = (value: unknown) => typeof value === 'string' && value.length >= 6;
+
+  const memberCodeTaken = (code: string) =>
+    (db.users || []).some(
+      (u: any) => String(u.uniqueCode || '').trim().toUpperCase() === code.toUpperCase(),
+    );
+
+  const memberCodeTakenInFirestore = async (code: string) => {
+    if (!firebaseAdminApp) return false;
     try {
-      const adminAuth = getAdminAuthService();
-      const adminDb = getAdminDb();
-      if (!adminAuth || !adminDb) {
-        return res.status(500).json({ success: false, error: 'Auth or DB service not available' });
+      const snapshot = await admin
+        .firestore(firebaseAdminApp)
+        .collection('users')
+        .where('uniqueCode', '==', code)
+        .limit(1)
+        .get();
+      return !snapshot.empty;
+    } catch (err: any) {
+      console.warn('[register] Firestore member-code check skipped:', err?.message || err);
+      return false;
+    }
+  };
+
+  const generateUniqueMemberCode = async (): Promise<string> => {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const code = `CC-CC-${Math.floor(1000 + Math.random() * 9000)}`;
+      if (!memberCodeTaken(code) && !(await memberCodeTakenInFirestore(code))) return code;
+    }
+    throw new Error('Could not create a unique CinemaChat member code.');
+  };
+
+  const deleteAuthUserSafely = async (uid: string) => {
+    if (!firebaseAdminApp || !uid) return;
+    try {
+      await admin.auth(firebaseAdminApp).deleteUser(uid);
+      console.warn(`[register] Cleaned up partial Firebase Auth account ${uid}.`);
+    } catch (err: any) {
+      console.warn('[register] Partial-auth cleanup failed:', err?.message || err);
+    }
+  };
+
+  app.post('/api/auth/register-by-id', async (req, res) => {
+    const { name, username, email, phone, password, age, gender, residence, country } = req.body || {};
+    const clientIp =
+      (req.headers['x-forwarded-for'] as string)?.split(',')[0] ||
+      req.socket.remoteAddress ||
+      req.ip ||
+      'Unknown';
+
+    try {
+      // ---- 1. Validate + normalize ----------------------------------------
+      const cleanName = sanitizeNameText(name);
+      if (!cleanName) {
+        return res.status(400).json({ success: false, error: REGISTER_ERR_INVALID_NAME });
       }
 
-      // Check if user already exists in Firestore by phone/uniqueCode
-      const usersRef = adminDb.collection('users'); // Uses MockFirestoreCollection
-      const querySnapshot = await usersRef.where('uniqueCode', '==', uniqueCode).get();
-      if (!querySnapshot.empty) {
-        return res.status(400).json({ success: false, error: 'Ø¦Û•Ù… Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø±Û• Ù¾ÛŽØ´ØªØ± Ù‡Û•ÛŒÛ•!' });
+      const cleanUsername = normalizeUsernameText(username);
+      if (!isValidUsernameFormat(cleanUsername)) {
+        return res.status(400).json({ success: false, error: REGISTER_ERR_INVALID_USERNAME });
       }
 
-      // Create Firebase Auth user
-      const userRecord = await adminAuth.createUser({
-        email: email || `${uniqueCode.toLowerCase()}@cinemachat.local`,
-        password: password,
-        displayName: name
-      });
+      const cleanEmail = email ? normalizeEmailText(email) : '';
+      const cleanPhone = phone ? normalizePhoneText(phone) : '';
+      const usingEmail = Boolean(cleanEmail);
+      const usingPhone = Boolean(cleanPhone);
 
-      // Save to Firestore
-      await adminDb.doc('users', userRecord.uid).set({ // Uses MockFirestoreDoc
-        uid: userRecord.uid,
-        name,
-        phone,
-        email: userRecord.email,
+      if (!usingEmail && !usingPhone) {
+        return res.status(400).json({ success: false, error: REGISTER_ERR_MISSING_CONTACT });
+      }
+      if (usingEmail && !isValidEmailFormat(cleanEmail)) {
+        return res.status(400).json({ success: false, error: REGISTER_ERR_INVALID_EMAIL });
+      }
+      if (usingPhone && !cleanPhone) {
+        return res.status(400).json({ success: false, error: REGISTER_ERR_INVALID_PHONE });
+      }
+      if (!isValidPasswordText(password)) {
+        return res.status(400).json({ success: false, error: REGISTER_ERR_WEAK_PASSWORD });
+      }
+
+      // ---- 2. Uniqueness checks against the canonical db.json store -------
+      if (!db.users) db.users = [];
+
+      const usernameDup = db.users.some(
+        (u: any) =>
+          normalizeUsernameText(u.username) === cleanUsername ||
+          normalizeUsernameText(u.name) === cleanUsername,
+      );
+      if (usernameDup) {
+        return res.status(409).json({ success: false, error: REGISTER_ERR_DUPLICATE_USERNAME });
+      }
+
+      if (usingEmail) {
+        const emailDup = db.users.some(
+          (u: any) => normalizeEmailText(u.email || u.emailLower || '') === cleanEmail,
+        );
+        if (emailDup) {
+          return res.status(409).json({ success: false, error: REGISTER_ERR_DUPLICATE_EMAIL });
+        }
+      }
+
+      if (usingPhone) {
+        const phoneDup = db.users.some((u: any) => {
+          const stored = normalizePhoneText(u.phoneNumber || u.phone || '');
+          return Boolean(stored) && stored === cleanPhone;
+        });
+        if (phoneDup) {
+          return res.status(409).json({ success: false, error: REGISTER_ERR_DUPLICATE_PHONE });
+        }
+      }
+
+      // ---- 3. Uniqueness checks in Firebase Auth + Firestore --------------
+      const adminApp = initializeFirebaseAdmin();
+      if (adminApp) {
+        if (usingEmail) {
+          try {
+            const existingUser = await admin.auth(adminApp).getUserByEmail(cleanEmail);
+            if (existingUser?.uid) {
+              return res.status(409).json({ success: false, error: REGISTER_ERR_DUPLICATE_EMAIL });
+            }
+          } catch (err: any) {
+            // auth/user-not-found is expected; everything else is logged only.
+            if (err?.code !== 'auth/user-not-found') {
+              console.warn('[register] Firebase email pre-check skipped:', err?.message || err);
+            }
+          }
+        }
+        try {
+          const usersFs = admin.firestore(adminApp).collection('users');
+          const firestoreDupChecks: Array<Promise<boolean>> = [
+            usersFs.where('username', '==', cleanUsername).limit(1).get().then((s: any) => !s.empty),
+            usingEmail
+              ? usersFs.where('email', '==', cleanEmail).limit(1).get().then((s: any) => !s.empty)
+              : Promise.resolve(false),
+            usingEmail
+              ? usersFs.where('emailLower', '==', cleanEmail).limit(1).get().then((s: any) => !s.empty)
+              : Promise.resolve(false),
+            usingPhone
+              ? usersFs.where('phone', '==', cleanPhone).limit(1).get().then((s: any) => !s.empty)
+              : Promise.resolve(false),
+            usingPhone
+              ? usersFs.where('phoneNumber', '==', cleanPhone).limit(1).get().then((s: any) => !s.empty)
+              : Promise.resolve(false),
+          ];
+          const results = await Promise.all(firestoreDupChecks);
+          if (results[0]) {
+            return res.status(409).json({ success: false, error: REGISTER_ERR_DUPLICATE_USERNAME });
+          }
+          if (results[1] || results[2]) {
+            return res.status(409).json({ success: false, error: REGISTER_ERR_DUPLICATE_EMAIL });
+          }
+          if (results[3] || results[4]) {
+            return res.status(409).json({ success: false, error: REGISTER_ERR_DUPLICATE_PHONE });
+          }
+        } catch (err: any) {
+          console.warn('[register] Firestore duplicate pre-check skipped:', err?.message || err);
+        }
+      }
+
+      // ---- 4. Unique CC-ID / member code (existing CC-CC-#### format) ------
+      let uniqueCode = '';
+      try {
+        uniqueCode = await generateUniqueMemberCode();
+      } catch (err: any) {
+        console.error('[register] Member code generation failed:', err?.message || err);
+        return res.status(500).json({ success: false, error: REGISTER_ERR_GENERIC });
+      }
+
+      // ---- 5. Create the Firebase Auth account ----------------------------
+      let uid = '';
+      let customToken = '';
+      try {
+        if (adminApp) {
+          const createPayload: Record<string, any> = {
+            password,
+            displayName: cleanName,
+          };
+          if (usingEmail) createPayload.email = cleanEmail;
+          if (usingPhone) createPayload.phoneNumber = cleanPhone;
+          const userRecord = await admin.auth(adminApp).createUser(createPayload);
+          uid = userRecord.uid;
+          customToken = await admin.auth(adminApp).createCustomToken(uid);
+        } else {
+          // No Firebase Admin (nor emulator) configured: registration cannot mint
+          // real custom tokens, so refuse loudly instead of creating a broken
+          // account that the client can never sign in to.
+          console.error(
+            '[register] Firebase Admin unavailable (missing credentials or emulator). ' +
+              'Registration rejected to avoid creating unusable mock accounts.',
+          );
+          return res.status(503).json({ success: false, error: REGISTER_ERR_GENERIC });
+        }
+      } catch (err: any) {
+        console.error('[register] Firebase Auth account creation failed:', err?.message || err);
+        if (err?.code === 'auth/email-already-in-use' || String(err?.message || '').includes('EMAIL_EXISTS')) {
+          return res.status(409).json({ success: false, error: REGISTER_ERR_DUPLICATE_EMAIL });
+        }
+        if (String(err?.message || '').includes('PHONE_NUMBER_EXISTS')) {
+          return res.status(409).json({ success: false, error: REGISTER_ERR_DUPLICATE_PHONE });
+        }
+        return res.status(500).json({ success: false, error: REGISTER_ERR_GENERIC });
+      }
+
+      // ---- 6. Persist the canonical profile (Firestore + db.json) ---------
+      const now = new Date().toISOString();
+      const profile = {
+        uid,
+        name: cleanName,
+        displayName: cleanName,
+        username: cleanUsername,
+        phone: cleanPhone,
+        phoneNumber: cleanPhone,
+        email: cleanEmail,
+        emailLower: cleanEmail,
         uniqueCode,
         isOnline: true,
-        createdAt: new Date().toISOString(),
-        age,
-        gender,
-        residence,
-        country,
-        role: 'user',
-        provider: 'password',
-        authProvider: 'password',
-      });
-
-      // Save locally to db.users in db.json for admin view with credentials
-      if (!db.users) db.users = [];
-      const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || "Unknown";
-
-      const existsIdx = db.users.findIndex((u: any) => u.uid === userRecord.uid || (u.uniqueCode && u.uniqueCode.toUpperCase() === uniqueCode.toUpperCase()));
-      const newUserObj = {
-        uid: userRecord.uid,
-        name,
-        username: name,
-        phone: phone || "",
-        email: userRecord.email,
-        uniqueCode,
-        createdAt: new Date().toISOString(),
-        deviceIp: clientIp,
-        ip: clientIp,
-        password: password || "Cc_CinemaChat123",
-        role: 'user',
-        provider: 'password',
-        authProvider: 'password',
+        createdAt: now,
+        updatedAt: now,
+        lastActive: now,
         active: true,
         kicked: false,
-        age: age || "",
-        gender: gender || "",
-        residence: residence || "",
-        country: country || ""
+        role: 'user',
+        userRole: 'user',
+        provider: 'password',
+        authProvider: 'password',
+        age: String(age || '').trim().slice(0, 20),
+        gender: String(gender || '').trim().slice(0, 40),
+        residence: String(residence || '').trim().slice(0, 100),
+        country: String(country || '').trim().slice(0, 60),
+        deviceIp: clientIp,
+        ip: clientIp,
       };
 
-      if (existsIdx !== -1) {
-        db.users[existsIdx] = { ...db.users[existsIdx], ...newUserObj };
-      } else {
-        db.users.push(newUserObj);
+      if (adminApp) {
+        try {
+          await admin.firestore(adminApp).collection('users').doc(uid).set(profile, { merge: true });
+        } catch (err: any) {
+          console.error('[register] Firestore profile write failed:', err?.message || err);
+          await deleteAuthUserSafely(uid);
+          return res.status(500).json({ success: false, error: REGISTER_ERR_GENERIC });
+        }
       }
 
-      logUserActivity(db, uniqueCode, "Register", `Ù‡Û•Ú˜Ù…Ø§Ø±ÛŽÚ©ÛŒ Ù†ÙˆÛŽÛŒ ØªÛ†Ù…Ø§Ø±Ú©Ø±Ø¯ Ø¨Û•Ù†Ø§ÙˆÛŒ "${name}"`, clientIp);
+      const existsIdx = db.users.findIndex((u: any) => u.uid === uid);
+      if (existsIdx !== -1) {
+        db.users[existsIdx] = { ...db.users[existsIdx], ...profile };
+      } else {
+        db.users.push(profile);
+      }
       await saveDB(db);
+      logUserActivity(db, uniqueCode, 'Register', `هەژمارەی نوێی تۆمارکرد بەناوی "${cleanName}"`, clientIp);
 
-      // Create Custom Token
-      const customToken = await adminAuth.createCustomToken(userRecord.uid);
-
-      return res.json({ success: true, customToken });
+      return res.json({
+        success: true,
+        customToken,
+        user: {
+          uid,
+          name: cleanName,
+          username: cleanUsername,
+          email: cleanEmail,
+          phone: cleanPhone,
+          uniqueCode,
+          role: 'user',
+        },
+      });
     } catch (err: any) {
-      console.error("[ID Register] Failed details:", err);
-      return res.status(500).json({ success: false, error: err.message, code: err.code });
+      console.error('[register-by-id] Unexpected error:', err?.message || err);
+      return res.status(500).json({ success: false, error: REGISTER_ERR_GENERIC });
     }
   });
 
   app.post('/api/auth/login-by-id', async (req, res) => {
     const { uniqueCode } = req.body;
     if (!uniqueCode || typeof uniqueCode !== 'string') {
-      return res.status(400).json({ success: false, error: 'Ù†Ø§Ø³Ù†Ø§Ù…Û•ÛŒ Ú†ÙˆÙˆÙ†Û• Ú˜ÙˆÙˆØ±Û•ÙˆÛ• Ù¾ÛŽÙˆÛŒØ³ØªÛ•' });
+      return res.status(400).json({ success: false, error: 'تکایە ناوی چوونە ژوورەوە پێویستە' });
     }
 
     try {
@@ -5587,20 +5821,23 @@ async function startServer() {
 
       if (querySnapshot.empty) {
         console.warn(`[ID Auth] User not found for code: "${uniqueCode}"`);
-        return res.status(404).json({ success: false, error: 'Ø¦Û•Ù… Ú©Û†Ø¯Û•ÛŒ ID-ÛŒÛ• Ù‡Û•ÚµÛ•ÛŒÛ•ØŒ ØªÚ©Ø§ÛŒÛ• Ø¬Ø§Ø±ÛŽÚ©ÛŒ ØªØ± Ù‡Û•ÙˆÚµ Ø¨Ø¯Û•' });
+        return res.status(404).json({ success: false, error: 'ئەم کێدی ID-یە هەڵەیە، تکایە جارێکی تر هەوڵ بدە' });
       }
 
       const userDoc = querySnapshot.docs[0];
       const userData = userDoc.data();
       const uid = userDoc.id;
 
-      // Create custom token using mock auth
-      const customToken = await adminAuth.createCustomToken(uid);
+      // Create custom token (real Firebase Admin token when available, mock fallback otherwise)
+      const customToken =
+        firebaseAdminApp && uid
+          ? await admin.auth(firebaseAdminApp).createCustomToken(uid)
+          : await adminAuth.createCustomToken(uid);
 
       console.log(`[ID Auth] Successfully authenticated user: ${userData.name || uid} via uniqueCode: ${userData.uniqueCode}`);
 
       const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || "Unknown";
-      logUserActivity(db, userData.uniqueCode, "Login", `Ú©Û†Ø¯ÛŒ Ø¨ÛŽÙ‡Ø§ÙˆØªØ§ Ø¨Û• Ø³Û•Ø±Ú©Û•ÙˆØªÙˆÙˆÛŒÛŒ Ø¯Ø§Ø®Ù„ Ú©Ø±Ø§ Ùˆ Ú†ÙˆÙˆÙ†Û• Ú˜ÙˆÙˆØ±Û•ÙˆÛ• Ø¦Û•Ù†Ø¬Ø§Ù…Ø¯Ø±Ø§`, clientIp);
+      logUserActivity(db, userData.uniqueCode, "Login", `کێدی به‌هاو‌تا بە سەرکەوتوویی داخڵ کراو و چوونە ژوورەوە ئەنجامدرا`, clientIp);
       await saveDB(db);
 
       return res.json({
@@ -5616,7 +5853,7 @@ async function startServer() {
       });
     } catch (err: any) {
       console.error("[ID Auth] Login by ID logic failed with error:", err);
-      return res.status(500).json({ success: false, error: `Ù‡Û•ÚµÛ•ÛŒ Ú©Ø§ØªÛŒ Ø³ÛŽØ±Ú¤Û•Ø±: ${err.message || err}`, code: err.code });
+      return res.status(500).json({ success: false, error: 'هەڵەیەک ڕوویدا لە کاتی چوونە ژوورەوە، تکایە دووبارە هەوڵ بدەوە' });
     }
   });
 

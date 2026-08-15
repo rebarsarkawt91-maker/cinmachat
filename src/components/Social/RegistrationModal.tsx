@@ -241,6 +241,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
   const [showPassword, setShowPassword] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
+    username: '',
     phone: '',
     email: '',
     password: '',
@@ -274,6 +275,26 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
   const qrInputRef = React.useRef<HTMLInputElement>(null);
   const googleAttemptRef = React.useRef(0);
   const redirectResultHandledRef = React.useRef(false);
+  const submittingRef = React.useRef(false);
+  const focusFieldRef = React.useRef<string | null>(null);
+
+  // Focus the invalid field whenever a validation error is displayed.
+  React.useEffect(() => {
+    if (!focusFieldRef.current) return;
+    const el = document.getElementById(focusFieldRef.current);
+    if (el) (el as HTMLInputElement).focus();
+    focusFieldRef.current = null;
+  }, [error]);
+
+  // Single source of truth for form fields: keeps values on failure and clears
+  // the previous error as soon as the user starts typing again.
+  const updateForm = React.useCallback(
+    (field: keyof typeof formData, value: string) => {
+      if (error) setError(null);
+      setFormData((prev) => ({ ...prev, [field]: value }));
+    },
+    [error],
+  );
 
   const clearGoogleAuthState = React.useCallback(() => {
     googleAttemptRef.current += 1;
@@ -473,11 +494,13 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submittingRef.current) return;
     setIsLoading(true);
     setError(null);
     let targetEmail = "";
 
-    // Rate Limiting Guard
+    // Rate Limiting Guard (checked only for fresh registrations, recorded AFTER
+    // validation passes so duplicate/typo attempts never consume the window).
     const rateLimitKey = 'cc_reg_attempts';
     const now = Date.now();
     const attemptsStr = sessionStorage.getItem(rateLimitKey) || '[]';
@@ -490,13 +513,10 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
       return;
     }
 
-    if (!isLogin) {
-      attempts.push(now);
-      sessionStorage.setItem(rateLimitKey, JSON.stringify(attempts));
-    }
-
     // Input Sanitization
     const sanitizedName = (formData.name || "").replace(/<\/?[^>]+(>|$)/g, "").replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "").trim();
+
+    submittingRef.current = true;
 
     try {
       if (isLogin && showAdminBypass) {
@@ -532,6 +552,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
         }
 
         setError("کۆدی نهێنی سەرپەرشتیار نادروستە یان سێرڤەر وەڵام نادات.");
+        submittingRef.current = false;
         return;
       }
 
@@ -573,19 +594,60 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
           return;
         }
       } else {
-        // Registration
-        targetEmail = formData.email?.trim() || "";
-        const uniqueCode = `CC-CC-${Math.floor(1000 + Math.random() * 9000)}`;
+        // Registration (email OR mobile): validate locally with readable Kurdish
+        // messages and focus the invalid field, then let the server enforce the
+        // canonical checks (uniqueness of username/email/phone, CC-ID generation).
+        const trimmedName = sanitizedName;
+        const trimmedUsername = (formData.username || "").trim().toLowerCase();
+        const trimmedEmail = formData.email?.trim().toLowerCase() || "";
+        const trimmedPhone = formData.phone?.trim() || "";
+        const rawPassword = formData.password || "";
+
+        // Client-side validation failed: release the submit guard and focus the
+        // offending field so the user can correct it without retyping anything.
+        const failValidation = (message: string, fieldId: string) => {
+          submittingRef.current = false;
+          setIsLoading(false);
+          setError(message);
+          focusFieldRef.current = fieldId;
+        };
+
+        if (!trimmedName) {
+          failValidation("تکایە ناوێک بنووسە.", "register-name");
+          return;
+        }
+        if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(trimmedUsername)) {
+          failValidation("ناوی بەکارهێنەرەکە نادروستە؛ دەبێت لە ٣ بۆ ٣٢ پیتی ئینگلیزی، ژمارە، یان (. _ -) پێکهاتبێت.", "register-username");
+          return;
+        }
+        if (authMethod === "email") {
+          if (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+            failValidation("تکایە ئیمەیڵێکی دروست بنووسە.", "register-email");
+            return;
+          }
+        } else if (!trimmedPhone || !/^[+0-9\s\-()]{8,}$/.test(trimmedPhone)) {
+          failValidation("تکایە ژمارە مۆبایلەکە بە دروستی و بە ژمارەی ئینگلیزی بنووسە.", "register-phone");
+          return;
+        }
+        if (rawPassword.length < 6) {
+          failValidation("پاسۆردەکە زۆر لاوازە؛ پاسۆردێکی بەهێزتر بەکاربهێنە.", "register-password");
+          return;
+        }
+
+        // Record the attempt only after validation passed (not on typos/dups).
+        attempts.push(now);
+        sessionStorage.setItem(rateLimitKey, JSON.stringify(attempts));
+
         try {
           const res = await fetch("/api/auth/register-by-id", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              name: sanitizedName,
-              email: targetEmail,
-              password: formData.password,
-              uniqueCode,
-              phone: formData.phone,
+              name: trimmedName,
+              username: trimmedUsername,
+              email: authMethod === "email" ? trimmedEmail : "",
+              phone: authMethod === "phone" ? trimmedPhone : "",
+              password: rawPassword,
               age: formData.age,
               gender: formData.gender,
               residence: formData.residence,
@@ -593,11 +655,19 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
             })
           });
 
-          const data = await res.json();
-          if (data.success && data.customToken) {
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.success) {
+            // Server-provided readable Kurdish message takes priority; never
+            // surface raw stack traces / Firebase internals.
+            throw new Error(
+              (data && typeof data.error === "string" && data.error) ||
+                "خۆتۆمارکردن سەرکەوتوو نەبوو. تکایە دووبارە هەوڵ بدەوە.",
+            );
+          }
+          if (data.customToken) {
             await signInWithCustomToken(auth, data.customToken);
           } else {
-            throw new Error(data.error || "هەڵەیەک لە تۆمارکردن ڕوویدا");
+            throw new Error("خۆتۆمارکردن سەرکەوتوو نەبوو. تکایە دووبارە هەوڵ بدەوە.");
           }
         } catch (err: any) {
           throw err;
@@ -622,10 +692,13 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
       } else if (errCode === 'auth/wrong-password' || errCode === 'auth/invalid-credential' || err.message?.includes('wrong-password') || err.message?.includes('invalid-credential')) {
         errorMsg = "وشەی تێپەڕ یان ناوی بەکارهێنەر نادروستە! تکایە دڵنیاببەوە لە زانیارییەکانت.";
       } else if (err.message) {
+        // Prefer the readable server-provided message (already in Kurdish) over
+        // any raw Firebase/auth internals that may be attached to the error.
         errorMsg = err.message;
       }
       setError(errorMsg);
     } finally {
+      submittingRef.current = false;
       setIsLoading(false);
     }
   };
@@ -884,7 +957,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                 icon={<Mail className="h-4 w-4" />}
                 type="email"
                 value={formData.email}
-                onChange={(value) => setFormData((prev) => ({ ...prev, email: value }))}
+                onChange={(value) => updateForm("email", value)}
                 placeholder="name@example.com"
                 autoComplete="email"
                 required
@@ -896,7 +969,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                 icon={<Phone className="h-4 w-4" />}
                 type="tel"
                 value={formData.phone}
-                onChange={(value) => setFormData((prev) => ({ ...prev, phone: value }))}
+                onChange={(value) => updateForm("phone", value)}
                 placeholder="+9647700000000"
                 autoComplete="tel"
                 inputMode="tel"
@@ -970,16 +1043,29 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
               ) : (
                 <>
                   {!isLogin && (
-                    <FloatingInput
-                      id="register-name"
-                      label="ناوی بەکارهێنەر"
-                      icon={<User className="h-4 w-4" />}
-                      value={formData.name}
-                      onChange={(value) => setFormData((prev) => ({ ...prev, name: value }))}
-                      placeholder="CinemaChat"
-                      autoComplete="name"
-                      required
-                    />
+                    <>
+                      <FloatingInput
+                        id="register-name"
+                        label="ناوی تەواو"
+                        icon={<User className="h-4 w-4" />}
+                        value={formData.name}
+                        onChange={(value) => updateForm("name", value)}
+                        placeholder="CinemaChat"
+                        autoComplete="name"
+                        required
+                      />
+                      <FloatingInput
+                        id="register-username"
+                        label="ناوی بەکارهێنەر (Username)"
+                        icon={<KeyRound className="h-4 w-4" />}
+                        value={formData.username}
+                        onChange={(value) => updateForm("username", value)}
+                        placeholder="my_username123"
+                        autoComplete="username"
+                        required
+                        dir="ltr"
+                      />
+                    </>
                   )}
 
                   {authMethod === "email" ? (
@@ -989,11 +1075,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                       icon={<Mail className="h-4 w-4" />}
                       type="email"
                       value={isLogin ? formData.phone : formData.email}
-                      onChange={(value) =>
-                        setFormData((prev) =>
-                          isLogin ? { ...prev, phone: value } : { ...prev, email: value },
-                        )
-                      }
+                      onChange={(value) => updateForm(isLogin ? "phone" : "email", value)}
                       placeholder="name@example.com"
                       autoComplete="email"
                       required
@@ -1016,7 +1098,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                         icon={<Phone className="h-4 w-4" />}
                         type="tel"
                         value={formData.phone}
-                        onChange={(value) => setFormData((prev) => ({ ...prev, phone: value }))}
+                        onChange={(value) => updateForm("phone", value)}
                         placeholder={isLogin ? "CC-ADM-001 / 07700000000" : "07700000000"}
                         autoComplete="tel"
                         inputMode="tel"
@@ -1042,7 +1124,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                     icon={<Lock className="h-4 w-4" />}
                     type={showPassword ? "text" : "password"}
                     value={formData.password}
-                    onChange={(value) => setFormData((prev) => ({ ...prev, password: value }))}
+                    onChange={(value) => updateForm("password", value)}
                     placeholder="••••••••"
                     autoComplete={isLogin ? "current-password" : "new-password"}
                     required
@@ -1065,6 +1147,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                     setShowPassword(false);
                     setFormData({
                       name: '',
+                      username: '',
                       phone: '',
                       email: '',
                       password: '',
