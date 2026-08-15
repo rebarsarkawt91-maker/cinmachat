@@ -1,32 +1,237 @@
 import React, { useState } from 'react';
 import { 
   auth, 
-  db,
+  authPersistenceReady,
   createUserWithEmailAndPassword, 
   signInWithEmailAndPassword,
   updateProfile,
   signInWithCustomToken,
   GoogleAuthProvider,
   signInWithPopup,
-  doc, 
-  setDoc, 
-  getDoc, 
-  updateDoc, 
-  getDocs, 
-  collection, 
-  query, 
-  where
+  signInWithRedirect,
+  getRedirectResult,
 } from '../../lib/firebase';
 import { X, User, Phone, Lock, Sparkles, LogIn, Calendar, Users, MapPin, Globe, Mail, QrCode, Eye, EyeOff, ArrowLeft, KeyRound } from 'lucide-react';
 import { handleFirestoreError, OperationType } from '../../lib/firestoreUtils';
 import { motion, AnimatePresence } from 'motion/react';
 import jsQR from 'jsqr';
+import { hydrateGoogleCinemaChatProfile } from '../../services/socialProfileProvisioning';
 
 interface RegistrationModalProps {
   isOpen: boolean;
   onClose: () => void;
   initialMode?: "landing" | "login" | "signup";
 }
+
+const inputBaseClass =
+  "peer h-11 w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 pt-4 pb-1 text-sm font-bold text-white outline-none transition placeholder:text-transparent focus:border-red-500/70 focus:bg-white/[0.06] focus:ring-2 focus:ring-red-500/15 disabled:opacity-60 sm:h-12 sm:rounded-2xl sm:px-4 sm:pt-5";
+
+const FloatingInput = ({
+  id,
+  label,
+  icon,
+  type = "text",
+  value,
+  onChange,
+  placeholder,
+  required = false,
+  autoComplete,
+  inputMode,
+  dir = "rtl",
+  className = "",
+  trailing,
+}: {
+  id: string;
+  label: string;
+  icon: React.ReactNode;
+  type?: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  required?: boolean;
+  autoComplete?: string;
+  inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
+  dir?: "rtl" | "ltr";
+  className?: string;
+  trailing?: React.ReactNode;
+}) => (
+  <label htmlFor={id} className="group relative block">
+    <span className="pointer-events-none absolute right-4 top-1/2 z-10 -translate-y-1/2 text-zinc-500 transition group-focus-within:text-red-400">
+      {icon}
+    </span>
+    <input
+      id={id}
+      type={type}
+      required={required}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder={placeholder}
+      autoComplete={autoComplete}
+      inputMode={inputMode}
+      dir={dir}
+      aria-label={label}
+      className={`${inputBaseClass} pr-11 ${trailing ? "pl-12" : "pl-4"} ${dir === "ltr" ? "text-left" : "text-right kurdish-text"} ${className}`}
+    />
+    <span className="pointer-events-none absolute right-11 top-1.5 text-[10px] font-black text-zinc-500 transition group-focus-within:text-red-300 kurdish-text">
+      {label}
+    </span>
+    {trailing && (
+      <div className="absolute left-2 top-1/2 -translate-y-1/2">
+        {trailing}
+      </div>
+    )}
+  </label>
+);
+
+const AuthChoiceButton = ({
+  icon,
+  label,
+  helper,
+  onClick,
+  tone = "default",
+}: {
+  icon: React.ReactNode;
+  label: string;
+  helper: string;
+  onClick: () => void;
+  tone?: "default" | "primary";
+}) => (
+  <button
+    type="button"
+    onClick={onClick}
+      className={`group flex min-h-[52px] w-full items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-right transition-all hover:-translate-y-0.5 active:scale-[0.98] focus:outline-none focus:ring-2 focus:ring-red-500/30 sm:min-h-[58px] sm:gap-3 sm:rounded-2xl sm:px-4 sm:py-3 ${
+      tone === "primary"
+        ? "border-red-500/35 bg-red-600 text-white shadow-lg shadow-red-950/30 hover:bg-red-700"
+        : "border-white/10 bg-white/[0.04] text-white hover:border-white/20 hover:bg-white/[0.07]"
+    }`}
+    aria-label={label}
+  >
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-black/25 text-white/90 sm:h-10 sm:w-10">
+      {icon}
+    </span>
+    <span className="min-w-0 flex-1">
+      <span className="block truncate text-sm font-black kurdish-text">{label}</span>
+      <span className="mt-0.5 block truncate text-[10px] font-bold text-white/55 kurdish-text">{helper}</span>
+    </span>
+    <ArrowLeft className="h-4 w-4 shrink-0 text-white/40 transition group-hover:-translate-x-0.5 group-hover:text-white" />
+  </button>
+);
+
+const isMobileAuthBrowser = () =>
+  typeof window !== "undefined" &&
+  (window.matchMedia("(max-width: 767px)").matches ||
+    /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent));
+
+const GOOGLE_AUTH_TIMEOUT_MS = 30000;
+const GOOGLE_AUTH_FLAG_KEY = "cinemachat_google_redirect_pending";
+const EMAIL_PASSWORD_AUTH_FLAG_KEY = "cinemachat_email_password_signin";
+
+const withTimeout = async <T,>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> => {
+  let timeoutId: number | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = window.setTimeout(() => {
+      const error = new Error(message);
+      (error as any).code = "cinemachat/auth-timeout";
+      reject(error);
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timeoutId) window.clearTimeout(timeoutId);
+  }
+};
+
+const cleanupAuthCallbackUrl = () => {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  const sensitiveKeys = [
+    "code",
+    "state",
+    "oauth_token",
+    "oauth_verifier",
+    "access_token",
+    "id_token",
+    "authuser",
+    "prompt",
+  ];
+  let changed = false;
+  for (const key of sensitiveKeys) {
+    if (url.searchParams.has(key)) {
+      url.searchParams.delete(key);
+      changed = true;
+    }
+  }
+  if (changed) {
+    window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
+  }
+};
+
+const navigateToHome = () => {
+  if (typeof window === "undefined") return;
+  window.location.replace("/");
+};
+
+const GoogleAuthLoadingScreen = () => (
+  <div
+    className="fixed inset-0 z-[200000] flex items-center justify-center bg-black px-6 text-center text-white"
+    role="status"
+    aria-live="polite"
+  >
+    <div className="flex flex-col items-center">
+      <div className="text-3xl font-black italic tracking-tight text-white sm:text-5xl">
+        CINAMACHAT
+      </div>
+      <p className="mt-3 text-sm font-black uppercase tracking-[0.22em] text-red-400">
+        Signing in...
+      </p>
+      <div className="mt-8 h-10 w-10 animate-spin rounded-full border-2 border-white/20 border-t-red-500" />
+      <p className="mt-8 text-xl font-black leading-8 text-white kurdish-text" dir="rtl">
+        چاوەڕێ بکە... بە هەژمارەکەت دەچیتە ژورەوە.
+      </p>
+      <p className="mt-2 text-sm font-bold text-zinc-400">
+        Please wait... Signing you in.
+      </p>
+    </div>
+  </div>
+);
+
+const GoogleAuthRecoveryPanel = ({
+  message,
+  onRetry,
+  onCancel,
+}: {
+  message: string;
+  onRetry: () => void;
+  onCancel: () => void;
+}) => (
+  <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-center sm:rounded-2xl">
+    <p className="text-xs font-black leading-5 text-amber-200">
+      {message}
+    </p>
+    <div className="mt-3 grid grid-cols-2 gap-2">
+      <button
+        type="button"
+        onClick={onCancel}
+        className="h-10 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs font-black text-white transition hover:bg-white/[0.08] focus:outline-none focus:ring-2 focus:ring-red-500/30"
+      >
+        Cancel
+      </button>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="h-10 rounded-xl bg-red-600 px-3 text-xs font-black text-white transition hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500/30"
+      >
+        Try again
+      </button>
+    </div>
+  </div>
+);
 
 export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, onClose, initialMode }) => {
   const [isLogin, setIsLogin] = useState(initialMode !== "signup");
@@ -62,8 +267,62 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [showAdminBypass, setShowAdminBypass] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
+  const [googleRedirectError, setGoogleRedirectError] = useState("");
+  const [googleRedirectTimedOut, setGoogleRedirectTimedOut] = useState(false);
 
   const qrInputRef = React.useRef<HTMLInputElement>(null);
+  const googleAttemptRef = React.useRef(0);
+  const redirectResultHandledRef = React.useRef(false);
+
+  const clearGoogleAuthState = React.useCallback(() => {
+    googleAttemptRef.current += 1;
+    sessionStorage.removeItem(GOOGLE_AUTH_FLAG_KEY);
+    cleanupAuthCallbackUrl();
+    setGoogleBusy(false);
+    setGoogleRedirectError("");
+    setGoogleRedirectTimedOut(false);
+    setIsLoading(false);
+  }, []);
+
+  const finalizeGoogleCinemaChatAccount = React.useCallback(async (user: any) => {
+    if (!user?.uid) {
+      throw new Error("Google sign-in returned no user");
+    }
+
+    await withTimeout(
+      hydrateGoogleCinemaChatProfile(user),
+      GOOGLE_AUTH_TIMEOUT_MS,
+      "Google profile setup is taking longer than expected.",
+    );
+  }, []);
+
+  const googleAuthMessage = (err: any) => {
+    const code = String(err?.code || "");
+    if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
+      return "Google sign-in was canceled. You can try again when you are ready.";
+    }
+    if (code === "auth/popup-blocked") {
+      return "The browser blocked the Google sign-in popup. Please allow popups for CinemaChat and try again.";
+    }
+    if (code === "auth/unauthorized-domain") {
+      const host = typeof window !== "undefined" ? window.location.hostname : "this domain";
+      return `Google sign-in is not authorized for ${host}. Add this domain in Firebase Authentication Authorized domains.`;
+    }
+    if (code === "auth/operation-not-supported-in-this-environment") {
+      return "Google sign-in is not supported in this browser environment. Please try another browser.";
+    }
+    if (code === "auth/network-request-failed") {
+      return "Network error during Google sign-in. Please check the connection and try again.";
+    }
+    if (code === "auth/account-exists-with-different-credential") {
+      return "An account already exists with this email using another sign-in method.";
+    }
+    if (code === "cinemachat/auth-timeout") {
+      return "Google sign-in is taking longer than expected.";
+    }
+    return "چوونەژوورەوە بە گووگڵ سەرکەوتوو نەبوو. تکایە دووبارە هەوڵبدەرەوە.";
+  };
 
   const handleDirectIdLogin = async (codeToSubmit: string) => {
     setIsLoading(true);
@@ -84,7 +343,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
         const { signInWithCustomToken } = await import('firebase/auth');
         await signInWithCustomToken(auth, data.customToken);
         onClose();
-        window.location.reload();
+        navigateToHome();
       } else {
         setError('ئەم کۆدەی ID-یە هەڵەیە، تکایە جارێکی تر هەوڵ بدە');
       }
@@ -93,6 +352,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
       setError('ئەم کۆدەی ID-یە هەڵەیە، تکایە جارێکی تر هەوڵ بدە');
     } finally {
       setIsLoading(false);
+      setGoogleBusy(false);
     }
   };
 
@@ -147,8 +407,6 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
     reader.readAsDataURL(file);
   };
 
-  if (!isOpen) return null;
-
   const recoveryMessage = "If the information matches an account, password reset instructions will be sent to the registered email.";
 
   const handlePasswordRecovery = async (e: React.FormEvent) => {
@@ -172,6 +430,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
       setSuccessMessage(recoveryMessage);
     } finally {
       setIsLoading(false);
+      setGoogleBusy(false);
     }
   };
 
@@ -183,102 +442,34 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
     setShowAdminBypass(false);
     setShowPassword(false);
     setError(null);
+    setGoogleRedirectError("");
+    setGoogleRedirectTimedOut(false);
     setSuccessMessage(null);
   };
 
-  const inputBaseClass =
-    "peer h-12 w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 pt-5 pb-1 text-sm font-bold text-white outline-none transition placeholder:text-transparent focus:border-red-500/70 focus:bg-white/[0.06] focus:ring-2 focus:ring-red-500/15 disabled:opacity-60";
+  const completeEmailPasswordLogin = () => {
+    // Email/password sign-in resolves only after Firebase has persisted the
+    // credential. Navigate to "/" for a real reload so the auth state is
+    // re-established and the current page never keeps stale content.
+    setIsLoading(false);
+    onClose();
+    navigateToHome();
+  };
 
-  const FloatingInput = ({
-    id,
-    label,
-    icon,
-    type = "text",
-    value,
-    onChange,
-    placeholder,
-    required = false,
-    autoComplete,
-    inputMode,
-    dir = "rtl",
-    className = "",
-    trailing,
-  }: {
-    id: string;
-    label: string;
-    icon: React.ReactNode;
-    type?: string;
-    value: string;
-    onChange: (value: string) => void;
-    placeholder: string;
-    required?: boolean;
-    autoComplete?: string;
-    inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
-    dir?: "rtl" | "ltr";
-    className?: string;
-    trailing?: React.ReactNode;
-  }) => (
-    <label htmlFor={id} className="group relative block">
-      <span className="pointer-events-none absolute right-4 top-1/2 z-10 -translate-y-1/2 text-zinc-500 transition group-focus-within:text-red-400">
-        {icon}
-      </span>
-      <input
-        id={id}
-        type={type}
-        required={required}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={placeholder}
-        autoComplete={autoComplete}
-        inputMode={inputMode}
-        dir={dir}
-        aria-label={label}
-        className={`${inputBaseClass} pr-11 ${trailing ? "pl-12" : "pl-4"} ${dir === "ltr" ? "text-left" : "text-right kurdish-text"} ${className}`}
-      />
-      <span className="pointer-events-none absolute right-11 top-1.5 text-[10px] font-black text-zinc-500 transition group-focus-within:text-red-300 kurdish-text">
-        {label}
-      </span>
-      {trailing && (
-        <div className="absolute left-2 top-1/2 -translate-y-1/2">
-          {trailing}
-        </div>
-      )}
-    </label>
-  );
-
-  const AuthChoiceButton = ({
-    icon,
-    label,
-    helper,
-    onClick,
-    tone = "default",
-  }: {
-    icon: React.ReactNode;
-    label: string;
-    helper: string;
-    onClick: () => void;
-    tone?: "default" | "primary";
-  }) => (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`group flex min-h-[58px] w-full items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-right transition-all hover:-translate-y-0.5 active:scale-[0.98] focus:outline-none focus:ring-2 focus:ring-red-500/30 ${
-        tone === "primary"
-          ? "border-red-500/35 bg-red-600 text-white shadow-lg shadow-red-950/30 hover:bg-red-700"
-          : "border-white/10 bg-white/[0.04] text-white hover:border-white/20 hover:bg-white/[0.07]"
-      }`}
-      aria-label={label}
-    >
-      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-black/25 text-white/90">
-        {icon}
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-black kurdish-text">{label}</span>
-        <span className="mt-0.5 block truncate text-[10px] font-bold text-white/55 kurdish-text">{helper}</span>
-      </span>
-      <ArrowLeft className="h-4 w-4 shrink-0 text-white/40 transition group-hover:-translate-x-0.5 group-hover:text-white" />
-    </button>
-  );
+  const signInWithEmailPassword = async (email: string) => {
+    sessionStorage.setItem(EMAIL_PASSWORD_AUTH_FLAG_KEY, "1");
+    try {
+      await authPersistenceReady;
+      const credential = await signInWithEmailAndPassword(auth, email, formData.password);
+      if (!credential?.user) {
+        throw new Error("Email sign-in did not return a user.");
+      }
+      return credential;
+    } catch (error) {
+      sessionStorage.removeItem(EMAIL_PASSWORD_AUTH_FLAG_KEY);
+      throw error;
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -307,32 +498,10 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
     // Input Sanitization
     const sanitizedName = (formData.name || "").replace(/<\/?[^>]+(>|$)/g, "").replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "").trim();
 
-    const isLocalAdminBypass =
-      formData.name.trim().toLowerCase() === "admin" &&
-      (formData.password === "password123" ||
-        formData.password === "RebarSarkawtAdmin2026!");
-
     try {
       if (isLogin && showAdminBypass) {
-        // Offline-safe admin bypass for production cases where API endpoint is unavailable.
-        if (isLocalAdminBypass) {
-          localStorage.setItem("cinemachat_local_admin_profile", JSON.stringify({
-            name: "admin",
-            phone: "07701966640",
-            uniqueCode: "CC-ADM-001"
-          }));
-          localStorage.setItem("cinemachat_admin", JSON.stringify({
-            username: "admin",
-            isSuper: true,
-            isOwner: true,
-            role: "owner"
-          }));
-          onClose();
-          window.location.reload();
-          return;
-        }
-
-        // Verify admin secret key from backend when available.
+        // Verify admin secret key from backend only. No privileged password is
+        // stored, compared, or exposed in the frontend.
         try {
           const verifyRes = await fetch("/api/admin/verify-secret-login", {
             method: "POST",
@@ -354,7 +523,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
               }));
               localStorage.setItem("cinemachat_admin", JSON.stringify(verifyData.adminUser));
               onClose();
-              window.location.reload();
+              navigateToHome();
               return;
             }
           }
@@ -371,7 +540,9 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
         
         if (loginIdentifier.includes("@")) {
           // Normal email/password login
-          await signInWithEmailAndPassword(auth, loginIdentifier, formData.password);
+          await signInWithEmailPassword(loginIdentifier);
+          completeEmailPasswordLogin();
+          return;
         } else {
           // Try ID login first
           const res = await fetch("/api/auth/login-by-id", {
@@ -385,7 +556,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
             if (data.success && data.customToken) {
               await signInWithCustomToken(auth, data.customToken);
               onClose();
-              window.location.reload();
+              navigateToHome();
               return;
             }
           }
@@ -397,7 +568,9 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
             const cleanUsername = loginIdentifier.toLowerCase().replace(/[^a-z0-9_.-]/g, '');
             targetEmail = `${cleanUsername}@cinamachat.com`;
           }
-          await signInWithEmailAndPassword(auth, targetEmail, formData.password);
+          await signInWithEmailPassword(targetEmail);
+          completeEmailPasswordLogin();
+          return;
         }
       } else {
         // Registration
@@ -432,7 +605,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
       }
 
       onClose();
-      window.location.reload();
+      navigateToHome();
     } catch (err: any) {
       console.error("Auth error occurred:", err);
       let errorMsg = "هەڵەیەک ڕوویدا، تکایە دووبارە هەوڵبدەرەوە.";
@@ -457,72 +630,162 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
     }
   };
 
+  React.useEffect(() => {
+    let cancelled = false;
+    if (
+      redirectResultHandledRef.current ||
+      sessionStorage.getItem(GOOGLE_AUTH_FLAG_KEY) !== "1"
+    ) {
+      return;
+    }
+    redirectResultHandledRef.current = true;
+    const attemptId = ++googleAttemptRef.current;
+
+    setGoogleBusy(true);
+    setGoogleRedirectError("");
+    setGoogleRedirectTimedOut(false);
+    setError(null);
+    withTimeout(
+      getRedirectResult(auth),
+      GOOGLE_AUTH_TIMEOUT_MS,
+      "Google sign-in is taking longer than expected.",
+    )
+      .then(async (result) => {
+        if (cancelled || googleAttemptRef.current !== attemptId) return;
+        if (!result?.user) {
+          sessionStorage.removeItem(GOOGLE_AUTH_FLAG_KEY);
+          cleanupAuthCallbackUrl();
+          setGoogleRedirectTimedOut(false);
+          return;
+        }
+        sessionStorage.removeItem(GOOGLE_AUTH_FLAG_KEY);
+        cleanupAuthCallbackUrl();
+        setGoogleRedirectTimedOut(false);
+        await withTimeout(
+          finalizeGoogleCinemaChatAccount(result.user),
+          GOOGLE_AUTH_TIMEOUT_MS,
+          "Google profile setup is taking longer than expected.",
+        );
+        if (cancelled || googleAttemptRef.current !== attemptId) return;
+        onClose();
+        navigateToHome();
+      })
+      .catch((err: any) => {
+        if (cancelled || googleAttemptRef.current !== attemptId) return;
+        sessionStorage.removeItem(GOOGLE_AUTH_FLAG_KEY);
+        cleanupAuthCallbackUrl();
+        console.error("Google redirect auth error:", err?.code || err?.message || err);
+        const message = googleAuthMessage(err);
+        setIsLogin(true);
+        setAuthStep("landing");
+        setGoogleRedirectError(message);
+        setGoogleRedirectTimedOut(err?.code === "cinemachat/auth-timeout");
+        setError(message);
+      })
+      .finally(() => {
+        if (!cancelled && googleAttemptRef.current === attemptId) {
+          setIsLoading(false);
+          setGoogleBusy(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [finalizeGoogleCinemaChatAccount, onClose]);
+
   const handleGoogleSignIn = async () => {
+    if (googleBusy || isLoading) return;
+    const attemptId = ++googleAttemptRef.current;
+    setGoogleBusy(true);
+    setGoogleRedirectError("");
+    setGoogleRedirectTimedOut(false);
     setIsLoading(true);
     setError(null);
     const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: "select_account" });
     try {
-      const result = await signInWithPopup(auth, provider);
-      const user = result.user;
-      
-      const userDocRef = doc(db, 'users', user.uid);
-      const userSnap = await getDoc(userDocRef).catch(() => null);
-
-      if (userSnap && userSnap.exists()) {
-        await updateDoc(userDocRef, { isOnline: true }).catch(() => {});
-      } else {
-        const uniqueCode = `CC-CC-${Math.floor(1000 + Math.random() * 9000)}`;
-        await setDoc(userDocRef, {
-          uid: user.uid,
-          name: user.displayName || 'Google User',
-          phone: user.phoneNumber || 'Google Account',
-          email: user.email,
-          uniqueCode,
-          isOnline: true,
-          createdAt: new Date().toISOString(),
-          role: 'user',
-          provider: 'google',
-          authProvider: 'google',
-        }, { merge: true });
-
-        await setDoc(doc(db, 'syncGroups', user.uid), {
-          id: user.uid,
-          name: `ژووری ${user.displayName || 'Google User'}`,
-          creatorId: user.uid,
-          memberIds: [user.uid],
-          playback: { isPlaying: false, currentTime: 0, updatedAt: new Date().toISOString() },
-          createdAt: new Date().toISOString()
-        }, { merge: true });
+      await authPersistenceReady;
+      if (isMobileAuthBrowser()) {
+        sessionStorage.setItem(GOOGLE_AUTH_FLAG_KEY, "1");
+        await withTimeout(
+          signInWithRedirect(auth, provider),
+          GOOGLE_AUTH_TIMEOUT_MS,
+          "Google sign-in is taking longer than expected.",
+        );
+        const redirectError = new Error("Google sign-in redirect did not complete.");
+        (redirectError as any).code = "cinemachat/auth-timeout";
+        throw redirectError;
       }
-
+      sessionStorage.removeItem(GOOGLE_AUTH_FLAG_KEY);
+      const result = await withTimeout(
+        signInWithPopup(auth, provider),
+        GOOGLE_AUTH_TIMEOUT_MS,
+        "Google sign-in is taking longer than expected.",
+      );
+      if (googleAttemptRef.current !== attemptId) return;
+      if (!result?.user) {
+        throw new Error("Google sign-in returned no user");
+      }
+      await withTimeout(
+        finalizeGoogleCinemaChatAccount(result.user),
+        GOOGLE_AUTH_TIMEOUT_MS,
+        "Google profile setup is taking longer than expected.",
+      );
+      if (googleAttemptRef.current !== attemptId) return;
       onClose();
-      window.location.reload();
+      navigateToHome();
     } catch (err: any) {
+      sessionStorage.removeItem(GOOGLE_AUTH_FLAG_KEY);
+      cleanupAuthCallbackUrl();
       console.error("Google auth error:", err);
-      setError("چوونەژوورەوە بە گووگڵ سەرکەوتوو نەبوو. تکایە دووبارە هەوڵبدەرەوە.");
+      const message = googleAuthMessage(err);
+      setIsLogin(true);
+      setAuthStep("landing");
+      setGoogleRedirectError(message);
+      setGoogleRedirectTimedOut(err?.code === "cinemachat/auth-timeout");
+      setError(message);
     } finally {
       setIsLoading(false);
+      if (
+        googleAttemptRef.current === attemptId &&
+        sessionStorage.getItem(GOOGLE_AUTH_FLAG_KEY) !== "1"
+      ) {
+        setGoogleBusy(false);
+      }
     }
   };
 
+  const isGoogleAuthLoading = googleBusy && !googleRedirectError && !googleRedirectTimedOut;
+  const shouldShowAuthDialog = isOpen || !!googleRedirectError || googleRedirectTimedOut;
+
+  if (isGoogleAuthLoading) {
+    return <GoogleAuthLoadingScreen />;
+  }
+
+  if (!shouldShowAuthDialog) return null;
+
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-black/95 p-3 backdrop-blur-md sm:p-5">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center overflow-hidden bg-black/95 px-2 py-[calc(0.5rem+env(safe-area-inset-top))] pb-[calc(0.5rem+env(safe-area-inset-bottom))] backdrop-blur-md sm:p-5">
       <motion.div
         initial={{ opacity: 0, y: 12, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: 12, scale: 0.98 }}
         transition={{ duration: 0.18 }}
-        className="my-auto w-full max-w-[min(94vw,430px)] overflow-hidden rounded-3xl border border-white/10 bg-[#08080a] text-right shadow-2xl shadow-black/60"
+        className="my-auto flex max-h-[calc(100dvh-1rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] w-full max-w-[min(94vw,430px)] flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#08080a] text-right shadow-2xl shadow-black/60 sm:max-h-[calc(100dvh-2.5rem)] sm:rounded-3xl"
         role="dialog"
         aria-modal="true"
         aria-labelledby="cinemachat-auth-title"
       >
-        <div className="relative border-b border-white/10 bg-[radial-gradient(circle_at_top_right,rgba(229,9,20,0.20),transparent_36%),linear-gradient(180deg,rgba(255,255,255,0.06),transparent)] px-4 pb-4 pt-5 text-center sm:px-6">
+        <div className="relative shrink-0 border-b border-white/10 bg-[radial-gradient(circle_at_top_right,rgba(229,9,20,0.20),transparent_36%),linear-gradient(180deg,rgba(255,255,255,0.06),transparent)] px-4 pb-3 pt-4 text-center sm:px-6 sm:pb-4 sm:pt-5">
           <button
             type="button"
-            onClick={onClose}
+            onClick={() => {
+              clearGoogleAuthState();
+              onClose();
+            }}
             aria-label="Close authentication"
-            className="absolute left-4 top-4 flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-zinc-400 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-red-500/30"
+              className="absolute left-3 top-3 flex h-9 w-9 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-zinc-400 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-red-500/30 sm:left-4 sm:top-4 sm:h-10 sm:w-10 sm:rounded-2xl"
           >
             <X className="h-4 w-4" />
           </button>
@@ -538,16 +801,16 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                 setSuccessMessage(null);
               }}
               aria-label="Back"
-              className="absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-zinc-400 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-red-500/30"
+              className="absolute right-3 top-3 flex h-9 w-9 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-zinc-400 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-red-500/30 sm:right-4 sm:top-4 sm:h-10 sm:w-10 sm:rounded-2xl"
             >
               <ArrowLeft className="h-4 w-4" />
             </button>
           )}
 
-          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl border border-red-500/20 bg-red-500/10 text-red-400">
+          <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-xl border border-red-500/20 bg-red-500/10 text-red-400 sm:mb-3 sm:h-12 sm:w-12 sm:rounded-2xl">
             {showPasswordRecovery ? <KeyRound className="h-6 w-6" /> : isLogin ? <LogIn className="h-6 w-6" /> : <Sparkles className="h-6 w-6" />}
           </div>
-          <h2 id="cinemachat-auth-title" className="text-xl font-black text-white kurdish-text sm:text-2xl">
+          <h2 id="cinemachat-auth-title" className="text-lg font-black text-white kurdish-text sm:text-2xl">
             {showPasswordRecovery
               ? "گەڕاندنەوەی وشەی تێپەڕ"
               : authStep === "landing"
@@ -556,7 +819,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                   ? "چوونەژوورەوە"
                   : "خۆتۆمارکردن"}
           </h2>
-          <p className="mx-auto mt-1 max-w-[300px] text-xs leading-6 text-zinc-500 kurdish-text">
+          <p className="mx-auto mt-1 max-w-[300px] text-[11px] leading-5 text-zinc-500 kurdish-text sm:text-xs sm:leading-6">
             {showPasswordRecovery
               ? "ئیمەیڵ و ژمارەی مۆبایلی تۆمارکراو بنووسە."
               : authStep === "landing"
@@ -567,10 +830,10 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
           </p>
         </div>
 
-        <div className="max-h-[min(78vh,720px)] overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3 sm:px-6 sm:py-5">
           {authStep === "landing" && !showPasswordRecovery ? (
-            <div className="space-y-4">
-              <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-3 sm:space-y-4">
+              <div className="grid gap-2.5 sm:grid-cols-2 sm:gap-3">
                 <AuthChoiceButton
                   icon={<LogIn className="h-5 w-5" />}
                   label="چوونەژوورەوە"
@@ -588,16 +851,31 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
               <button
                 type="button"
                 onClick={handleGoogleSignIn}
-                disabled={isLoading}
-                className="flex h-12 w-full items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 text-sm font-black text-white transition hover:bg-white/[0.08] active:scale-[0.98] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-500/30"
+                disabled={isLoading || googleBusy}
+                className="flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 text-sm font-black text-white transition hover:bg-white/[0.08] active:scale-[0.98] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-500/30 sm:h-12 sm:rounded-2xl"
               >
                 <Globe className="h-4 w-4" />
-                Continue with Google
+                {googleBusy ? "Connecting..." : "Continue with Google"}
               </button>
+              {(googleRedirectError || googleRedirectTimedOut) ? (
+                <GoogleAuthRecoveryPanel
+                  message={googleRedirectError || "Google sign-in is taking longer than expected."}
+                  onRetry={handleGoogleSignIn}
+                  onCancel={() => {
+                    clearGoogleAuthState();
+                    setError(null);
+                    onClose();
+                  }}
+                />
+              ) : error ? (
+                <p className="rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-center text-[11px] font-bold leading-5 text-red-300 sm:rounded-2xl">
+                  {error}
+                </p>
+              ) : null}
             </div>
           ) : showPasswordRecovery ? (
-            <form onSubmit={handlePasswordRecovery} className="space-y-3">
-              <div className="rounded-2xl border border-amber-500/15 bg-amber-500/10 p-3 text-[11px] font-bold leading-6 text-amber-100/85 kurdish-text">
+            <form onSubmit={handlePasswordRecovery} className="space-y-2.5 sm:space-y-3">
+              <div className="rounded-xl border border-amber-500/15 bg-amber-500/10 p-2.5 text-[11px] font-bold leading-5 text-amber-100/85 kurdish-text sm:rounded-2xl sm:p-3 sm:leading-6">
                 هیچ SMS یان OTP نانێردرێت. ئەگەر زانیارییەکان بگونجێن، Firebase ئیمەیڵی فەرمی گەڕاندنەوەی وشەی تێپەڕ دەنێرێت.
               </div>
               <FloatingInput
@@ -606,7 +884,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                 icon={<Mail className="h-4 w-4" />}
                 type="email"
                 value={formData.email}
-                onChange={(value) => setFormData({ ...formData, email: value })}
+                onChange={(value) => setFormData((prev) => ({ ...prev, email: value }))}
                 placeholder="name@example.com"
                 autoComplete="email"
                 required
@@ -618,7 +896,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                 icon={<Phone className="h-4 w-4" />}
                 type="tel"
                 value={formData.phone}
-                onChange={(value) => setFormData({ ...formData, phone: value })}
+                onChange={(value) => setFormData((prev) => ({ ...prev, phone: value }))}
                 placeholder="+9647700000000"
                 autoComplete="tel"
                 inputMode="tel"
@@ -626,33 +904,33 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                 dir="ltr"
               />
               {successMessage && (
-                <p className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-center text-[11px] font-bold leading-6 text-emerald-300 kurdish-text">
+                <p className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-center text-[11px] font-bold leading-5 text-emerald-300 kurdish-text sm:rounded-2xl sm:leading-6">
                   {successMessage}
                 </p>
               )}
               <button
                 type="submit"
-                disabled={isLoading}
-                className="flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-red-600 px-4 text-sm font-black text-white shadow-lg shadow-red-950/30 transition hover:bg-red-700 active:scale-[0.98] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-500/30 kurdish-text"
+                disabled={isLoading || googleBusy}
+                className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-red-600 px-4 text-sm font-black text-white shadow-lg shadow-red-950/30 transition hover:bg-red-700 active:scale-[0.98] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-500/30 kurdish-text sm:h-12 sm:rounded-2xl"
               >
                 {isLoading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/20 border-t-white" /> : "ناردنی ئیمەیڵی گەڕاندنەوە"}
               </button>
             </form>
           ) : (
-            <form onSubmit={handleSubmit} className="space-y-3">
+            <form onSubmit={handleSubmit} className="space-y-2.5 sm:space-y-3">
               {!showAdminBypass && (
                 <div className="grid gap-2 sm:grid-cols-2">
                   <button
                     type="button"
                     onClick={() => resetAuthView(isLogin, "email")}
-                    className={`h-11 rounded-2xl border px-3 text-xs font-black transition focus:outline-none focus:ring-2 focus:ring-red-500/30 kurdish-text ${authMethod === "email" ? "border-red-500/50 bg-red-600 text-white" : "border-white/10 bg-white/[0.04] text-zinc-400 hover:text-white"}`}
+                    className={`h-10 rounded-xl border px-3 text-xs font-black transition focus:outline-none focus:ring-2 focus:ring-red-500/30 kurdish-text sm:h-11 sm:rounded-2xl ${authMethod === "email" ? "border-red-500/50 bg-red-600 text-white" : "border-white/10 bg-white/[0.04] text-zinc-400 hover:text-white"}`}
                   >
                     {isLogin ? "Login with Email" : "Register using Email"}
                   </button>
                   <button
                     type="button"
                     onClick={() => resetAuthView(isLogin, "phone")}
-                    className={`h-11 rounded-2xl border px-3 text-xs font-black transition focus:outline-none focus:ring-2 focus:ring-red-500/30 kurdish-text ${authMethod === "phone" ? "border-red-500/50 bg-red-600 text-white" : "border-white/10 bg-white/[0.04] text-zinc-400 hover:text-white"}`}
+                    className={`h-10 rounded-xl border px-3 text-xs font-black transition focus:outline-none focus:ring-2 focus:ring-red-500/30 kurdish-text sm:h-11 sm:rounded-2xl ${authMethod === "phone" ? "border-red-500/50 bg-red-600 text-white" : "border-white/10 bg-white/[0.04] text-zinc-400 hover:text-white"}`}
                   >
                     {isLogin ? "Login with Mobile" : "Register using Mobile"}
                   </button>
@@ -666,7 +944,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                     label="ناوی سەرپەرشتیار"
                     icon={<User className="h-4 w-4" />}
                     value={formData.name}
-                    onChange={(value) => setFormData({ ...formData, name: value })}
+                    onChange={(value) => setFormData((prev) => ({ ...prev, name: value }))}
                     placeholder="admin"
                     autoComplete="username"
                     required
@@ -677,8 +955,8 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                     icon={<Lock className="h-4 w-4" />}
                     type={showPassword ? "text" : "password"}
                     value={formData.password}
-                    onChange={(value) => setFormData({ ...formData, password: value })}
-                    placeholder="password"
+                    onChange={(value) => setFormData((prev) => ({ ...prev, password: value }))}
+                    placeholder="••••••••"
                     autoComplete="current-password"
                     required
                     dir="ltr"
@@ -697,7 +975,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                       label="ناوی بەکارهێنەر"
                       icon={<User className="h-4 w-4" />}
                       value={formData.name}
-                      onChange={(value) => setFormData({ ...formData, name: value })}
+                      onChange={(value) => setFormData((prev) => ({ ...prev, name: value }))}
                       placeholder="CinemaChat"
                       autoComplete="name"
                       required
@@ -711,7 +989,11 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                       icon={<Mail className="h-4 w-4" />}
                       type="email"
                       value={isLogin ? formData.phone : formData.email}
-                      onChange={(value) => setFormData(isLogin ? { ...formData, phone: value } : { ...formData, email: value })}
+                      onChange={(value) =>
+                        setFormData((prev) =>
+                          isLogin ? { ...prev, phone: value } : { ...prev, email: value },
+                        )
+                      }
                       placeholder="name@example.com"
                       autoComplete="email"
                       required
@@ -734,7 +1016,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                         icon={<Phone className="h-4 w-4" />}
                         type="tel"
                         value={formData.phone}
-                        onChange={(value) => setFormData({ ...formData, phone: value })}
+                        onChange={(value) => setFormData((prev) => ({ ...prev, phone: value }))}
                         placeholder={isLogin ? "CC-ADM-001 / 07700000000" : "07700000000"}
                         autoComplete="tel"
                         inputMode="tel"
@@ -760,8 +1042,8 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                     icon={<Lock className="h-4 w-4" />}
                     type={showPassword ? "text" : "password"}
                     value={formData.password}
-                    onChange={(value) => setFormData({ ...formData, password: value })}
-                    placeholder="password"
+                    onChange={(value) => setFormData((prev) => ({ ...prev, password: value }))}
+                    placeholder="••••••••"
                     autoComplete={isLogin ? "current-password" : "new-password"}
                     required
                     dir="ltr"
@@ -799,21 +1081,31 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
               )}
 
               {!isLogin && (
-                <div className="rounded-2xl border border-red-500/10 bg-red-500/5 p-3 text-center text-[11px] font-bold leading-5 text-zinc-400 kurdish-text">
+                <div className="rounded-xl border border-red-500/10 bg-red-500/5 p-2.5 text-center text-[11px] font-bold leading-5 text-zinc-400 kurdish-text sm:rounded-2xl sm:p-3">
                   ناسنامەی بەستنەوەی ژوورەکەت <span className="font-mono text-red-400">CC-ID</span> بە ئۆتۆماتیکی دروست دەبێت.
                 </div>
               )}
 
-              {error && (
-                <p className="rounded-2xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-center text-[11px] font-bold leading-5 text-red-300 kurdish-text">
+              {(googleRedirectError || googleRedirectTimedOut) ? (
+                <GoogleAuthRecoveryPanel
+                  message={googleRedirectError || "Google sign-in is taking longer than expected."}
+                  onRetry={handleGoogleSignIn}
+                  onCancel={() => {
+                    clearGoogleAuthState();
+                    setError(null);
+                    onClose();
+                  }}
+                />
+              ) : error && (
+                <p className="rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-center text-[11px] font-bold leading-5 text-red-300 kurdish-text sm:rounded-2xl">
                   {error}
                 </p>
               )}
 
               <button
                 type="submit"
-                disabled={isLoading}
-                className="flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-red-600 px-4 text-sm font-black text-white shadow-lg shadow-red-950/30 transition hover:bg-red-700 active:scale-[0.98] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-500/30 kurdish-text"
+                disabled={isLoading || googleBusy}
+                className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-red-600 px-4 text-sm font-black text-white shadow-lg shadow-red-950/30 transition hover:bg-red-700 active:scale-[0.98] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-500/30 kurdish-text sm:h-12 sm:rounded-2xl"
               >
                 {isLoading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/20 border-t-white" /> : isLogin ? "چوونەژوورەوە" : "دروستکردنی ئەکاونت"}
               </button>
@@ -827,11 +1119,11 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
               <button
                 type="button"
                 onClick={handleGoogleSignIn}
-                disabled={isLoading}
-                className="flex h-12 w-full items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 text-sm font-black text-white transition hover:bg-white/[0.08] active:scale-[0.98] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-500/30"
+                disabled={isLoading || googleBusy}
+                className="flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 text-sm font-black text-white transition hover:bg-white/[0.08] active:scale-[0.98] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-500/30 sm:h-12 sm:rounded-2xl"
               >
                 <Globe className="h-4 w-4" />
-                Continue with Google
+                {googleBusy ? "Connecting..." : "Continue with Google"}
               </button>
 
               {isLogin && !showAdminBypass && (

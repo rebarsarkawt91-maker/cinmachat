@@ -55,8 +55,7 @@ export const Login = ({ onLoginSuccess }: LoginProps) => {
         const normalizedUsername = username.trim().toLowerCase();
         const localAdminFallback =
           normalizedUsername === "admin" &&
-          (password === "password123" ||
-            password === "RebarSarkawtAdmin2026!");
+          false;
 
         if (localAdminFallback) {
           setSuccess(true);
@@ -78,8 +77,7 @@ export const Login = ({ onLoginSuccess }: LoginProps) => {
       const normalizedUsername = username.trim().toLowerCase();
       const localAdminFallback =
         normalizedUsername === "admin" &&
-        (password === "password123" ||
-          password === "RebarSarkawtAdmin2026!");
+        false;
 
       if (localAdminFallback) {
         setSuccess(true);
@@ -164,6 +162,7 @@ export const Login = ({ onLoginSuccess }: LoginProps) => {
                 required
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
+                autoComplete="username"
                 placeholder="بۆ نموونە: dekan@123"
                 className="w-full bg-black/40 border border-white/5 rounded-2xl pr-11 pl-4 py-3.5 text-xs text-white kurdish-text outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/30 transition-all font-mono"
               />
@@ -183,6 +182,7 @@ export const Login = ({ onLoginSuccess }: LoginProps) => {
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
                 placeholder="••••••"
                 className="w-full bg-black/40 border border-white/5 rounded-2xl pr-11 pl-11 py-3.5 text-xs text-white outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/30 transition-all font-mono"
               />

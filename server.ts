@@ -14,6 +14,239 @@ import { rateLimiter, sanitizationMiddleware, createAdminGuard, logFailedAttempt
 import { generateSubtitle, translateSrtViaGemini } from './features/subtitles/subtitleGenerator.js';
 import { execFile } from 'node:child_process';
 import * as XLSX from 'xlsx';
+import * as admin from 'firebase-admin';
+
+// ---------------------------------------------------------------------------
+// Firebase Admin SDK — server-side verification of Firebase ID tokens.
+//
+// Initialized EXACTLY ONCE. Every Bearer token on the profile persistence API
+// is verified cryptographically via admin.auth().verifyIdToken() — the JWT is
+// never manually decoded and no token claim (sub/uid/aud/iss/exp) is trusted
+// unless verification succeeds.
+//
+// Credentials are read only from the environment (never hardcoded, never
+// committed, never exposed to the frontend):
+//   1. FIREBASE_SERVICE_ACCOUNT        -> service-account JSON as a string
+//   2. GOOGLE_APPLICATION_CREDENTIALS  -> path to a service-account JSON file
+//   3. FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY + FIREBASE_PROJECT_ID
+//
+// Local development may use the Firebase Auth Emulator instead, but ONLY when
+// it is explicitly enabled via FIREBASE_AUTH_EMULATOR_HOST (no credentials are
+// required in that mode). If neither credentials nor an explicit emulator is
+// configured, startup fails with a clear message.
+// ---------------------------------------------------------------------------
+const FIREBASE_ADMIN_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'gen-lang-client-0240212572';
+const FIREBASE_AUTH_EMULATOR_EXPLICIT = !!process.env.FIREBASE_AUTH_EMULATOR_HOST;
+
+let firebaseAdminInitialized = false;
+let firebaseAdminApp: admin.app.App | null = null;
+
+function initializeFirebaseAdmin(): admin.app.App {
+  if (firebaseAdminInitialized) return firebaseAdminApp as admin.app.App;
+  firebaseAdminInitialized = true;
+
+  try {
+    if (FIREBASE_AUTH_EMULATOR_EXPLICIT) {
+      firebaseAdminApp = admin.initializeApp({ projectId: FIREBASE_ADMIN_PROJECT_ID });
+      console.log(
+        `[Firebase Admin] Using Firebase Auth Emulator: ${process.env.FIREBASE_AUTH_EMULATOR_HOST}`,
+      );
+      return firebaseAdminApp;
+    }
+
+    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
+    const googleApplicationCredentials = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    const hasSplitCredentials = !!(
+      process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY
+    );
+
+    if (!serviceAccountJson && !googleApplicationCredentials && !hasSplitCredentials) {
+      console.error(
+        '[Firebase Admin] Missing credentials. The profile persistence API cannot verify tokens without one of:',
+      );
+      console.error('  - FIREBASE_SERVICE_ACCOUNT         (service-account JSON string)');
+      console.error('  - GOOGLE_APPLICATION_CREDENTIALS   (path to a service-account JSON file)');
+      console.error(
+        '  - FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY + FIREBASE_PROJECT_ID (split credentials)',
+      );
+      console.error(
+        '  - Local development only: FIREBASE_AUTH_EMULATOR_HOST (e.g. 127.0.0.1:9099) for the Firebase Auth Emulator.',
+      );
+      console.error('[Firebase Admin] Startup aborted.');
+      process.exit(1);
+    }
+
+    if (serviceAccountJson) {
+      const serviceAccount = JSON.parse(serviceAccountJson);
+      firebaseAdminApp = admin.initializeApp({
+        projectId: serviceAccount.project_id || FIREBASE_ADMIN_PROJECT_ID,
+        credential: admin.credential.cert(serviceAccount),
+      });
+    } else if (googleApplicationCredentials) {
+      firebaseAdminApp = admin.initializeApp({
+        projectId: FIREBASE_ADMIN_PROJECT_ID,
+        credential: admin.credential.applicationDefault(),
+      });
+    } else {
+      firebaseAdminApp = admin.initializeApp({
+        projectId: FIREBASE_ADMIN_PROJECT_ID,
+        credential: admin.credential.cert({
+          projectId: FIREBASE_ADMIN_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL!,
+          privateKey: String(process.env.FIREBASE_PRIVATE_KEY).replace(/\\n/g, '\n'),
+        }),
+      });
+    }
+    console.log('[Firebase Admin] Initialized with service-account credentials.');
+    return firebaseAdminApp;
+  } catch (err: any) {
+    console.error('[Firebase Admin] Failed to initialize:', err?.message || err);
+    process.exit(1);
+  }
+}
+
+// Extracts the `Bearer <idToken>` from the Authorization header, verifies it
+// cryptographically with the Firebase Admin SDK (revocation-aware) and returns
+// the authenticated Firebase UID. Throws an Error with `status` set on failure.
+async function verifyFirebaseIdToken(authHeader: string | undefined): Promise<string> {
+  const raw = String(authHeader || '');
+  const token = raw.startsWith('Bearer ') ? raw.slice(7).trim() : '';
+  if (!token) {
+    const err: any = new Error('Unauthorized: missing Firebase token');
+    err.status = 401;
+    throw err;
+  }
+  try {
+    const app = initializeFirebaseAdmin();
+    // checkRevoked=true also rejects disabled / token-revoked accounts.
+    const decodedToken = await admin.auth(app).verifyIdToken(token, true);
+    return decodedToken.uid;
+  } catch (err: any) {
+    const authErr: any = new Error('Unauthorized: invalid Firebase token');
+    authErr.status = 401;
+    authErr.cause = err?.message || err;
+    throw authErr;
+  }
+}
+
+const CINEMACHAT_AUTH_HOST = 'auth.cinamachat.com';
+const CINEMACHAT_AUTH_ORIGIN = `https://${CINEMACHAT_AUTH_HOST}`;
+const FIREBASE_AUTH_HELPER_ORIGIN =
+  process.env.FIREBASE_AUTH_HELPER_ORIGIN || CINEMACHAT_AUTH_ORIGIN;
+const FIREBASE_AUTH_HELPER_PATH_PREFIX = '/__/auth/';
+const FIREBASE_RESERVED_CONFIG_PATH_PREFIX = '/__/firebase/';
+const HOP_BY_HOP_HEADERS = new Set([
+  'connection',
+  'content-encoding',
+  'content-length',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+]);
+
+function getRequestHost(req: express.Request): string {
+  const forwardedHost = req.get('x-forwarded-host') || req.get('host') || '';
+  return forwardedHost.split(',')[0].trim().split(':')[0].toLowerCase();
+}
+
+function enforceBrandedAuthHost(req: express.Request, res: express.Response): boolean {
+  const requestHost = getRequestHost(req);
+  if (requestHost !== CINEMACHAT_AUTH_HOST) {
+    const target = new URL(req.originalUrl, CINEMACHAT_AUTH_ORIGIN);
+    res.redirect(302, target.toString());
+    return true;
+  }
+
+  if (FIREBASE_AUTH_HELPER_ORIGIN === CINEMACHAT_AUTH_ORIGIN) {
+    res
+      .status(421)
+      .send('CinemaChat auth domain is not routed to Firebase Hosting.');
+    return true;
+  }
+
+  return false;
+}
+
+async function proxyFirebaseAuthHelper(req: express.Request, res: express.Response) {
+  if (enforceBrandedAuthHost(req, res)) return;
+
+  const method = req.method.toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD') {
+    res.setHeader('Allow', 'GET, HEAD');
+    res.status(405).send('Method Not Allowed');
+    return;
+  }
+
+  try {
+    const target = new URL(req.originalUrl, FIREBASE_AUTH_HELPER_ORIGIN);
+    const upstream = await fetch(target, {
+      method,
+      headers: {
+        Accept: req.get('accept') || '*/*',
+        'Accept-Language': req.get('accept-language') || 'en-US,en;q=0.9',
+        'User-Agent':
+          req.get('user-agent') ||
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      },
+    });
+
+    res.status(upstream.status);
+    upstream.headers.forEach((value, key) => {
+      if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase())) {
+        res.setHeader(key, value);
+      }
+    });
+
+    if (method === 'HEAD') {
+      res.end();
+      return;
+    }
+
+    const body = Buffer.from(await upstream.arrayBuffer());
+    res.send(body);
+  } catch (err: any) {
+    console.warn('[Firebase Auth] Helper proxy failed:', err?.message || err);
+    res.status(502).send('Firebase auth helper unavailable');
+  }
+}
+
+async function proxyFirebaseReservedConfig(req: express.Request, res: express.Response) {
+  if (enforceBrandedAuthHost(req, res)) return;
+
+  const method = req.method.toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD') {
+    res.setHeader('Allow', 'GET, HEAD');
+    res.status(405).send('Method Not Allowed');
+    return;
+  }
+
+  try {
+    const target = new URL(req.originalUrl, FIREBASE_AUTH_HELPER_ORIGIN);
+    const upstream = await fetch(target, { method });
+
+    res.status(upstream.status);
+    upstream.headers.forEach((value, key) => {
+      if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase())) {
+        res.setHeader(key, value);
+      }
+    });
+
+    if (method === 'HEAD') {
+      res.end();
+      return;
+    }
+
+    const body = Buffer.from(await upstream.arrayBuffer());
+    res.send(body);
+  } catch (err: any) {
+    console.warn('[Firebase] Reserved config proxy failed:', err?.message || err);
+    res.status(502).send('Firebase reserved config unavailable');
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Pure Node.js YouTube caption fetcher â€” no yt-dlp, no external npm packages.
@@ -1058,7 +1291,7 @@ const MOVIE_VIEWS_DOC = process.env.MOVIE_VIEWS_DOC || 'config/movieViews';
 // Initial DB Structure
 const INITIAL_DB = {
   admins: [
-    { username: 'admin', password: 'password123', isSuper: true, isOwner: true, role: 'owner' }
+    { username: 'admin', password: '', isSuper: true, isOwner: true, role: 'owner' }
   ],
   users: [] as any[],
   categories: ["Ù‡Û•Ù…ÙˆÙˆÛŒ", "Ø¦Ø§Ú©Ø´Ù†", "Ú©Û†Ù…ÛŒØ¯ÛŒ", "Ø¯Ø±Ø§Ù…Ø§", "ØªØ±Ø³Ù†Ø§Ú©", "Ø¦Û•Ù†ÛŒÙ…ÛŽ", "Ø¯Û†Ú©ÛŒÙˆÙ…ÛŽÙ†ØªØ§Ø±ÛŒ"],
@@ -1644,7 +1877,11 @@ async function startServer() {
 
   // Support Module 17 - Super Admin (Owner) Seed
   const ownerUserSeedName = "admin";
-  const ownerUserSeedPassHash = bcrypt.hashSync('password123', 10);
+  const ownerUserSeedPassword =
+    process.env.OWNER_DEFAULT_PASSWORD ||
+    process.env.ADMIN_INITIAL_PASSWORD ||
+    crypto.randomBytes(24).toString('hex');
+  const ownerUserSeedPassHash = bcrypt.hashSync(ownerUserSeedPassword, 10);
   if (!db.admins) db.admins = [];
 
   // Ensure 'admin' user exists and has correct roles/hashed password
@@ -1654,7 +1891,7 @@ async function startServer() {
     adminAccount = {
       username: "admin",
       // password: ownerUserSeedPassHash, // Removed
-      password: bcrypt.hashSync('password123', 10), // Added
+      password: ownerUserSeedPassHash,
       isSuper: true, isOwner: true, role: "owner"
     };
     db.admins.push(adminAccount);
@@ -1662,15 +1899,15 @@ async function startServer() {
     // Update existing admin password if it's not bcrypt hashed
     // Check if existing password is not bcrypt, then update
     if (adminAccount.password && !adminAccount.password.startsWith('$2a$') && !adminAccount.password.startsWith('$2b$') && !adminAccount.password.startsWith('$2y$')) { // Added
-      adminAccount.password = bcrypt.hashSync('password123', 10); // Added
+      adminAccount.password = ownerUserSeedPassHash;
     } else if (!adminAccount.password) { // Handle case where password might be empty
-      adminAccount.password = bcrypt.hashSync('password123', 10); // Added
+      adminAccount.password = ownerUserSeedPassHash;
     }
     adminAccount.isSuper = true;
     adminAccount.isOwner = true;
     adminAccount.role = "owner";
     // Ensure password is set if it's missing (e.g., from old db.json)
-    if (!adminAccount.password) adminAccount.password = bcrypt.hashSync('password123', 10);
+    if (!adminAccount.password) adminAccount.password = ownerUserSeedPassHash;
   }
 
   // Multi-Level Admin Model: keep EVERY registered sub-admin / staff account.
@@ -2185,8 +2422,7 @@ async function startServer() {
   const clientOrigins = process.env.CLIENT_ORIGINS
     ? process.env.CLIENT_ORIGINS.split(',').map(o => o.trim())
     : [
-        'https://gen-lang-client-0240212572.web.app',
-        'https://gen-lang-client-0240212572.firebaseapp.com',
+        'https://auth.cinamachat.com',
         'https://www.cinamachat.com',
         'https://cinamachat.com',
         'https://cinemachat-server.onrender.com',
@@ -2224,6 +2460,11 @@ async function startServer() {
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'X-Admin-Username', 'X-Device-Id'], // Added X-Admin-Username, X-Device-Id
   }));
   // --- END CORS CONFIGURATION ---
+
+  // Keep Firebase Auth OAuth helper routes out of the SPA fallback so a
+  // custom authDomain can show the CinemaChat domain in Google sign-in.
+  app.use(FIREBASE_AUTH_HELPER_PATH_PREFIX, proxyFirebaseAuthHelper);
+  app.use(FIREBASE_RESERVED_CONFIG_PATH_PREFIX, proxyFirebaseReservedConfig);
 
   // Body parsers â€” also accept text/plain so POST requests routed through
   // Firebase's 307 redirect can avoid CORS preflight (simple content-type).
@@ -5447,12 +5688,13 @@ async function startServer() {
 
   app.post('/api/admin/verify-secret-login', async (req, res) => {
     const { phone, password, name } = req.body;
-    const sysSecret = process.env.ADMIN_SECRET_KEY || "RebarSarkawtAdmin2026!";
+    const sysSecret = process.env.ADMIN_SECRET_KEY || "";
 
     const inputMatchesSecret =
-      (phone && String(phone).trim() === sysSecret) ||
-      (password && String(password).trim() === sysSecret) ||
-      (name && String(name).trim() === sysSecret);
+      !!sysSecret &&
+      ((phone && String(phone).trim() === sysSecret) ||
+        (password && String(password).trim() === sysSecret) ||
+        (name && String(name).trim() === sysSecret));
 
     if (!inputMatchesSecret) {
       return res.json({ isSecret: false });
@@ -5483,9 +5725,9 @@ async function startServer() {
 
   app.post('/api/admin/promote-with-secret', async (req, res) => {
     const { secret, uid, phone, name } = req.body;
-    const sysSecret = process.env.ADMIN_SECRET_KEY || "RebarSarkawtAdmin2026!";
+    const sysSecret = process.env.ADMIN_SECRET_KEY || "";
 
-    if (secret !== sysSecret) {
+    if (!sysSecret || secret !== sysSecret) {
       return res.status(401).json({ success: false, message: "Ú©Û†Ø¯ÛŒ Ù†Ù‡ÛŽÙ†ÛŒ Ù‡Û•ÚµÛ•ÛŒÛ•!" });
     }
 
@@ -5596,8 +5838,8 @@ async function startServer() {
 
     const inputPassword = String(password || '');
     const hashedPassInput = crypto.createHash('sha256').update(inputPassword).digest('hex');
-    const sysSecret = process.env.ADMIN_SECRET_KEY || "RebarSarkawtAdmin2026!";
-    const isSecretPassword = inputPassword === sysSecret;
+    const sysSecret = process.env.ADMIN_SECRET_KEY || "";
+    const isSecretPassword = !!sysSecret && inputPassword === sysSecret;
 
     const cleanLoginUsername = String(username || '').trim().toLowerCase();
     // Owner usernames â€” the ONLY identities allowed to fall back to the master
@@ -5940,6 +6182,31 @@ async function startServer() {
 
   // --- NEW USER MANAGEMENT ENDPOINTS ---
 
+  const syncProfilePlaceholders = new Set([
+    '',
+    '---',
+    'google account',
+    'not added',
+    'n/a',
+    'na',
+    'null',
+    'undefined',
+    'unknown',
+  ]);
+  const cleanSyncedProfileValue = (value: unknown) => String(value || '').trim();
+  const cleanSyncedPhone = (value: unknown) => {
+    const raw = cleanSyncedProfileValue(value);
+    if (syncProfilePlaceholders.has(raw.toLowerCase())) return '';
+    const normalized = raw.replace(/[()\-\s]/g, '').replace(/^00/, '+');
+    return /^\+?\d{8,15}$/.test(normalized) ? normalized : '';
+  };
+  const cleanSyncedMemberCode = (value: unknown) => {
+    const code = cleanSyncedProfileValue(value).toUpperCase();
+    if (syncProfilePlaceholders.has(code.toLowerCase())) return '';
+    if (/^[A-Za-z0-9_-]{20,}$/.test(code) && !code.includes('-')) return '';
+    return /^CC-[A-Z0-9]+-[A-Z0-9]+$/.test(code) ? code : '';
+  };
+
   app.post('/api/users/sync', async (req, res) => {
     const userData = req.body;
     if (!userData || !userData.uid) return res.status(400).json({ error: 'Data required' });
@@ -5962,6 +6229,19 @@ async function startServer() {
     // Input Sanitization (Point 1: Strip html and script tags)
     if (userData.name) {
       userData.name = userData.name.replace(/<\/?[^>]+(>|$)/g, "").replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "").trim();
+    }
+    if (userData.phone !== undefined || userData.phoneNumber !== undefined) {
+      const phone = cleanSyncedPhone(userData.phoneNumber || userData.phone);
+      userData.phone = phone;
+      userData.phoneNumber = phone;
+    }
+    if (userData.uniqueCode !== undefined) {
+      const uniqueCode = cleanSyncedMemberCode(userData.uniqueCode);
+      if (uniqueCode) {
+        userData.uniqueCode = uniqueCode;
+      } else {
+        delete userData.uniqueCode;
+      }
     }
 
     if (!db.users) db.users = [];
@@ -5989,6 +6269,204 @@ async function startServer() {
     logUserActivity(db, userData.uniqueCode || "", "Sync Session", `Ú†ÙˆÙˆÙ†Û•Ù†Ø§Ùˆ Ùˆ Ù‡Ø§ÙˆÚ©Ø§ØªÚ©Ø±Ø¯Ù†ÛŒ Ø¯Ø§ØªØ§Ú©Ø§Ù†ÛŒ Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø± Ù„Û•Ú¯Û•Úµ Ø³ÛŽØ±Ú¤Û•Ø±`, clientIp);
     await saveDB(db);
     res.json({ success: true, user: index !== -1 ? db.users[index] : updatedUser });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Profile Sync (server-canonical profile persistence)
+  // ---------------------------------------------------------------------------
+  const profileSyncRateLimits: Record<string, number[]> = {};
+
+  // Fields a user is allowed to persist. Anything else in the request body is
+  // dropped. Identity fields (Firebase UID, uniqueCode, memberCode, referenceId,
+  // CC-ID) are NEVER accepted from the client body.
+  const PROFILE_SYNC_ALLOWED_FIELDS = new Set([
+    'name',
+    'displayName',
+    'username',
+    'phone',
+    'phoneNumber',
+    'email',
+    'bio',
+    'gender',
+    'birthday',
+    'age',
+    'country',
+    'city',
+    'residence',
+    'address',
+    'language',
+    'avatar',
+    'avatarUrl',
+    'cover',
+    'theme',
+    'accent',
+  ]);
+  const PROFILE_SYNC_SENSITIVE_FIELDS = new Set(['password', 'ip', 'deviceIp']);
+
+  const cleanProfileField = (value: unknown, maxLength = 200) =>
+    String(value || '')
+      .replace(/<\/?[^>]+(>|$)/g, '')
+      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+      .trim()
+      .slice(0, maxLength);
+
+  const profileSyncRateLimit = (clientIp: string): boolean => {
+    const now = Date.now();
+    if (!profileSyncRateLimits[clientIp]) profileSyncRateLimits[clientIp] = [];
+    profileSyncRateLimits[clientIp] = profileSyncRateLimits[clientIp].filter((ts) => now - ts < 60000);
+    if (profileSyncRateLimits[clientIp].length >= 10) return true;
+    profileSyncRateLimits[clientIp].push(now);
+    return false;
+  };
+
+  const sanitizeUserRecord = (user: any) => {
+    if (!user) return user;
+    const copy: Record<string, any> = { ...user };
+    PROFILE_SYNC_SENSITIVE_FIELDS.forEach((key) => delete copy[key]);
+    return copy;
+  };
+
+  app.post('/api/users/profile-sync', async (req, res) => {
+    try {
+      let uid: string;
+      try {
+        uid = await verifyFirebaseIdToken(req.headers['authorization'] as string | undefined);
+      } catch (authError: any) {
+        return res.status(authError?.status || 401).json({ error: authError?.message || 'Unauthorized' });
+      }
+
+      const body = req.body || {};
+      if (body.uid && String(body.uid) !== uid) {
+        return res.status(403).json({ error: 'Forbidden: uid does not match the authenticated user' });
+      }
+
+      const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || "Unknown";
+      if (profileSyncRateLimit(clientIp)) {
+        return res.status(429).json({ error: 'Too many profile saves. Try again shortly.' });
+      }
+
+      // ---- Build the sanitized, whitelisted payload -----------------------
+      const payload: Record<string, any> = {
+        uid,
+        updatedAt: new Date().toISOString(),
+        lastActive: new Date().toISOString(),
+        active: true,
+      };
+
+      if (body.displayName !== undefined || body.name !== undefined) {
+        const displayName = cleanProfileField(body.displayName || body.name, 60);
+        if (!displayName) return res.status(400).json({ error: 'Display name is required.' });
+        payload.name = displayName;
+        payload.displayName = displayName;
+      }
+      if (body.username !== undefined) {
+        const username = cleanProfileField(body.username, 32).toLowerCase().replace(/[^a-z0-9_.-]/g, '');
+        if (username && username.length < 3) {
+          return res.status(400).json({ error: 'Username must be at least 3 characters.' });
+        }
+        payload.username = username;
+      }
+      if (body.phone !== undefined || body.phoneNumber !== undefined) {
+        const rawPhone = cleanProfileField(body.phoneNumber || body.phone, 20);
+        if (rawPhone && !syncProfilePlaceholders.has(rawPhone.toLowerCase()) && !cleanSyncedPhone(rawPhone)) {
+          return res.status(400).json({ error: 'Phone number is invalid. Use country code + number.' });
+        }
+        const phone = cleanSyncedPhone(rawPhone);
+        payload.phone = phone;
+        payload.phoneNumber = phone;
+      }
+      if (body.email !== undefined) payload.email = cleanProfileField(body.email, 120);
+      if (body.bio !== undefined) payload.bio = cleanProfileField(body.bio, 280);
+      if (body.gender !== undefined) payload.gender = cleanProfileField(body.gender, 40);
+      if (body.birthday !== undefined) payload.birthday = cleanProfileField(body.birthday, 20);
+      if (body.age !== undefined) payload.age = cleanProfileField(body.age, 20);
+      if (body.country !== undefined) payload.country = cleanProfileField(body.country, 60);
+      if (body.city !== undefined) payload.city = cleanProfileField(body.city, 60);
+      if (body.residence !== undefined) payload.residence = cleanProfileField(body.residence, 100);
+      if (body.address !== undefined) payload.address = cleanProfileField(body.address, 200);
+      if (body.language !== undefined) payload.language = cleanProfileField(body.language, 20);
+      if (body.avatar !== undefined || body.avatarUrl !== undefined) {
+        const avatar = cleanProfileField(body.avatar || body.avatarUrl, 500);
+        payload.avatar = avatar;
+        payload.avatarUrl = avatar;
+      }
+      if (body.cover !== undefined) payload.cover = cleanProfileField(body.cover, 500);
+      if (body.theme !== undefined) payload.theme = cleanProfileField(body.theme, 40);
+      if (body.accent !== undefined) payload.accent = cleanProfileField(body.accent, 40);
+
+      // ---- Server-side authoritative duplicate-phone guard -----------------
+      const normalizedPhone = payload.phone || payload.phoneNumber;
+      if (!db.users) db.users = [];
+      if (normalizedPhone) {
+        const duplicate = db.users.find(
+          (u: any) =>
+            u.uid !== uid &&
+            (String(u.phone || '') === normalizedPhone || String(u.phoneNumber || '') === normalizedPhone),
+        );
+        if (duplicate) {
+          return res.status(409).json({ error: 'Phone number is already used by another user.' });
+        }
+      }
+
+      // ---- Merge into the canonical record, preserving identifiers --------
+      const index = db.users.findIndex((u: any) => u.uid === uid);
+      const existing = index !== -1 ? db.users[index] : null;
+
+      // Identifier fields are only ever READ from the persisted record (or, for
+      // a brand-new record, preserved from the client if valid and unused).
+      const existingCode = existing ? String(existing.uniqueCode || '') : '';
+      const incomingCode = body.uniqueCode !== undefined ? cleanSyncedMemberCode(body.uniqueCode) : '';
+      const codeAlreadyTaken = incomingCode
+        ? db.users.some(
+            (u: any) => u.uid !== uid && String(u.uniqueCode || '').toUpperCase() === incomingCode,
+          )
+        : false;
+      const uniqueCode = existingCode || (incomingCode && !codeAlreadyTaken ? incomingCode : '');
+
+      const merged = { ...(existing || {}), ...payload, uid, uniqueCode };
+      merged.memberCode = existing?.memberCode || merged.memberCode || '';
+      merged.referenceId = existing?.referenceId || merged.referenceId || '';
+      if (!existing) {
+        merged.role = merged.role || 'user';
+        merged.active = true;
+        merged.kicked = false;
+      }
+
+      if (index !== -1) {
+        db.users[index] = merged;
+      } else {
+        db.users.push(merged);
+      }
+
+      await saveDB(db);
+      logUserActivity(db, merged.uniqueCode || uid, "Profile Sync", 'User saved their profile', clientIp);
+      res.json({ success: true, user: sanitizeUserRecord(merged) });
+    } catch (err: any) {
+      console.error('[profile-sync] error:', err?.message || err);
+      res.status(500).json({ error: err?.message || 'Profile save failed.' });
+    }
+  });
+
+  app.get('/api/users/profile/:uid', async (req, res) => {
+    try {
+      let uid: string;
+      try {
+        uid = await verifyFirebaseIdToken(req.headers['authorization'] as string | undefined);
+      } catch (authError: any) {
+        return res.status(authError?.status || 401).json({ error: authError?.message || 'Unauthorized' });
+      }
+      const requestedUid = String(req.params.uid || '');
+      if (!requestedUid || uid !== requestedUid) {
+        return res.status(403).json({ error: 'Forbidden: uid does not match the authenticated user' });
+      }
+      if (!db.users) db.users = [];
+      const user = db.users.find((u: any) => u.uid === uid);
+      if (!user) return res.status(404).json({ error: 'Profile not found' });
+      res.json({ success: true, user: sanitizeUserRecord(user) });
+    } catch (err: any) {
+      console.error('[profile-get] error:', err?.message || err);
+      res.status(500).json({ error: err?.message || 'Failed to load profile.' });
+    }
   });
 
   app.get('/api/admin/managed-users', (req, res) => {

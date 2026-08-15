@@ -451,6 +451,43 @@ export const api = {
     } catch (error) { /* best-effort */ }
   },
 
+  // --- Profile persistence (server-canonical) ---
+  // Saves the user's editable profile to the server FIRST. Throws on failure so
+  // callers can surface the server's validation errors (e.g. duplicate phone).
+  // Returns the canonical saved user record.
+  async saveProfile(uid: string, idToken: string, fields: Record<string, any>) {
+    const res = await fetch(api.resolveApiUrl('/api/users/profile-sync'), {
+      method: 'POST',
+      headers: {
+        // text/plain mirrors the app convention: after a Firebase Hosting 307
+        // redirect this avoids a CORS preflight for the JSON content type.
+        'Content-Type': 'text/plain',
+        'Authorization': `Bearer ${idToken}`,
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify({ uid, ...fields }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data?.error || `Profile save failed (${res.status})`);
+    }
+    return data?.user || data;
+  },
+
+  // Loads the canonical server profile for a signed-in user (best-effort;
+  // returns null when the server has no record for this uid).
+  async getProfile(uid: string, idToken: string) {
+    const res = await fetch(api.resolveApiUrl(`/api/users/profile/${encodeURIComponent(uid)}`), {
+      headers: {
+        'Accept': 'application/json',
+        'Authorization': `Bearer ${idToken}`,
+      },
+    });
+    if (res.status === 404 || !res.ok) return null;
+    const data = await res.json().catch(() => null);
+    return data?.user || null;
+  },
+
   async getStats(sessionId?: string) {
     try {
       const query = sessionId ? `?session=${encodeURIComponent(sessionId)}` : '';

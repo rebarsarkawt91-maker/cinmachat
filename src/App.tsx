@@ -84,6 +84,7 @@ import {
   Eye,
   EyeOff,
   Layers,
+  Clapperboard,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { Plyr } from "plyr-react";
@@ -108,6 +109,10 @@ import {
   markSecurityOffline,
   logUserActivity,
 } from "./services/securityMonitor";
+import {
+  cleanProfilePhone,
+  getPublicMemberCode,
+} from "./services/socialProfileProvisioning";
 import {
   subscribeChannelSettings,
   loadChannelSettings,
@@ -238,7 +243,7 @@ const API_BASE = 'https://www.cinamachat.com';
 const shouldPreferCustomDomainApi = (): boolean => {
   if (typeof window === "undefined") return false;
   const host = window.location.hostname.toLowerCase();
-  return host.endsWith('.web.app') || host.endsWith('.firebaseapp.com');
+  return host === "auth.cinamachat.com";
 };
 
 async function fetchApi(
@@ -7508,10 +7513,22 @@ export default function App() {
   const [selectedMovieIds, setSelectedMovieIds] = useState<string[]>([]);
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
   const [showPlayer, setShowPlayer] = useState(false);
+  // Explicit, separate open state for the movie details panel. A movie-card
+  // click opens details ONLY (never the player); the player opens exclusively
+  // from the dedicated Play button inside the details panel. Keeping
+  // `selectedMovie` (which movie), `isMovieDetailsOpen` (details layer) and
+  // `showPlayer` (player layer) as three distinct states guarantees the two
+  // layers can never both be active foreground modals at the same time.
+  const [isMovieDetailsOpen, setIsMovieDetailsOpen] = useState(false);
   // Page scroll position captured the instant the movie detail/player modal
   // opens, restored verbatim when it closes so the homepage never jumps to the
   // top (scroll position is lost today when a movie card is clicked).
   const savedPageScrollRef = useRef<number | null>(null);
+  // The element that opened the details modal, so keyboard focus can be
+  // returned to it when the modal fully closes (accessibility requirement).
+  const movieReturnFocusRef = useRef<HTMLElement | null>(null);
+  // The details/player dialog container, used to move focus into the modal.
+  const movieModalRef = useRef<HTMLDivElement | null>(null);
 
   // Dynamic genres from Firestore (real-time). While the snapshot hasn't
   // arrived yet we fall back to the default catalog so the nav never flashes
@@ -8930,6 +8947,128 @@ export default function App() {
     [],
   );
 
+  // --- Movie-card click → details → explicit Play state separation -----------
+  // A card click must mean "open movie details" — never "play". The player only
+  // mounts after the user presses the dedicated Play button inside the details
+  // panel, so details and player are never both active foreground layers.
+
+  // Card click: open ONLY the details panel. The player stays closed and is
+  // not mounted or initialized (no autoplay, no iframe, no view counting).
+  const openMovieDetails = useCallback(
+    (movie: Movie) => {
+      // Remember the opener element so focus returns to the card on close.
+      if (document.activeElement instanceof HTMLElement) {
+        movieReturnFocusRef.current = document.activeElement;
+      }
+      // Capture the homepage's scroll position BEFORE the modal mounts so we
+      // can restore it exactly when the modal closes.
+      if (savedPageScrollRef.current === null) {
+        savedPageScrollRef.current = window.scrollY;
+      }
+      setSelectedMovie(movie);
+      setActiveServerUrl(getMovieSourceUrl(movie));
+      setIsMovieDetailsOpen(true);
+      setShowPlayer(false);
+      // Pre-load the saved resume point (continue-watching) so the FIRST
+      // explicit Play resumes where the user left off instead of starting over
+      // from 0s. It is consumed once the player actually mounts.
+      try {
+        const local = JSON.parse(
+          localStorage.getItem("cinemachat_continue_watching") || "{}",
+        );
+        const saved = local[movie.id];
+        resumeTimeRef.current =
+          saved && typeof saved.progress === "number" && saved.progress >= 5
+            ? saved.progress
+            : 0;
+      } catch {
+        resumeTimeRef.current = 0;
+      }
+    },
+    [],
+  );
+
+  // Explicit "Play / Watch Movie" — the only action that opens the player from
+  // the details panel. Closes the details layer first so exactly one modal is
+  // ever the active foreground layer.
+  const playSelectedMovie = useCallback(() => {
+    if (!selectedMovie) return;
+    setIsMovieDetailsOpen(false);
+    setShowPlayer(true);
+  }, [selectedMovie]);
+
+  // Close the player and return to the details panel. The existing design
+  // intentionally keeps the details mounted behind the player so state is
+  // preserved; closing the player simply brings that panel back to the front.
+  const closePlayerToDetails = useCallback(() => {
+    setShowPlayer(false);
+    setIsMovieDetailsOpen(true);
+  }, []);
+
+  // Full close: hide both layers, restore page scroll (handled by the layout
+  // effect below) and return keyboard focus to the card that opened the modal.
+  const closeMovieModal = useCallback(() => {
+    setIsMovieDetailsOpen(false);
+    setShowPlayer(false);
+    setSelectedMovie(null);
+    setActiveServerUrl(null);
+    const target = movieReturnFocusRef.current;
+    movieReturnFocusRef.current = null;
+    if (target && document.contains(target)) {
+      requestAnimationFrame(() => {
+        try {
+          target.focus();
+        } catch {
+          /* ignore */
+        }
+      });
+    }
+  }, []);
+
+  // Escape closes ONLY the active foreground layer: the player first (returning
+  // to details), then the details panel (full close). There is a single handler
+  // so there is never more than one Escape-triggered close path.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (showPlayer) {
+        closePlayerToDetails();
+      } else if (isMovieDetailsOpen) {
+        closeMovieModal();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showPlayer, isMovieDetailsOpen, closePlayerToDetails, closeMovieModal]);
+
+  // Single scroll lock for the whole movie modal lifecycle (details + player).
+  // Exactly one `overflow: hidden` is applied while the modal is open and is
+  // fully released when it closes — never a double scroll lock.
+  useEffect(() => {
+    const isOpen = !!selectedMovie && (showPlayer || isMovieDetailsOpen);
+    if (!isOpen) return undefined;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [selectedMovie, showPlayer, isMovieDetailsOpen]);
+
+  // Move focus into the dialog when a movie is opened (the container is made
+  // focusable with tabIndex={-1}). Runs once per movie selection change.
+  useEffect(() => {
+    if (!selectedMovie) return undefined;
+    const raf = requestAnimationFrame(() => {
+      try {
+        movieModalRef.current?.focus();
+      } catch {
+        /* ignore */
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMovie?.id]);
+
   // Keep the page's scroll position stable across the movie modal lifecycle.
   // On open: remember where the homepage was and neutralize any scroll the
   // browser performs while the fixed overlay mounts (focus / scroll anchoring).
@@ -9563,6 +9702,7 @@ export default function App() {
       setSelectedMovie(null);
       setActiveServerUrl(null);
       setShowPlayer(false);
+      setIsMovieDetailsOpen(false);
     }
   }, [activeSyncGroup, selectedMovie]);
 
@@ -9647,8 +9787,8 @@ export default function App() {
     const securityProfile = {
       uid: socialProfile.uid,
       name: socialProfile.name || "",
-      phone: socialProfile.phone || "",
-      uniqueCode: socialProfile.uniqueCode || "",
+      phone: cleanProfilePhone(socialProfile.phoneNumber || socialProfile.phone),
+      uniqueCode: getPublicMemberCode(socialProfile, fbUser.uid),
       residence: socialProfile.residence || "",
       country: socialProfile.country || "",
       role: socialProfile.role || socialProfile.userRole || "Member",
@@ -9790,8 +9930,9 @@ export default function App() {
           body: JSON.stringify({
             uid: socialProfile.uid,
             name: sanitizedName,
-            phone: socialProfile.phone || "",
-            uniqueCode: socialProfile.uniqueCode || "",
+            phone: cleanProfilePhone(socialProfile.phoneNumber || socialProfile.phone),
+            phoneNumber: cleanProfilePhone(socialProfile.phoneNumber || socialProfile.phone),
+            uniqueCode: getPublicMemberCode(socialProfile, fbUser.uid),
             avatar: socialProfile.avatar || "",
           }),
         });
@@ -11426,8 +11567,7 @@ export default function App() {
         const normalizedUsername = adminUsername.trim().toLowerCase();
         const localAdminFallback =
           normalizedUsername === "admin" &&
-          (adminPassword === "password123" ||
-            adminPassword === "RebarSarkawtAdmin2026!");
+          false;
 
         if (localAdminFallback) {
           const localAdminUser = {
@@ -11452,8 +11592,7 @@ export default function App() {
       const normalizedUsername = adminUsername.trim().toLowerCase();
       const localAdminFallback =
         normalizedUsername === "admin" &&
-        (adminPassword === "password123" ||
-          adminPassword === "RebarSarkawtAdmin2026!");
+        false;
 
       if (localAdminFallback) {
         const localAdminUser = {
@@ -11479,7 +11618,9 @@ export default function App() {
   const handleLogout = () => {
     setCurrentUser(null);
     safeStorage.remove("cinemachat_admin");
+    safeStorage.remove("cinemachat_local_admin_profile");
     setShowAdminPanel(false);
+    window.location.replace("/");
   };
 
   // Strict role verification to prevent pre-computation or DOM tampering
@@ -12331,6 +12472,7 @@ export default function App() {
               </div> {/* Secure Connection Indicator */}
             <AccountCenter
               socialProfile={socialProfile}
+              currentUser={fbUser}
               onLogin={() => {
                 setModalMode("landing");
                 setShowSocialModal(true);
@@ -12341,6 +12483,7 @@ export default function App() {
               }}
               onLogout={fbLogout}
               onOpenIdentityCard={() => setShowIdentityCard(true)}
+              onOpenInviteFriends={() => setShowIdentityCard(true)}
               onOpenMessages={() => setShowDirectMessagesModal(true)}
               onUpdateProfile={updateSocialProfile}
             />
@@ -12966,7 +13109,7 @@ export default function App() {
                       isFavorite={favoriteIds.has(movie.id)}
                       isLiked={likedIds.has(movie.id)}
                       likes={getMovieLikes(movie)}
-                      onOpen={openMovie}
+                      onOpen={openMovieDetails}
                       onToggleFavorite={handleToggleFavorite}
                       onToggleLike={handleToggleLike}
                     />
@@ -13110,7 +13253,7 @@ export default function App() {
                             isFavorite={favoriteIds.has(movie.id)}
                             isLiked={likedIds.has(movie.id)}
                             likes={getMovieLikes(movie)}
-                            onOpen={openMovie}
+                            onOpen={openMovieDetails}
                             onToggleFavorite={handleToggleFavorite}
                             onToggleLike={handleToggleLike}
                           />
@@ -13145,7 +13288,7 @@ export default function App() {
                               isFavorite={favoriteIds.has(movie.id)}
                               isLiked={likedIds.has(movie.id)}
                               likes={getMovieLikes(movie)}
-                              onOpen={openMovie}
+                              onOpen={openMovieDetails}
                               onToggleFavorite={handleToggleFavorite}
                               onToggleLike={handleToggleLike}
                             />
@@ -13270,7 +13413,7 @@ export default function App() {
 
       {/* Point 14/15/16: Detailed Movie View (Selection) */}
       <AnimatePresence>
-        {selectedMovie && (
+        {selectedMovie && (isMovieDetailsOpen || showPlayer) && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -13279,35 +13422,40 @@ export default function App() {
           >
             <div
               className="absolute inset-0 bg-black/90 backdrop-blur-xl"
-              onClick={() => { setSelectedMovie(null); setActiveServerUrl(null); }}
+              onClick={closeMovieModal}
             />
  
             <motion.div
+              ref={movieModalRef}
+              role="dialog"
+              aria-modal="true"
+              aria-label={`${selectedMovie.title} — ${showPlayer ? "Player" : "Movie details"}`}
+              tabIndex={-1}
               initial={{ scale: 0.9, y: 20 }}
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.9, y: 20 }}
-              className={`relative w-full ${showPlayer ? "fixed inset-0 m-0 max-w-none h-full rounded-none z-[1000] overflow-hidden" : "max-w-5xl rounded-3xl max-h-[95vh] border border-white/5 shadow-[0_0_100px_rgba(0,0,0,1)] overflow-hidden overflow-y-auto custom-scrollbar"} bg-[#141414] transition-all duration-500`} // Dynamic styling for player mode
+              className={`relative w-full ${showPlayer ? "fixed inset-0 m-0 max-w-none h-full rounded-none z-[1000] overflow-hidden" : "max-w-3xl rounded-3xl max-h-[90vh] border border-white/5 shadow-[0_0_100px_rgba(0,0,0,1)] overflow-y-auto custom-scrollbar"} bg-[#141414] transition-all duration-500`} // Dynamic styling for player mode
             >
               <button
+                type="button"
+                aria-label="Close"
                 onClick={() => {
-                  setSelectedMovie(null);
-                  setActiveServerUrl(null);
-                  setShowPlayer(false);
+                  closeMovieModal();
                   if (activeSyncGroup?.isVIP) {
                     setActiveSyncGroup(null);
                   }
                 }}
-                className={`absolute ${showPlayer ? "top-4 right-4" : "top-6 right-6"} z-[60] p-2 bg-black/60 hover:bg-red-600 rounded-full text-white transition-all backdrop-blur-md border border-white/10 scale-90 md:scale-100`}
+                className={`${showPlayer ? "absolute top-4 right-4" : "sticky top-3 mt-3 mr-3 ml-auto w-fit"} z-[60] p-2 bg-black/60 hover:bg-red-600 rounded-full text-white transition-all backdrop-blur-md border border-white/10 scale-90 md:scale-100`}
               >
                 <X className="w-5 h-5" />
               </button>
 
               <div
-                className={`flex flex-col ${showPlayer ? "h-full bg-black" : "md:flex-row h-full"}`} // Layout for player vs details
+                className={`flex flex-col ${showPlayer ? "h-full bg-black" : "md:flex-row"}`} // Layout for player vs details
               >
                 <div
                   ref={modalPlayerRef}
-                  className="w-full h-full relative bg-black shadow-2xl aspect-video md:aspect-[21/9]"
+                  className={`${showPlayer ? "w-full h-full relative bg-black shadow-2xl aspect-video md:aspect-[21/9]" : "w-full md:w-72 lg:w-80 flex-shrink-0 relative bg-black shadow-2xl aspect-[2/3] md:aspect-auto md:min-h-[440px] max-h-[45vh] md:max-h-none"}`}
                   onPointerDown={onPlayerPointerDown}
                   onPointerMove={onPlayerPointerMove}
                   onPointerUp={onPlayerPointerUp}
@@ -13487,7 +13635,9 @@ export default function App() {
                       <div className="absolute top-0 inset-x-0 p-6 flex items-center justify-between z-50 bg-gradient-to-b from-black/90 to-transparent pointer-events-none font-sans">
                         <div className="flex items-center gap-2 pointer-events-auto">
                           <button
-                            onClick={() => setShowPlayer(false)}
+                            type="button"
+                            aria-label="Close player"
+                            onClick={closePlayerToDetails}
                             className="p-2.5 bg-black/60 hover:bg-red-600 rounded-full text-white transition-all backdrop-blur-md border border-white/10 cursor-pointer shadow-lg hover:scale-105 active:scale-95"
                             title="Close"
                           >
@@ -13792,25 +13942,33 @@ export default function App() {
                       </div>
                     </div>
                   ) : (
-                    <div className="relative h-full aspect-[2/3] md:aspect-auto">
-                      <img
-                        src={selectedMovie?.image || undefined}
-                        referrerPolicy="no-referrer"
-                        onError={(e) => {
-                          const target = e.target as HTMLImageElement;
-                          target.src =
-                            "https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800";
-                        }}
-                        className="w-full h-full object-cover"
-                        alt={selectedMovie.title} // Movie Poster
-                      />
+                    <div className="relative h-full w-full">
+                      {selectedMovie.image ? (
+                        <img
+                          src={selectedMovie.image}
+                          referrerPolicy="no-referrer"
+                          onError={(e) => {
+                            const target = e.target as HTMLImageElement;
+                            target.src =
+                              "https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800";
+                          }}
+                          className="w-full h-full object-cover"
+                          alt={selectedMovie.title} // Movie Poster
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-zinc-800 to-zinc-900">
+                          <Clapperboard className="w-14 h-14 text-white/20" />
+                        </div>
+                      )} {/* Poster / Fallback Placeholder */}
                       {getMovieSourceUrl(selectedMovie) && (
                         <button
+                          type="button"
+                          aria-label={`Play ${selectedMovie.title}`}
                           onClick={() => {
                             if (config.playerMode === "popup") {
                               popOutPlayer(getMovieSourceUrl(selectedMovie));
                             } else {
-                              setShowPlayer(true);
+                              playSelectedMovie();
                             }
                           }}
                           className="absolute inset-0 m-auto w-20 h-20 bg-brand-primary/90 text-white rounded-full flex items-center justify-center hover:scale-110 transition-transform shadow-2xl z-20 group"
@@ -13823,9 +13981,9 @@ export default function App() {
                 </div>
 
                 {!showPlayer && (
-                  <div className="flex-1 p-8 md:p-12 flex flex-col justify-center bg-[#141414]">
-                    <div className="flex items-center justify-between mb-6">
-                      <div className="flex items-center gap-3">
+                  <div className="flex-1 p-5 md:p-8 flex flex-col justify-center bg-[#141414] min-w-0">
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+                      <div className="flex flex-wrap items-center gap-2">
                         {selectedMovie.isNetflixOriginal && (
                           <div className="flex items-center gap-2">
                             <div className="w-5 h-8 bg-brand-primary flex items-center justify-center font-black italic rounded-sm shadow-lg text-sm">
@@ -13879,7 +14037,7 @@ export default function App() {
                           </span>
                         )}
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -13938,11 +14096,11 @@ export default function App() {
                       )} {/* WhatsApp Link */}
                     </div>
 
-                    <h2 className="text-3xl md:text-5xl font-black mb-6 kurdish-text leading-tight">
+                    <h2 className="text-2xl md:text-4xl font-black mb-4 kurdish-text leading-tight">
                       {selectedMovie.title}
                     </h2>
 
-                    <div className="flex flex-wrap gap-3 mb-8">
+                    <div className="flex flex-wrap gap-2 mb-5">
                       {selectedMovie.tags.map((tag) => (
                         <span
                           key={tag}
@@ -13954,7 +14112,7 @@ export default function App() {
                     </div> {/* Movie Tags */}
 
                     {/* CinemaChat interactive rating (0-10 stars) */}
-                    <div className="mb-8">
+                    <div className="mb-5">
                       <div className="flex items-center gap-2 mb-2">
                         <span className="text-[10px] font-black uppercase tracking-widest text-gray-500 kurdish-text">
                           هەڵسەنگاندنی سینەما چات
@@ -13995,11 +14153,11 @@ export default function App() {
                       </div>
                     </div>
 
-                    <p className="text-gray-400 kurdish-text text-lg leading-relaxed mb-10 max-w-xl">
+                    <p className="text-gray-400 kurdish-text text-sm md:text-base leading-relaxed mb-6 max-w-xl">
                       {selectedMovie.description}
                     </p>
 
-                    <div className="flex flex-col gap-4 mt-auto pt-8 border-t border-white/5">
+                    <div className="flex flex-col gap-4 mt-auto pt-6 border-t border-white/5">
 
                       {selectedMovie.externalMovieLink && (
                         <div className="flex items-center gap-2 mb-6 p-4 bg-emerald-900/20 border border-emerald-500/20 rounded-2xl">
@@ -14011,7 +14169,7 @@ export default function App() {
                       )} {/* External Link Info */}
 
                       {/* Point: Server Links (Dynamic Switching & Label Improvement) */}
-                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 mb-6">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6">
                         {selectedMovie.hdtodayUrl && (
                           <button
                             onClick={() => {
@@ -14146,20 +14304,16 @@ export default function App() {
                       {getMovieSourceUrl(selectedMovie) && (
                         <div className="flex gap-3">
                           <button
-                            onClick={() => {
-                              setShowPlayer(!showPlayer);
-                            }}
+                            type="button"
+                            aria-label={`Play ${selectedMovie.title}`}
+                            onClick={playSelectedMovie}
                             className="flex-1 py-3 bg-brand-primary text-white rounded-xl font-black flex items-center justify-center gap-3 hover:bg-red-700 transition-all active:scale-95 shadow-lg shadow-red-600/10"
                           >
-                            {showPlayer ? (
-                              <X className="w-5 h-5" />
-                            ) : (
-                              <Play className="w-5 h-5 fill-current" />
-                            )}
+                            <Play className="w-5 h-5 fill-current" />
                             <span className="text-sm kurdish-text">
-                              {showPlayer ? "داخستنی ڤیدیۆ" : "ئێستا سەیری بکە"}
+                              ئێستا سەیری بکە
                             </span>
-                          </button> {/* Play/Close Video Button */}
+                          </button> {/* Play / Watch Movie Button */}
 
                           <button
                             onClick={() => {
@@ -14359,7 +14513,7 @@ export default function App() {
                     </div>
 
                     {/* Point 71: Similar Movies */}
-                    <div className="mt-12">
+                    <div className="mt-8">
                       <h4 className="text-xs font-black uppercase tracking-widest text-gray-500 mb-6 kurdish-text flex items-center gap-2">
                         <TrendingUp className="w-4 h-4" />
                         فیلمە هاوشێوەکان
@@ -14374,7 +14528,7 @@ export default function App() {
                               isFavorite={favoriteIds.has(m.id)}
                               isLiked={likedIds.has(m.id)}
                               likes={getMovieLikes(m)}
-                              onOpen={openMovie}
+                              onOpen={openMovieDetails}
                               onToggleFavorite={handleToggleFavorite}
                               onToggleLike={handleToggleLike}
                             />

@@ -28,7 +28,17 @@ import {
   onAuthStateChanged,
   signInAnonymously,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   GoogleAuthProvider,
+  EmailAuthProvider,
+  linkWithCredential,
+  updatePassword,
+  reauthenticateWithCredential,
+  reauthenticateWithPopup,
+  reauthenticateWithRedirect,
+  browserLocalPersistence,
+  setPersistence,
   signOut,
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
@@ -43,9 +53,11 @@ import {
   getDownloadURL
 } from "firebase/storage";
 
+const CINEMACHAT_AUTH_DOMAIN = "auth.cinamachat.com";
+
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyDQBu-FwP9w7O6KqaWQOsqyTP6NudH9eBI",
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "gen-lang-client-0240212572.firebaseapp.com",
+  authDomain: CINEMACHAT_AUTH_DOMAIN,
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "gen-lang-client-0240212572",
   storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "gen-lang-client-0240212572.firebasestorage.app",
   messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "996348355298",
@@ -69,6 +81,9 @@ if (import.meta.env.DEV && import.meta.env.VITE_USE_FIRESTORE_EMULATOR !== "fals
 }
 
 export const auth = getAuth(app);
+export const authPersistenceReady = setPersistence(auth, browserLocalPersistence).catch((err) => {
+  console.warn("[Firebase Auth] Could not enforce local persistence:", err?.code || err?.message || err);
+});
 
 // Local E2E/testing runs against the local Auth emulator so anonymous sign-in
 // (which the join-room flow relies on) produces tokens the Firestore emulator
@@ -106,7 +121,17 @@ export {
   onAuthStateChanged,
   signInAnonymously,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   GoogleAuthProvider,
+  EmailAuthProvider,
+  linkWithCredential,
+  updatePassword,
+  reauthenticateWithCredential,
+  reauthenticateWithPopup,
+  reauthenticateWithRedirect,
+  browserLocalPersistence,
+  setPersistence,
   signOut,
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
