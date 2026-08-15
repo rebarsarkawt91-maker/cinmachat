@@ -108,6 +108,7 @@ export const SocialAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [socialProfile, setSocialProfile] = useState<SocialUser | null>(null);
   const [loading, setLoading] = useState(true);
   const authEventVersionRef = useRef(0);
+  const logoutBusyRef = useRef(false);
 
   // Fetches the canonical server profile and merges it over the Firestore-based
   // profile so newer server data always wins after reload/sign-in. An empty
@@ -249,10 +250,19 @@ export const SocialAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   }, []);
 
   const logout = async () => {
+    // Guard against double-clicks / concurrent invocations (the UI button is
+    // also disabled via logoutBusy, but a second call can still race in).
+    if (logoutBusyRef.current) return;
+    logoutBusyRef.current = true;
     setLoading(true);
+
+    // Clear every client-side account marker FIRST so a reload can never
+    // re-hydrate a "signed in" shell from a stale local bypass/flag.
     try {
       localStorage.removeItem("cinemachat_local_admin_profile");
       localStorage.removeItem("cinemachat_admin");
+    } catch (e) {}
+    try {
       sessionStorage.removeItem(GOOGLE_AUTH_FLAG_KEY);
       sessionStorage.removeItem(EMAIL_PASSWORD_AUTH_FLAG_KEY);
     } catch (e) {}
@@ -264,13 +274,16 @@ export const SocialAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     try {
       await firebaseSignOut(auth);
     } catch (error) {
-      setLoading(false);
-      throw error;
+      // Never leave the UI half-signed-in: if the SDK call fails (e.g. a flaky
+      // network) we still clear the local session state and reload. The reloaded
+      // app reflects the real Firebase auth state instead of a stale shell.
+      console.warn("[SocialAuth] signOut() failed; clearing local session state anyway:", error);
     }
 
     setCurrentUser(null);
     setSocialProfile(null);
     setLoading(false);
+    logoutBusyRef.current = false;
     navigateToHome();
   };
 
@@ -311,7 +324,7 @@ export const SocialAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           const snapshot = await getDocs(phoneQuery);
           const duplicate = snapshot.docs.some((item: any) => item.id !== currentUser.uid);
           if (duplicate) {
-            throw new Error('ئەم ژمارەی مۆبایلە پێشتر بەکارهاتووە.');
+            throw new Error('ئەم ژمارە مۆبایلە پێشتر تۆمار کراوە.');
           }
         }
       }

@@ -497,7 +497,6 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
     if (submittingRef.current) return;
     setIsLoading(true);
     setError(null);
-    let targetEmail = "";
 
     // Rate Limiting Guard (checked only for fresh registrations, recorded AFTER
     // validation passes so duplicate/typo attempts never consume the window).
@@ -558,41 +557,50 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
 
       if (isLogin) {
         const loginIdentifier = formData.phone.trim();
-        
+
         if (loginIdentifier.includes("@")) {
           // Normal email/password login
           await signInWithEmailPassword(loginIdentifier);
           completeEmailPasswordLogin();
           return;
-        } else {
-          // Try ID login first
-          const res = await fetch("/api/auth/login-by-id", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ uniqueCode: loginIdentifier })
-          });
-
-          if (res.ok) {
-            const data = await res.json();
-            if (data.success && data.customToken) {
-              await signInWithCustomToken(auth, data.customToken);
-              onClose();
-              navigateToHome();
-              return;
-            }
-          }
-          
-          // Legacy fallback
-          if (/^\d+$/.test(loginIdentifier)) {
-            targetEmail = `${loginIdentifier}@cinamachat.com`;
-          } else {
-            const cleanUsername = loginIdentifier.toLowerCase().replace(/[^a-z0-9_.-]/g, '');
-            targetEmail = `${cleanUsername}@cinamachat.com`;
-          }
-          await signInWithEmailPassword(targetEmail);
-          completeEmailPasswordLogin();
-          return;
         }
+
+        // Try CC-ID login first (covers "CC-CC-####", "CC-####", bare "####")
+        const res = await fetch("/api/auth/login-by-id", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ uniqueCode: loginIdentifier })
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          if (data.success && data.customToken) {
+            await signInWithCustomToken(auth, data.customToken);
+            onClose();
+            navigateToHome();
+            return;
+          }
+        }
+
+        // Mobile + password login (no email required, no fake-email fallback).
+        // The server validates the phone, compares the bcrypt hash of the
+        // stored password and mints a custom token for the SAME account UID.
+        const mobileRes = await fetch("/api/auth/login-mobile", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ phone: loginIdentifier, password: formData.password })
+        });
+        const mobileData = await mobileRes.json().catch(() => ({}));
+        if (!mobileRes.ok || !mobileData.success || !mobileData.customToken) {
+          throw new Error(
+            (mobileData && typeof mobileData.error === "string" && mobileData.error) ||
+              "ژمارە مۆبایل یان پاسۆردەکە دروست نییە.",
+          );
+        }
+        await signInWithCustomToken(auth, mobileData.customToken);
+        onClose();
+        navigateToHome();
+        return;
       } else {
         // Registration (email OR mobile): validate locally with readable Kurdish
         // messages and focus the invalid field, then let the server enforce the
@@ -625,9 +633,17 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
             failValidation("تکایە ئیمەیڵێکی دروست بنووسە.", "register-email");
             return;
           }
-        } else if (!trimmedPhone || !/^[+0-9\s\-()]{8,}$/.test(trimmedPhone)) {
-          failValidation("تکایە ژمارە مۆبایلەکە بە دروستی و بە ژمارەی ئینگلیزی بنووسە.", "register-phone");
-          return;
+        } else {
+          // Accept Kurdish/Arabic digits (٠-٩ / ۰-۹) and normalize separators
+          // before validating; the server performs the authoritative check.
+          const convertedPhone = (trimmedPhone || "")
+            .replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)))
+            .replace(/[۰-۹]/g, (d) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(d)));
+          const cleanPhoneCheck = convertedPhone.replace(/[\s\-()]/g, "").replace(/^00/, "+");
+          if (!/^\+?\d{8,15}$/.test(cleanPhoneCheck)) {
+            failValidation("تکایە ژمارە مۆبایلەکە بە دروستی بنووسە.", "register-phone");
+            return;
+          }
         }
         if (rawPassword.length < 6) {
           failValidation("پاسۆردەکە زۆر لاوازە؛ پاسۆردێکی بەهێزتر بەکاربهێنە.", "register-password");
@@ -639,21 +655,38 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
         sessionStorage.setItem(rateLimitKey, JSON.stringify(attempts));
 
         try {
-          const res = await fetch("/api/auth/register-by-id", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              name: trimmedName,
-              username: trimmedUsername,
-              email: authMethod === "email" ? trimmedEmail : "",
-              phone: authMethod === "phone" ? trimmedPhone : "",
-              password: rawPassword,
-              age: formData.age,
-              gender: formData.gender,
-              residence: formData.residence,
-              country: formData.country
-            })
-          });
+          const isMobileRegistration = authMethod === "phone";
+          const res = await fetch(
+            isMobileRegistration ? "/api/auth/register-mobile" : "/api/auth/register-by-id",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(
+                isMobileRegistration
+                  ? {
+                      name: trimmedName,
+                      username: trimmedUsername,
+                      phone: trimmedPhone,
+                      password: rawPassword,
+                      age: formData.age,
+                      gender: formData.gender,
+                      residence: formData.residence,
+                      country: formData.country,
+                    }
+                  : {
+                      name: trimmedName,
+                      username: trimmedUsername,
+                      email: trimmedEmail,
+                      phone: "",
+                      password: rawPassword,
+                      age: formData.age,
+                      gender: formData.gender,
+                      residence: formData.residence,
+                      country: formData.country,
+                    },
+              ),
+            },
+          );
 
           const data = await res.json().catch(() => ({}));
           if (!res.ok || !data.success) {

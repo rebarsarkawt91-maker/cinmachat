@@ -6,6 +6,14 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Protected password-hash records for phone+password accounts.
+    // The Admin SDK writes/reads these (bypassing rules); ALL direct frontend
+    // read/write access is denied — this block makes the denial explicit and
+    // self-documenting in addition to the Global Safety Net above.
+    match /_authRecords/{recordId} {
+      allow read, write: if false;
+    }
+
     // --- Primitives ---
     function isSignedIn() {
       return request.auth != null;

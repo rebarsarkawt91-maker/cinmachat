@@ -43,6 +43,7 @@ const FIREBASE_AUTH_EMULATOR_EXPLICIT = !!process.env.FIREBASE_AUTH_EMULATOR_HOS
 let firebaseAdminInitialized = false;
 let firebaseAdminApp: admin.app.App | null = null;
 let firebaseAdminInitError: string | null = null;
+let firebaseAdminUsingEmulator = false;
 
 function buildFirebaseAdminCredentialConfig() {
   const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
@@ -84,6 +85,7 @@ function initializeFirebaseAdmin(): admin.app.App | null {
   try {
     if (FIREBASE_AUTH_EMULATOR_EXPLICIT) {
       firebaseAdminApp = admin.initializeApp({ projectId: FIREBASE_ADMIN_PROJECT_ID });
+      firebaseAdminUsingEmulator = true;
       console.log(
         `[Firebase Admin] Using Firebase Auth Emulator: ${process.env.FIREBASE_AUTH_EMULATOR_HOST}`,
       );
@@ -1475,6 +1477,78 @@ async function saveDB(db: any) {
   const snapshot = JSON.stringify(db, null, 2);
   dbWriteChain = dbWriteChain.then(() => fs.writeFile(DB_PATH, snapshot));
   await dbWriteChain;
+}
+
+// ---------------------------------------------------------------------------
+// Protected server-side password records for phone+password accounts.
+//
+// These records hold ONLY the bcrypt hash of the account password — never the
+// plaintext — and exist ONLY in the protected Firestore `_authRecords/{uid}`
+// collection, written and read exclusively with the Firebase Admin SDK. There
+// is NO local file mirror: nothing is ever written to auth-records.json,
+// db.json, localStorage, sessionStorage, API responses, or logs. (The
+// gitignored `auth-records.json` entry is kept only to prevent accidental
+// commits; the application never creates or reads that file.)
+//
+// firestore.rules' "Global Safety Net" (`match /{document=**}` -> allow
+// read, write: if false;) plus the explicit `_authRecords` deny block keep the
+// collection invisible to every client request — the Admin SDK bypasses rules,
+// so no rules deploy is required for server-side access to succeed.
+// ---------------------------------------------------------------------------
+const AUTH_RECORDS_COLLECTION = '_authRecords';
+
+// Returns the stored record for a normalized phone, or null. Runs a bounded
+// query (limit 1) so no full-collection scan ever happens.
+async function findAuthRecordByPhone(
+  adminApp: admin.app.App,
+  normalizedPhone: string,
+): Promise<any | null> {
+  try {
+    const snapshot = await admin
+      .firestore(adminApp)
+      .collection(AUTH_RECORDS_COLLECTION)
+      .where('normalizedPhone', '==', normalizedPhone)
+      .limit(1)
+      .get();
+    if (!snapshot.empty) {
+      const doc = snapshot.docs[0];
+      return { uid: doc.id, ...doc.data() };
+    }
+  } catch (err: any) {
+    console.warn('[auth-records] Firestore lookup failed:', err?.message || err);
+  }
+  return null;
+}
+
+// Persists a password record to `_authRecords/{uid}` via the Admin SDK.
+// Returns whether the write succeeded (used to trigger account rollback).
+async function saveAuthRecord(
+  adminApp: admin.app.App,
+  record: {
+    uid: string;
+    normalizedPhone: string;
+    passwordHash: string;
+    createdAt: string;
+    updatedAt: string;
+  },
+): Promise<boolean> {
+  try {
+    await admin.firestore(adminApp).collection(AUTH_RECORDS_COLLECTION).doc(record.uid).set(record);
+    return true;
+  } catch (err: any) {
+    console.warn('[auth-records] Firestore write failed:', err?.message || err);
+    return false;
+  }
+}
+
+// Deletes the password record for a UID. Used only during registration
+// rollback; it never touches any other account's record.
+async function deleteAuthRecord(adminApp: admin.app.App, uid: string): Promise<void> {
+  try {
+    await admin.firestore(adminApp).collection(AUTH_RECORDS_COLLECTION).doc(uid).delete();
+  } catch (err: any) {
+    console.warn('[auth-records] Firestore delete failed:', err?.message || err);
+  }
 }
 
 // Helper for fetch with timeout
@@ -5857,6 +5931,399 @@ async function startServer() {
     }
   });
 
+  // ---------------------------------------------------------------------------
+  // Phone + password registration (NO email required) and login.
+  //
+  // No fake email is ever created: mobile accounts have an empty email, the
+  // phone is the login identifier, and the password hash lives only in the
+  // protected Firestore `_authRecords` collection (Admin SDK only, no local
+  // file mirror). Kurdish/Arabic digits and the 07XXXXXXXXX / 9647XXXXXXXXX /
+  // +9647XXXXXXXXX phone formats all normalize to one canonical +9647XXXXXXXXX
+  // form so a phone always matches exactly one account.
+  // ---------------------------------------------------------------------------
+  const REGISTER_MOBILE_ERR_INVALID_PHONE = 'تکایە ژمارە مۆبایلەکە بە دروستی بنووسە.';
+  const LOGIN_MOBILE_ERR_CREDENTIALS = 'ژمارە مۆبایل یان پاسۆردەکە دروست نییە.';
+  const AUTH_ERR_TOO_MANY_ATTEMPTS = 'زۆر هەوڵت دا، کەمێک چاوەڕوان بە و دووبارە هەوڵبدەوە.';
+
+  const mobileRegisterRateLimits: Record<string, number[]> = {};
+  const mobileLoginRateLimits: Record<string, number[]> = {};
+  const isMobileRateLimited = (bucket: Record<string, number[]>, ip: string, max: number) => {
+    const now = Date.now();
+    if (!bucket[ip]) bucket[ip] = [];
+    bucket[ip] = bucket[ip].filter((ts) => now - ts < 60000);
+    if (bucket[ip].length >= max) return true;
+    bucket[ip].push(now);
+    return false;
+  };
+
+  const getClientIp = (req: express.Request) =>
+    (req.headers['x-forwarded-for'] as string)?.split(',')[0] ||
+    req.socket.remoteAddress ||
+    req.ip ||
+    'Unknown';
+
+  // Canonical Iraqi mobile form: 07XXXXXXXXX / 9647XXXXXXXXX / +9647XXXXXXXXX
+  // all become +9647XXXXXXXXX. Other valid numbers are returned unchanged.
+  const canonicalizeMobilePhone = (value: unknown) => {
+    const normalized = normalizePhoneText(value);
+    if (!normalized) return '';
+    const digits = normalized.replace(/^\+/, '');
+    if (/^07\d{9}$/.test(digits)) return `+964${digits.slice(1)}`;
+    if (/^9647\d{9}$/.test(digits)) return `+${digits}`;
+    return normalized;
+  };
+
+  app.post('/api/auth/register-mobile', async (req, res) => {
+    const { name, username, phone, password, age, gender, residence, country } = req.body || {};
+    const clientIp = getClientIp(req);
+    let uid = '';
+    let createdFirebaseUser = false;
+    let adminApp: admin.app.App | null = null;
+
+    // Rollback helper: deletes ONLY the partial account created by THIS request
+    // (fresh Firebase Auth UID, Firestore profile doc, _authRecords doc, and the
+    // db.json entry). It can never delete an existing real account.
+    const rollbackMobileRegistration = async (reason: string) => {
+      if (!adminApp || !uid) return;
+      console.error(`[register-mobile] Rolling back partial account ${uid} after: ${reason}`);
+      if (createdFirebaseUser) {
+        try {
+          await deleteAuthUserSafely(uid);
+        } catch (err: any) {
+          console.warn('[register-mobile] rollback: Firebase Auth delete failed:', err?.message || err);
+        }
+      }
+      try {
+        await admin.firestore(adminApp).collection('users').doc(uid).delete();
+      } catch (err: any) {
+        console.warn('[register-mobile] rollback: Firestore profile delete failed:', err?.message || err);
+      }
+      await deleteAuthRecord(adminApp, uid);
+      const idx = db.users.findIndex((u: any) => u.uid === uid);
+      if (idx !== -1) db.users.splice(idx, 1);
+      try {
+        await saveDB(db);
+      } catch (err: any) {
+        console.warn('[register-mobile] rollback: db.json save failed:', err?.message || err);
+      }
+    };
+
+    try {
+      if (isMobileRateLimited(mobileRegisterRateLimits, clientIp, 3)) {
+        return res.status(429).json({ success: false, error: AUTH_ERR_TOO_MANY_ATTEMPTS });
+      }
+
+      const cleanName = sanitizeNameText(name);
+      if (!cleanName) {
+        return res.status(400).json({ success: false, error: REGISTER_ERR_INVALID_NAME });
+      }
+
+      const cleanUsername = normalizeUsernameText(username);
+      if (!isValidUsernameFormat(cleanUsername)) {
+        return res.status(400).json({ success: false, error: REGISTER_ERR_INVALID_USERNAME });
+      }
+
+      const cleanPhone = phone ? canonicalizeMobilePhone(phone) : '';
+      if (!cleanPhone) {
+        return res.status(400).json({ success: false, error: REGISTER_MOBILE_ERR_INVALID_PHONE });
+      }
+      if (!isValidPasswordText(password)) {
+        return res.status(400).json({ success: false, error: REGISTER_ERR_WEAK_PASSWORD });
+      }
+
+      adminApp = initializeFirebaseAdmin();
+      if (!adminApp) {
+        return res.status(503).json({ success: false, error: REGISTER_ERR_GENERIC });
+      }
+
+      if (!db.users) db.users = [];
+
+      // ---- db.json uniqueness (canonical phone form catches 0770 vs +964770) ---
+      const usernameDup = db.users.some(
+        (u: any) =>
+          normalizeUsernameText(u.username) === cleanUsername ||
+          normalizeUsernameText(u.name) === cleanUsername,
+      );
+      if (usernameDup) {
+        return res.status(409).json({ success: false, error: REGISTER_ERR_DUPLICATE_USERNAME });
+      }
+      const phoneDup = db.users.some((u: any) => {
+        const stored = canonicalizeMobilePhone(u.phoneNumber || u.phone || '');
+        return Boolean(stored) && stored === cleanPhone;
+      });
+      if (phoneDup) {
+        return res.status(409).json({ success: false, error: REGISTER_ERR_DUPLICATE_PHONE });
+      }
+
+      // ---- Firebase Auth + Firestore uniqueness ---------------------------------
+      const altPhone = cleanPhone.startsWith('+9647') ? `0${cleanPhone.slice(4)}` : '';
+      try {
+        const existingPhone = await admin.auth(adminApp).getUserByPhoneNumber(cleanPhone);
+        if (existingPhone?.uid) {
+          return res.status(409).json({ success: false, error: REGISTER_ERR_DUPLICATE_PHONE });
+        }
+      } catch (err: any) {
+        // auth/user-not-found is expected; everything else is logged only.
+        if (err?.code !== 'auth/user-not-found') {
+          console.warn('[register-mobile] Firebase phone pre-check skipped:', err?.message || err);
+        }
+      }
+      try {
+        const usersFs = admin.firestore(adminApp).collection('users');
+        const checks: Array<Promise<boolean>> = [
+          usersFs.where('username', '==', cleanUsername).limit(1).get().then((s: any) => !s.empty),
+          usersFs.where('phone', '==', cleanPhone).limit(1).get().then((s: any) => !s.empty),
+          usersFs.where('phoneNumber', '==', cleanPhone).limit(1).get().then((s: any) => !s.empty),
+          altPhone
+            ? usersFs.where('phone', '==', altPhone).limit(1).get().then((s: any) => !s.empty)
+            : Promise.resolve(false),
+          altPhone
+            ? usersFs.where('phoneNumber', '==', altPhone).limit(1).get().then((s: any) => !s.empty)
+            : Promise.resolve(false),
+        ];
+        const results = await Promise.all(checks);
+        if (results[0]) {
+          return res.status(409).json({ success: false, error: REGISTER_ERR_DUPLICATE_USERNAME });
+        }
+        if (results[1] || results[2] || results[3] || results[4]) {
+          return res.status(409).json({ success: false, error: REGISTER_ERR_DUPLICATE_PHONE });
+        }
+      } catch (err: any) {
+        console.warn('[register-mobile] Firestore duplicate pre-check skipped:', err?.message || err);
+      }
+
+      let uniqueCode = '';
+      try {
+        uniqueCode = await generateUniqueMemberCode();
+      } catch (err: any) {
+        console.error('[register-mobile] Member code generation failed:', err?.message || err);
+        return res.status(500).json({ success: false, error: REGISTER_ERR_GENERIC });
+      }
+
+      // Create the Firebase user WITHOUT an email and WITHOUT a Firebase
+      // password (no fake email, no plaintext ever): the bcrypt hash is kept
+      // server-side only (Firestore `_authRecords`) and used by login-mobile.
+      try {
+        const userRecord = await admin.auth(adminApp).createUser({ displayName: cleanName, phoneNumber: cleanPhone });
+        uid = userRecord.uid;
+        createdFirebaseUser = true;
+      } catch (err: any) {
+        if (String(err?.message || err?.code || '').includes('PHONE_NUMBER_EXISTS')) {
+          return res.status(409).json({ success: false, error: REGISTER_ERR_DUPLICATE_PHONE });
+        }
+        // Some backends reject unverified phone numbers on createUser; retry
+        // without the phoneNumber rather than fail registration.
+        try {
+          const userRecord = await admin.auth(adminApp).createUser({ displayName: cleanName });
+          uid = userRecord.uid;
+          createdFirebaseUser = true;
+        } catch (err2: any) {
+          console.error('[register-mobile] Firebase Auth user creation failed:', err2?.message || err2);
+          return res.status(500).json({ success: false, error: REGISTER_ERR_GENERIC });
+        }
+      }
+
+      let customToken = '';
+      try {
+        customToken = await admin.auth(adminApp).createCustomToken(uid);
+      } catch (err: any) {
+        console.error('[register-mobile] Custom token minting failed:', err?.message || err);
+        await rollbackMobileRegistration('custom token minting failed');
+        return res.status(500).json({ success: false, error: REGISTER_ERR_GENERIC });
+      }
+
+      const now = new Date().toISOString();
+      const profile = {
+        uid,
+        name: cleanName,
+        displayName: cleanName,
+        username: cleanUsername,
+        phone: cleanPhone,
+        phoneNumber: cleanPhone,
+        email: '',
+        emailLower: '',
+        uniqueCode,
+        isOnline: true,
+        createdAt: now,
+        updatedAt: now,
+        lastActive: now,
+        active: true,
+        kicked: false,
+        role: 'user',
+        userRole: 'user',
+        provider: 'mobile',
+        authProvider: 'mobile',
+        age: String(age || '').trim().slice(0, 20),
+        gender: String(gender || '').trim().slice(0, 40),
+        residence: String(residence || '').trim().slice(0, 100),
+        country: String(country || '').trim().slice(0, 60),
+        deviceIp: clientIp,
+        ip: clientIp,
+      };
+
+      try {
+        await admin.firestore(adminApp).collection('users').doc(uid).set(profile, { merge: true });
+      } catch (err: any) {
+        console.error('[register-mobile] Firestore profile write failed:', err?.message || err);
+        await rollbackMobileRegistration('Firestore profile write failed');
+        return res.status(500).json({ success: false, error: REGISTER_ERR_GENERIC });
+      }
+
+      const existingIdx = db.users.findIndex((u: any) => u.uid === uid);
+      if (existingIdx !== -1) db.users[existingIdx] = { ...db.users[existingIdx], ...profile };
+      else db.users.push(profile);
+      try {
+        await saveDB(db);
+      } catch (err: any) {
+        console.error('[register-mobile] db.json save failed:', err?.message || err);
+        await rollbackMobileRegistration('db.json save failed');
+        return res.status(500).json({ success: false, error: REGISTER_ERR_GENERIC });
+      }
+      logUserActivity(db, uniqueCode, 'Register', `خۆتۆمارکردن بە مۆبایل "${cleanPhone}"`, clientIp);
+
+      // Hash asynchronously (non-blocking) and store ONLY in Firestore
+      // `_authRecords/{uid}`. Without a durable hash the account can never log
+      // in again, so any failure rolls the whole registration back.
+      let passwordHash = '';
+      try {
+        passwordHash = await bcrypt.hash(password, 10);
+      } catch (err: any) {
+        console.error('[register-mobile] Password hashing failed:', err?.message || err);
+        await rollbackMobileRegistration('password hashing failed');
+        return res.status(500).json({ success: false, error: REGISTER_ERR_GENERIC });
+      }
+      const hashPersisted = await saveAuthRecord(adminApp, {
+        uid,
+        normalizedPhone: cleanPhone,
+        passwordHash,
+        createdAt: now,
+        updatedAt: now,
+      });
+      if (!hashPersisted) {
+        await rollbackMobileRegistration('password hash could not be persisted');
+        return res.status(500).json({ success: false, error: REGISTER_ERR_GENERIC });
+      }
+
+      return res.json({
+        success: true,
+        customToken,
+        user: {
+          uid,
+          name: cleanName,
+          username: cleanUsername,
+          phone: cleanPhone,
+          uniqueCode,
+          role: 'user',
+        },
+      });
+    } catch (err: any) {
+      console.error('[register-mobile] Unexpected error:', err?.message || err);
+      try {
+        await rollbackMobileRegistration('unexpected error');
+      } catch (rollbackErr: any) {
+        console.warn('[register-mobile] rollback during error path failed:', rollbackErr?.message || rollbackErr);
+      }
+      return res.status(500).json({ success: false, error: REGISTER_ERR_GENERIC });
+    }
+  });
+
+  app.post('/api/auth/login-mobile', async (req, res) => {
+    const { phone, password } = req.body || {};
+    const clientIp = getClientIp(req);
+    try {
+      if (isMobileRateLimited(mobileLoginRateLimits, clientIp, 10)) {
+        return res.status(429).json({ success: false, error: AUTH_ERR_TOO_MANY_ATTEMPTS });
+      }
+
+      if (typeof password !== 'string' || !password.trim()) {
+        return res.status(401).json({ success: false, error: LOGIN_MOBILE_ERR_CREDENTIALS });
+      }
+      const cleanPhone = phone ? canonicalizeMobilePhone(phone) : '';
+      if (!cleanPhone) {
+        return res.status(401).json({ success: false, error: LOGIN_MOBILE_ERR_CREDENTIALS });
+      }
+
+      const adminApp = initializeFirebaseAdmin();
+      if (!adminApp) {
+        return res.status(503).json({ success: false, error: REGISTER_ERR_GENERIC });
+      }
+
+      // Bounded Firestore lookup (limit 1) — no full-collection scan, no local
+      // file, no cache that could serve stale or forged records.
+      const record = await findAuthRecordByPhone(adminApp, cleanPhone);
+      if (!record || !record.uid || !record.passwordHash) {
+        return res.status(401).json({ success: false, error: LOGIN_MOBILE_ERR_CREDENTIALS });
+      }
+
+      // Async (non-blocking) constant-time comparison.
+      let passwordValid = false;
+      try {
+        passwordValid = await bcrypt.compare(String(password), record.passwordHash);
+      } catch (err: any) {
+        console.error('[login-mobile] Hash comparison failed:', err?.message || err);
+        passwordValid = false;
+      }
+      if (!passwordValid) {
+        return res.status(401).json({ success: false, error: LOGIN_MOBILE_ERR_CREDENTIALS });
+      }
+
+      const uid = record.uid;
+      let customToken = '';
+      try {
+        customToken = await admin.auth(adminApp).createCustomToken(uid);
+      } catch (err: any) {
+        console.error('[login-mobile] Custom token minting failed:', err?.message || err);
+        return res.status(500).json({ success: false, error: REGISTER_ERR_GENERIC });
+      }
+
+      const now = new Date().toISOString();
+      let userData: any = null;
+      try {
+        const doc = await admin.firestore(adminApp).collection('users').doc(uid).get();
+        if (doc.exists) userData = doc.data();
+      } catch (err: any) {
+        console.warn('[login-mobile] Firestore profile load failed:', err?.message || err);
+      }
+      if (!userData) userData = (db.users || []).find((u: any) => u.uid === uid) || null;
+
+      if (userData) {
+        try {
+          await admin
+            .firestore(adminApp)
+            .collection('users')
+            .doc(uid)
+            .set({ isOnline: true, lastActive: now }, { merge: true });
+        } catch (err: any) {
+          console.warn('[login-mobile] Online status update skipped:', err?.message || err);
+        }
+        const dbUser = (db.users || []).find((u: any) => u.uid === uid);
+        if (dbUser) {
+          dbUser.isOnline = true;
+          dbUser.lastActive = now;
+        }
+        await saveDB(db);
+        logUserActivity(db, userData.uniqueCode || uid, 'Login', 'چوونەژوورەوە بە ژمارە مۆبایل', clientIp);
+      }
+
+      return res.json({
+        success: true,
+        customToken,
+        user: {
+          uid,
+          name: userData?.name || '',
+          username: userData?.username || '',
+          email: userData?.email || '',
+          phone: userData?.phoneNumber || userData?.phone || cleanPhone,
+          uniqueCode: userData?.uniqueCode || '',
+          role: userData?.role || 'user',
+        },
+      });
+    } catch (err: any) {
+      console.error('[login-mobile] Unexpected error:', err?.message || err);
+      return res.status(500).json({ success: false, error: REGISTER_ERR_GENERIC });
+    }
+  });
+
   app.post('/api/auth/password-recovery/request', async (req, res) => {
     const genericMessage = 'If the information matches an account, password reset instructions will be sent to the registered email.';
     const clientIp = ((req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || 'unknown').trim();
@@ -6636,7 +7103,11 @@ async function startServer() {
         payload.phone = phone;
         payload.phoneNumber = phone;
       }
-      if (body.email !== undefined) payload.email = cleanProfileField(body.email, 120);
+      if (body.email !== undefined) {
+        const email = cleanProfileField(body.email, 120).toLowerCase();
+        payload.email = email;
+        if (email) payload.emailLower = email;
+      }
       if (body.bio !== undefined) payload.bio = cleanProfileField(body.bio, 280);
       if (body.gender !== undefined) payload.gender = cleanProfileField(body.gender, 40);
       if (body.birthday !== undefined) payload.birthday = cleanProfileField(body.birthday, 20);
@@ -6655,9 +7126,39 @@ async function startServer() {
       if (body.theme !== undefined) payload.theme = cleanProfileField(body.theme, 40);
       if (body.accent !== undefined) payload.accent = cleanProfileField(body.accent, 40);
 
-      // ---- Server-side authoritative duplicate-phone guard -----------------
-      const normalizedPhone = payload.phone || payload.phoneNumber;
+      // ---- Server-side authoritative duplicate guards (always exclude self) --
       if (!db.users) db.users = [];
+
+      const normalizedUsername = payload.username
+        ? String(payload.username).trim().toLowerCase()
+        : '';
+      if (normalizedUsername) {
+        const duplicate = db.users.find(
+          (u: any) =>
+            u.uid !== uid &&
+            String(u.username || '').trim().toLowerCase() === normalizedUsername,
+        );
+        if (duplicate) {
+          return res.status(409).json({ error: 'ئەم ناوی بەکارهێنەرە پێشتر تۆمار کراوە.' });
+        }
+      }
+
+      const normalizedEmail = payload.email
+        ? String(payload.email).trim().toLowerCase()
+        : '';
+      if (normalizedEmail) {
+        const duplicate = db.users.find(
+          (u: any) =>
+            u.uid !== uid &&
+            (String(u.email || '').trim().toLowerCase() === normalizedEmail ||
+              String(u.emailLower || '').trim().toLowerCase() === normalizedEmail),
+        );
+        if (duplicate) {
+          return res.status(409).json({ error: 'ئەم ئیمەیڵە پێشتر بەکارهاتووە.' });
+        }
+      }
+
+      const normalizedPhone = payload.phone || payload.phoneNumber;
       if (normalizedPhone) {
         const duplicate = db.users.find(
           (u: any) =>
@@ -6665,7 +7166,7 @@ async function startServer() {
             (String(u.phone || '') === normalizedPhone || String(u.phoneNumber || '') === normalizedPhone),
         );
         if (duplicate) {
-          return res.status(409).json({ error: 'Phone number is already used by another user.' });
+          return res.status(409).json({ error: 'ئەم ژمارە مۆبایلە پێشتر تۆمار کراوە.' });
         }
       }
 
@@ -6700,6 +7201,22 @@ async function startServer() {
       }
 
       await saveDB(db);
+
+      // Mirror the canonical record into Firestore (users/{uid}) so the two
+      // stores never drift. Only with REAL admin credentials — the local
+      // emulator mode already mirrors via the client (connectFirestoreEmulator).
+      if (firebaseAdminApp && !firebaseAdminUsingEmulator) {
+        try {
+          await admin
+            .firestore(firebaseAdminApp)
+            .collection('users')
+            .doc(uid)
+            .set(sanitizeUserRecord(merged), { merge: true });
+        } catch (err: any) {
+          console.warn('[profile-sync] Firestore mirror write failed (non-fatal):', err?.message || err);
+        }
+      }
+
       logUserActivity(db, merged.uniqueCode || uid, "Profile Sync", 'User saved their profile', clientIp);
       res.json({ success: true, user: sanitizeUserRecord(merged) });
     } catch (err: any) {
