@@ -33,16 +33,52 @@ import * as admin from 'firebase-admin';
 // Local development may use the Firebase Auth Emulator instead, but ONLY when
 // it is explicitly enabled via FIREBASE_AUTH_EMULATOR_HOST (no credentials are
 // required in that mode). If neither credentials nor an explicit emulator is
-// configured, startup fails with a clear message.
+// configured, the profile persistence endpoints fail safely with HTTP 503 and
+// the rest of the site keeps running — the server process is never killed by a
+// missing-credential or token-verification error.
 // ---------------------------------------------------------------------------
 const FIREBASE_ADMIN_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'gen-lang-client-0240212572';
 const FIREBASE_AUTH_EMULATOR_EXPLICIT = !!process.env.FIREBASE_AUTH_EMULATOR_HOST;
 
 let firebaseAdminInitialized = false;
 let firebaseAdminApp: admin.app.App | null = null;
+let firebaseAdminInitError: string | null = null;
 
-function initializeFirebaseAdmin(): admin.app.App {
-  if (firebaseAdminInitialized) return firebaseAdminApp as admin.app.App;
+function buildFirebaseAdminCredentialConfig() {
+  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
+  const googleApplicationCredentials = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  const hasSplitCredentials = !!(
+    process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY
+  );
+
+  if (serviceAccountJson) {
+    const serviceAccount = JSON.parse(serviceAccountJson);
+    return {
+      projectId: serviceAccount.project_id || FIREBASE_ADMIN_PROJECT_ID,
+      credential: admin.credential.cert(serviceAccount),
+    };
+  }
+  if (googleApplicationCredentials) {
+    return {
+      projectId: FIREBASE_ADMIN_PROJECT_ID,
+      credential: admin.credential.applicationDefault(),
+    };
+  }
+  if (hasSplitCredentials) {
+    return {
+      projectId: FIREBASE_ADMIN_PROJECT_ID,
+      credential: admin.credential.cert({
+        projectId: FIREBASE_ADMIN_PROJECT_ID,
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL!,
+        privateKey: String(process.env.FIREBASE_PRIVATE_KEY).replace(/\\n/g, '\n'),
+      }),
+    };
+  }
+  return null;
+}
+
+function initializeFirebaseAdmin(): admin.app.App | null {
+  if (firebaseAdminInitialized) return firebaseAdminApp;
   firebaseAdminInitialized = true;
 
   try {
@@ -54,16 +90,13 @@ function initializeFirebaseAdmin(): admin.app.App {
       return firebaseAdminApp;
     }
 
-    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
-    const googleApplicationCredentials = process.env.GOOGLE_APPLICATION_CREDENTIALS;
-    const hasSplitCredentials = !!(
-      process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY
-    );
-
-    if (!serviceAccountJson && !googleApplicationCredentials && !hasSplitCredentials) {
-      console.error(
-        '[Firebase Admin] Missing credentials. The profile persistence API cannot verify tokens without one of:',
-      );
+    const credentialConfig = buildFirebaseAdminCredentialConfig();
+    if (!credentialConfig) {
+      firebaseAdminInitError = 'Missing Firebase Admin credentials. Set one of: ' +
+        'FIREBASE_SERVICE_ACCOUNT, GOOGLE_APPLICATION_CREDENTIALS, ' +
+        'or FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY. ' +
+        'For local development set FIREBASE_AUTH_EMULATOR_HOST instead.';
+      console.error('[Firebase Admin] Missing credentials. The profile persistence API cannot verify tokens.');
       console.error('  - FIREBASE_SERVICE_ACCOUNT         (service-account JSON string)');
       console.error('  - GOOGLE_APPLICATION_CREDENTIALS   (path to a service-account JSON file)');
       console.error(
@@ -72,42 +105,26 @@ function initializeFirebaseAdmin(): admin.app.App {
       console.error(
         '  - Local development only: FIREBASE_AUTH_EMULATOR_HOST (e.g. 127.0.0.1:9099) for the Firebase Auth Emulator.',
       );
-      console.error('[Firebase Admin] Startup aborted.');
-      process.exit(1);
+      console.error('[Firebase Admin] Profile endpoints will return 503 until credentials are configured.');
+      return null;
     }
 
-    if (serviceAccountJson) {
-      const serviceAccount = JSON.parse(serviceAccountJson);
-      firebaseAdminApp = admin.initializeApp({
-        projectId: serviceAccount.project_id || FIREBASE_ADMIN_PROJECT_ID,
-        credential: admin.credential.cert(serviceAccount),
-      });
-    } else if (googleApplicationCredentials) {
-      firebaseAdminApp = admin.initializeApp({
-        projectId: FIREBASE_ADMIN_PROJECT_ID,
-        credential: admin.credential.applicationDefault(),
-      });
-    } else {
-      firebaseAdminApp = admin.initializeApp({
-        projectId: FIREBASE_ADMIN_PROJECT_ID,
-        credential: admin.credential.cert({
-          projectId: FIREBASE_ADMIN_PROJECT_ID,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL!,
-          privateKey: String(process.env.FIREBASE_PRIVATE_KEY).replace(/\\n/g, '\n'),
-        }),
-      });
-    }
+    firebaseAdminApp = admin.initializeApp(credentialConfig);
     console.log('[Firebase Admin] Initialized with service-account credentials.');
     return firebaseAdminApp;
   } catch (err: any) {
+    firebaseAdminInitError = err?.message || String(err);
     console.error('[Firebase Admin] Failed to initialize:', err?.message || err);
-    process.exit(1);
+    console.error('[Firebase Admin] Profile endpoints will return 503 until this is fixed.');
+    return null;
   }
 }
 
 // Extracts the `Bearer <idToken>` from the Authorization header, verifies it
 // cryptographically with the Firebase Admin SDK (revocation-aware) and returns
 // the authenticated Firebase UID. Throws an Error with `status` set on failure.
+// Never crashes the process: when the Admin SDK cannot be initialized (missing
+// credentials) it throws a 503 so only the profile endpoints are affected.
 async function verifyFirebaseIdToken(authHeader: string | undefined): Promise<string> {
   const raw = String(authHeader || '');
   const token = raw.startsWith('Bearer ') ? raw.slice(7).trim() : '';
@@ -116,8 +133,15 @@ async function verifyFirebaseIdToken(authHeader: string | undefined): Promise<st
     err.status = 401;
     throw err;
   }
+  const app = initializeFirebaseAdmin();
+  if (!app) {
+    const err: any = new Error(
+      firebaseAdminInitError || 'Firebase Admin SDK is not configured',
+    );
+    err.status = 503;
+    throw err;
+  }
   try {
-    const app = initializeFirebaseAdmin();
     // checkRevoked=true also rejects disabled / token-revoked accounts.
     const decodedToken = await admin.auth(app).verifyIdToken(token, true);
     return decodedToken.uid;
@@ -8117,6 +8141,16 @@ let videoDownloaded = false;
     console.log('==================================================');
     console.log(`CinemaChat Server started on http://0.0.0.0:${PORT}`);
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    // Initialize the Firebase Admin SDK once at startup so a missing-credential
+    // misconfiguration is logged immediately (not on the first profile request).
+    // Returns null when unconfigured; profile endpoints then return 503 and the
+    // rest of the server keeps serving normally.
+    const adminApp = initializeFirebaseAdmin();
+    console.log(
+      adminApp
+        ? '[Firebase Admin] Ready for token verification.'
+        : '[Firebase Admin] NOT configured — profile persistence endpoints return 503.',
+    );
     console.log('==================================================');
   });
 }
