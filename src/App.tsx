@@ -133,7 +133,9 @@ import { Movie, SyncGroup, SocialUser } from "./types";
 import { useSocialAuth } from "./context/SocialAuthContext";
 import jsQR from "jsqr";
 import { RegistrationModal } from "./components/Social/RegistrationModal";
+import { CompleteAccountModal } from "./components/Social/CompleteAccountModal";
 import { CinemaChatRoom } from "./components/Social/CinemaChatRoom";
+import { FriendConnectRoom } from "./components/Social/FriendConnectRoom";
 import { CinemaChatInviteNotification } from "./components/Social/CinemaChatInviteNotification";
 import { RoomInviteNotification } from "./components/Social/RoomInviteNotification";
 import type { CinemaChatParticipant } from "./services/cinemaChat";
@@ -7404,8 +7406,11 @@ export default function App() {
   const [showDramaRoomModal, setShowDramaRoomModal] = useState(false);
   const [editingDramaRoom, setEditingDramaRoom] = useState<any>(null);
   const [showDramaHubModal, setShowDramaHubModal] = useState(false);
-  // The permanent CinemaChat watch room modal (main_broadcast_room).
+  // The permanent CinemaChat watch room modal (main_broadcast_room) — opened
+  // from the "watch together" invitation notifications (outside this flow).
   const [showCinemaChatRoom, setShowCinemaChatRoom] = useState(false);
+  // The CinemaChat private Friend → Connect modal (the card's main entry).
+  const [showFriendConnect, setShowFriendConnect] = useState(false);
 
   // Movie IDs currently assigned to any Drama Room. Used to hide assigned
   // dramas from the public main listing (they stay visible inside their room);
@@ -8538,9 +8543,16 @@ export default function App() {
     loading: socialAuthLoading,
     logout: fbLogout,
     updateSocialProfile,
+    accountReadiness,
+    refreshProfile,
   } = useSocialAuth();
   const [showSocialModal, setShowSocialModal] = useState(false);
   const [modalMode, setModalMode] = useState<"landing" | "login" | "signup">("landing");
+  const [showCompleteAccount, setShowCompleteAccount] = useState(false);
+
+  // Whether the auth modal was opened from the CinemaChat flow (Friend→Connect).
+  // When true, a successful sign-in returns to the room instead of reloading.
+  const [authFlowReturn, setAuthFlowReturn] = useState(false);
 
   // ============ Favorites / Likes / Live-metrics (movie card enhancements) ============
   // The Firebase uid drives persistence; guests use localStorage instead.
@@ -8571,15 +8583,26 @@ export default function App() {
 
   // Account status for the CinemaChat room's invitation flow: account users can
   // send AND receive real persisted invitations; device-only guests can still
-  // join via code/QR but cannot receive account invitations.
-  const hasCinemaChatAccount =
-    !!fbUser &&
-    !!socialProfile &&
-    typeof socialProfile.uniqueCode === "string" &&
-    socialProfile.uniqueCode.trim().length > 0;
+  // join via code/QR but cannot receive account invitations. Gated by the same
+  // account-readiness state machine used by the Friend→Connect flow, so an
+  // incomplete/guest/error account never half-enables the account features.
+  const hasCinemaChatAccount = accountReadiness.state === "ready";
   const cinemaChatAccountName = socialProfile?.name || cinemaChatIdentity.name;
   const cinemaChatAccountCode =
     hasCinemaChatAccount ? socialProfile?.uniqueCode : undefined;
+
+  // Logout wrapper: always tear down every CinemaChat/auth overlay FIRST so a
+  // stale "signed-in" room or registration modal can never survive a logout
+  // (stale-auth cleanup). The Firebase sign-out itself lives in the context.
+  const handleAuthLogout = useCallback(() => {
+    setShowFriendConnect(false);
+    setShowCinemaChatRoom(false);
+    setShowSocialModal(false);
+    setShowCompleteAccount(false);
+    setShowJoinCodeModal(false);
+    setAuthFlowReturn(false);
+    void fbLogout();
+  }, [fbLogout]);
 
   // Hydrate the signed-in user's favorites + liked movies in real time from
   // Firestore (users/{uid}). Guests fall back to localStorage.
@@ -9811,7 +9834,7 @@ export default function App() {
       );
       if (isBanned && !securityBlockedRef.current) {
         securityBlockedRef.current = true;
-        fbLogout();
+        handleAuthLogout();
         alert("ئەم هەژمارە بلۆککراوە. ناتوانیت بچیتە ناو سایتەکە.");
         return;
       }
@@ -9863,7 +9886,7 @@ export default function App() {
             detail: "لەلایەن بەڕێوبەرەوە لە سیستم دەرکرا",
             role: securityProfile.role,
           });
-          fbLogout();
+          handleAuthLogout();
           alert("هەژمارەکەت لەلایەن بەڕێوبەرەوە داخراوە.");
         }
       },
@@ -9889,7 +9912,7 @@ export default function App() {
             role: securityProfile.role,
             deviceIp: ip,
           });
-          fbLogout();
+          handleAuthLogout();
           alert("ئەم ئایپیە بلۆککراوە. ناتوانیت بچیتە ناو سایتەکە.");
         }
       },
@@ -9938,7 +9961,7 @@ export default function App() {
         });
         const data = await res.json();
         if (data.user?.kicked) {
-          fbLogout();
+          handleAuthLogout();
           alert("هەژمارەکەت لەلایەن بەڕێوبەرەوە داخراوە.");
         }
       } catch (err) {
@@ -12367,7 +12390,7 @@ export default function App() {
       onDelete={handleDeleteDramaRoom}
       liveViewersMap={roomLiveViewers}
       ratingsMap={roomRatingsMap}
-      onOpenCinemaChat={() => setShowCinemaChatRoom(true)}
+      onOpenCinemaChat={() => setShowFriendConnect(true)}
       onOpenDramaHub={() => setShowDramaHubModal(true)}
       onOpenCinemaWindow={() => setShowCinemaWindowModal(true)}
       cinemaWindowRoom={cinemaWindowPublicRoom}
@@ -12481,7 +12504,7 @@ export default function App() {
                 setModalMode("landing");
                 setShowSocialModal(true);
               }}
-              onLogout={fbLogout}
+              onLogout={handleAuthLogout}
               onOpenIdentityCard={() => setShowIdentityCard(true)}
               onOpenInviteFriends={() => setShowIdentityCard(true)}
               onOpenMessages={() => setShowDirectMessagesModal(true)}
@@ -13384,8 +13407,30 @@ export default function App() {
             accountName={cinemaChatAccountName}
             accountCode={cinemaChatAccountCode}
             onRequestAccount={() => {
+              setAuthFlowReturn(true);
               setModalMode("signup");
               setShowSocialModal(true);
+            }}
+          />
+          {/* CinemaChat private Friend → Connect (ephemeral 1-to-1 chat). The
+              CinemaChat card opens THIS modal; the watch room above stays
+              reachable through the "watch together" notifications only. */}
+          <FriendConnectRoom
+            open={showFriendConnect}
+            onClose={() => setShowFriendConnect(false)}
+            myUid={fbUser?.uid || ""}
+            myName={socialProfile?.name || "بەکارهێنەر"}
+            myCode={cinemaChatAccountCode || ""}
+            myAvatar={socialProfile?.avatarUrl || socialProfile?.avatar}
+            readiness={accountReadiness}
+            onRequestAccount={() => {
+              setAuthFlowReturn(true);
+              setModalMode("signup");
+              setShowSocialModal(true);
+            }}
+            onRetryAuth={() => void refreshProfile()}
+            onCompleteAccount={() => {
+              setShowCompleteAccount(true);
             }}
           />
           </>
@@ -15899,7 +15944,28 @@ const trailerId = movie.trailerUrl
       <RegistrationModal
         isOpen={showSocialModal}
         initialMode={modalMode}
-        onClose={() => setShowSocialModal(false)}
+        onClose={() => {
+          setShowSocialModal(false);
+          setAuthFlowReturn(false);
+        }}
+        onAuthSuccess={
+          authFlowReturn
+            ? () => {
+                // Returning to the CinemaChat flow: stay on the page so the
+                // Friend→Connect room re-evaluates readiness and continues.
+                setShowSocialModal(false);
+                setAuthFlowReturn(false);
+              }
+            : undefined
+        }
+      />
+
+      {/* Complete-Account prompt for signed-in users whose canonical profile is
+          missing required fields (gate = authenticated-incomplete). */}
+      <CompleteAccountModal
+        open={showCompleteAccount}
+        onClose={() => setShowCompleteAccount(false)}
+        readiness={accountReadiness}
       />
 
       {/* Smart Entry Modal for Joining Rooms */}

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { 
   auth, 
   db,
@@ -18,6 +18,7 @@ import {
   hydrateGoogleCinemaChatProfile,
   normalizeProfilePhone,
 } from '../services/socialProfileProvisioning';
+import { getAccountReadiness, AccountReadiness } from '../services/accountReadiness';
 import { api } from '../services/api';
 
 type FirebaseUser = any;
@@ -47,8 +48,12 @@ interface SocialAuthContextType {
   currentUser: FirebaseUser | null;
   socialProfile: SocialUser | null;
   loading: boolean;
+  /** Account readiness for the CinemaChat private flow (guest/incomplete/ready). */
+  accountReadiness: AccountReadiness;
   logout: () => Promise<void>;
   updateSocialProfile: (updates: ProfileUpdateInput) => Promise<void>;
+  /** Re-runs the canonical profile hydration for the current user (retry). */
+  refreshProfile: () => Promise<void>;
 }
 
 const SocialAuthContext = createContext<SocialAuthContextType | undefined>(undefined);
@@ -110,25 +115,117 @@ export const SocialAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const authEventVersionRef = useRef(0);
   const logoutBusyRef = useRef(false);
 
+  // Derive account readiness from the canonical auth/profile state. Single
+  // source of truth shared by the CinemaChat gate, profile menu and modals.
+  const accountReadiness = getAccountReadiness(currentUser, socialProfile, loading);
+
   // Fetches the canonical server profile and merges it over the Firestore-based
   // profile so newer server data always wins after reload/sign-in. An empty
   // server uniqueCode is never allowed to clobber a valid client-side code.
-  const loadServerCanonicalProfile = async (user: FirebaseUser, baseProfile: SocialUser | null) => {
-    try {
-      const idToken = await user.getIdToken();
-      const serverProfile = await api.getProfile(user.uid, idToken);
-      if (!serverProfile) return baseProfile;
-      const merged = { ...(baseProfile || {}), ...serverProfile } as SocialUser;
-      const baseCode = getPublicMemberCode(baseProfile, user.uid);
-      if (baseCode && !getPublicMemberCode(serverProfile, user.uid)) {
-        merged.uniqueCode = baseCode;
+  const loadServerCanonicalProfile = useCallback(
+    async (user: FirebaseUser, baseProfile: SocialUser | null) => {
+      try {
+        const idToken = await user.getIdToken();
+        const serverProfile = await api.getProfile(user.uid, idToken);
+        if (!serverProfile) return baseProfile;
+        const merged = { ...(baseProfile || {}), ...serverProfile } as SocialUser;
+        const baseCode = getPublicMemberCode(baseProfile, user.uid);
+        if (baseCode && !getPublicMemberCode(serverProfile, user.uid)) {
+          merged.uniqueCode = baseCode;
+        }
+        return merged;
+      } catch (error) {
+        console.warn("Could not load canonical profile from server:", error);
+        return baseProfile;
       }
-      return merged;
-    } catch (error) {
-      console.warn("Could not load canonical profile from server:", error);
-      return baseProfile;
-    }
-  };
+    },
+    [],
+  );
+
+  // Loads the canonical profile for a signed-in user. Extracted so both the
+  // onAuthStateChanged listener and refreshProfile() share ONE hydration path.
+  const hydrateProfile = useCallback(
+    async (user: FirebaseUser, authEventVersion: number) => {
+      setLoading(true);
+      const isGoogleUser = user.providerData?.some(
+        (provider: { providerId?: string }) => provider.providerId === 'google.com',
+      );
+      const isEmailPasswordSignIn = sessionStorage.getItem(EMAIL_PASSWORD_AUTH_FLAG_KEY) === '1';
+      const shouldHydrateGoogleProfile = isGoogleUser && !isEmailPasswordSignIn;
+      try {
+        if (shouldHydrateGoogleProfile) {
+          const profile = await withProfileTimeout(
+            hydrateGoogleCinemaChatProfile(user),
+            'Profile loading is taking longer than expected.',
+          );
+          const canonicalProfile = await loadServerCanonicalProfile(user, profile);
+          if (authEventVersion === authEventVersionRef.current) {
+            setSocialProfile(canonicalProfile);
+          }
+        } else {
+          // Email/password path: read this account's existing profile, then
+          // overlay the canonical server record (server wins on reload).
+          const userDocRef = doc(db, 'users', user.uid);
+          const profileSnap = await getDoc(userDocRef);
+          if (authEventVersion !== authEventVersionRef.current) return;
+
+          const baseProfile = profileSnap.exists()
+            ? (profileSnap.data() as SocialUser)
+            : null;
+          if (baseProfile) baseProfile.userRole = baseProfile.userRole || baseProfile.role;
+
+          const canonicalProfile = await loadServerCanonicalProfile(user, baseProfile);
+          if (authEventVersion !== authEventVersionRef.current) return;
+
+          if (canonicalProfile) {
+            // Only mint a member code when NO canonical source (server or
+            // Firestore) already has one; never regenerate existing codes.
+            if (!getPublicMemberCode(canonicalProfile, user.uid) && profileSnap.exists()) {
+              const baseNum = baseProfile?.uniqueCode
+                ? baseProfile.uniqueCode.replace('CC-', '')
+                : Math.floor(1000 + Math.random() * 9000);
+              const uniqueCode = `CC-CC-${baseNum}`;
+              await updateDoc(userDocRef, { uniqueCode }).catch(() => {});
+              canonicalProfile.uniqueCode = uniqueCode;
+            }
+
+            if (authEventVersion === authEventVersionRef.current) {
+              setSocialProfile(canonicalProfile);
+            }
+            if (!canonicalProfile.isOnline) {
+              await updateDoc(userDocRef, { isOnline: true }).catch(() => {});
+            }
+          } else if (authEventVersion === authEventVersionRef.current) {
+            setSocialProfile(null);
+          }
+        }
+      } catch (error) {
+        if (authEventVersion !== authEventVersionRef.current) return;
+        if (shouldHydrateGoogleProfile) {
+          console.error("Profile hydration error:", error);
+          setSocialProfile((previous) => previous ?? makeRecoverableGoogleProfile(user));
+        } else {
+          console.error("Profile Fetch Error:", error);
+        }
+      } finally {
+        if (isEmailPasswordSignIn) {
+          sessionStorage.removeItem(EMAIL_PASSWORD_AUTH_FLAG_KEY);
+        }
+        if (authEventVersion === authEventVersionRef.current) {
+          setLoading(false);
+        }
+      }
+    },
+    [loadServerCanonicalProfile],
+  );
+
+  const refreshProfile = useCallback(async (): Promise<void> => {
+    const user = currentUser;
+    if (!user || user.uid === "admin_local_bypass") return;
+    const authEventVersion = ++authEventVersionRef.current;
+    setCurrentUser(user);
+    await hydrateProfile(user, authEventVersion);
+  }, [currentUser, hydrateProfile]);
 
   useEffect(() => {
     // Check if there is a local admin bypass in local storage
@@ -167,77 +264,9 @@ export const SocialAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
       const authEventVersion = ++authEventVersionRef.current;
       setCurrentUser(user);
-      
+
       if (user) {
-        setLoading(true);
-        const isGoogleUser = user.providerData?.some(
-          (provider: { providerId?: string }) => provider.providerId === 'google.com',
-        );
-        const isEmailPasswordSignIn = sessionStorage.getItem(EMAIL_PASSWORD_AUTH_FLAG_KEY) === '1';
-        const shouldHydrateGoogleProfile = isGoogleUser && !isEmailPasswordSignIn;
-        try {
-          if (shouldHydrateGoogleProfile) {
-            const profile = await withProfileTimeout(
-              hydrateGoogleCinemaChatProfile(user),
-              'Profile loading is taking longer than expected.',
-            );
-            const canonicalProfile = await loadServerCanonicalProfile(user, profile);
-            if (authEventVersion === authEventVersionRef.current) {
-              setSocialProfile(canonicalProfile);
-            }
-          } else {
-            // Email/password path: read this account's existing profile, then
-            // overlay the canonical server record (server wins on reload).
-            const userDocRef = doc(db, 'users', user.uid);
-            const profileSnap = await getDoc(userDocRef);
-            if (authEventVersion !== authEventVersionRef.current) return;
-
-            const baseProfile = profileSnap.exists()
-              ? (profileSnap.data() as SocialUser)
-              : null;
-            if (baseProfile) baseProfile.userRole = baseProfile.userRole || baseProfile.role;
-
-            const canonicalProfile = await loadServerCanonicalProfile(user, baseProfile);
-            if (authEventVersion !== authEventVersionRef.current) return;
-
-            if (canonicalProfile) {
-              // Only mint a member code when NO canonical source (server or
-              // Firestore) already has one; never regenerate existing codes.
-              if (!getPublicMemberCode(canonicalProfile, user.uid) && profileSnap.exists()) {
-                const baseNum = baseProfile?.uniqueCode
-                  ? baseProfile.uniqueCode.replace('CC-', '')
-                  : Math.floor(1000 + Math.random() * 9000);
-                const uniqueCode = `CC-CC-${baseNum}`;
-                await updateDoc(userDocRef, { uniqueCode }).catch(() => {});
-                canonicalProfile.uniqueCode = uniqueCode;
-              }
-
-              if (authEventVersion === authEventVersionRef.current) {
-                setSocialProfile(canonicalProfile);
-              }
-              if (!canonicalProfile.isOnline) {
-                await updateDoc(userDocRef, { isOnline: true }).catch(() => {});
-              }
-            } else if (authEventVersion === authEventVersionRef.current) {
-              setSocialProfile(null);
-            }
-          }
-        } catch (error) {
-          if (authEventVersion !== authEventVersionRef.current) return;
-          if (shouldHydrateGoogleProfile) {
-            console.error("Profile hydration error:", error);
-            setSocialProfile((previous) => previous ?? makeRecoverableGoogleProfile(user));
-          } else {
-            console.error("Profile Fetch Error:", error);
-          }
-        } finally {
-          if (isEmailPasswordSignIn) {
-            sessionStorage.removeItem(EMAIL_PASSWORD_AUTH_FLAG_KEY);
-          }
-          if (authEventVersion === authEventVersionRef.current) {
-            setLoading(false);
-          }
-        }
+        await hydrateProfile(user, authEventVersion);
       } else {
         setSocialProfile(null);
         setLoading(false);
@@ -247,7 +276,7 @@ export const SocialAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return () => {
       unsubscribeAuth();
     };
-  }, []);
+  }, [hydrateProfile]);
 
   const logout = async () => {
     // Guard against double-clicks / concurrent invocations (the UI button is
@@ -381,7 +410,7 @@ export const SocialAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   };
 
   return (
-    <SocialAuthContext.Provider value={{ currentUser, socialProfile, loading, logout, updateSocialProfile }}>
+    <SocialAuthContext.Provider value={{ currentUser, socialProfile, loading, accountReadiness, logout, updateSocialProfile, refreshProfile }}>
       {children}
     </SocialAuthContext.Provider>
   );

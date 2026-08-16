@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import http from 'node:http';
+import { WebSocketServer, WebSocket } from 'ws';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -14,7 +16,12 @@ import { rateLimiter, sanitizationMiddleware, createAdminGuard, logFailedAttempt
 import { generateSubtitle, translateSrtViaGemini } from './features/subtitles/subtitleGenerator.js';
 import { execFile } from 'node:child_process';
 import * as XLSX from 'xlsx';
-import * as admin from 'firebase-admin';
+// `import admin from` (esModuleInterop) resolves firebase-admin's CJS
+// `export =` namespace to its default export: the full admin object. A bare
+// `import * as admin` would only expose the `default` slot under tsx's ESM
+// loader (breaking admin.credential.cert), while the esbuild CJS bundle would
+// expose everything directly — the default-import form works identically in both.
+import admin from 'firebase-admin';
 
 // ---------------------------------------------------------------------------
 // Firebase Admin SDK — server-side verification of Firebase ID tokens.
@@ -174,6 +181,20 @@ async function verifyFirebaseIdToken(authHeader: string | undefined): Promise<st
   }
 }
 
+// Converts a thrown auth-verification error into a safe client response.
+// Technical details (e.g. "Missing Firebase Admin credentials") are logged to
+// the server console only; clients always receive a short, readable message
+// with the same HTTP status, never internal error strings.
+function respondAuthError(res: express.Response, authError: any): void {
+  const status = authError?.status || 401;
+  if (status === 503) {
+    console.error('[auth] Firebase Admin unavailable:', authError?.message || authError);
+    res.status(503).json({ error: 'پایگەی تۆمارکردن کاتی بەکارە؛ تکایە دواتر هەوڵبدەوە.' });
+    return;
+  }
+  res.status(status).json({ error: 'نەیتوانی پەسەند بیت؛ تکایە دووبارە هەوڵبدەوە.' });
+}
+
 const CINEMACHAT_AUTH_HOST = 'auth.cinamachat.com';
 const CINEMACHAT_AUTH_ORIGIN = `https://${CINEMACHAT_AUTH_HOST}`;
 const FIREBASE_AUTH_HELPER_ORIGIN =
@@ -294,7 +315,7 @@ async function proxyFirebaseReservedConfig(req: express.Request, res: express.Re
 }
 
 // ---------------------------------------------------------------------------
-// Pure Node.js YouTube caption fetcher â€” no yt-dlp, no external npm packages.
+// Pure Node.js YouTube caption fetcher — no yt-dlp, no external npm packages.
 // Extracts the video ID, fetches the YouTube page to locate caption tracks,
 // downloads the first available caption track, and returns the raw text.
 // ---------------------------------------------------------------------------
@@ -1179,7 +1200,7 @@ async function fetchYoutubeCaptionsViaYtDlp(
 }
 
 // ---------------------------------------------------------------------------
-// Direct YouTube stream resolution (yt-dlp) â€” powers the player's fallback so
+// Direct YouTube stream resolution (yt-dlp) — powers the player's fallback so
 // posted movies still play when YouTube blocks embedding (the "Playback ID"
 // error). yt-dlp already exists on the server (used for captions) and returns a
 // progressive MP4 URL that any <video> element can stream directly without CORS.
@@ -1280,7 +1301,7 @@ function formatSrtTime(seconds: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
 }
 
-// Sanitize URLs to decode HTML entities (e.g. &#x2F; â†’ /) and convert YouTube watch links to embed links
+// Sanitize URLs to decode HTML entities (e.g. &#x2F; → /) and convert YouTube watch links to embed links
 function sanitizeUrl(url: string): string {
   if (!url || typeof url !== 'string') return '';
   let cleanUrl = url
@@ -1316,7 +1337,7 @@ process.on('unhandledRejection', (reason: any) => {
 const DB_PATH = path.join(process.cwd(), 'db.json');
 
 // Firestore is the durable cross-deploy store for movie view counts. Render's
-// filesystem is ephemeral â€” db.json (and its viewsCounts) resets on every
+// filesystem is ephemeral — db.json (and its viewsCounts) resets on every
 // deploy/restart, which wiped the lifetime counters in production. The counters
 // are written through to Firestore and re-hydrated at boot so they survive
 // redeploys. Same project + public web API key the client already uses
@@ -1330,7 +1351,7 @@ const FIREBASE_API_KEY =
   process.env.VITE_FIREBASE_API_KEY ||
   'AIzaSyDQBu-FwP9w7O6KqaWQOsqyTP6NudH9eBI';
 // Doc that stores { counts: { movieId: views } } in the `config` collection
-// (rules: allow read, write: if true â€” no deploy of firestore.rules needed).
+// (rules: allow read, write: if true — no deploy of firestore.rules needed).
 const MOVIE_VIEWS_DOC = process.env.MOVIE_VIEWS_DOC || 'config/movieViews';
 
 // Initial DB Structure
@@ -1339,7 +1360,7 @@ const INITIAL_DB = {
     { username: 'admin', password: '', isSuper: true, isOwner: true, role: 'owner' }
   ],
   users: [] as any[],
-  categories: ["Ù‡Û•Ù…ÙˆÙˆÛŒ", "Ø¦Ø§Ú©Ø´Ù†", "Ú©Û†Ù…ÛŒØ¯ÛŒ", "Ø¯Ø±Ø§Ù…Ø§", "ØªØ±Ø³Ù†Ø§Ú©", "Ø¦Û•Ù†ÛŒÙ…ÛŽ", "Ø¯Û†Ú©ÛŒÙˆÙ…ÛŽÙ†ØªØ§Ø±ÛŒ"],
+  categories: ["هەمووی", "ئاکشن", "کۆمیدی", "دراما", "ترسناک", "ئەنیمێ", "دۆکیومێنتاری"],
   heroConfig: {
     heroVideoUrl: '',
     heroPlaylist: [] as string[]
@@ -1347,7 +1368,7 @@ const INITIAL_DB = {
   syncGroups: {
     "global_room_official": {
       id: "global_room_official",
-      name: "Ù¾Û•Ø®Ø´ÛŒ Ú•Ø§Ø³ØªÛ•ÙˆØ®Û†",
+      name: "پەخشی ڕاستەوخۆ",
       currentMovieId: "hero-promo",
       playback: {
         isPlaying: true,
@@ -1356,7 +1377,7 @@ const INITIAL_DB = {
       },
       videoData: {
         id: "hero-promo",
-        title: "Ù¾Û•Ø®Ø´ÛŒ Ú•Ø§Ø³ØªÛ•ÙˆØ®Û†",
+        title: "پەخشی ڕاستەوخۆ",
         isYouTube: false,
         url: ""
       }
@@ -1395,7 +1416,7 @@ const INITIAL_DB = {
   // Derived from `favorites` but cached so trending/enrichment stays O(1).
   favoriteCounts: {} as Record<string, number>,
   // Per-movie lifetime view count (movieId -> number of watch sessions).
-  // The single source of truth for every card's "ðŸ“ˆ Views" counter. Covers
+  // The single source of truth for every card's "📈 Views" counter. Covers
   // movies that only exist in Firestore (not in manualMovies), seeded at boot
   // from the movies' existing `views` field and incremented once per session.
   viewsCounts: {} as Record<string, number>,
@@ -1420,7 +1441,7 @@ const INITIAL_DB = {
 const INITIAL_BROADCAST_ROOM = {
   id: 'main_broadcast_room',
   // Permanent "CinemaChat" two-person watch room. The name must always read
-  // "CinemaChat" â€” the startup guard below re-asserts it even when the room
+  // "CinemaChat" — the startup guard below re-asserts it even when the room
   // already exists so renames can never stick.
   name: 'CinemaChat',
   hostCode: 'ADMIN_BROADCAST',
@@ -1437,7 +1458,7 @@ const INITIAL_BROADCAST_ROOM = {
 
 const INITIAL_GLOBAL_ROOM = {
   id: 'global_room_official',
-  name: 'Ú˜ÙˆÙˆØ±ÛŒ Ø³Û•Ø±Û•Ú©ÛŒ',
+  name: 'ژووری سەرەکی',
   hostCode: 'GLOBAL_HOST',
   currentMovieUrl: '',
   isPlaying: false,
@@ -1671,8 +1692,8 @@ const saveMovieViewsToFirestore = (counts: Record<string, number>): void => {
     );
 };
 
-// Persist a single movie's category tags to Firestore (movies/{id}) â€” the
-// durable catalog store the client reads via getDocs â€” so an admin "Ù¾Û†Ù„ÛŽÙ†"
+// Persist a single movie's category tags to Firestore (movies/{id}) — the
+// durable catalog store the client reads via getDocs — so an admin "پۆلێن"
 // change is visible to every client immediately, not just in the server cache.
 // Throws on non-OK so the caller can surface a failed Firestore write.
 const saveMovieTagsToFirestore = async (movieId: string, tags: string[]): Promise<void> => {
@@ -1700,8 +1721,8 @@ const saveMovieTagsToFirestore = async (movieId: string, tags: string[]): Promis
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 };
 
-// --- Durable movie catalog sync (Firestore â†’ server cache) ---
-// The homepage catalog lives in Firestore (movies/{id}) â€” the admin panel writes
+// --- Durable movie catalog sync (Firestore → server cache) ---
+// The homepage catalog lives in Firestore (movies/{id}) — the admin panel writes
 // every movie there from the browser. The backend used to serve only the local
 // db.json manual list, so /api/movies returned a near-empty payload in production
 // (Render's filesystem is ephemeral) and the frontend had to block on a full
@@ -1763,7 +1784,7 @@ const firestorePaymentsUrl = (query: string) =>
     FIREBASE_API_KEY
   )}${query}`;
 
-// One-shot read of the Firestore movies collection (capped at 300 docs â€” the
+// One-shot read of the Firestore movies collection (capped at 300 docs — the
 // whole catalog is far below that). Returns plain movie objects keyed by doc id.
 const loadFirestoreMovies = async (): Promise<any[]> => {
   const res = await fetchWithTimeout(
@@ -1808,7 +1829,7 @@ const syncFirestoreMovies = async (deletedIds: string[] = []): Promise<void> => 
   }
 };
 
-// Stored URLs may arrive HTML-entity-encoded (e.g. "https:&#x2F;&#x2F;â€¦?a=1&amp;b=2")
+// Stored URLs may arrive HTML-entity-encoded (e.g. "https:&#x2F;&#x2F;…?a=1&amp;b=2")
 // when a URL was pasted from an HTML source or saved through a form. If left
 // raw, a browser resolves such a string to a malformed request like
 // "https://&/" (the "&#x2F;" "&#x2F;" becomes a "#fragment" / "&" and Chrome
@@ -1845,6 +1866,316 @@ const mergeCatalogWithFirestore = (local: any[], deletedIds: string[] = []): any
   for (const movie of Object.values(firestoreMoviesCache)) store(movie);
   return Array.from(merged.values());
 };
+
+// ---------------------------------------------------------------------------
+// Private 1-to-1 ephemeral chat (Friend → Connect flow)
+//
+// Unlike the permanent CinemaChat broadcast room, this is a strictly PRIVATE
+// two-person session between two accounts connected via the `friend_connections`
+// collection. It is EPHEMERAL by design:
+//   • Messages live ONLY in server RAM — never in Firestore, db.json,
+//     localStorage, sessionStorage, logs, analytics or backups.
+//   • Sessions are destroyed when a participant leaves, when BOTH disconnect,
+//     or when heartbeats go silent (bounded fallback ~45s for abrupt browser /
+//     network termination).
+//   • `friend_connections` documents hold only connection metadata + status —
+//     never message history. A reconnect always starts with an empty chat.
+//
+// Security: every event authenticates with a Firebase ID token verified server-
+// side (verifyFirebaseIdToken). The sender UID is ALWAYS derived from the token
+// — a phone/email is never used as a session/room id. Only the two participants
+// of an ACCEPTED connection may join, send or receive in a session.
+//
+// WebSocket endpoint:  /ws/private-chat  (dedicated path on the HTTP server)
+// REST endpoint:       POST /api/private-chat/session
+// ---------------------------------------------------------------------------
+
+const PRIVATE_CONNECTIONS_COLLECTION = 'friend_connections';
+const PRIVATE_SESSION_HEARTBEAT_MS = 45000; // silent this long → dead session
+const PRIVATE_SESSION_SWEEP_MS = 15000;     // sweep frequency
+const PRIVATE_MESSAGE_MAX_LEN = 2000;
+const PRIVATE_MESSAGE_RATE_WINDOW_MS = 15000;
+const PRIVATE_MESSAGE_RATE_MAX = 30;        // per participant per window
+
+interface PrivateSessionMember {
+  uid: string;
+  socket: WebSocket | null;
+  connectedAt: number;
+  lastHeartbeatAt: number;
+  rateHits: number[];
+  typing: boolean;
+}
+
+interface PrivateSession {
+  id: string;             // cryptographically random — the only session identifier
+  connectionId: string;   // friend_connections doc id
+  participants: string[]; // sorted [uidA, uidB]
+  status: 'open' | 'closed';
+  createdAt: number;
+  lastHeartbeatAt: number;
+  members: Map<string, PrivateSessionMember>;
+}
+
+// connectionId → session. Message history is intentionally NOT stored anywhere.
+const privateSessions = new Map<string, PrivateSession>();
+
+const privateSessionLog = (action: string, sessionId?: string, detail?: string) => {
+  console.log(`[PrivateChat] ${action}${sessionId ? ` ${sessionId}` : ''}${detail ? ` — ${detail}` : ''}`);
+};
+
+/** Read an accepted-connection document via the Admin SDK (bypasses client
+ *  rules, so the server is the single authority for session access). Returns
+ *  null when the doc is missing OR the Admin SDK isn't configured. */
+const getPrivateConnection = (connectionId: string): Promise<any | null> => {
+  const app = initializeFirebaseAdmin();
+  if (!app) return Promise.resolve(null);
+  return app
+    .firestore()
+    .collection(PRIVATE_CONNECTIONS_COLLECTION)
+    .doc(connectionId)
+    .get()
+    .then((snap) => (snap.exists ? snap.data() : null))
+    .catch((err: any) => {
+      console.error('[PrivateChat] Failed to read connection:', err?.message || err);
+      return null;
+    });
+};
+
+/** Tear down a session, notify any live sockets, drop it from memory. */
+function destroyPrivateSession(connectionId: string, reason: string) {
+  const session = privateSessions.get(connectionId);
+  if (!session) return;
+  session.status = 'closed';
+  for (const member of session.members.values()) {
+    if (member.socket && member.socket.readyState === WebSocket.OPEN) {
+      try {
+        member.socket.send(JSON.stringify({ type: 'session_closed', reason }));
+      } catch { /* socket is gone */ }
+      try { member.socket.close(1000, 'session closed'); } catch { /* socket is gone */ }
+    }
+  }
+  session.members.clear();
+  privateSessions.delete(connectionId);
+  privateSessionLog('Session destroyed', session.id, reason);
+}
+
+function getOrCreatePrivateSession(connectionId: string, uidA: string, uidB: string): PrivateSession {
+  const existing = privateSessions.get(connectionId);
+  if (existing && existing.status === 'open') return existing;
+  if (existing) {
+    existing.members.clear();
+    privateSessions.delete(connectionId);
+  }
+  const session: PrivateSession = {
+    id: crypto.randomBytes(16).toString('hex'),
+    connectionId,
+    participants: [uidA, uidB].sort(),
+    status: 'open',
+    createdAt: Date.now(),
+    lastHeartbeatAt: Date.now(),
+    members: new Map(),
+  };
+  privateSessions.set(connectionId, session);
+  privateSessionLog('Session created', session.id);
+  return session;
+}
+
+function findPrivateSessionById(sessionId: string): PrivateSession | null {
+  for (const session of privateSessions.values()) {
+    if (session.id === sessionId) return session;
+  }
+  return null;
+}
+
+function privateSessionBroadcast(session: PrivateSession, payload: object, excludeUid?: string) {
+  for (const [puid, member] of session.members) {
+    if (puid === excludeUid) continue;
+    if (member.socket && member.socket.readyState === WebSocket.OPEN) {
+      try { member.socket.send(JSON.stringify(payload)); } catch { /* socket is gone */ }
+    }
+  }
+}
+
+function sanitizePrivateText(raw: unknown): string {
+  const s = String(raw ?? '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+    .trim();
+  if (!s || s.length > PRIVATE_MESSAGE_MAX_LEN) return '';
+  return s;
+}
+
+/** Create-or-return the session id for an ACCEPTED connection, restricted to
+ *  the two participants. Shared by the REST endpoint and the WS auth path so
+ *  both parties always resolve to the SAME session id for a connection. */
+async function privateSessionIdForParticipant(uid: string, connectionId: string): Promise<string> {
+  const connection = await getPrivateConnection(connectionId);
+  if (!connection) {
+    const err: any = new Error('connection not found');
+    err.status = 404;
+    throw err;
+  }
+  if (connection.status !== 'accepted') {
+    const err: any = new Error('connection not accepted');
+    err.status = 409;
+    throw err;
+  }
+  if (connection.requesterUid !== uid && connection.targetUid !== uid) {
+    const err: any = new Error('forbidden: not a participant');
+    err.status = 403;
+    throw err;
+  }
+  return getOrCreatePrivateSession(connectionId, connection.requesterUid, connection.targetUid).id;
+}
+
+/** Per-connection WebSocket handler for the ephemeral private chat. */
+function handlePrivateChatSocket(ws: WebSocket) {
+  let session: PrivateSession | null = null;
+  let uid: string | null = null;
+
+  const fail = (code: number, message: string) => {
+    try { ws.send(JSON.stringify({ type: 'error', message })); } catch { /* socket is gone */ }
+    try { ws.close(code, message); } catch { /* socket is gone */ }
+  };
+
+  ws.on('message', (raw) => {
+    let msg: any;
+    try { msg = JSON.parse(raw.toString()); } catch { return; }
+    const type = msg?.type;
+
+    if (type === 'auth') {
+      if (uid) { fail(1002, 'already authenticated'); return; }
+      const token = String(msg?.token || '');
+      const sessionId = String(msg?.sessionId || '');
+      if (!token || !sessionId) { fail(1002, 'auth requires token and sessionId'); return; }
+      verifyFirebaseIdToken(`Bearer ${token}`)
+        .then(async (verifiedUid) => {
+          const found = findPrivateSessionById(sessionId);
+          if (!found) { fail(1004, 'session not found or closed'); return; }
+          if (!found.participants.includes(verifiedUid)) { fail(1008, 'forbidden: not a participant'); return; }
+          // Re-authorize against Firestore so a revoked / re-created connection
+          // can never be resurrected in an open session.
+          const connection = await getPrivateConnection(found.connectionId);
+          if (!connection || connection.status !== 'accepted') {
+            destroyPrivateSession(found.connectionId, 'connection no longer accepted');
+            fail(1004, 'session unavailable');
+            return;
+          }
+          session = found;
+          uid = verifiedUid;
+          found.lastHeartbeatAt = Date.now();
+          const previous = found.members.get(uid);
+          if (previous && previous.socket !== ws && previous.socket && previous.socket.readyState === WebSocket.OPEN) {
+            try { previous.socket.close(4000, 'replaced by a newer connection'); } catch { /* socket is gone */ }
+          }
+          found.members.set(uid, {
+            uid,
+            socket: ws,
+            connectedAt: Date.now(),
+            lastHeartbeatAt: Date.now(),
+            rateHits: [],
+            typing: false,
+          });
+          ws.send(JSON.stringify({
+            type: 'joined',
+            sessionId: found.id,
+            participants: found.participants,
+            peerUid: found.participants.find((p) => p !== uid) || '',
+          }));
+          privateSessionBroadcast(found, { type: 'presence', uid, online: true }, uid);
+          privateSessionLog('Participant joined', found.id, uid);
+        })
+        .catch((err: any) => {
+          fail(err?.status === 503 ? 1013 : 1008, err?.message || 'authentication failed');
+        });
+      return;
+    }
+
+    if (!session || !uid) { fail(1002, 'not authenticated'); return; }
+    const member = session.members.get(uid);
+    if (!member || member.socket !== ws) { fail(1002, 'invalid connection'); return; }
+    const now = Date.now();
+    session.lastHeartbeatAt = now;
+    member.lastHeartbeatAt = now;
+
+    if (type === 'heartbeat') {
+      ws.send(JSON.stringify({ type: 'heartbeat_ack', t: now }));
+      return;
+    }
+    if (session.status !== 'open') { fail(1004, 'session closed'); return; }
+
+    if (type === 'send') {
+      member.rateHits = member.rateHits.filter((t) => now - t < PRIVATE_MESSAGE_RATE_WINDOW_MS);
+      if (member.rateHits.length >= PRIVATE_MESSAGE_RATE_MAX) {
+        ws.send(JSON.stringify({ type: 'error', message: 'rate_limited' }));
+        return;
+      }
+      const text = sanitizePrivateText(msg?.text);
+      if (!text) {
+        ws.send(JSON.stringify({ type: 'error', message: 'empty_message' }));
+        return;
+      }
+      member.rateHits.push(now);
+      const payload = {
+        type: 'message',
+        clientId: String(msg?.clientId || '').slice(0, 64),
+        senderId: uid,
+        text,
+        ts: now,
+      };
+      // Deliver to the ONE other participant only — never broadcast publicly.
+      privateSessionBroadcast(session, payload, uid);
+      // Echo an ack to the sender (optimistic UI keeps the server timestamp).
+      ws.send(JSON.stringify({ ...payload, ack: true }));
+      return;
+    }
+
+    if (type === 'typing') {
+      member.typing = !!msg?.typing;
+      privateSessionBroadcast(session, { type: 'typing', uid, typing: member.typing }, uid);
+      return;
+    }
+
+    if (type === 'leave') {
+      destroyPrivateSession(session.connectionId, 'participant left');
+      return;
+    }
+  });
+
+  ws.on('close', () => {
+    if (session && uid) {
+      const member = session.members.get(uid);
+      if (member && member.socket === ws) {
+        session.members.delete(uid);
+        privateSessionBroadcast(session, { type: 'presence', uid, online: false }, uid);
+        if (session.members.size === 0) {
+          destroyPrivateSession(session.connectionId, 'both participants disconnected');
+        }
+      }
+    }
+  });
+
+  ws.on('error', () => {
+    try { ws.close(); } catch { /* socket is gone */ }
+  });
+}
+
+// Periodic sweep: destroy sessions whose heartbeats went silent (abrupt network
+// / browser shutdown). This bounded fallback guarantees ephemerality even when
+// a Leave/Close event can never arrive.
+setInterval(() => {
+  const now = Date.now();
+  for (const [connectionId, session] of privateSessions) {
+    if (session.status !== 'open') {
+      privateSessions.delete(connectionId);
+      continue;
+    }
+    const allStale = session.participants.every((p) => {
+      const member = session.members.get(p);
+      return !member || now - member.lastHeartbeatAt > PRIVATE_SESSION_HEARTBEAT_MS;
+    });
+    if (allStale) destroyPrivateSession(connectionId, 'heartbeat expired');
+  }
+}, PRIVATE_SESSION_SWEEP_MS);
 
 async function startServer() {
   console.log('==================================================');
@@ -1916,7 +2247,7 @@ async function startServer() {
   if (!db.invitations) db.invitations = [];
   if (!db.directMessages) db.directMessages = [];
   if (!db.appSnapshots) db.appSnapshots = [];
-  if (!db.categories) db.categories = ["Ù‡Û•Ù…ÙˆÙˆÛŒ", "Ø¦Ø§Ú©Ø´Ù†", "Ú©Û†Ù…ÛŒØ¯ÛŒ", "Ø¯Ø±Ø§Ù…Ø§", "ØªØ±Ø³Ù†Ø§Ú©", "Ø¦Û•Ù†ÛŒÙ…ÛŽ", "Ø¯Û†Ú©ÛŒÙˆÙ…ÛŽÙ†ØªØ§Ø±ÛŒ"];
+  if (!db.categories) db.categories = ["هەمووی", "ئاکشن", "کۆمیدی", "دراما", "ترسناک", "ئەنیمێ", "دۆکیومێنتاری"];
   if (!db.favorites) db.favorites = {};
   if (!db.favoriteCounts) db.favoriteCounts = {};
   if (!db.ratings) db.ratings = {};
@@ -1930,7 +2261,7 @@ async function startServer() {
   // Permanent "CinemaChat" two-person watch room (main_broadcast_room).
   // Ensured at EVERY startup so the room always survives restarts. If it already
   // exists, ALL of its data (activeUsers, chatMessages, videoData, playback,
-  // currentMovieUrl, ...) is preserved untouched â€” only the name is guaranteed
+  // currentMovieUrl, ...) is preserved untouched — only the name is guaranteed
   // to read "CinemaChat" and the isOfficial flag is enforced.
   if (!db.syncGroups["main_broadcast_room"]) {
     db.syncGroups["main_broadcast_room"] = { ...INITIAL_BROADCAST_ROOM };
@@ -1975,8 +2306,8 @@ async function startServer() {
   // if (!Array.isArray(db.rooms)) db.rooms = []; // Removed
   if (!db.vipSettings) db.vipSettings = {
     qrCodeUrl: "https://i.ibb.co/3kWy3m9/fastpay-qr-mock.png",
-    paymentDetails: "Ú˜Ù…Ø§Ø±Û•ÛŒ Ø¨Ø§ÚµØ§Ù†Ø³ÛŒ ÙØ§Ø³ØªÙ¾Û•ÛŒ / Ø²ÛŒÙ† Ú©Ø§Ø´: 07501234567\nØ¨Ø§Ù†Ú©ÛŒ ÙˆØ§ÚµÛŽØª: FIb - 12345678", // Default payment details
-    instructions: "Ø¨Û† Ø¨Û•Ú˜Ø¯Ø§Ø±ÛŒÚ©Ø±Ø¯Ù† Ùˆ Ø¨ÛŒÙ†ÛŒÙ†ÛŒ Ù¾Û•Ø®Ø´ÛŒ Ú•Ø§Ø³ØªÛ•ÙˆØ®Û†ÛŒ VIP CinemaChat Ø¨Û• Ø´ÛŽÙˆÛ•ÛŒ Ù‡Û•Ù…ÛŒØ´Û•ÛŒÛŒØŒ Ø¨Ú•ÛŒ Ù¾Ø§Ø±Û•ÛŒ ØªÛŒÚ©ÛŽØªÛ•Ú©Û• Ø¨Ù†ÛŽØ±Û• Ùˆ Ù¾Ø§Ø´Ø§Ù† Ù¾Û•ÛŒÙˆÛ•Ù†Ø¯ÛŒ Ø¨Û• Ø¦Û•Ø¯Ù…ÛŒÙ†Û•ÙˆÛ• Ø¨Ú©Û• Ù„Û• ØªÛŽÙ„ÛŒÚ¯Ø±Ø§Ù… (@cinemasupport) Ø¨Û† ÙˆÛ•Ø±Ú¯Ø±ØªÙ†ÛŒ Ú©Û†Ø¯Û•Ú©Û•Øª."
+    paymentDetails: "ژمارەی باڵانسی فاستپەی / زین کاش: 07501234567\nبانکی واڵێت: FIb - 12345678", // Default payment details
+    instructions: "بۆ بەژداریکردن و بینینی پەخشی ڕاستەوخۆی VIP CinemaChat بە شێوەی هەمیشەیی، بڕی پارەی تیکێتەکە بنێرە و پاشان پەیوەندی بە ئەدمینەوە بکە لە تێلیگرام (@cinemasupport) بۆ وەرگرتنی کۆدەکەت."
   };
   if (db.cinemaWindows?.cinema_1) {
     const room = db.cinemaWindows.cinema_1;
@@ -2058,9 +2389,9 @@ async function startServer() {
     String(deviceId || '').trim().replace(/[^\w.:@-]/g, '').slice(0, 128);
 
   // Resolve the caller's identity from a request:
-  //   deviceId â€” the unique browser/device fingerprint sent by the client.
-  //   ip       â€” the client's public IP (shared on mobile NAT networks).
-  //   key      â€” the identity used for auto-ban counting: the device fingerprint
+  //   deviceId — the unique browser/device fingerprint sent by the client.
+  //   ip       — the client's public IP (shared on mobile NAT networks).
+  //   key      — the identity used for auto-ban counting: the device fingerprint
   //              whenever it is present, otherwise the IP (non-browser clients).
   // Preferring the device fingerprint is what isolates a single misbehaving
   // device instead of blocking the whole platform / every user behind the IP.
@@ -2102,7 +2433,7 @@ async function startServer() {
     return !!(db.ownerWhitelist && clean && db.ownerWhitelist[clean]);
   };
 
-  // Exact IP match only â€” a substring match previously let a banned IP such as
+  // Exact IP match only — a substring match previously let a banned IP such as
   // "1.2.3.4" also block "1.2.3.40" or "101.2.3.4" (over-blocking whole ranges).
   const isIpBanned = (ip: string): boolean => {
     const cleanIp = normalizeIpKey(ip);
@@ -2199,7 +2530,7 @@ async function startServer() {
 
   function getIpLocation(ip: string): string {
     if (ip === "::1" || ip === "127.0.0.1" || ip.startsWith("192.168.")) {
-      return "Ù†Ø§ÙˆÛ•Ø®Û† (Erbil, KR)";
+      return "ناوەخۆ (Erbil, KR)";
     }
     const cities = ["Erbil", "Sulaymaniyah", "Duhok", "Kirkuk", "Halabja", "Zakho", "Sorani"];
     const sum = ip.split('.').reduce((acc, val) => acc + (parseInt(val) || 0), 0);
@@ -2271,7 +2602,7 @@ async function startServer() {
       dbAny.intrusionAttempts = dbAny.intrusionAttempts.slice(0, 200);
     }
   }
-  let trackerText = "Ø¨Û•Ø®ÛŽØ±Ø¨ÛŽÙ† Ø¨Û† CinamaChat - Ù†ÙˆÛŽØªØ±ÛŒÙ† ÙÛŒÙ„Ù… Ùˆ Ø²Ù†Ø¬ÛŒØ±Û•Ú©Ø§Ù† Ù„ÛŽØ±Û• Ø¨Ø¨ÛŒÙ†Û•";
+  let trackerText = "بەخێربێن بۆ CinamaChat - نوێترین فیلم و زنجیرەکان لێرە ببینە";
   let trackerType = "normal";
   let lastFetchTime = new Date().toISOString();
 
@@ -2472,7 +2803,7 @@ async function startServer() {
     };
   };
 
-  // Detect the highest live-viewer movie so cards can render the ðŸ”¥ #1 Live
+  // Detect the highest live-viewer movie so cards can render the 🔥 #1 Live
   // badge without a client round-trip.
   const getTopLiveMovieId = (): string => {
     let topId = '';
@@ -2583,7 +2914,7 @@ async function startServer() {
   app.use(FIREBASE_AUTH_HELPER_PATH_PREFIX, proxyFirebaseAuthHelper);
   app.use(FIREBASE_RESERVED_CONFIG_PATH_PREFIX, proxyFirebaseReservedConfig);
 
-  // Body parsers â€” also accept text/plain so POST requests routed through
+  // Body parsers — also accept text/plain so POST requests routed through
   // Firebase's 307 redirect can avoid CORS preflight (simple content-type).
   app.use(express.json({ type: ['application/json', 'text/plain'], limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -2633,8 +2964,8 @@ async function startServer() {
         addSystemErrorLog(
           db,
           `${req.method} ${req.url}`,
-          `Ø´Ú©Ø³Øª Ù„Û• Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ Ø¨Û• Ú©Û†Ø¯ÛŒ HTTP ${res.statusCode}`,
-          `Ø¦Ø§ÛŒÙ¾ÛŒ Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø±: ${cleanIp}`
+          `شکست لە داواکاری بە کۆدی HTTP ${res.statusCode}`,
+          `ئایپی بەکارهێنەر: ${cleanIp}`
         );
       }
     });
@@ -2685,7 +3016,7 @@ async function startServer() {
         await addIntrusionAttempt(db, cleanIp, req.url, matchedPattern, "SQL Injection / XSS Probe", identity.deviceId);
 
         // Count total threat records for this identity (device fingerprint when
-        // present, else IP). Auto-banning the DEVICE isolates the offender â€”
+        // present, else IP). Auto-banning the DEVICE isolates the offender —
         // never the whole site / other users behind a shared mobile IP.
         const threatKey = identity.key;
         const threatCount = db.intrusionAttempts.filter((att: any) => {
@@ -2706,13 +3037,13 @@ async function startServer() {
               recordBanTime(cleanIp);
             }
           }
-          await addAuditLog(db, "SYSTEM_AUTO_SHIELD", "Auto Device/IP Block (Intrusion)", `Ø¨Ù„Û†Ú©Ú©Ø±Ø¯Ù†ÛŒ Ø®Û†Ú©Ø§Ø±ÛŒ ${identity.deviceId ? `Ø¦Ø§Ù…ÛŽØ±ÛŒ ${identity.deviceId}` : `Ø¦Ø§ÛŒÙ¾ÛŒ ${cleanIp}`} Ø¨Û•Ù‡Û†ÛŒ Ø²ÛŒØ§ØªØ± Ù„Û• Ù£ Ù‡Û•ÙˆÚµÛŒ Ù‡ÛŽØ±Ø´Ø¨Ø±Ø¯Ù†.`);
+          await addAuditLog(db, "SYSTEM_AUTO_SHIELD", "Auto Device/IP Block (Intrusion)", `بلۆککردنی خۆکاری ${identity.deviceId ? `ئامێری ${identity.deviceId}` : `ئایپی ${cleanIp}`} بەهۆی زیاتر لە ٣ هەوڵی هێرشبردن.`);
           await saveDB(db);
-          return res.status(403).json({ error: "Ø³ÛŒØ³ØªÛ•Ù…ÛŒ Ù‚Û•ÚµØºØ§Ù†ÛŒ Ø¦Ø§Ø³Ø§ÛŒØ´ Ú•ÛŽÚ¯Ø±ÛŒ Ù„ÛŽÚ©Ø±Ø¯ÛŒØª Ø¨Û•Ù‡Û†ÛŒ Ú¯Û†Ú•Ø§Ù†Ú©Ø§Ø±ÛŒ Ú¯ÙˆÙ…Ø§Ù†Ø§ÙˆÛŒ Ù„Ú©ÛŽÙ†Ø¯Ø±Ø§Ùˆ" });
+          return res.status(403).json({ error: "سیستەمی قەڵغانی ئاسایش ڕێگری لێکردیت بەهۆی گۆڕانکاری گوماناوی لکێندراو" });
         }
 
         await saveDB(db);
-        return res.status(400).json({ error: "Ú©Ø±Ø¯Ø§Ø±ÛŒ Ú¯ÙˆÙ…Ø§Ù†Ø§ÙˆÛŒ Ø¯Û†Ø²Ø±Ø§ÛŒÛ•ÙˆÛ• (Potential Threat Blocked by Security Shield)" });
+        return res.status(400).json({ error: "کرداری گوماناوی دۆزرایەوە (Potential Threat Blocked by Security Shield)" });
       }
     }
     next();
@@ -2745,10 +3076,10 @@ async function startServer() {
                 banned: true,
                 ownerExempt: true,
                 unblockAt: new Date(exemption.unblockAt || Date.now()).toISOString(),
-                error: 'ØªÛ† Ø¨Ù„Û†Ú© Ú©Ø±Ø§ÙˆÛŒØª (Ø¨Û† Ø®Ø§ÙˆÛ•Ù†ÛŒ Ø³ÛŒØ³ØªÛ•Ù… â€” Ø¯Û•Ú©Ø±ÛŽØªÛ•ÙˆÛ• Ø¨Û• Ø®Û†Ú©Ø§Ø±ÛŒ Ø¯ÙˆØ§ÛŒ Ù¡ Ø®ÙˆÙ„Û•Ú©)'
+                error: 'تۆ بلۆک کراویت (بۆ خاوەنی سیستەم — دەکرێتەوە بە خۆکاری دوای ١ خولەک)'
               });
             }
-            return next(); // Auto-unblocked owner device â€” allow the request.
+            return next(); // Auto-unblocked owner device — allow the request.
           }
         }
         if (ipBanned) {
@@ -2760,14 +3091,14 @@ async function startServer() {
                 banned: true,
                 ownerExempt: true,
                 unblockAt: new Date(exemption.unblockAt || Date.now()).toISOString(),
-                error: 'ØªÛ† Ø¨Ù„Û†Ú© Ú©Ø±Ø§ÙˆÛŒØª (Ø¨Û† Ø®Ø§ÙˆÛ•Ù†ÛŒ Ø³ÛŒØ³ØªÛ•Ù… â€” Ø¯Û•Ú©Ø±ÛŽØªÛ•ÙˆÛ• Ø¨Û• Ø®Û†Ú©Ø§Ø±ÛŒ Ø¯ÙˆØ§ÛŒ Ù¡ Ø®ÙˆÙ„Û•Ú©)'
+                error: 'تۆ بلۆک کراویت (بۆ خاوەنی سیستەم — دەکرێتەوە بە خۆکاری دوای ١ خولەک)'
               });
             }
-            return next(); // Auto-unblocked owner IP/device â€” allow the request.
+            return next(); // Auto-unblocked owner IP/device — allow the request.
           }
         }
         console.warn(`[Blocked] Blocked request from banned ${deviceBanned ? `device: ${identity.deviceId}` : `IP: ${identity.ip}`} to ${req.url}`);
-        return res.status(403).json({ banned: true, error: 'ØªÛ† Ø¨Ù„Û†Ú© Ú©Ø±Ø§ÙˆÛŒØª' });
+        return res.status(403).json({ banned: true, error: 'تۆ بلۆک کراویت' });
       }
     }
     next();
@@ -2781,7 +3112,7 @@ async function startServer() {
       const isStaticAsset = req.url.includes('.') && !isApiCall;
 
       if (isApiCall && !isAdminCall && !isStaticAsset) {
-        return res.status(503).json({ emergencyLock: true, error: 'âš ï¸ Ù…Ø§ÚµÙ¾Û•Ú• Ù„Û• Ø¦ÛŽØ³ØªØ§Ø¯Ø§ Ø¨Û• Ø´ÛŽÙˆÛ•ÛŒÛ•Ú©ÛŒ Ú©Ø§ØªÛŒ Ø¯Ø§Ø®Ø±Ø§ÙˆÛ• Ø¨Û•Ù‡Û†ÛŒ Ø¨Ø§Ø±ÛŒ Ù†Ø§Ø¦Ø§Ø³Ø§ÛŒÛŒ.' });
+        return res.status(503).json({ emergencyLock: true, error: '⚠️ ماڵپەڕ لە ئێستادا بە شێوەیەکی کاتی داخراوە بەهۆی باری نائاسایی.' });
       }
     }
     next();
@@ -2813,7 +3144,7 @@ async function startServer() {
           });
         }
         if (exemption.exempt) {
-          // Auto-unblocked just now â€” report the owner device as no longer banned.
+          // Auto-unblocked just now — report the owner device as no longer banned.
           return res.json({ banned: false, ip: identity.ip, deviceId: identity.deviceId, emergencyLock: !!db.emergencyLock });
         }
       }
@@ -2839,7 +3170,7 @@ async function startServer() {
     res.json({ banned: !!isBanned, ip: identity.ip, deviceId: identity.deviceId, emergencyLock: !!db.emergencyLock });
   });
 
-  // Public unblock-request endpoint (no auth â€” reachable by blocked users so
+  // Public unblock-request endpoint (no auth — reachable by blocked users so
   // they can request their IP/device to be unblocked). A light per-IP rate
   // limit prevents bots from flooding the admin queue.
   const unblockRequestRate: Record<string, { attempts: number; firstAt: number }> = {};
@@ -2854,7 +3185,7 @@ async function startServer() {
     const existing = unblockRequestRate[rateKey];
     if (existing && now - existing.firstAt < 10 * 60 * 1000) {
       if (existing.attempts >= 3) {
-        return res.status(429).json({ success: false, error: 'Ø²Û†Ø± Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ Ù†ÛŽØ±Ø¯Ø±Ø§ÙˆÛ• Ù„Û•Ù… Ø¦Ø§Ù…ÛŽØ±Û•ÙˆÛ•. ØªÚ©Ø§ÛŒÛ• Ø¯ÙˆØ§ØªØ± Ù‡Û•ÙˆÚµØ¨Ø¯Û•ÙˆÛ•.' });
+        return res.status(429).json({ success: false, error: 'زۆر داواکاری نێردراوە لەم ئامێرەوە. تکایە دواتر هەوڵبدەوە.' });
       }
       existing.attempts += 1;
     } else {
@@ -2866,10 +3197,10 @@ async function startServer() {
     const cleanPhone = typeof phone === 'string' ? phone.trim().replace(/\s+/g, '') : '';
 
     if (!cleanName) {
-      return res.status(400).json({ success: false, error: 'ØªÚ©Ø§ÛŒÛ• Ù†Ø§ÙˆÛŒ Ø®Û†Øª Ø¨Ù†ÙˆÙˆØ³Û•.' });
+      return res.status(400).json({ success: false, error: 'تکایە ناوی خۆت بنووسە.' });
     }
     if (!/^\+?\d{6,15}$/.test(cleanPhone)) {
-      return res.status(400).json({ success: false, error: 'ØªÚ©Ø§ÛŒÛ• Ú˜Ù…Ø§Ø±Û•ÛŒ Ù…Û†Ø¨Ø§ÛŒÙ„ÛŒ Ø¯Ø±ÙˆØ³Øª Ø¨Ù†ÙˆÙˆØ³Û•.' });
+      return res.status(400).json({ success: false, error: 'تکایە ژمارەی مۆبایلی دروست بنووسە.' });
     }
 
     if (!db.unblockRequests) db.unblockRequests = [];
@@ -2891,11 +3222,11 @@ async function startServer() {
     // Persist safely: if the write fails, respond with 500 instead of leaving
     // the client's request hanging (unhandled rejection).
     try {
-      await addAuditLog(db, "USER_UNBLOCK_REQUEST", "New Unblock Request", `Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ Ù„Ø§Ø¨Ø±Ø¯Ù†ÛŒ Ø¨Ù„Û†Ú© Ù„Û• ${cleanName} (${cleanPhone}) Ø¦Ø§ÛŒÙ¾ÛŒ: ${cleanIp}${cleanDeviceId ? ` Ø¦Ø§Ù…ÛŽØ±: ${cleanDeviceId}` : ''}`);
+      await addAuditLog(db, "USER_UNBLOCK_REQUEST", "New Unblock Request", `داواکاری لابردنی بلۆک لە ${cleanName} (${cleanPhone}) ئایپی: ${cleanIp}${cleanDeviceId ? ` ئامێر: ${cleanDeviceId}` : ''}`);
       await saveDB(db);
     } catch (err) {
       console.error('[Unblock Request] Failed to persist unblock request:', err);
-      return res.status(500).json({ success: false, error: 'Ù‡Û•ÚµÛ•ÛŒ Ù†Ø§ÙˆØ®Û†ÛŒÛŒ Ú•ÙˆÙˆÛŒØ¯Ø§ Ù„Û• ØªÛ†Ù…Ø§Ø±Ú©Ø±Ø¯Ù†ÛŒ Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ. ØªÚ©Ø§ÛŒÛ• Ø¯ÙˆØ§ØªØ± Ù‡Û•ÙˆÚµØ¨Ø¯Û•ÙˆÛ•.' });
+      return res.status(500).json({ success: false, error: 'هەڵەی ناوخۆیی ڕوویدا لە تۆمارکردنی داواکاری. تکایە دواتر هەوڵبدەوە.' });
     }
     console.log(`[Unblock Request] ${cleanName} (${cleanPhone}) from ${cleanIp} device=${cleanDeviceId || 'unknown'}`);
     res.json({ success: true });
@@ -2914,7 +3245,7 @@ async function startServer() {
     if (!db.bannedIps.includes(cleanIp)) {
       db.bannedIps.push(cleanIp);
       recordBanTime(cleanIp);
-      await addAuditLog(db, adminName, "Ban IP", `Ø¦Ø§ÛŒÙ¾ÛŒ Ø¨Ù„Û†Ú©Ú©Ø±Ø§: ${cleanIp}`);
+      await addAuditLog(db, adminName, "Ban IP", `ئایپی بلۆککرا: ${cleanIp}`);
       await saveDB(db);
       console.log(`[Ban IP] Admin banned IP: ${cleanIp}`);
     }
@@ -2928,14 +3259,14 @@ async function startServer() {
     const cleanIp = String(ip).trim();
     db.bannedIps = db.bannedIps.filter((item: string) => String(item).trim() !== cleanIp);
     clearBanTime(cleanIp);
-    await addAuditLog(db, adminName, "Unban IP", `Ø¨Ù„Û†Ú©ÛŒ Ø¦Ø§ÛŒÙ¾ÛŒ Ù„Ø§Ø¯Ø±Ø§: ${cleanIp}`);
+    await addAuditLog(db, adminName, "Unban IP", `بلۆکی ئایپی لادرا: ${cleanIp}`);
     await saveDB(db);
     console.log(`[Unban IP] Admin unbanned IP: ${cleanIp}`);
     res.json({ success: true, bannedIps: db.bannedIps });
   });
 
   // Banned-devices administration endpoints. Auto-bans target the device
-  // fingerprint (X-Device-Id), so admins unban devices here â€” while the
+  // fingerprint (X-Device-Id), so admins unban devices here — while the
   // manual approval flow (resolve-unblock-request) unblocks both at once.
   app.get('/api/admin/banned-devices', (req, res) => {
     const list = (db.bannedDevices || []).map((deviceId: string) => ({
@@ -2951,7 +3282,7 @@ async function startServer() {
     const key = normalizeDeviceKey(deviceId);
     if (!key) return res.status(400).json({ error: 'Device ID required' });
     clearBanDevice(key);
-    await addAuditLog(db, adminName, "Unban Device", `Ø¨Ù„Û†Ú©ÛŒ Ø¦Ø§Ù…ÛŽØ± Ù„Ø§Ø¯Ø±Ø§: ${key}`);
+    await addAuditLog(db, adminName, "Unban Device", `بلۆکی ئامێر لادرا: ${key}`);
     await saveDB(db);
     console.log(`[Unban Device] Admin unbanned device: ${key}`);
     res.json({ success: true, bannedDevices: db.bannedDevices });
@@ -2972,7 +3303,7 @@ async function startServer() {
       db.unblockRequests = db.unblockRequests.filter((r: any) => r.id !== id);
       db.unblockArchive = db.unblockArchive || [];
       db.unblockArchive.unshift({ ...target, status: 'deleted', resolvedBy: adminName || 'Admin', resolvedAt: new Date().toISOString() });
-      await addAuditLog(db, adminName, "Delete Unblock Request", `Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ Ù„Ø§Ø¨Ø±Ø¯Ù†ÛŒ Ø¨Ù„Û†Ú© Ø³Ú•Ø§ÛŒÛ•ÙˆÛ•: ${target.name} (${target.phone})`);
+      await addAuditLog(db, adminName, "Delete Unblock Request", `داواکاری لابردنی بلۆک سڕایەوە: ${target.name} (${target.phone})`);
       await saveDB(db);
     }
     res.json({ success: true, unblockRequests: db.unblockRequests });
@@ -2986,7 +3317,7 @@ async function startServer() {
       db.unblockArchive.unshift({ ...r, status: 'archived', resolvedBy: adminName || 'Admin', resolvedAt: new Date().toISOString() });
     });
     db.unblockRequests = [];
-    await addAuditLog(db, adminName, "Clear Unblock Requests", `Ù‡Û•Ù…ÙˆÙˆ Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒÛŒÛ•Ú©Ø§Ù†ÛŒ Ù„Ø§Ø¨Ø±Ø¯Ù†ÛŒ Ø¨Ù„Û†Ú© Ø³Ú•Ø§Ù†Û•ÙˆÛ• (${count})`);
+    await addAuditLog(db, adminName, "Clear Unblock Requests", `هەموو داواکارییەکانی لابردنی بلۆک سڕانەوە (${count})`);
     await saveDB(db);
     res.json({ success: true });
   });
@@ -3001,7 +3332,7 @@ async function startServer() {
     if (!target) return res.status(404).json({ error: 'Unblock request not found' });
 
     // Unban the requester's device fingerprint (the primary auto-ban target) and
-    // IP (for manually IP-banned requests). Only the exact device/IP is lifted â€”
+    // IP (for manually IP-banned requests). Only the exact device/IP is lifted —
     // other devices and users are never affected.
     const requesterDevice = String(target.deviceId || '').trim();
     if (requesterDevice) clearBanDevice(requesterDevice);
@@ -3022,10 +3353,10 @@ async function startServer() {
 
     await addAuditLog(db, adminName, "Resolve Unblock Request",
       requesterDevice
-        ? `Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ Ù„Ø§Ø¨Ø±Ø¯Ù†ÛŒ Ø¨Ù„Û†Ú©ÛŒ Ù¾Û•Ø³Û•Ù†Ø¯Ú©Ø±Ø§ Ùˆ Ø¨Ù„Û†Ú©ÛŒ Ø¦Ø§Ù…ÛŽØ±/Ø¦Ø§ÛŒÙ¾ÛŒ (${requesterDevice}${requesterIp ? ` / ${requesterIp}` : ''}) Ù„Ø§Ø¨Ø±Ø§ Ø¨Û† ${target.name} (${target.phone})`
+        ? `داواکاری لابردنی بلۆکی پەسەندکرا و بلۆکی ئامێر/ئایپی (${requesterDevice}${requesterIp ? ` / ${requesterIp}` : ''}) لابرا بۆ ${target.name} (${target.phone})`
         : requesterIp
-          ? `Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ Ù„Ø§Ø¨Ø±Ø¯Ù†ÛŒ Ø¨Ù„Û†Ú©ÛŒ Ù¾Û•Ø³Û•Ù†Ø¯Ú©Ø±Ø§ Ùˆ Ø¨Ù„Û†Ú©ÛŒ ${requesterIp} Ù„Ø§Ø¨Ø±Ø§ Ø¨Û† ${target.name} (${target.phone})`
-          : `Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ Ù„Ø§Ø¨Ø±Ø¯Ù†ÛŒ Ø¨Ù„Û†Ú© Ù„Ø§Ø¨Ø±Ø§: ${target.name} (${target.phone})`);
+          ? `داواکاری لابردنی بلۆکی پەسەندکرا و بلۆکی ${requesterIp} لابرا بۆ ${target.name} (${target.phone})`
+          : `داواکاری لابردنی بلۆک لابرا: ${target.name} (${target.phone})`);
     await saveDB(db);
     console.log(`[Unblock Request] Resolved by ${adminName}: ${target.name} (${target.phone}) ip=${requesterIp} device=${requesterDevice || 'unknown'}`);
     res.json({ success: true, bannedIps: db.bannedIps, bannedDevices: db.bannedDevices, unblockRequests: db.unblockRequests });
@@ -3055,10 +3386,10 @@ async function startServer() {
   app.get('/api/admin/export/blocked-users/xlsx', (req, res) => {
     const rows = (db.bannedIps || []).map((ip: string, idx: number) => ({
       '#': idx + 1,
-      'IP Ø¦Ø§ÛŒÙ¾ÛŒ Ø¨Ù„Û†Ú©Ú©Ø±Ø§Ùˆ': ip,
-      'Ú©Ø§ØªÛŒ Ø¨Ù„Û†Ú© (Blocked At)': (db.bannedIpTimestamps && db.bannedIpTimestamps[ip])
-        ? new Date(db.bannedIpTimestamps[ip]).toLocaleString('ku-IQ') : 'Ù†Û•Ø²Ø§Ù†Ø±Ø§Ùˆ (Unknown)',
-      'Ø¬Û†Ø±ÛŒ Ø¨Ù„Û†Ú©': (db.ownerWhitelist && db.ownerWhitelist[ip]) ? 'Ú©Ø§ØªÛŒ Ø¨Û† Ø¦Û•Ø¯Ù…ÛŒÙ† (Owner temp)' : 'Ø¨Ù„Û†Ú©ÛŒ ØªÛ•ÙˆØ§Ùˆ (Permanent)'
+      'IP ئایپی بلۆککراو': ip,
+      'کاتی بلۆک (Blocked At)': (db.bannedIpTimestamps && db.bannedIpTimestamps[ip])
+        ? new Date(db.bannedIpTimestamps[ip]).toLocaleString('ku-IQ') : 'نەزانراو (Unknown)',
+      'جۆری بلۆک': (db.ownerWhitelist && db.ownerWhitelist[ip]) ? 'کاتی بۆ ئەدمین (Owner temp)' : 'بلۆکی تەواو (Permanent)'
     }));
     sendXlsx(res, buildExportWorkbook(rows, 'Blocked Users', [6, 20, 30, 28]), 'blocked-users.xlsx');
   });
@@ -3066,12 +3397,12 @@ async function startServer() {
   app.get('/api/admin/export/unblock-requests/xlsx', (req, res) => {
     const rows = (db.unblockRequests || []).map((r: any, idx: number) => ({
       '#': idx + 1,
-      'Ù†Ø§Ùˆ (Name)': r.name || '',
-      'Ú˜Ù…Ø§Ø±Û•ÛŒ Ù…Û†Ø¨Ø§ÛŒÙ„ (Phone)': r.phone || '',
-      'IP Ø¦Ø§ÛŒÙ¾ÛŒ': r.ip || '',
-      'Ú©Ø§ØªÛŒ Ø¨Ù„Û†Ú© (Blocked At)': r.blockedAt ? new Date(r.blockedAt).toLocaleString('ku-IQ') : 'Ù†Û•Ø²Ø§Ù†Ø±Ø§Ùˆ',
-      'Ú©Ø§ØªÛŒ Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ (Requested At)': r.timestamp ? new Date(r.timestamp).toLocaleString('ku-IQ') : 'Ù†Û•Ø²Ø§Ù†Ø±Ø§Ùˆ',
-      'Ø¦Ø§Ù…ÛŽØ±/Ø¨Û•Ø´ÛŽÙˆÛ• (Device)': r.device || ''
+      'ناو (Name)': r.name || '',
+      'ژمارەی مۆبایل (Phone)': r.phone || '',
+      'IP ئایپی': r.ip || '',
+      'کاتی بلۆک (Blocked At)': r.blockedAt ? new Date(r.blockedAt).toLocaleString('ku-IQ') : 'نەزانراو',
+      'کاتی داواکاری (Requested At)': r.timestamp ? new Date(r.timestamp).toLocaleString('ku-IQ') : 'نەزانراو',
+      'ئامێر/بەشێوە (Device)': r.device || ''
     }));
     sendXlsx(res, buildExportWorkbook(rows, 'Unblock Requests', [6, 18, 18, 18, 28, 28, 45]), 'unblock-requests.xlsx');
   });
@@ -3098,7 +3429,7 @@ async function startServer() {
     if (!db.bannedKeywords) db.bannedKeywords = [];
     if (!db.bannedKeywords.includes(cleanKw)) {
       db.bannedKeywords.push(cleanKw);
-      await addAuditLog(db, adminName, "Add Keyword", `ÙˆØ´Û•ÛŒ Ù‚Û•Ø¯Û•ØºÛ•Ú©Ø±Ø§Ùˆ Ø²ÛŒØ§Ø¯Ú©Ø±Ø§: "${cleanKw}"`);
+      await addAuditLog(db, adminName, "Add Keyword", `وشەی قەدەغەکراو زیادکرا: "${cleanKw}"`);
       await saveDB(db);
     }
     res.json({ success: true, bannedKeywords: db.bannedKeywords });
@@ -3110,7 +3441,7 @@ async function startServer() {
     const cleanKw = String(keyword).trim();
     if (!db.bannedKeywords) db.bannedKeywords = [];
     db.bannedKeywords = db.bannedKeywords.filter((k: string) => String(k).trim() !== cleanKw);
-    await addAuditLog(db, adminName, "Delete Keyword", `ÙˆØ´Û•ÛŒ Ù‚Û•Ø¯Û•ØºÛ•Ú©Ø±Ø§Ùˆ Ù„Ø§Ø¯Ø±Ø§: "${cleanKw}"`);
+    await addAuditLog(db, adminName, "Delete Keyword", `وشەی قەدەغەکراو لادرا: "${cleanKw}"`);
     await saveDB(db);
     res.json({ success: true, bannedKeywords: db.bannedKeywords });
   });
@@ -3123,7 +3454,7 @@ async function startServer() {
   app.post('/api/admin/toggle-emergency-lock', async (req, res) => {
     const { enabled, adminName } = req.body;
     db.emergencyLock = !!enabled;
-    await addAuditLog(db, adminName, "Emergency Lock", `Ù‚ÙˆÙÚµÛŒ Ø¨Ø§Ø±ÛŒ Ù†Ø§Ø¦Ø§Ø³Ø§ÛŒÛŒ Ù…Ø§ÚµÙ¾Û•Ú• ${db.emergencyLock ? "Ú†Ø§Ù„Ø§Ú©Ú©Ø±Ø§ ðŸ›‘" : "Ù†Ø§Ú†Ø§Ù„Ø§Ú©Ú©Ø±Ø§ ðŸ”“"}`);
+    await addAuditLog(db, adminName, "Emergency Lock", `قوفڵی باری نائاسایی ماڵپەڕ ${db.emergencyLock ? "چالاککرا 🛑" : "ناچالاککرا 🔓"}`);
     await saveDB(db);
     res.json({ success: true, emergencyLock: db.emergencyLock });
   });
@@ -3148,12 +3479,12 @@ async function startServer() {
     try {
       const { backupData, adminName } = req.body;
       if (!backupData) {
-        return res.status(400).json({ error: 'Ø¯Ø§ØªØ§ÛŒ Ø¨Ø§Ú©Ø¦Û•Ù¾ Ø¨Ù†ÛŽØ±Û•' });
+        return res.status(400).json({ error: 'داتای باکئەپ بنێرە' });
       }
 
       // Basic validation
       if (!backupData.admins || !Array.isArray(backupData.admins)) {
-        return res.status(400).json({ error: 'Ø¯Ø§ØªØ§Ú©Û• Ú¯ÙˆÙ†Ø¬Ø§Ùˆ Ù†ÛŒÛŒÛ•ØŒ Ù¾ÛŽÙˆÛŒØ³ØªÛ• Ù„ÛŒØ³ØªÛŒ Ù„Ø§ÛŒÛ•Ù†Ú¯Ø±ÛŒ Ø¦Û•Ø¯Ù…ÛŒÙ† Ùˆ ÙÛ†Ø±Ù…Ø§ØªÛ• Ø¯Ø±ÙˆØ³ØªÛ•Ú©Ø§Ù†ÛŒ ØªÛŽØ¯Ø§Ø¨ÛŽØª' });
+        return res.status(400).json({ error: 'داتاکە گونجاو نییە، پێویستە لیستی لایەنگری ئەدمین و فۆرماتە دروستەکانی تێدابێت' });
       }
 
       // Overwrite
@@ -3172,16 +3503,16 @@ async function startServer() {
       if (backupData.systemErrorLogs) db.systemErrorLogs = backupData.systemErrorLogs;
       if (backupData.intrusionAttempts) db.intrusionAttempts = backupData.intrusionAttempts;
 
-      await addAuditLog(db, adminName || "Admin", "Restore Database", "Ø¨Ù†Ú©Û•Ø¯Ø±Ø§ÙˆÛ•ÛŒ Ú¯Ø´ØªÛŒ Ø¨Û• Ø³Û•Ø±Ú©Û•ÙˆØªÙˆÙˆÛŒÛŒ Ù„Û• Ø¯Ø±ÙˆØ³ØªÚ©Ø±Ø§ÙˆÛ•ÛŒÛ•Ú©ÛŒ Ú©Û†Ù† Ú¯Û•Ú•ÛŽÙ†Ø¯Ø±Ø§ÛŒÛ•ÙˆÛ•");
+      await addAuditLog(db, adminName || "Admin", "Restore Database", "بنکەدراوەی گشتی بە سەرکەوتوویی لە دروستکراوەیەکی کۆن گەڕێندرایەوە");
       await saveDB(db);
 
       if (db.manualMovies) {
         setMoviesCache(() => [...db.manualMovies]);
       }
 
-      res.json({ success: true, message: 'Ø¯Ø§ØªØ§Ø¨Û•ÛŒØ³ Ø¨Û• Ø³Û•Ø±Ú©Û•ÙˆØªÙˆÙˆÛŒÛŒ Ú¯Û•Ú•ÛŽÙ†Ø¯Ø±Ø§ÛŒÛ•ÙˆÛ•' });
+      res.json({ success: true, message: 'داتابەیس بە سەرکەوتوویی گەڕێندرایەوە' });
     } catch (err: any) {
-      res.status(500).json({ error: `Ø´Ú©Ø³Øª Ù„Û• Ú¯Û•Ú•Ø§Ù†Ø¯Ù†Û•ÙˆÛ•ÛŒ Ø¯Ø§ØªØ§Ø¨Û•ÛŒØ³: ${err.message}` });
+      res.status(500).json({ error: `شکست لە گەڕاندنەوەی داتابەیس: ${err.message}` });
     }
   });
 
@@ -3204,7 +3535,7 @@ async function startServer() {
   app.post('/api/admin/clear-error-logs', async (req, res) => {
     const { adminName } = req.body;
     db.systemErrorLogs = [];
-    await addAuditLog(db, adminName || "Admin", "Clear Error Logs", "Ù‡Û•Ù…ÙˆÙˆ ØªÛ†Ù…Ø§Ø±ÛŒ Ù‡Û•ÚµÛ•Ú©Ø§Ù†ÛŒ Ø³ÛŒØ³ØªÛ•Ù… Ø³Ú•Ø¯Ø±Ø§Ù†Û•ÙˆÛ•");
+    await addAuditLog(db, adminName || "Admin", "Clear Error Logs", "هەموو تۆماری هەڵەکانی سیستەم سڕدرانەوە");
     await saveDB(db);
     res.json({ success: true, errorLogs: [] });
   });
@@ -3228,7 +3559,7 @@ async function startServer() {
   app.post('/api/admin/clear-intrusion-attempts', async (req, res) => {
     const { adminName } = req.body;
     db.intrusionAttempts = [];
-    await addAuditLog(db, adminName || "Admin", "Clear Intrusion Attempts", "Ù‡Û•Ù…ÙˆÙˆ ØªÛ†Ù…Ø§Ø±ÛŒ Ù‡ÛŽØ±Ø´Û• Ú¯ÙˆÙ…Ø§Ù†Ø§ÙˆÛŒÛŒÛ•Ú©Ø§Ù† Ø³Ú•Ø¯Ø±Ø§Ù†Û•ÙˆÛ•");
+    await addAuditLog(db, adminName || "Admin", "Clear Intrusion Attempts", "هەموو تۆماری هێرشە گوماناوییەکان سڕدرانەوە");
     await saveDB(db);
     res.json({ success: true, intrusionAttempts: [] });
   });
@@ -3245,7 +3576,7 @@ async function startServer() {
     try {
       const { name, description, adminName } = req.body;
       if (!name) {
-        return res.status(400).json({ error: 'Ù†Ø§ÙˆÛŒ Ú©Û†Ù¾ÛŒ ÛŒÛ•Ø¯Û•Ú¯ Ù¾ÛŽÙˆÛŒØ³ØªÛ•' });
+        return res.status(400).json({ error: 'ناوی کۆپی یەدەگ پێویستە' });
       }
 
       const filePath = path.join(process.cwd(), 'src', 'App.tsx');
@@ -3264,30 +3595,30 @@ async function startServer() {
       if (!db.appSnapshots) db.appSnapshots = [];
       db.appSnapshots.unshift(newSnapshot);
 
-      await addAuditLog(db, adminName || "Admin", "Create Code Snapshot", `Ú©Û†Ù¾ÛŒ ÛŒÛ•Ø¯Û•Ú¯ÛŒ Ù†ÙˆÛŽ Ø¯Ø±ÙˆØ³ØªÚ©Ø±Ø§ Ø¨Û† App.tsx Ø¨Û• Ù†Ø§ÙˆÛŒ: ${name}`);
+      await addAuditLog(db, adminName || "Admin", "Create Code Snapshot", `کۆپی یەدەگی نوێ دروستکرا بۆ App.tsx بە ناوی: ${name}`);
       await saveDB(db);
 
       res.json({ success: true, snapshots: db.appSnapshots });
     } catch (err: any) {
-      res.status(500).json({ error: `Ø´Ú©Ø³Øª Ù„Û• Ø¯Ø±ÙˆØ³ØªÚ©Ø±Ø¯Ù†ÛŒ Ú©Û†Ù¾ÛŒ ÛŒÛ•Ø¯Û•Ú¯ÛŒ App.tsx: ${err.message}` });
+      res.status(500).json({ error: `شکست لە دروستکردنی کۆپی یەدەگی App.tsx: ${err.message}` });
     }
   });
 
   // Restore an App snapshot
   app.post('/api/admin/snapshots/restore', async (req, res) => {
     if (process.env.NODE_ENV === 'production') { // Added
-      return res.status(403).json({ error: 'Ø¨Û† Ù¾Ø§Ø±Ø§Ø³ØªÙ†ÛŒ Ø¦Û•Ù…Ù†ÛŒÛŒÛ•ØªÛŒ Ø³ÛŽØ±Ú¤Û•Ø±ØŒ Ú¯Û•Ú•Ø§Ù†Ø¯Ù†Û•ÙˆÛ•ÛŒ Ú©Û†Ù¾ÛŒ ÛŒÛ•Ø¯Û•Ú¯ÛŒ Ú©Û†Ø¯ Ù„Û• Ú˜ÛŒÙ†Ú¯Û•ÛŒ Ø¨Û•Ø±Ù‡Û•Ù…Ù‡ÛŽÙ†Ø§Ù† (Production) Ø¨Ù„Û†Ú© Ú©Ø±Ø§ÙˆÛ•.' }); // Added
+      return res.status(403).json({ error: 'بۆ پاراستنی ئەمنییەتی سێرڤەر، گەڕاندنەوەی کۆپی یەدەگی کۆد لە ژینگەی بەرهەمهێنان (Production) بلۆک کراوە.' }); // Added
     } // Added
     try {
       const { snapshotId, adminName } = req.body;
       if (!snapshotId) {
-        return res.status(400).json({ error: 'Ú©Û†Ø¯ÛŒ Ù†Ø§Ø³Ù†Ø§Ù…Û•ÛŒ Ú©Û†Ù¾ÛŒ ÛŒÛ•Ø¯Û•Ú¯ Ù¾ÛŽÙˆÛŒØ³ØªÛ•' });
+        return res.status(400).json({ error: 'کۆدی ناسنامەی کۆپی یەدەگ پێویستە' });
       }
 
       const snapshots = db.appSnapshots || [];
       const snapshot = snapshots.find((s: any) => s.id === snapshotId);
       if (!snapshot) {
-        return res.status(404).json({ error: 'Ø¦Û•Ù… Ú©Û†Ù¾ÛŒÛŒÛ• ÛŒÛ•Ø¯Û•Ú¯Û• Ø¨ÙˆÙˆÙ†ÛŒ Ù†ÛŒÛŒÛ• Ù„Û• Ø³ÛŒØ³ØªÛ•Ù…Ø¯Ø§!' });
+        return res.status(404).json({ error: 'ئەم کۆپییە یەدەگە بوونی نییە لە سیستەمدا!' });
       }
 
       const filePath = path.join(process.cwd(), 'src', 'App.tsx');
@@ -3297,8 +3628,8 @@ async function startServer() {
         const currentContent = await fs.readFile(filePath, 'utf-8');
         const autoBackup = {
           id: 'snap_auto_' + Date.now(),
-          name: `Ø³ÛŒØ³ØªÛ•Ù…ÛŒ Ø®Û†Ú©Ø§Ø± (Ù¾ÛŽØ´ Ú¯Û•Ú•Ø§Ù†Ø¯Ù†Û•ÙˆÛ•ÛŒ ${snapshot.name})`,
-          description: "Ø³ÛŒØ³ØªÛ•Ù…ÛŒ Ø®Û†Ú©Ø§Ø± Ø¨Û• Ø´ÛŽÙˆÛ•ÛŒÛ•Ú©ÛŒ Ø®Û†Ú©Ø§Ø±Ø§Ù†Û• Ù¾ÛŽØ´ Ú¯Û•Ú•Ø§Ù†Ø¯Ù†Û•ÙˆÛ• Ø¬ÛŽÚ¯Ø±ÛŒÚ©Ø±Ø¯.",
+          name: `سیستەمی خۆکار (پێش گەڕاندنەوەی ${snapshot.name})`,
+          description: "سیستەمی خۆکار بە شێوەیەکی خۆکارانە پێش گەڕاندنەوە جێگریکرد.",
           content: currentContent,
           size: (currentContent.length / 1024).toFixed(2) + " KB",
           adminName: "SYSTEM_AUTO",
@@ -3312,41 +3643,41 @@ async function startServer() {
       // Write snapshot content to file
       await fs.writeFile(filePath, snapshot.content, 'utf-8');
 
-      await addAuditLog(db, adminName || "Admin", "Restore Code Snapshot", `Ú©Û†Ù¾ÛŒ Ù¾ÛŽØ´ÙˆÙˆÛŒ Ú¯Û•Ú•ÛŽÙ†Ø¯Ø±Ø§ÛŒÛ•ÙˆÛ• Ø¨Û† App.tsx Ù„Û• Ú•ÛŽÚ¯Û•ÛŒ Ù„Û†Ú¯ÛŒ: ${snapshot.name}`);
+      await addAuditLog(db, adminName || "Admin", "Restore Code Snapshot", `کۆپی پێشووی گەڕێندرایەوە بۆ App.tsx لە ڕێگەی لۆگی: ${snapshot.name}`);
       await saveDB(db);
 
-      res.json({ success: true, message: 'Ú©Û†Ù¾ÛŒ ÛŒÛ•Ø¯Û•Ú¯ Ø¨Û• Ø³Û•Ø±Ú©Û•ÙˆØªÙˆÙˆÛŒÛŒ Ú¯Û•Ú•ÛŽÙ†Ø¯Ø±Ø§ÛŒÛ•ÙˆÛ•ØŒ Ø³ÛŒØ³ØªÛ•Ù…Û•Ú©Û• Ø¯Û•Ø³ØªÙ¾ÛŽØ¯Û•Ú©Ø§ØªÛ•ÙˆÛ•' });
+      res.json({ success: true, message: 'کۆپی یەدەگ بە سەرکەوتوویی گەڕێندرایەوە، سیستەمەکە دەستپێدەکاتەوە' });
     } catch (err: any) {
-      res.status(500).json({ error: `Ø´Ú©Ø³Øª Ù„Û• Ú¯Û•Ú•Ø§Ù†Ø¯Ù†Û•ÙˆÛ•ÛŒ Ú©Û†Ù¾ÛŒ ÛŒÛ•Ø¯Û•Ú¯ÛŒ App.tsx: ${err.message}` });
+      res.status(500).json({ error: `شکست لە گەڕاندنەوەی کۆپی یەدەگی App.tsx: ${err.message}` });
     }
   });
 
   // Delete an App snapshot
   app.post('/api/admin/snapshots/delete', async (req, res) => {
     if (process.env.NODE_ENV === 'production') { // Added
-      return res.status(403).json({ error: 'Ø¨Û† Ù¾Ø§Ø±Ø§Ø³ØªÙ†ÛŒ Ø¦Û•Ù…Ù†ÛŒÛŒÛ•ØªÛŒ Ø³ÛŽØ±Ú¤Û•Ø±ØŒ Ú¯Û•Ú•Ø§Ù†Ø¯Ù†Û•ÙˆÛ•ÛŒ Ú©Û†Ù¾ÛŒ ÛŒÛ•Ø¯Û•Ú¯ÛŒ Ú©Û†Ø¯ Ù„Û• Ú˜ÛŒÙ†Ú¯Û•ÛŒ Ø¨Û•Ø±Ù‡Û•Ù…Ù‡ÛŽÙ†Ø§Ù† (Production) Ø¨Ù„Û†Ú© Ú©Ø±Ø§ÙˆÛ•.' }); // Added
+      return res.status(403).json({ error: 'بۆ پاراستنی ئەمنییەتی سێرڤەر، گەڕاندنەوەی کۆپی یەدەگی کۆد لە ژینگەی بەرهەمهێنان (Production) بلۆک کراوە.' }); // Added
     } // Added
     try {
       const { snapshotId, adminName } = req.body;
       if (!snapshotId) {
-        return res.status(400).json({ error: 'Ú©Û†Ø¯ÛŒ Ù†Ø§Ø³Ù†Ø§Ù…Û•ÛŒ Ú©Û†Ù¾ÛŒ Ù¾ÛŽÙˆÛŒØ³ØªÛ•' });
+        return res.status(400).json({ error: 'کۆدی ناسنامەی کۆپی پێویستە' });
       }
 
       if (!db.appSnapshots) db.appSnapshots = [];
       const index = db.appSnapshots.findIndex((s: any) => s.id === snapshotId);
       if (index === -1) {
-        return res.status(404).json({ error: 'Ú©Û†Ù¾ÛŒ Ù†Ø§Ø¯Û†Ø²Ø±Ø§ÛŒÛ•ÙˆÛ• ÛŒØ§Ù† Ù¾ÛŽØ´ØªØ± Ø³Ú•Ø§ÙˆÛ•ØªÛ•ÙˆÛ•' });
+        return res.status(404).json({ error: 'کۆپی نادۆزرایەوە یان پێشتر سڕاوەتەوە' });
       }
 
       const deletedSnap = db.appSnapshots[index];
       db.appSnapshots.splice(index, 1);
 
-      await addAuditLog(db, adminName || "Admin", "Delete Code Snapshot", `Ú©Û†Ù¾ÛŒ ÛŒÛ•Ø¯Û•Ú¯ Ø³Ú•Ø§ÛŒÛ•ÙˆÛ•: ${deletedSnap.name}`);
+      await addAuditLog(db, adminName || "Admin", "Delete Code Snapshot", `کۆپی یەدەگ سڕایەوە: ${deletedSnap.name}`);
       await saveDB(db);
 
       res.json({ success: true, snapshots: db.appSnapshots });
     } catch (err: any) {
-      res.status(500).json({ error: `Ø´Ú©Ø³Øª Ù„Û• Ø³Ú•ÛŒÙ†Û•ÙˆÛ•ÛŒ Ú©Û†Ù¾ÛŒ ÛŒÛ•Ø¯Û•Ú¯: ${err.message}` });
+      res.status(500).json({ error: `شکست لە سڕینەوەی کۆپی یەدەگ: ${err.message}` });
     }
   });
 
@@ -3361,7 +3692,7 @@ async function startServer() {
   app.post('/api/admin/vip/tickets/generate', async (req, res) => {
     const { customerName, customerPhone, videoUrl, adminName } = req.body;
     if (!customerName || !customerPhone) {
-      return res.status(400).json({ error: 'Ù†Ø§ÙˆÛŒ Ú©Ú•ÛŒØ§Ø± Ùˆ Ú˜Ù…Ø§Ø±Û•ÛŒ Ù…Û†Ø¨Ø§ÛŒÙ„ Ù¾ÛŽÙˆÛŒØ³ØªÛ• Ø¨Û† Ø¯Ø±ÙˆØ³ØªÚ©Ø±Ø¯Ù†ÛŒ ØªÛŒÚ©ÛŽØª' });
+      return res.status(400).json({ error: 'ناوی کڕیار و ژمارەی مۆبایل پێویستە بۆ دروستکردنی تیکێت' });
     }
 
     // Generate unique code in format: 10 digit order number + random hex string of size 7
@@ -3385,7 +3716,7 @@ async function startServer() {
     if (!db.vipTickets) db.vipTickets = [];
     db.vipTickets.unshift(newTicket);
 
-    await addAuditLog(db, adminName || "Admin", "Generate VIP Code", `Ú©Û†Ø¯ÛŒ Ù†ÙˆÛŽÛŒ VIP Ø¯Ø±ÙˆØ³ØªÚ©Ø±Ø§ Ø¨Û†: ${customerName} (${code})`);
+    await addAuditLog(db, adminName || "Admin", "Generate VIP Code", `کۆدی نوێی VIP دروستکرا بۆ: ${customerName} (${code})`);
     await saveDB(db);
 
     res.json({ success: true, ticket: newTicket });
@@ -3395,8 +3726,8 @@ async function startServer() {
   app.get('/api/admin/vip/settings', (req, res) => {
     res.json(db.vipSettings || {
       qrCodeUrl: "https://i.ibb.co/3kWy3m9/fastpay-qr-mock.png",
-      paymentDetails: "Ú˜Ù…Ø§Ø±Û•ÛŒ Ø¨Ø§ÚµØ§Ù†Ø³ÛŒ ÙØ§Ø³ØªÙ¾Û•ÛŒ / Ø²ÛŒÙ† Ú©Ø§Ø´: 07501234567\nØ¨Ø§Ù†Ú©ÛŒ ÙˆØ§ÚµÛŽØª: FIb - 12345678",
-      instructions: "Ø¨Û† Ø¨Û•Ú˜Ø¯Ø§Ø±ÛŒÚ©Ø±Ø¯Ù† Ùˆ Ø¨ÛŒÙ†ÛŒÙ†ÛŒ Ù¾Û•Ø®Ø´ÛŒ Ú•Ø§Ø³ØªÛ•ÙˆØ®Û†ÛŒ VIP CinemaChat Ø¨Û• Ø´ÛŽÙˆÛ•ÛŒ Ù‡Û•Ù…ÛŒØ´Û•ÛŒÛŒØŒ Ø¨Ú•ÛŒ Ù¾Ø§Ø±Û•ÛŒ ØªÛŒÚ©ÛŽØªÛ•Ú©Û• Ø¨Ù†ÛŽØ±Û• Ùˆ Ù¾Ø§Ø´Ø§Ù† Ù¾Û•ÛŒÙˆÛ•Ù†Ø¯ÛŒ Ø¨Û• Ø¦Û•Ø¯Ù…ÛŒÙ†Û•ÙˆÛ• Ø¨Ú©Û• Ù„Û• ØªÛŽÙ„ÛŒÚ¯Ø±Ø§Ù… (@cinemasupport) Ø¨Û† ÙˆÛ•Ø±Ú¯Ø±ØªÙ†ÛŒ Ú©Û†Ø¯Û•Ú©Û•Øª.",
+      paymentDetails: "ژمارەی باڵانسی فاستپەی / زین کاش: 07501234567\nبانکی واڵێت: FIb - 12345678",
+      instructions: "بۆ بەژداریکردن و بینینی پەخشی ڕاستەوخۆی VIP CinemaChat بە شێوەی هەمیشەیی، بڕی پارەی تیکێتەکە بنێرە و پاشان پەیوەندی بە ئەدمینەوە بکە لە تێلیگرام (@cinemasupport) بۆ وەرگرتنی کۆدەکەت.",
       paymentLogoUrl: ""
     });
   });
@@ -3411,7 +3742,7 @@ async function startServer() {
       paymentLogoUrl: paymentLogoUrl || ""
     };
 
-    await addAuditLog(db, adminName || "Admin", "Update VIP Settings", "Ú•ÛŽÚ©Ø®Ø³ØªÙ†Û•Ú©Ø§Ù†ÛŒ Ù¾Ø§Ø±Û•Ø¯Ø§Ù† Ùˆ ØªÛŒÚ©ÛŽØªÛŒ VIP Ù†ÙˆÛŽÚ©Ø±Ø§ÛŒÛ•ÙˆÛ•");
+    await addAuditLog(db, adminName || "Admin", "Update VIP Settings", "ڕێکخستنەکانی پارەدان و تیکێتی VIP نوێکرایەوە");
     await saveDB(db);
 
     res.json({ success: true, settings: db.vipSettings });
@@ -3422,13 +3753,13 @@ async function startServer() {
     try {
       const { fileData, fileName, adminName } = req.body;
       if (!fileData) {
-        return res.status(400).json({ success: false, error: "Ø¯Ø§ØªØ§ÛŒ ÙØ§ÛŒÙ„ Ù†Û•Ù†ÛŽØ±Ø¯Ø±Ø§ÙˆÛ•!" });
+        return res.status(400).json({ success: false, error: "داتای فایل نەنێردراوە!" });
       }
 
       // Safe regex match to extract MIME and base64 representation
       const matches = fileData.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
       if (!matches || matches.length !== 3) {
-        return res.status(400).json({ success: false, error: "ÙÛ†Ø±Ù…Ø§ØªÛŒ ÙˆÛŽÙ†Û•Ú©Û• Ø¯Ø±ÙˆØ³Øª Ù†ÛŒÛŒÛ• (ØªÛ•Ù†Ù‡Ø§ Base64 Data URL Ù¾ÛŽØ´ÙˆØ§Ø²ÛŒÚ©Ø±Ø§ÙˆÛ•)" });
+        return res.status(400).json({ success: false, error: "فۆرماتی وێنەکە دروست نییە (تەنها Base64 Data URL پێشوازیکراوە)" });
       }
 
       const mimeType = matches[1];
@@ -3437,13 +3768,13 @@ async function startServer() {
       // Format validation: jpeg/jpg/png/webp
       const allowedMimeTypes = ["image/jpeg", "image/png", "image/jpg", "image/webp", "image/svg+xml"];
       if (!allowedMimeTypes.includes(mimeType)) {
-        return res.status(400).json({ success: false, error: "Ú•ÛŽÚ¯Û• ØªÛ•Ù†Ù‡Ø§ Ø¨Û• ÙˆÛŽÙ†Û•ÛŒ ÙÛ†Ø±Ù…Ø§ØªÛŒ PNG, JPEG, WEBP Ùˆ SVG Ø¯Ø±Ø§ÙˆÛ•" });
+        return res.status(400).json({ success: false, error: "ڕێگە تەنها بە وێنەی فۆرماتی PNG, JPEG, WEBP و SVG دراوە" });
       }
 
       // File size constraint: Max 2MB (2 * 1024 * 1024 bytes)
       const approxSizeBytes = Math.floor((base64Content.length * 3) / 4);
       if (approxSizeBytes > 2 * 1024 * 1024) {
-        return res.status(400).json({ success: false, error: "Ù‚Û•Ø¨Ø§Ø±Û•ÛŒ ÙˆÛŽÙ†Û• Ù†Ø§ØªÙˆØ§Ù†ÛŽØª Ù„Û• Ù¢ Ù…ÛŽÚ¯Ø§Ø¨Ø§ÛŒØª Ø²ÛŒØ§ØªØ± Ø¨ÛŽØª!" });
+        return res.status(400).json({ success: false, error: "قەبارەی وێنە ناتوانێت لە ٢ مێگابایت زیاتر بێت!" });
       }
 
       // Extract extension
@@ -3475,12 +3806,12 @@ async function startServer() {
       console.error("Error in VIP Upload Route:", err);
       return res.status(500).json({
         success: false,
-        error: "Ú©ÛŽØ´Û•ÛŒÛ•Ú© Ú•ÙˆÙˆÛŒØ¯Ø§ Ù„Û• Ø¨Ø§Ø±Ú©Ø±Ø¯Ù†ÛŒ ÙØ§ÛŒÙ„Û•Ú©Û•Ø¯Ø§: " + (err.message || String(err))
+        error: "کێشەیەک ڕوویدا لە بارکردنی فایلەکەدا: " + (err.message || String(err))
       });
     }
   });
 
-  // Module 4: Movie & YouTube Publishing â€” secure poster image upload endpoint.
+  // Module 4: Movie & YouTube Publishing — secure poster image upload endpoint.
   // Accepts the Base64 data-URL produced by the client-side canvas compressor,
   // validates MIME + size, writes a durable copy under /uploads and records the
   // upload in db.posterUploads. The returned `url` is the self-contained data-URL
@@ -3490,28 +3821,28 @@ async function startServer() {
     try {
       const { imageData, fileName, adminName } = req.body;
       if (!imageData || typeof imageData !== 'string') {
-        return res.status(400).json({ success: false, error: "Ø¯Ø§ØªØ§ÛŒ ÙˆÛŽÙ†Û• Ù†Û•Ù†ÛŽØ±Ø¯Ø±Ø§ÙˆÛ• (imageData Ù¾ÛŽÙˆÛŒØ³ØªÛ•)" });
+        return res.status(400).json({ success: false, error: "داتای وێنە نەنێردراوە (imageData پێویستە)" });
       }
 
       // Safe regex match to extract MIME and base64 representation
       const matches = imageData.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
       if (!matches || matches.length !== 3) {
-        return res.status(400).json({ success: false, error: "ÙÛ†Ø±Ù…Ø§ØªÛŒ ÙˆÛŽÙ†Û•Ú©Û• Ø¯Ø±ÙˆØ³Øª Ù†ÛŒÛŒÛ• (ØªÛ•Ù†Ù‡Ø§ Base64 Data URL Ù¾ÛŽØ´ÙˆØ§Ø²ÛŒÚ©Ø±Ø§ÙˆÛ•)" });
+        return res.status(400).json({ success: false, error: "فۆرماتی وێنەکە دروست نییە (تەنها Base64 Data URL پێشوازیکراوە)" });
       }
 
       const mimeType = matches[1];
       const base64Content = matches[2];
 
-      // Raster poster formats only (no SVG â€” keeps the published poster safe)
+      // Raster poster formats only (no SVG — keeps the published poster safe)
       const allowedMimeTypes = ["image/jpeg", "image/png", "image/jpg", "image/webp"];
       if (!allowedMimeTypes.includes(mimeType)) {
-        return res.status(400).json({ success: false, error: "Ú•ÛŽÚ¯Û• ØªÛ•Ù†Ù‡Ø§ Ø¨Û• ÙˆÛŽÙ†Û•ÛŒ ÙÛ†Ø±Ù…Ø§ØªÛŒ PNG, JPEG ÛŒØ§Ù† WEBP Ø¯Ø±Ø§ÙˆÛ•" });
+        return res.status(400).json({ success: false, error: "ڕێگە تەنها بە وێنەی فۆرماتی PNG, JPEG یان WEBP دراوە" });
       }
 
       // File size constraint: Max 2MB
       const approxSizeBytes = Math.floor((base64Content.length * 3) / 4);
       if (approxSizeBytes > 2 * 1024 * 1024) {
-        return res.status(400).json({ success: false, error: "Ù‚Û•Ø¨Ø§Ø±Û•ÛŒ ÙˆÛŽÙ†Û• Ù†Ø§ØªÙˆØ§Ù†ÛŽØª Ù„Û• Ù¢ Ù…ÛŽÚ¯Ø§Ø¨Ø§ÛŒØª Ø²ÛŒØ§ØªØ± Ø¨ÛŽØª!" });
+        return res.status(400).json({ success: false, error: "قەبارەی وێنە ناتوانێت لە ٢ مێگابایت زیاتر بێت!" });
       }
 
       let extension = "png";
@@ -3540,7 +3871,7 @@ async function startServer() {
       });
       if (db.posterUploads.length > 200) db.posterUploads = db.posterUploads.slice(0, 200);
 
-      await addAuditLog(db, String(adminName || 'Admin'), "Upload Poster", `Ù¾Û†Ø³ØªÛ•Ø±ÛŒ ÙÛŒÙ„Ù… Ø¨Ø§Ø±Ú©Ø±Ø§: "${safeBaseName}.${extension}"`);
+      await addAuditLog(db, String(adminName || 'Admin'), "Upload Poster", `پۆستەری فیلم بارکرا: "${safeBaseName}.${extension}"`);
       await saveDB(db);
 
       return res.json({
@@ -3555,7 +3886,7 @@ async function startServer() {
       console.error("Error in Movie Poster Upload Route:", err);
       return res.status(500).json({
         success: false,
-        error: "Ú©ÛŽØ´Û•ÛŒÛ•Ú© Ú•ÙˆÙˆÛŒØ¯Ø§ Ù„Û• Ø¨Ø§Ø±Ú©Ø±Ø¯Ù†ÛŒ Ù¾Û†Ø³ØªÛ•Ø±Û•Ú©Û•Ø¯Ø§: " + (err.message || String(err))
+        error: "کێشەیەک ڕوویدا لە بارکردنی پۆستەرەکەدا: " + (err.message || String(err))
       });
     }
   });
@@ -3574,7 +3905,7 @@ async function startServer() {
     try {
       const { customerName, customerPhone, bankScreenshot } = req.body;
       if (!customerName || !customerPhone || !bankScreenshot) {
-        return res.status(400).json({ success: false, error: 'ØªÚ©Ø§ÛŒÛ• Ø³Û•Ø±Ø¬Û•Ù… Ø®Ø§Ù†Û•Ú©Ø§Ù† Ù¾Ú•Ø¨Ú©Û•Ø±Û•ÙˆÛ• Ùˆ ÙˆÛŽÙ†Û•ÛŒ Ù¾ÛŽØ¨ÚµØ§ÙˆÚ©Ø±Ø¯Ù† Ø¨Ø§Ø±Ø¨Ú©Û•!' });
+        return res.status(400).json({ success: false, error: 'تکایە سەرجەم خانەکان پڕبکەرەوە و وێنەی پێبڵاوکردن باربکە!' });
       }
 
       const newRequest = {
@@ -3601,13 +3932,13 @@ async function startServer() {
     try {
       const { requestId, videoUrl, adminName } = req.body;
       if (!requestId) {
-        return res.status(400).json({ success: false, error: 'Ù†Ø§Ø³Ù†Ø§Ù…Û•ÛŒ Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ Ù†Ø§Ø¯ÛŒØ§Ø±Û•.' });
+        return res.status(400).json({ success: false, error: 'ناسنامەی داواکاری نادیارە.' });
       }
 
       if (!db.vipRequests) db.vipRequests = [];
       const reqIndex = db.vipRequests.findIndex((r: any) => r.id === requestId);
       if (reqIndex === -1) {
-        return res.status(404).json({ success: false, error: 'Ø¦Û•Ù… Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒÛŒÛ• Ù†Û•Ø¯Û†Ø²Ø±Ø§ÛŒÛ•ÙˆÛ•.' });
+        return res.status(404).json({ success: false, error: 'ئەم داواکارییە نەدۆزرایەوە.' });
       }
 
       const reqData = db.vipRequests[reqIndex];
@@ -3637,7 +3968,7 @@ async function startServer() {
       reqData.status = "Approved";
       reqData.approvedCode = code;
 
-      await addAuditLog(db, adminName || "Admin", "Approve VIP Request", `Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ VIP Ù¾Û•Ø³Û•Ù†Ø¯Ú©Ø±Ø§ Ø¨Û†: ${reqData.customerName} Ùˆ Ú©Û†Ø¯ Ø¯Ø±ÙˆØ³ØªÚ©Ø±Ø§ (${code})`);
+      await addAuditLog(db, adminName || "Admin", "Approve VIP Request", `داواکاری VIP پەسەندکرا بۆ: ${reqData.customerName} و کۆد دروستکرا (${code})`);
       await saveDB(db);
 
       res.json({ success: true, ticket: newTicket });
@@ -3651,19 +3982,19 @@ async function startServer() {
     try {
       const { requestId, adminName } = req.body;
       if (!requestId) {
-        return res.status(400).json({ success: false, error: 'Ù†Ø§Ø³Ù†Ø§Ù…Û•ÛŒ Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ Ù†Ø§Ø¯ÛŒØ§Ø±Û•.' });
+        return res.status(400).json({ success: false, error: 'ناسنامەی داواکاری نادیارە.' });
       }
 
       if (!db.vipRequests) db.vipRequests = [];
       const index = db.vipRequests.findIndex((r: any) => r.id === requestId);
       if (index === -1) {
-        return res.status(404).json({ success: false, error: 'Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ Ù†Û•Ø¯Û†Ø²Ø±Ø§ÛŒÛ•ÙˆÛ•.' });
+        return res.status(404).json({ success: false, error: 'داواکاری نەدۆزرایەوە.' });
       }
 
       const deletedReq = db.vipRequests[index];
       db.vipRequests.splice(index, 1);
 
-      await addAuditLog(db, adminName || "Admin", "Decline VIP Request", `Ø¯Ø§ÙˆØ§Ú©Ø§Ø±ÛŒ Ú•Û•ØªÚ©Ø±Ø§ÛŒÛ•ÙˆÛ• ÛŒØ§Ù† Ø³Ú•Ø§ÛŒÛ•ÙˆÛ• Ø¨Û†: ${deletedReq.customerName}`);
+      await addAuditLog(db, adminName || "Admin", "Decline VIP Request", `داواکاری ڕەتکرایەوە یان سڕایەوە بۆ: ${deletedReq.customerName}`);
       await saveDB(db);
 
       res.json({ success: true });
@@ -3697,7 +4028,7 @@ async function startServer() {
         if (record.attempts > maxAttemptsLocal) {
           return res.status(429).json({
             success: false,
-            message: 'Ø³ÛŒØ³ØªÛ•Ù…ÛŒ Ú†Ø§ÙˆØ¯ÛŽØ±ÛŒ Ø³ÙˆÙˆØ¯ÙˆÛ•Ø±Ú¯Ø±ØªÙ†ÛŒ Ù†Ø§Ø¯Ø±ÙˆØ³Øª Ùˆ Ù‡Û•ÙˆÚµÛŒ ØªÙˆÙ†Ø¯Ú•Û•ÙˆÛŒ Ø¯Û†Ø²ÛŒÛŒÛ•ÙˆÛ•! ØªÚ©Ø§ÛŒÛ• Ø¯ÙˆØ§ÛŒ Ø®ÙˆÙ„Û•Ú©ÛŽÚ© ØªØ§Ù‚ÛŒ Ø¨Ú©Û•Ø±Û•ÙˆÛ• (Rate Limited).'
+            message: 'سیستەمی چاودێری سوودوەرگرتنی نادروست و هەوڵی توندڕەوی دۆزییەوە! تکایە دوای خولەکێک تاقی بکەرەوە (Rate Limited).'
           });
         }
       }
@@ -3705,7 +4036,7 @@ async function startServer() {
 
     const { code } = req.body;
     if (!code) {
-      return res.status(400).json({ success: false, message: 'Ú©Û†Ø¯ÛŒ ØªÛŒÚ©ÛŽØªÛŒ VIP Ù¾ÛŽÙˆÛŒØ³ØªÛ•.' });
+      return res.status(400).json({ success: false, message: 'کۆدی تیکێتی VIP پێویستە.' });
     }
 
     const cleanCode = String(code).trim();
@@ -3713,7 +4044,7 @@ async function startServer() {
 
     const ticketIndex = db.vipTickets.findIndex((t: any) => t.code === cleanCode);
     if (ticketIndex === -1) {
-      return res.status(404).json({ success: false, message: 'Ø¦Û•Ù… Ú©Û†Ø¯ÛŒ VIPÛŒÛ• Ù†Ø§Ø¯Ø±ÙˆØ³ØªÛ• ÛŒØ§Ù† Ø¨ÙˆÙˆÙ†ÛŒ Ù†ÛŒÛŒÛ• Ù„Û• Ø³ÛŒØ³ØªÛ•Ù…Ø¯Ø§!' });
+      return res.status(404).json({ success: false, message: 'ئەم کۆدی VIPیە نادروستە یان بوونی نییە لە سیستەمدا!' });
     }
 
     const ticket = db.vipTickets[ticketIndex];
@@ -3721,7 +4052,7 @@ async function startServer() {
     if (ticket.status === "Expired") {
       return res.status(400).json({
         success: false,
-        message: 'Ø¦Û•Ù… Ø¨Ù„ÛŒØªÛ• Ø¨Û•Ø³Û•Ø±Ú†ÙˆÙˆÛ• Ùˆ Ù„Û•Ù„Ø§ÛŒÛ•Ù† Ø¨Û•Ú•ÛŽÙˆØ¨Û•Ø±Û•ÙˆÛ• ÛŒØ§Ù† Ø¨Û•Ù‡Û†ÛŒ ØªÛŽÙ¾Û•Ú•Ø§Ù†Ø¯Ù†ÛŒ Ú•ÛŽÚ˜Û•ÛŒ Ø¦Ø§Ù…ÛŽØ±Û•Ú©Ø§Ù† Ú•Ø§Ú¯ÛŒØ±Ø§ÙˆÛ•!'
+        message: 'ئەم بلیتە بەسەرچووە و لەلایەن بەڕێوبەرەوە یان بەهۆی تێپەڕاندنی ڕێژەی ئامێرەکان ڕاگیراوە!'
       });
     }
 
@@ -3739,7 +4070,7 @@ async function startServer() {
         await saveDB(db);
         return res.status(400).json({
           success: false,
-          message: 'Ø¦Û•Ù… ØªÛŒÚ©ÛŽØªÛ• Ù¾ÛŽØ´ØªØ± Ù„Û•Ø³Û•Ø± Ú©Û•Ø³ÛŒ Ø¬ÛŒØ§ÙˆØ§Ø² Ú†Ø§Ù„Ø§Ú©Ú©Ø±Ø§ÙˆÛ• Ùˆ ØªÛ•Ù†Ù‡Ø§ Ú•ÛŽÚ¯Û• Ø¨Û• Ù¢ Ø¦Ø§Ù…ÛŽØ±ÛŒ Ø¬ÛŒØ§ÙˆØ§Ø² Ø¯Û•Ø¯Ø±ÛŽØª Ù„Û•Ø³Û•Ø± Ù„Û†Ú¯ÛŒ Ø¯Ø§ØªØ§Ø¨Û•ÛŒØ³!'
+          message: 'ئەم تیکێتە پێشتر لەسەر کەسی جیاواز چالاککراوە و تەنها ڕێگە بە ٢ ئامێری جیاواز دەدرێت لەسەر لۆگی داتابەیس!'
         });
       }
       ticket.verifiedDevices.push(clientIp);
@@ -3748,11 +4079,11 @@ async function startServer() {
     const userAgent = req.headers['user-agent'] || "Unknown Device";
 
     // Parse simplified user agent device info
-    let deviceInfo = "Ú©Ø§Ø±Ù¾ÛŽÚ©Û•Ø±ÛŒ Ø¦Ø§Ø³Ø§ÛŒÛŒ (PC/Web)";
-    if (/android/i.test(userAgent)) deviceInfo = "Ù…Û†Ø¨Ø§ÛŒÙ„ (Android)";
-    else if (/iphone|ipad/i.test(userAgent)) deviceInfo = "Ù…Û†Ø¨Ø§ÛŒÙ„ (iOS / iPhone)";
-    else if (/macintosh/i.test(userAgent)) deviceInfo = "Ú©Û†Ù…Ù¾ÛŒÙˆØªÛ•Ø± (Apple macOS)";
-    else if (/windows/i.test(userAgent)) deviceInfo = "Ú©Û†Ù…Ù¾ÛŒÙˆØªÛ•Ø± (MS Windows)";
+    let deviceInfo = "کارپێکەری ئاسایی (PC/Web)";
+    if (/android/i.test(userAgent)) deviceInfo = "مۆبایل (Android)";
+    else if (/iphone|ipad/i.test(userAgent)) deviceInfo = "مۆبایل (iOS / iPhone)";
+    else if (/macintosh/i.test(userAgent)) deviceInfo = "کۆمپیوتەر (Apple macOS)";
+    else if (/windows/i.test(userAgent)) deviceInfo = "کۆمپیوتەر (MS Windows)";
 
     ticket.usedCount = (ticket.usedCount || 0) + 1;
     ticket.lastIp = clientIp;
@@ -3775,7 +4106,7 @@ async function startServer() {
   app.post('/api/vip/check-validity', (req, res) => {
     const { code } = req.body;
     if (!code) {
-      return res.status(400).json({ success: false, message: 'Ú©Û†Ø¯ÛŒ ØªÛŒÚ©ÛŽØªÛŒ VIP Ù¾ÛŽÙˆÛŒØ³ØªÛ•.' });
+      return res.status(400).json({ success: false, message: 'کۆدی تیکێتی VIP پێویستە.' });
     }
 
     const cleanCode = String(code).trim();
@@ -3783,11 +4114,11 @@ async function startServer() {
 
     const ticket = db.vipTickets.find((t: any) => t.code === cleanCode);
     if (!ticket) {
-      return res.json({ success: false, message: 'Ø¦Û•Ù… Ø¨Ù„ÛŒØªÛ• Ø¨ÙˆÙˆÙ†ÛŒ Ù†ÛŒÛŒÛ•!' });
+      return res.json({ success: false, message: 'ئەم بلیتە بوونی نییە!' });
     }
 
     if (ticket.status === "Expired") {
-      return res.json({ success: false, message: 'Ø¦Û•Ù… Ø¨Ù„ÛŒØªÛ• Ø¨Û•Ø³Û•Ø±Ú†ÙˆÙˆÛ•!' });
+      return res.json({ success: false, message: 'ئەم بلیتە بەسەرچووە!' });
     }
 
     res.json({ success: true, ticket });
@@ -3802,7 +4133,7 @@ async function startServer() {
   app.post('/api/admin/vip/videos/add', async (req, res) => {
     const { title, videoUrl, adminName } = req.body;
     if (!title || !videoUrl) {
-      return res.status(400).json({ error: 'Ù†Ø§ÙˆÛŒ Ú¤ÛŒØ¯ÛŒÛ† Ùˆ Ù„ÛŒÙ†Ú©ÛŒ Ú¤ÛŒØ¯ÛŒÛ† Ù¾ÛŽÙˆÛŒØ³ØªÙ†' });
+      return res.status(400).json({ error: 'ناوی ڤیدیۆ و لینکی ڤیدیۆ پێویستن' });
     }
 
     const newVideo = {
@@ -3815,7 +4146,7 @@ async function startServer() {
     if (!db.vipVideos) db.vipVideos = [];
     db.vipVideos.push(newVideo);
 
-    await addAuditLog(db, adminName || "Admin", "Add VIP Video", `Ú¤ÛŒØ¯ÛŒÛ†ÛŒ Ù†ÙˆÛŽÛŒ VIP Ø²ÛŒØ§Ø¯Ú©Ø±Ø§: "${title}"`);
+    await addAuditLog(db, adminName || "Admin", "Add VIP Video", `ڤیدیۆی نوێی VIP زیادکرا: "${title}"`);
     await saveDB(db);
 
     res.json({ success: true, video: newVideo });
@@ -4258,12 +4589,12 @@ async function startServer() {
   // Delete VIP Video
   app.post('/api/admin/vip/videos/delete', async (req, res) => {
     const { id, adminName } = req.body;
-    if (!id) return res.status(400).json({ error: 'Ú©Û†Ø¯ÛŒ Ú¤ÛŒØ¯ÛŒÛ† Ù¾ÛŽÙˆÛŒØ³ØªÛ•' });
+    if (!id) return res.status(400).json({ error: 'کۆدی ڤیدیۆ پێویستە' });
 
     if (!db.vipVideos) db.vipVideos = [];
     db.vipVideos = db.vipVideos.filter((v: any) => v.id !== id);
 
-    await addAuditLog(db, adminName || "Admin", "Delete VIP Video", `Ú¤ÛŒØ¯ÛŒÛ†ÛŒ VIP Ø³Ú•Ø§ÛŒÛ•ÙˆÛ•: ${id}`);
+    await addAuditLog(db, adminName || "Admin", "Delete VIP Video", `ڤیدیۆی VIP سڕایەوە: ${id}`);
     await saveDB(db);
 
     res.json({ success: true, videos: db.vipVideos });
@@ -4281,7 +4612,7 @@ async function startServer() {
     const vipUsedCount = Array.isArray(db.vipTickets) ? db.vipTickets.filter((t: any) => t.usedCount > 0).length : 0;
 
     // Build some elegant aggregations or time graphs
-    const sampleTimelineDays = ["Ø´Û•Ù…Ù…Û•", "ÛŒÛ•Ú©Ø´Û•Ù…Ù…Û•", "Ø¯ÙˆÙˆØ´Û•Ù…Ù…Û•", "Ø³ÛŽØ´Û•Ù…Ù…Û•", "Ú†ÙˆØ§Ø±Ø´Û•Ù…Ù…Û•", "Ù¾ÛŽÙ†Ø¬Ø´Û•Ù…Ù…Û•", "Ù‡Û•ÛŒÙ†ÛŒ"];
+    const sampleTimelineDays = ["شەممە", "یەکشەممە", "دووشەممە", "سێشەممە", "چوارشەممە", "پێنجشەممە", "هەینی"];
     const trafficByDay = sampleTimelineDays.map((day, idx) => {
       // seed custom ratios
       const base = 250 + (idx * 45) % 180;
@@ -4320,6 +4651,22 @@ async function startServer() {
       node: process.version,
       platform: process.platform,
       memory: process.memoryUsage().rss
+    });
+  });
+
+  // Non-secret auth/backend health used by the client to decide whether account
+  // mutations are safe in the current backend mode. Never exposes credentials,
+  // file paths, tokens, or project identifiers.
+  app.get('/api/health/auth', (_req, res) => {
+    const adminApp = initializeFirebaseAdmin();
+    res.json({
+      status: 'ok',
+      firebaseAdmin: Boolean(adminApp),
+      firestore: Boolean(adminApp),
+      emulator: firebaseAdminUsingEmulator,
+      mode: FIREBASE_AUTH_EMULATOR_EXPLICIT ? 'emulator' : 'production',
+      ready: Boolean(adminApp),
+      time: new Date().toISOString(),
     });
   });
 
@@ -4391,7 +4738,7 @@ async function startServer() {
     try {
       const movieId = String((req.params as any).movieId || '').trim();
       const session = String((req.body as any)?.session || '').trim();
-      // Device identity (persistent, same across tabs) â€” used ONLY to dedupe
+      // Device identity (persistent, same across tabs) — used ONLY to dedupe
       // lifetime `views`. Live concurrent viewers are keyed by `session` so two
       // tabs of the same device count as two live viewers.
       const deviceId = String((req.body as any)?.deviceId || '').trim();
@@ -4490,7 +4837,7 @@ async function startServer() {
   // --- USER RATINGS (CinemaChat rating) ---
   // Persists a per-user score (1-10) on a movie and returns the aggregated
   // CinemaChat rating + how many users rated it. Ratings never overwrite the
-  // movie's IMDb `rating` field â€” they are stored separately and displayed
+  // movie's IMDb `rating` field — they are stored separately and displayed
   // alongside it on every card.
   app.post('/api/movies/:movieId/rate', async (req, res) => {
     try {
@@ -4674,7 +5021,7 @@ async function startServer() {
       const { fromUserCode, fromUserName, targetCodeOrName, roomId, roomName } = req.body;
 
       if (!targetCodeOrName || !fromUserCode || !roomId) {
-        return res.status(400).json({ error: 'Ø¯Ø§Ø®ÚµÚ©Ø±Ø§ÙˆÛ•Ú©Ø§Ù† Ù†Ø§ØªÛ•ÙˆØ§ÙˆÙ†' });
+        return res.status(400).json({ error: 'داخڵکراوەکان ناتەواون' });
       }
 
       const cleanTarget = targetCodeOrName.trim().toUpperCase();
@@ -4691,7 +5038,7 @@ async function startServer() {
       });
 
       if (!targetUser) {
-        return res.status(404).json({ error: 'Ø¨Û•Ú©Ø§Ø±Ú¾ÛŽÙ†Û•Ø±Û•Ú©Û• Ù†Û•Ø¯Û†Ø²Ø±Ø§ÛŒÛ•ÙˆÛ•! ØªÚ©Ø§ÛŒÛ• Ù†Ø§ÙˆÛŒ Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø± ÛŒØ§Ù† Ú©Û†Ø¯ÛŒ Ø¨ÛŽÙ‡Ø§ÙˆØªØ§ Ø¨Û• Ø¯Ø±ÙˆØ³ØªÛŒ Ø¨Ù†ÙˆÙˆØ³Û•.' });
+        return res.status(404).json({ error: 'بەکارھێنەرەکە نەدۆزرایەوە! تکایە ناوی بەکارهێنەر یان کۆدی بێهاوتا بە دروستی بنووسە.' });
       }
 
       const targetUserCode = (targetUser.uniqueCode || '').toUpperCase();
@@ -4701,16 +5048,16 @@ async function startServer() {
       }
 
       if (cleanFromCode === targetUserCode) {
-        return res.status(400).json({ error: 'Ù†Ø§ØªÙˆØ§Ù†ÛŒØª Ø®Û†Øª Ø¨Ø§Ù†Ú¯Ù‡ÛŽØ´Øª Ø¨Ú©Û•ÛŒØª!' });
+        return res.status(400).json({ error: 'ناتوانیت خۆت بانگهێشت بکەیت!' });
       }
 
       const newInvitation = {
         id: crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 9),
         fromUserCode: cleanFromCode,
-        fromUserName: fromUserName || 'Ù‡Ø§ÙˆÚ•ÛŽÛŒÛ•Ú©',
+        fromUserName: fromUserName || 'هاوڕێیەک',
         toUserCode: targetUserCode,
         roomId,
-        roomName: roomName || 'Ú˜ÙˆÙˆØ±ÛŒ Ù‡Ø§ÙˆÚ•ÛŽÛŒØ§Ù†',
+        roomName: roomName || 'ژووری هاوڕێیان',
         status: 'pending',
         timestamp: new Date().toISOString()
       };
@@ -4736,7 +5083,7 @@ async function startServer() {
 
       const inviteIndex = db.invitations.findIndex((inv: any) => inv.id === id);
       if (inviteIndex === -1) {
-        return res.status(404).json({ error: 'Ø¨Ø§Ù†Ú¯Ù‡ÛŽØ´ØªÙ†Ø§Ù…Û•Ú©Û• Ù†Û•Ø¯Û†Ø²Ø±Ø§ÛŒÛ•ÙˆÛ•' });
+        return res.status(404).json({ error: 'بانگهێشتنامەکە نەدۆزرایەوە' });
       }
 
       db.invitations[inviteIndex].status = status;
@@ -4778,7 +5125,7 @@ async function startServer() {
       const { senderCode, senderName, targetCodeOrName, message } = req.body;
 
       if (!senderCode || !targetCodeOrName || !message || !message.trim()) {
-        return res.status(400).json({ error: 'Ø¯Ø§Ø®ÚµÚ©Ø±Ø§ÙˆÛ•Ú©Ø§Ù† Ù†Ø§ØªÛ•ÙˆØ§ÙˆÙ†' });
+        return res.status(400).json({ error: 'داخڵکراوەکان ناتەواون' });
       }
 
       const cleanSenderCode = senderCode.trim().toUpperCase();
@@ -4796,14 +5143,14 @@ async function startServer() {
       });
 
       if (!targetUser) {
-        return res.status(404).json({ error: 'ÙˆÛ•Ø±Ú¯Ø±Û•Ú©Û• Ù†Û•Ø¯Û†Ø²Ø±Ø§ÛŒÛ•ÙˆÛ•! ØªÚ©Ø§ÛŒÛ• Ù†Ø§ÙˆÛŒ Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø± ÛŒØ§Ù† Ú©Û†Ø¯ÛŒ Ø¨ÛŽÙ‡Ø§ÙˆØªØ§ Ø¨Û• Ø¯Ø±ÙˆØ³ØªÛŒ Ø¨Ù†ÙˆÙˆØ³Û•.' });
+        return res.status(404).json({ error: 'وەرگرەکە نەدۆزرایەوە! تکایە ناوی بەکارهێنەر یان کۆدی بێهاوتا بە دروستی بنووسە.' });
       }
 
       const receiverCode = (targetUser.uniqueCode || '').toUpperCase();
-      const receiverName = targetUser.username || targetUser.name || 'Ø¨Û•Ú©Ø§Ø±Ú¾ÛŽÙ†Û•Ø±';
+      const receiverName = targetUser.username || targetUser.name || 'بەکارھێنەر';
 
       if (cleanSenderCode === receiverCode) {
-        return res.status(400).json({ error: 'Ù†Ø§ØªÙˆØ§Ù†ÛŒØª Ù†Ø§Ù…Û•ÛŒ Ø¯Ø§ÛŒØ±ÛŽÚ©Øª Ø¨Û† Ø®Û†Øª Ø¨Ù†ÛŽØ±ÛŒØª!' });
+        return res.status(400).json({ error: 'ناتوانیت نامەی دایرێکت بۆ خۆت بنێریت!' });
       }
 
       if (!db.directMessages) {
@@ -4813,7 +5160,7 @@ async function startServer() {
       const newDm = {
         id: crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 9),
         senderCode: cleanSenderCode,
-        senderName: senderName || 'Ù‡Ø§ÙˆÚ•ÛŽÛŒÛ•Ú©',
+        senderName: senderName || 'هاوڕێیەک',
         receiverCode: receiverCode,
         receiverName: receiverName,
         message: message.trim(),
@@ -4838,7 +5185,7 @@ async function startServer() {
     try {
       const { name, hostCode, currentMovieUrl } = req.body;
       if (!name || !hostCode) {
-        return res.status(400).json({ success: false, error: 'Ù†Ø§Ùˆ Ùˆ Ú©Û†Ø¯ÛŒ Ø®Ø§Ù†Û•Ø®ÙˆÛŽ Ù¾ÛŽÙˆÛŒØ³ØªÛ•' });
+        return res.status(400).json({ success: false, error: 'ناو و کۆدی خانەخوێ پێویستە' });
       }
 
       if (!db.syncGroups) db.syncGroups = {};
@@ -4848,7 +5195,7 @@ async function startServer() {
       // is protected: normal room creation must NEVER rename, overwrite or clear
       // it. Only the server startup guard may touch its identity/name.
       if (roomId === 'MAIN_BROADCAST_ROOM' || roomId === 'ADMIN_BROADCAST' || roomId === 'CINEMACHAT') {
-        return res.status(400).json({ success: false, error: 'Ø¦Û•Ù… Ú˜ÙˆÙˆØ±Û• Ú˜ÙˆÙˆØ±ÛŒ Ù‡Û•Ù…ÛŒØ´Û•ÛŒÛŒÛ• (CinemaChat) Ùˆ Ø¯Û•Ù¾Ø§Ø±ÛŽØ²Ø±ÛŽØª â€” Ù†Ø§Ú©Ø±ÛŽØª Ú¯Û†Ú•Ø§Ù†Ú©Ø§Ø±ÛŒ Ø¨Û•Ø³Û•Ø±Ø¯Ø§ Ø¨Ú©Ø±ÛŽØª' });
+        return res.status(400).json({ success: false, error: 'ئەم ژوورە ژووری هەمیشەییە (CinemaChat) و دەپارێزرێت — ناکرێت گۆڕانکاری بەسەردا بکرێت' });
       }
       const newRoom = { // New room object
         id: roomId,
@@ -4889,10 +5236,10 @@ async function startServer() {
       if (id === 'global_room_official') {
         room = { ...INITIAL_GLOBAL_ROOM };
       } else if (id === 'main_broadcast_room') {
-        // Fresh copy â€” never hand out (and never mutate) the shared constant.
+        // Fresh copy — never hand out (and never mutate) the shared constant.
         room = { ...INITIAL_BROADCAST_ROOM };
       } else { // Room not found
-        return res.status(404).json({ error: 'Ú˜ÙˆÙˆØ± Ø¨Û•Ø±Ø¯Û•Ø³Øª Ù†ÛŒÛŒÛ•' }); // Return 404
+        return res.status(404).json({ error: 'ژوور بەردەست نییە' }); // Return 404
       }
     }
 
@@ -4906,7 +5253,7 @@ async function startServer() {
         userObj.lastSeen = new Date().toISOString();
       } else {
         room.activeUsers.push({
-          username: cleanCode === room.hostCode ? 'Ø®Ø§Ù†Û•Ø®ÙˆÛŽ (Host)' : `Ø¨ÛŒÙ†Û•Ø±-${cleanCode.substring(0, 5)}`,
+          username: cleanCode === room.hostCode ? 'خانەخوێ (Host)' : `بینەر-${cleanCode.substring(0, 5)}`,
           uniqueCode: cleanCode,
           joinedAt: new Date().toISOString(),
           lastSeen: new Date().toISOString()
@@ -4928,7 +5275,7 @@ async function startServer() {
 
       const roomId = id.trim().toUpperCase();
       if (!db.syncGroups[roomId]) {
-        return res.status(404).json({ error: 'Ú˜ÙˆÙˆØ± Ø¨Û•Ø±Ø¯Û•Ø³Øª Ù†ÛŒÛŒÛ•' }); // Room not found
+        return res.status(404).json({ error: 'ژوور بەردەست نییە' }); // Room not found
       } // End if room not found
 
       // Update room data
@@ -4943,7 +5290,7 @@ async function startServer() {
           userObj.lastSeen = new Date().toISOString();
         } else {
           room.activeUsers.push({
-            username: cleanCode === room.hostCode ? 'Ø®Ø§Ù†Û•Ø®ÙˆÛŽ (Host)' : `Ø¨ÛŒÙ†Û•Ø±-${cleanCode.substring(0, 5)}`,
+            username: cleanCode === room.hostCode ? 'خانەخوێ (Host)' : `بینەر-${cleanCode.substring(0, 5)}`,
             uniqueCode: cleanCode,
             joinedAt: new Date().toISOString(),
             lastSeen: new Date().toISOString()
@@ -5018,7 +5365,7 @@ async function startServer() {
       const isVipTicketCode = db.vipTickets && db.vipTickets.some((t: any) => (t.code || '').trim().toUpperCase() === cleanCode);
 
       if (!cleanCode && !isBroadcastRoom) { // Only require code if not broadcast room
-        return res.status(400).json({ error: 'Ù¾ÛŽÙˆÛŒØ³ØªÛ• Ú©Û†Ø¯ÛŒ Ø®Û†Øª Ø¨Ù†Û•Ø®Ø´ÛŽÙ†ÛŒØª' });
+        return res.status(400).json({ error: 'پێویستە کۆدی خۆت بنەخشێنیت' });
       }
 
       // Initialize broadcast room if it doesn't exist
@@ -5029,11 +5376,11 @@ async function startServer() {
       }
 
       if (!db.syncGroups[roomId]) { // If room still not found
-        return res.status(404).json({ error: 'Ú˜ÙˆÙˆØ± Ø¨Û•Ø±Ø¯Û•Ø³Øª Ù†ÛŒÛŒÛ•' }); // Return 404
+        return res.status(404).json({ error: 'ژوور بەردەست نییە' }); // Return 404
       }
 
       if (!isBroadcastRoom && !userExists && !isGlobalHost && !isRoomHost && !isVipTicketCode && cleanCode !== 'ADMIN') {
-        return res.status(403).json({ error: 'Ú˜Ù…Ø§Ø±Û•ÛŒ Ú†ÙˆÙˆÙ†Û•Ú˜ÙˆÙˆØ±Û• Ù†Ø§Ø¯Ø±ÙˆØ³ØªÛ• ÛŒØ§Ù† ØªÛ†Ù…Ø§Ø± Ù†Û•Ú©Ø±Ø§ÙˆÛ•!' });
+        return res.status(403).json({ error: 'ژمارەی چوونەژوورە نادروستە یان تۆمار نەکراوە!' });
       }
 
       if (!room.activeUsers) room.activeUsers = [];
@@ -5042,7 +5389,7 @@ async function startServer() {
       const alreadyIn = room.activeUsers.some((u: any) => u.uniqueCode === cleanCode);
       if (!alreadyIn) {
         room.activeUsers.push({
-          username: username || `Ø¨ÛŒÙ†Û•Ø±-${cleanCode.substring(0, 5)}`,
+          username: username || `بینەر-${cleanCode.substring(0, 5)}`,
           uniqueCode: cleanCode,
           joinedAt: new Date().toISOString(),
           lastSeen: new Date().toISOString()
@@ -5057,7 +5404,7 @@ async function startServer() {
 
       room.updatedAt = new Date().toISOString();
       const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || "Unknown";
-      logUserActivity(db, cleanCode, "Join Room", `Ú†ÙˆÙˆÛ• Ù†Ø§Ùˆ Ú˜ÙˆÙˆØ±ÛŒ ØªÛ•Ù„Û•ÙØ²ÛŒÛ†Ù†ÛŒ "${room.name || id}"`, clientIp); // Log user activity
+      logUserActivity(db, cleanCode, "Join Room", `چووە ناو ژووری تەلەفزیۆنی "${room.name || id}"`, clientIp); // Log user activity
       db.syncGroups[roomId] = room; // Persist changes to the room object
       await saveDB(db);
 
@@ -5109,7 +5456,7 @@ async function startServer() {
   app.get('/api/drama-rooms/:id', (req, res) => {
     try {
       const room = (db.dramaRooms || {})[req.params.id];
-      if (!room) return res.status(404).json({ error: 'Ø¦Û•Ù… Ú˜ÙˆÙˆØ±Û• Ø¨Û•Ø±Ø¯Û•Ø³Øª Ù†ÛŒÛŒÛ•' });
+      if (!room) return res.status(404).json({ error: 'ئەم ژوورە بەردەست نییە' });
       res.json({
         success: true,
         room: { ...room, liveViewers: getRoomLiveViewers(room), rating: getRoomRating(room.id) }
@@ -5153,7 +5500,7 @@ async function startServer() {
     try {
       const { title, description, coverUrl, dramas } = req.body || {};
       if (!title || !String(title).trim()) {
-        return res.status(400).json({ success: false, error: 'Ù†Ø§ÙˆÙ†ÛŒØ´Ø§Ù†ÛŒ Ú˜ÙˆÙˆØ±Û•Ú©Û• Ù¾ÛŽÙˆÛŒØ³ØªÛ•' });
+        return res.status(400).json({ success: false, error: 'ناونیشانی ژوورەکە پێویستە' });
       }
       if (!db.dramaRooms) db.dramaRooms = {};
       const now = new Date().toISOString();
@@ -5182,10 +5529,10 @@ async function startServer() {
       const { id } = req.params;
       const { title, description, coverUrl, dramas } = req.body || {};
       if (!db.dramaRooms) db.dramaRooms = {};
-      if (!db.dramaRooms[id]) return res.status(404).json({ success: false, error: 'Ø¦Û•Ù… Ú˜ÙˆÙˆØ±Û• Ø¨Û•Ø±Ø¯Û•Ø³Øª Ù†ÛŒÛŒÛ•' });
+      if (!db.dramaRooms[id]) return res.status(404).json({ success: false, error: 'ئەم ژوورە بەردەست نییە' });
       const existing = db.dramaRooms[id];
       if (title !== undefined) {
-        if (!String(title).trim()) return res.status(400).json({ success: false, error: 'Ù†Ø§ÙˆÙ†ÛŒØ´Ø§Ù†ÛŒ Ú˜ÙˆÙˆØ±Û•Ú©Û• Ù¾ÛŽÙˆÛŒØ³ØªÛ•' });
+        if (!String(title).trim()) return res.status(400).json({ success: false, error: 'ناونیشانی ژوورەکە پێویستە' });
         existing.title = String(title).trim();
       }
       if (description !== undefined) existing.description = String(description || '').trim();
@@ -5205,7 +5552,7 @@ async function startServer() {
     try {
       const { id } = req.params;
       if (!db.dramaRooms) db.dramaRooms = {};
-      if (!db.dramaRooms[id]) return res.status(404).json({ success: false, error: 'Ø¦Û•Ù… Ú˜ÙˆÙˆØ±Û• Ø¨Û•Ø±Ø¯Û•Ø³Øª Ù†ÛŒÛŒÛ•' });
+      if (!db.dramaRooms[id]) return res.status(404).json({ success: false, error: 'ئەم ژوورە بەردەست نییە' });
       const removed = db.dramaRooms[id];
       delete db.dramaRooms[id];
       await saveDB(db);
@@ -5264,7 +5611,7 @@ async function startServer() {
     }
 
     if (!targetUrl || typeof targetUrl !== 'string') {
-      return res.status(400).json({ error: 'Ù„ÛŒÙ†Ú© ÛŒØ§Ù† Ú©Û†Ø¯ÛŒ Ù¾ÛŽÙˆÛŒØ³ØªÛ•' });
+      return res.status(400).json({ error: 'لینک یان کۆدی پێویستە' });
     }
 
     try {
@@ -5280,7 +5627,7 @@ async function startServer() {
       if (!response.ok) {
         // Log details but don't crash
         console.warn(`[Proxy Fetch] Failed: ${response.status} ${response.statusText}`);
-        return res.json({ success: false, error: `Ù†Û•ØªÙˆØ§Ù†Ø±Ø§ Ù¾Û•Ú•Û•ÛŒ ${targetUrl} Ø¨Ø§Ø±Ø¨Ú©Ø±ÛŽØª (${response.status})` });
+        return res.json({ success: false, error: `نەتوانرا پەڕەی ${targetUrl} باربکرێت (${response.status})` });
       }
 
       const html = await response.text();
@@ -5293,7 +5640,7 @@ async function startServer() {
       res.json({ success: true, html: smallHtml.substring(0, 150000) });
     } catch (err: any) {
       console.error('[Proxy Fetch Error]', err.message || err);
-      res.status(200).json({ success: false, error: 'Ù‡Û•ÚµÛ•ÛŒÛ•Ú© Ú•ÙˆÙˆÛŒØ¯Ø§ Ù„Û• Ú©Ø§ØªÛŒ Ù‡ÛŽÙ†Ø§Ù†ÛŒ Ø²Ø§Ù†ÛŒØ§Ø±ÛŒÛŒÛ•Ú©Ø§Ù†' });
+      res.status(200).json({ success: false, error: 'هەڵەیەک ڕوویدا لە کاتی هێنانی زانیارییەکان' });
     }
   });
 
@@ -5303,11 +5650,11 @@ async function startServer() {
 
   app.post('/api/admin/categories', async (req, res) => {
     const { name, adminName } = req.body;
-    if (!name) return res.status(400).json({ error: 'Ù†Ø§ÙˆÛŒ Ù¾Û†Ù„ÛŽÙ† Ù¾ÛŽÙˆÛŒØ³ØªÛ•' });
+    if (!name) return res.status(400).json({ error: 'ناوی پۆلێن پێویستە' });
     if (!db.categories) db.categories = [];
-    if (db.categories.includes(name)) return res.status(400).json({ error: 'Ø¦Û•Ù… Ù¾Û†Ù„ÛŽÙ†Û• Ù¾ÛŽØ´ØªØ± Ù‡Û•Ø¨ÙˆÙˆÛ•' });
+    if (db.categories.includes(name)) return res.status(400).json({ error: 'ئەم پۆلێنە پێشتر هەبووە' });
     db.categories.push(name);
-    await addAuditLog(db, adminName, "Add Category", `Ú©Ø§ÚµØ§/Ù¾Û†Ù„ÛŽÙ†ÛŒ Ù†ÙˆÛŽ Ø²ÛŒØ§Ø¯Ú©Ø±Ø§: "${name}"`);
+    await addAuditLog(db, adminName, "Add Category", `کاڵا/پۆلێنی نوێ زیادکرا: "${name}"`);
     await saveDB(db);
     res.json({ success: true, categories: db.categories });
   });
@@ -5320,12 +5667,12 @@ async function startServer() {
     const requesterRole = adminRecord?.role || (adminName?.trim().toLowerCase() === 'dekan@123' ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
     const canDelete = adminName?.trim().toLowerCase() === 'dekan@123' || adminName?.trim().toLowerCase() === 'admin' || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'owner';
     if (!canDelete) {
-      return res.status(403).json({ error: 'Ø´Ø§ÛŒØ³ØªÛ•ÛŒ Ø¯Û•Ø³Û•ÚµØ§ØªÛŒ Ù¾ÛŽÙˆÛŒØ³Øª Ù†ÛŒÛŒÛ•! Ú©Ø§Ø±Ù…Û•Ù†Ø¯ (Staff) Ù†Ø§ØªÙˆØ§Ù†ÛŽØª Ù¾Û†Ù„ÛŽÙ†Û•Ú©Ø§Ù† Ø¨Ø³Ú•ÛŽØªÛ•ÙˆÛ•.' });
+      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! کارمەند (Staff) ناتوانێت پۆلێنەکان بسڕێتەوە.' });
     }
 
     if (!db.categories) db.categories = [];
     db.categories = db.categories.filter((c: string) => c !== name);
-    await addAuditLog(db, adminName, "Delete Category", `Ù¾Û†Ù„ÛŽÙ† Ø³Ú•Ø§ÛŒÛ•ÙˆÛ•: "${name}"`);
+    await addAuditLog(db, adminName, "Delete Category", `پۆلێن سڕایەوە: "${name}"`);
     await saveDB(db);
     res.json({ success: true, categories: db.categories });
   });
@@ -6454,7 +6801,7 @@ async function startServer() {
       // Return isSecret: true status, directing client-side code to perform the registration/login safely
       // and call the Firestore direct update promotion endpoint (/api/admin/promote-with-secret)
       const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || "Unknown";
-      await addAuditLog(db, displayName, "Login Secret Match Tried", `Ù‡Û•ÙˆÚµÛŒ Ú†ÙˆÙˆÙ†Û•Ú˜ÙˆÙˆØ±Û•ÙˆÛ•ÛŒ Ø¦Û•Ø¯Ù…ÛŒÙ† Ø¨Û• Ú©Û†Ø¯ÛŒ Ù†Ù‡ÛŽÙ†ÛŒ.`);
+      await addAuditLog(db, displayName, "Login Secret Match Tried", `هەوڵی چوونەژوورەوەی ئەدمین بە کۆدی نهێنی.`);
       await saveDB(db);
 
       res.json({
@@ -6466,7 +6813,7 @@ async function startServer() {
       });
     } catch (err: any) {
       console.error("Secret login verification failed:", err);
-      res.status(500).json({ success: false, message: `Ù‡Û•ÚµÛ•ÛŒÛ•Ú© Ú•ÙˆÙˆÛŒØ¯Ø§: ${err.message || err}` });
+      res.status(500).json({ success: false, message: `هەڵەیەک ڕوویدا: ${err.message || err}` });
     }
   });
 
@@ -6475,13 +6822,13 @@ async function startServer() {
     const sysSecret = process.env.ADMIN_SECRET_KEY || "";
 
     if (!sysSecret || secret !== sysSecret) {
-      return res.status(401).json({ success: false, message: "Ú©Û†Ø¯ÛŒ Ù†Ù‡ÛŽÙ†ÛŒ Ù‡Û•ÚµÛ•ÛŒÛ•!" });
+      return res.status(401).json({ success: false, message: "کۆدی نهێنی هەڵەیە!" });
     }
 
     try {
       const dbInstance = getAdminDb();
       if (!dbInstance) {
-        return res.status(500).json({ success: false, message: "Ø¯Ø§ØªØ§Ø¨Û•ÛŒØ³ Ø¨Û•Ø±Ø¯Û•Ø³Øª Ù†ÛŒÛŒÛ• Ù„Û• Ø³ÛŽØ±Ú¤Û•Ø±." });
+        return res.status(500).json({ success: false, message: "داتابەیس بەردەست نییە لە سێرڤەر." });
       }
 
       if (uid) {
@@ -6522,17 +6869,17 @@ async function startServer() {
         hasAdmin.isSuper = true;
       }
 
-      await addAuditLog(db, displayName, "Role Promotion via Key", `Ø³Û•Ø±Ú©Û•ÙˆØªÙˆÙˆØ§Ù†Û• Ú•Û†ÚµÛŒ ÛŒÙˆØ²Û•Ø± Ú¯Û†Ú•Ø¯Ø±Ø§ Ø¨Û† Ø¦Û•Ø¯Ù…ÛŒÙ†ÛŒ Ú¯Ø´ØªÛŒ (Super Admin) Ù„Û• Ú•ÛŽÚ¯Û•ÛŒ Ú©Û†Ø¯ÛŒ Ù†Ù‡ÛŽÙ†ÛŒ.`);
+      await addAuditLog(db, displayName, "Role Promotion via Key", `سەرکەوتووانە ڕۆڵی یوزەر گۆڕدرا بۆ ئەدمینی گشتی (Super Admin) لە ڕێگەی کۆدی نهێنی.`);
       await saveDB(db);
 
       res.json({
         success: true,
-        message: "Ù¾Ù„Û•Ú©Û•Øª Ú©Ø±Ø§ Ø¨Û• Ø¦Û•Ø¯Ù…ÛŒÙ†ÛŒ Ú¯Ø´ØªÛŒ Ø¨Û• Ø³Û•Ø±Ú©Û•ÙˆØªÙˆÙˆÛŒÛŒ!",
+        message: "پلەکەت کرا بە ئەدمینی گشتی بە سەرکەوتوویی!",
         adminUser: { username: displayName, isSuper: true, isOwner: true, role: 'super_admin', ROLE_SUPER_ADMIN: true }
       });
     } catch (err: any) {
       console.error("Admin promotion failed:", err);
-      res.status(500).json({ success: false, message: `Ø®Ø±Ø§Ù¾ Ø¨Û•Ú•ÛŽÙˆÛ•Ú†ÙˆÙˆ: ${err.message || err}` });
+      res.status(500).json({ success: false, message: `خراپ بەڕێوەچوو: ${err.message || err}` });
     }
   });
 
@@ -6558,12 +6905,12 @@ async function startServer() {
               success: false,
               ownerExempt: true,
               unblockAt: new Date(exemption.unblockAt || Date.now()).toISOString(),
-              message: 'Ø¦Û•Ù… Ø¦Ø§Ù…ÛŽØ±Û• Ú©Ø§ØªÛŒÛŒÛ• Ø¨Ù„Û†Ú© Ú©Ø±Ø§ÙˆÛ• Ø¨Û† Ø®Ø§ÙˆÛ•Ù†ÛŒ Ø³ÛŒØ³ØªÛ•Ù… â€” Ø¯Û•Ú©Ø±ÛŽØªÛ•ÙˆÛ• Ø¨Û• Ø®Û†Ú©Ø§Ø±ÛŒ Ø¯ÙˆØ§ÛŒ Ù¡ Ø®ÙˆÙ„Û•Ú©.'
+              message: 'ئەم ئامێرە کاتییە بلۆک کراوە بۆ خاوەنی سیستەم — دەکرێتەوە بە خۆکاری دوای ١ خولەک.'
             });
           }
-          // Auto-unblocked already â€” fall through and allow the login attempt.
+          // Auto-unblocked already — fall through and allow the login attempt.
         } else {
-          return res.status(403).json({ success: false, message: 'ØªÛ† Ø¨Ù„Û†Ú© Ú©Ø±Ø§ÙˆÛŒØª Ù„Û•Ù… Ø³ÛŒØ³ØªÙ…Û•Ø¯Ø§.' });
+          return res.status(403).json({ success: false, message: 'تۆ بلۆک کراویت لەم سیستمەدا.' });
         }
       } else {
         const exemption = evaluateOwnerBlock(cleanIp, false);
@@ -6573,12 +6920,12 @@ async function startServer() {
               success: false,
               ownerExempt: true,
               unblockAt: new Date(exemption.unblockAt || Date.now()).toISOString(),
-              message: 'Ø¦Û•Ù… Ø¦Ø§ÛŒÙ¾ÛŒÛ• Ú©Ø§ØªÛŒÛŒÛ• Ø¨Ù„Û†Ú© Ú©Ø±Ø§ÙˆÛ• Ø¨Û† Ø®Ø§ÙˆÛ•Ù†ÛŒ Ø³ÛŒØ³ØªÛ•Ù… â€” Ø¯Û•Ú©Ø±ÛŽØªÛ•ÙˆÛ• Ø¨Û• Ø®Û†Ú©Ø§Ø±ÛŒ Ø¯ÙˆØ§ÛŒ Ù¡ Ø®ÙˆÙ„Û•Ú©.'
+              message: 'ئەم ئایپیە کاتییە بلۆک کراوە بۆ خاوەنی سیستەم — دەکرێتەوە بە خۆکاری دوای ١ خولەک.'
             });
           }
-          // Auto-unblocked already â€” fall through and allow the login attempt.
+          // Auto-unblocked already — fall through and allow the login attempt.
         } else {
-          return res.status(403).json({ success: false, message: 'ØªÛ† Ø¨Ù„Û†Ú© Ú©Ø±Ø§ÙˆÛŒØª Ù„Û•Ù… Ø³ÛŒØ³ØªÙ…Û•Ø¯Ø§.' });
+          return res.status(403).json({ success: false, message: 'تۆ بلۆک کراویت لەم سیستمەدا.' });
         }
       }
     }
@@ -6589,14 +6936,14 @@ async function startServer() {
     const isSecretPassword = !!sysSecret && inputPassword === sysSecret;
 
     const cleanLoginUsername = String(username || '').trim().toLowerCase();
-    // Owner usernames â€” the ONLY identities allowed to fall back to the master
+    // Owner usernames — the ONLY identities allowed to fall back to the master
     // secret key. Never grant sub-admin/staff usernames the master bypass.
     const OWNER_USERNAMES = ['admin', 'dekan@123'];
 
     // verifyStoredPassword authenticates a password against a SINGLE account's
     // OWN stored credential only (legacy plaintext, legacy sha256, or bcrypt).
     // This is deliberately strict: once an admin record exists, only its own
-    // unique password can unlock it â€” the Owner's master secret key must never
+    // unique password can unlock it — the Owner's master secret key must never
     // authenticate or elevate another account, otherwise every sub-admin would
     // effectively log in with the Owner's password (or fail with their own).
     const verifyStoredPassword = (storedPassword: string): boolean => {
@@ -6612,21 +6959,21 @@ async function startServer() {
       try {
         return bcrypt.compareSync(inputPassword, storedPassword);
       } catch {
-        // Malformed/legacy hash â€” never a silent login; treat as mismatch.
+        // Malformed/legacy hash — never a silent login; treat as mismatch.
         return false;
       }
     };
 
-    // Step 1 â€” authenticate against the account's OWN stored password.
+    // Step 1 — authenticate against the account's OWN stored password.
     let admin = db.admins.find((a: any) => String(a?.username || '').trim().toLowerCase() === cleanLoginUsername);
 
     if (admin && !verifyStoredPassword(String(admin.password || ''))) {
-      // Wrong password for an existing account â€” reject. Do NOT fall through to
+      // Wrong password for an existing account — reject. Do NOT fall through to
       // the secret-key path: existing accounts can only ever use their own key.
       admin = null;
     }
 
-    // Step 2 â€” Owner-only master-secret fallback for the platform owner when no
+    // Step 2 — Owner-only master-secret fallback for the platform owner when no
     // account record exists yet. Never persists a fake record with an unknown
     // password, and never applies to sub-admin/staff usernames.
     if (!admin && isSecretPassword && OWNER_USERNAMES.includes(cleanLoginUsername)) {
@@ -6645,12 +6992,12 @@ async function startServer() {
         if (cleanDeviceId) whitelistOwnerDevice(cleanDeviceId);
       }
 
-      await addAuditLog(db, admin.username, "Login Successful", `Ø¯Û•Ø³ØªÙ¾ÛŽÚ©Ø±Ø¯Ù†ÛŒ Ø¯Ø§Ù†ÛŒØ´ØªÙ† Ù„Û• Ú•ÛŽÚ¯Û•ÛŒ Ø¦Ø§ÛŒÙ¾ÛŒ ${cleanIp}`);
+      await addAuditLog(db, admin.username, "Login Successful", `دەستپێکردنی دانیشتن لە ڕێگەی ئایپی ${cleanIp}`);
       await saveDB(db);
 
       // The assigned role is ALWAYS derived from the account itself. An owner
       // account resolves to "owner" regardless of stored drift; a sub-admin
-      // keeps exactly the role that was assigned to it at creation time â€” the
+      // keeps exactly the role that was assigned to it at creation time — the
       // secret key can no longer silently upgrade a staff/deputy account.
       let responseRole = admin.role || (admin.isSuper ? "deputy_manager" : "staff");
       if (ownerName === "admin" || ownerName === "dekan@123") {
@@ -6711,7 +7058,7 @@ async function startServer() {
           });
           bannedStatus = true;
           ownerTempBan = isOwnerWhitelisted(cleanDeviceId);
-          await addAuditLog(db, "SYSTEM_AUTO_BAN", "Auto Device Ban", `Ø¨Ù„Û†Ú©ÛŒ Ø¦Û†ØªÛ†Ù…Ø§ØªÛŒÚ©ÛŒÛŒ Ø¦Ø§Ù…ÛŽØ± ${cleanDeviceId} Ø¨Û•Ù‡Û†ÛŒ Ù¥ Ù‡Û•ÙˆÚµÛŒ Ø´Ú©Ø³ØªØ®ÙˆØ§Ø±Ø¯ÙˆÙˆÛŒ Ú†ÙˆÙˆÙ†Û•Ú˜ÙˆÙˆØ±Û•ÙˆÛ• (IP: ${cleanIp}).`);
+          await addAuditLog(db, "SYSTEM_AUTO_BAN", "Auto Device Ban", `بلۆکی ئۆتۆماتیکیی ئامێر ${cleanDeviceId} بەهۆی ٥ هەوڵی شکستخواردووی چوونەژوورەوە (IP: ${cleanIp}).`);
         } else {
           if (!db.bannedIps) db.bannedIps = [];
           if (!db.bannedIps.includes(cleanIp)) {
@@ -6721,7 +7068,7 @@ async function startServer() {
             // Whitelisted owner IPs only get a 1-minute temporary block and
             // auto-unblock afterwards; normal IPs stay permanently banned.
             ownerTempBan = isOwnerWhitelisted(cleanIp);
-            await addAuditLog(db, "SYSTEM_AUTO_BAN", "Auto IP Ban", `Ø¨Ù„Û†Ú©ÛŒ Ø¦Û†ØªÛ†Ù…Ø§ØªÛŒÚ©ÛŒÛŒ Ø¦Ø§ÛŒÙ¾ÛŒ ${cleanIp} Ø¨Û•Ù‡Û†ÛŒ Ù¥ Ù‡Û•ÙˆÚµÛŒ Ø´Ú©Ø³ØªØ®ÙˆØ§Ø±Ø¯ÙˆÙˆÛŒ Ú†ÙˆÙˆÙ†Û•Ú˜ÙˆÙˆØ±Û•ÙˆÛ•.`);
+            await addAuditLog(db, "SYSTEM_AUTO_BAN", "Auto IP Ban", `بلۆکی ئۆتۆماتیکیی ئایپی ${cleanIp} بەهۆی ٥ هەوڵی شکستخواردووی چوونەژوورەوە.`);
           }
         }
       }
@@ -6731,9 +7078,9 @@ async function startServer() {
         success: false,
         message: bannedStatus
           ? (ownerTempBan
-              ? 'Ø¦Û•Ù… Ø¦Ø§ÛŒÙ¾ÛŒÛ• Ø¨Û† Ø®Ø§ÙˆÛ•Ù†ÛŒ Ø³ÛŒØ³ØªÛ•Ù… Ú©Ø§ØªÛŒÛŒÛ• Ø¨Ù„Û†Ú© Ú©Ø±Ø§ÙˆÛ• â€” Ø¯Û•Ú©Ø±ÛŽØªÛ•ÙˆÛ• Ø¨Û• Ø®Û†Ú©Ø§Ø±ÛŒ Ø¯ÙˆØ§ÛŒ Ù¡ Ø®ÙˆÙ„Û•Ú©.'
-              : 'Ø¦Û•Ù… Ø¦Ø§ÛŒÙ¾ÛŒÛ• Ø¨Ù„Û†Ú© Ú©Ø±Ø§ Ø¨Û• Ø´ÛŽÙˆÛ•ÛŒÛ•Ú©ÛŒ Ú©Ø§ØªÛŒ Ø¨Û•Ù‡Û†ÛŒ Ø²Û†Ø±ÛŒ Ù‡Û•ÙˆÚµÛ• Ø´Ú©Ø³ØªØ®ÙˆØ§Ø±Ø¯ÙˆÙˆÛ•Ú©Ø§Ù† (Ù¥ Ø´Ú©Ø³Øª).')
-          : 'Ù†Ø§ÙˆÛŒ Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø± ÛŒØ§Ù† ÙˆØ´Û•ÛŒ ØªÛŽÙ¾Û•Ú• Ù‡Û•ÚµÛ•ÛŒÛ•'
+              ? 'ئەم ئایپیە بۆ خاوەنی سیستەم کاتییە بلۆک کراوە — دەکرێتەوە بە خۆکاری دوای ١ خولەک.'
+              : 'ئەم ئایپیە بلۆک کرا بە شێوەیەکی کاتی بەهۆی زۆری هەوڵە شکستخواردووەکان (٥ شکست).')
+          : 'ناوی بەکارهێنەر یان وشەی تێپەڕ هەڵەیە'
       });
     }
   });
@@ -6746,7 +7093,7 @@ async function startServer() {
     })));
   });
 
-  // Module 17 role hierarchy â€” HIGHER number = MORE privilege. Every create /
+  // Module 17 role hierarchy — HIGHER number = MORE privilege. Every create /
   // delete / password-change guard below is derived from these levels so a user
   // can never escalate their own privileges or touch accounts at or above their
   // own level (except changing their own password).
@@ -6770,20 +7117,20 @@ async function startServer() {
     const { username, password, isSuper, role } = req.body || {};
     const requester = requesterInfo(req);
     if (requester.level < 2) {
-      return res.status(403).json({ error: 'Ø´Ø§ÛŒØ³ØªÛ•ÛŒ Ø¯Û•Ø³Û•ÚµØ§ØªÛŒ Ù¾ÛŽÙˆÛŒØ³Øª Ù†ÛŒÛŒÛ•! ØªÛ•Ù†Ù‡Ø§ Ø®Ø§ÙˆÛ•Ù† Ø³Û•Ø±Ù¾Û•Ø±Ø´ØªÛŒØ§Ø± (dekan@123 ÛŒØ§Ù† Ø¨Û•Ú•ÛŽÙˆÛ•Ø¨Û•Ø±ÛŒ Ø³Û•Ø±Û•Ú©ÛŒ Ú©Û•Ù†Ø§Ù„Û•Ú©Û•) Ø¯Û•ØªÙˆØ§Ù†ÛŽØª Ø¦Û•Ø¯Ù…ÛŒÙ† Ø¨Û•Ú•ÛŽÙˆÛ•Ø¨Ø¨Ø§Øª.' });
+      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیار (dekan@123 یان بەڕێوەبەری سەرەکی کەنالەکە) دەتوانێت ئەدمین بەڕێوەببات.' });
     }
 
-    // Input validation â€” strict length + charset, never expose internals
+    // Input validation — strict length + charset, never expose internals
     const safeUsername = String(username || '').trim();
     const safePassword = String(password || '');
-    if (!safeUsername || !safePassword) return res.status(400).json({ error: 'Ù†Ø§ÙˆÛŒ Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø± Ùˆ ÙˆØ´Û•ÛŒ ØªÛŽÙ¾Û•Ú• Ù¾ÛŽÙˆÛŒØ³ØªÙ†' });
-    if (safeUsername.length < 3 || safeUsername.length > 32) return res.status(400).json({ error: 'Ù†Ø§ÙˆÛŒ Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø± Ø¯Û•Ø¨ÛŽØª Ù£ Ø¨Û† Ù£Ù¢ Ù¾ÛŒØª Ø¨ÛŽØª' });
-    if (!/^[a-zA-Z0-9_.-]+$/.test(safeUsername)) return res.status(400).json({ error: 'Ù†Ø§ÙˆÛŒ Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø± ØªÛ•Ù†Ù‡Ø§ Ù¾ÛŒØªÛŒ Ø¦ÛŒÙ†Ú¯Ù„ÛŒØ²ÛŒØŒ Ú˜Ù…Ø§Ø±Û• Ùˆ _ . - Ù¾Û•Ø³Û•Ù†Ø¯Û•' });
-    if (safePassword.length < 6) return res.status(400).json({ error: 'ÙˆØ´Û•ÛŒ ØªÛŽÙ¾Û•Ú• Ø¯Û•Ø¨ÛŽØª Ù„Û• Ú©Û•Ù…ØªØ± Ù†Û•Ø¨ÛŽØª Ù„Û• Ù¦ Ù‡ÛŽÙ…Ø§' });
-    if (safePassword.length > 128) return res.status(400).json({ error: 'ÙˆØ´Û•ÛŒ ØªÛŽÙ¾Û•Ú• Ø²Û†Ø± Ø¯Ø±ÛŽÚ˜Û•' });
+    if (!safeUsername || !safePassword) return res.status(400).json({ error: 'ناوی بەکارهێنەر و وشەی تێپەڕ پێویستن' });
+    if (safeUsername.length < 3 || safeUsername.length > 32) return res.status(400).json({ error: 'ناوی بەکارهێنەر دەبێت ٣ بۆ ٣٢ پیت بێت' });
+    if (!/^[a-zA-Z0-9_.-]+$/.test(safeUsername)) return res.status(400).json({ error: 'ناوی بەکارهێنەر تەنها پیتی ئینگلیزی، ژمارە و _ . - پەسەندە' });
+    if (safePassword.length < 6) return res.status(400).json({ error: 'وشەی تێپەڕ دەبێت لە کەمتر نەبێت لە ٦ هێما' });
+    if (safePassword.length > 128) return res.status(400).json({ error: 'وشەی تێپەڕ زۆر درێژە' });
 
     if (db.admins.some((a: any) => a.username?.toLowerCase() === safeUsername.toLowerCase())) {
-      return res.status(400).json({ error: 'Ø¦Û•Ù… Ù†Ø§ÙˆÛ• Ù¾ÛŽØ´ØªØ± Ø¨Û•Ú©Ø§Ø±Ù‡Ø§ØªÙˆÙˆÛ•' });
+      return res.status(400).json({ error: 'ئەم ناوە پێشتر بەکارهاتووە' });
     }
 
     // Map the requested role onto a safe allow-list and enforce hierarchy: you
@@ -6791,7 +7138,7 @@ async function startServer() {
     const requestedRole = VALID_ROLES.includes(role) ? role : (isSuper ? 'deputy_manager' : 'staff');
     const requestedLevel = ROLE_LEVEL[requestedRole] || 1;
     if (requestedLevel >= requester.level) {
-      return res.status(403).json({ error: 'Ù†Ø§ØªÙˆØ§Ù†ÛŒØª Ø¦Û•Ø¯Ù…ÛŒÙ† Ø¨Û• Ø¦Ø§Ø³ØªÛŒ ÛŒÛ•Ú©Ø³Ø§Ù† ÛŒØ§Ù† Ø¨Û•Ø±Ø²ØªØ± Ù„Û• Ø®Û†Øª Ø¯Ø±ÙˆØ³Øª Ø¨Ú©Û•ÛŒØª' });
+      return res.status(403).json({ error: 'ناتوانیت ئەدمین بە ئاستی یەکسان یان بەرزتر لە خۆت دروست بکەیت' });
     }
 
     const secureHashedPassword = bcrypt.hashSync(safePassword, 10);
@@ -6807,12 +7154,12 @@ async function startServer() {
     if (!db.ownerNotifications) db.ownerNotifications = [];
     db.ownerNotifications.unshift({
       id: `notif-${Date.now()}`,
-      message: `ðŸ”” Ø¦Ø§Ú¯Ø§Ø¯Ø§Ø±ÛŒ Ú¯Ø±Ù†Ú¯: Ø®Û†Ú©Ø§Ø±Ø§Ù†Û• Ø¦Û•Ú©Ø§ÙˆÙ†ØªÛŒ Ø¦Û•Ø¯Ù…ÛŒÙ†ÛŒ Ù†ÙˆÛŽ Ø¨Û• Ù†Ø§ÙˆÛŒ [${safeUsername}] ÙˆÛ•Ú© [${requestedRole}] Ù„Û•Ù„Ø§ÛŒÛ•Ù† [${requester.name || "Ø®Ø§ÙˆÛ•Ù†Ú©Ø§Ø±"}] Ø¯Ø±ÙˆØ³ØªÚ©Ø±Ø§ Ù„Û• Ø¨Û•Ú¯ÛŒ Ø¯Ø§ØªØ§Ø¨Û•ÛŒØ³.`,
+      message: `🔔 ئاگاداری گرنگ: خۆکارانە ئەکاونتی ئەدمینی نوێ بە ناوی [${safeUsername}] وەک [${requestedRole}] لەلایەن [${requester.name || "خاوەنکار"}] دروستکرا لە بەگی داتابەیس.`,
       timestamp: new Date().toISOString(),
       read: false
     });
 
-    await addAuditLog(db, requester.name || 'system', "Create Admin", `Ø¦Û•Ø¯Ù…ÛŒÙ†ÛŒ Ù†ÙˆÛŽ Ø¯Ø±ÙˆØ³ØªÚ©Ø±Ø§: "${safeUsername}" ÙˆÛ•Ú© "${requestedRole}"`);
+    await addAuditLog(db, requester.name || 'system', "Create Admin", `ئەدمینی نوێ دروستکرا: "${safeUsername}" وەک "${requestedRole}"`);
     await saveDB(db);
     res.json({ success: true });
   });
@@ -6821,23 +7168,23 @@ async function startServer() {
     const { username } = req.params;
     const requester = requesterInfo(req);
     if (requester.level < 2) {
-      return res.status(403).json({ error: 'Ø´Ø§ÛŒØ³ØªÛ•ÛŒ Ø¯Û•Ø³Û•ÚµØ§ØªÛŒ Ù¾ÛŽÙˆÛŒØ³Øª Ù†ÛŒÛŒÛ•! ØªÛ•Ù†Ù‡Ø§ Ø®Ø§ÙˆÛ•Ù† Ø³Û•Ø±Ù¾Û•Ø±Ø´ØªÛŒØ§Ø± (dekan@123 ÛŒØ§Ù† Ø¨Û•Ú•ÛŽÙˆÛ•Ø¨Û•Ø±) Ø¯Û•ØªÙˆØ§Ù†ÛŽØª Ø¦Û•Ø¯Ù…ÛŒÙ† Ø¨Ø³Ú•ÛŽØªÛ•ÙˆÛ•.' });
+      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیار (dekan@123 یان بەڕێوەبەر) دەتوانێت ئەدمین بسڕێتەوە.' });
     }
 
     const targetName = String(username || '').trim().toLowerCase();
     const target = db.admins.find((a: any) => a.username?.toLowerCase() === targetName);
-    if (!target) return res.status(404).json({ error: 'Ø¦Û•Ù… Ø¦Û•Ø¯Ù…ÛŒÙ†Û• Ù†Û•Ø¯Û†Ø²Ø±Ø§ÛŒÛ•ÙˆÛ•' });
+    if (!target) return res.status(404).json({ error: 'ئەم ئەدمینە نەدۆزرایەوە' });
 
-    if (requester.name === targetName) return res.status(400).json({ error: 'ØªÛ† Ù†Ø§ØªÙˆØ§Ù†ÛŒØª Ø¦Û•Ú©Ø§ÙˆÙ†ØªÛŒ Ø®Û†Øª Ø¨Ø³Ú•ÛŒØªÛ•ÙˆÛ•' });
-    if (targetName === 'admin' || targetName === 'dekan@123') return res.status(400).json({ error: 'Ù†Ø§ØªÙˆØ§Ù†Ø±ÛŽØª Ø¦Û•Ø¯Ù…ÛŒÙ†ÛŒ Ø³Û•Ø±Û•Ú©ÛŒ Ø¨Ø³Ú•Ø¯Ø±ÛŽØªÛ•ÙˆÛ•' });
+    if (requester.name === targetName) return res.status(400).json({ error: 'تۆ ناتوانیت ئەکاونتی خۆت بسڕیتەوە' });
+    if (targetName === 'admin' || targetName === 'dekan@123') return res.status(400).json({ error: 'ناتوانرێت ئەدمینی سەرەکی بسڕدرێتەوە' });
 
     // Can never delete an account at or above your own privilege level
     if (roleLevel(target) >= requester.level) {
-      return res.status(403).json({ error: 'Ù†Ø§ØªÙˆØ§Ù†ÛŒØª Ø¦Û•Ø¯Ù…ÛŒÙ† Ø¨Û• Ø¦Ø§Ø³ØªÛŒ ÛŒÛ•Ú©Ø³Ø§Ù† ÛŒØ§Ù† Ø¨Û•Ø±Ø²ØªØ± Ù„Û• Ø®Û†Øª Ø¨Ø³Ú•ÛŒØªÛ•ÙˆÛ•' });
+      return res.status(403).json({ error: 'ناتوانیت ئەدمین بە ئاستی یەکسان یان بەرزتر لە خۆت بسڕیتەوە' });
     }
 
     db.admins = db.admins.filter((a: any) => a.username?.toLowerCase() !== targetName);
-    await addAuditLog(db, requester.name || 'system', "Delete Admin", `Ø¦Û•Ø¯Ù…ÛŒÙ†ÛŒ Ø³Ú•Ø§ÛŒÛ•ÙˆÛ•: "${target.username}"`);
+    await addAuditLog(db, requester.name || 'system', "Delete Admin", `ئەدمینی سڕایەوە: "${target.username}"`);
     await saveDB(db);
     res.json({ success: true });
   });
@@ -6851,7 +7198,7 @@ async function startServer() {
     const requesterRole = adminRecord?.role || (requester === 'dekan@123' ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
     const isAuthorized = requester === 'dekan@123' || requester === 'admin' || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'owner';
     if (!isAuthorized) {
-      return res.status(403).json({ error: 'Ø´Ø§ÛŒØ³ØªÛ•ÛŒ Ø¯Û•Ø³Û•ÚµØ§ØªÛŒ Ù¾ÛŽÙˆÛŒØ³Øª Ù†ÛŒÛŒÛ•! ØªÛ•Ù†Ù‡Ø§ Ø®Ø§ÙˆÛ•Ù† Ø³Û•Ø±Ù¾Û•Ø±Ø´ØªÛŒØ§Ø±ÛŒ Ø¨Ø§ÚµØ§ (dekan@123 ÛŒØ§Ù† Ø¨Û•Ú•ÛŽÙˆÛ•Ø¨Û•Ø±) Ø¯Û•ØªÙˆØ§Ù†ÛŽØª Ø¨Ú†ÛŽØªÛ• Ù†Ø§Ùˆ Ø¨Û•Ø´ÛŒ Ú•ÛŽÚ¯Û•Ù¾ÛŽØ¯Ø§Ù†ÛŒ Ø¦Ø§Ø³ØªÛ•Ú©Ø§Ù†.' });
+      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیاری باڵا (dekan@123 یان بەڕێوەبەر) دەتوانێت بچێتە ناو بەشی ڕێگەپێدانی ئاستەکان.' });
     }
 
     res.json({
@@ -6875,7 +7222,7 @@ async function startServer() {
   app.post('/api/admin/m17/admins/password', async (req, res) => {
     const requester = requesterInfo(req);
     if (requester.level < 2) {
-      return res.status(403).json({ error: 'Ø´Ø§ÛŒØ³ØªÛ•ÛŒ Ø¯Û•Ø³Û•ÚµØ§ØªÛŒ Ù¾ÛŽÙˆÛŒØ³Øª Ù†ÛŒÛŒÛ•! ØªÛ•Ù†Ù‡Ø§ Ø®Ø§ÙˆÛ•Ù† Ø³Û•Ø±Ù¾Û•Ø±Ø´ØªÛŒØ§Ø±ÛŒ Ø¨Ø§ÚµØ§ (dekan@123 ÛŒØ§Ù† super_admin) Ø¯Û•ØªÙˆØ§Ù†ÛŽØª ÙˆØ´Û•ÛŒ ØªÛŽÙ¾Û•Ú•ÛŒ Ø¦Û•Ø¯Ù…ÛŒÙ†Û•Ú©Ø§Ù† Ø¨Ú¯Û†Ú•ÛŽØª.' });
+      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیاری باڵا (dekan@123 یان super_admin) دەتوانێت وشەی تێپەڕی ئەدمینەکان بگۆڕێت.' });
     }
 
     const { targetUsername, newPassword, isSuper } = req.body || {};
@@ -6883,26 +7230,26 @@ async function startServer() {
     const adminIndex = db.admins.findIndex((a: any) => a.username?.toLowerCase() === targetName);
 
     if (adminIndex === -1) {
-      return res.status(404).json({ error: 'Ø¦Û•Ù… Ø¦Û•Ø¯Ù…ÛŒÙ†Û• Ù†Û•Ø¯Û†Ø²Ø±Ø§ÛŒÛ•ÙˆÛ•.' });
+      return res.status(404).json({ error: 'ئەم ئەدمینە نەدۆزرایەوە.' });
     }
 
     const target = db.admins[adminIndex];
     // You may always reset your own password, or the password of an account
-    // with strictly less privilege â€” never the platform owner's password.
+    // with strictly less privilege — never the platform owner's password.
     if (requester.name !== targetName) {
       if (targetName === 'admin' || targetName === 'dekan@123') {
-        return res.status(403).json({ error: 'Ù†Ø§ØªÙˆØ§Ù†ÛŒØª ÙˆØ´Û•ÛŒ ØªÛŽÙ¾Û•Ú•ÛŒ Ø®Ø§ÙˆÛ•Ù† Ù¾Ù„Ø§ØªÙÛ†Ø±Ù… Ø¨Ú¯Û†Ú•ÛŒØª' });
+        return res.status(403).json({ error: 'ناتوانیت وشەی تێپەڕی خاوەن پلاتفۆرم بگۆڕیت' });
       }
       if (roleLevel(target) >= requester.level) {
-        return res.status(403).json({ error: 'Ù†Ø§ØªÙˆØ§Ù†ÛŒØª ÙˆØ´Û•ÛŒ ØªÛŽÙ¾Û•Ú•ÛŒ Ø¦Û•Ø¯Ù…ÛŒÙ† Ø¨Û• Ø¦Ø§Ø³ØªÛŒ ÛŒÛ•Ú©Ø³Ø§Ù† ÛŒØ§Ù† Ø¨Û•Ø±Ø²ØªØ± Ù„Û• Ø®Û†Øª Ø¨Ú¯Û†Ú•ÛŒØª' });
+        return res.status(403).json({ error: 'ناتوانیت وشەی تێپەڕی ئەدمین بە ئاستی یەکسان یان بەرزتر لە خۆت بگۆڕیت' });
       }
     }
 
     // Securely hash the password if provided (bcrypt)
     const safeNewPassword = String(newPassword || '');
     if (safeNewPassword) {
-      if (safeNewPassword.length < 6) return res.status(400).json({ error: 'ÙˆØ´Û•ÛŒ ØªÛŽÙ¾Û•Ú• Ø¯Û•Ø¨ÛŽØª Ù„Û• Ú©Û•Ù…ØªØ± Ù†Û•Ø¨ÛŽØª Ù„Û• Ù¦ Ù‡ÛŽÙ…Ø§' });
-      if (safeNewPassword.length > 128) return res.status(400).json({ error: 'ÙˆØ´Û•ÛŒ ØªÛŽÙ¾Û•Ú• Ø²Û†Ø± Ø¯Ø±ÛŽÚ˜Û•' });
+      if (safeNewPassword.length < 6) return res.status(400).json({ error: 'وشەی تێپەڕ دەبێت لە کەمتر نەبێت لە ٦ هێما' });
+      if (safeNewPassword.length > 128) return res.status(400).json({ error: 'وشەی تێپەڕ زۆر درێژە' });
       db.admins[adminIndex].password = bcrypt.hashSync(safeNewPassword, 10);
     }
 
@@ -6911,20 +7258,20 @@ async function startServer() {
       db.admins[adminIndex].isSuper = !!isSuper;
     }
 
-    await addAuditLog(db, requester.name || 'system', "Modify Admin Credentials", `Ø¯Û•Ø³Û•ÚµØ§Øª ÛŒØ§Ù† Ù¾Ø§Ø³ÙˆÛ†Ø±Ø¯ Ú¯Û†Ú•Ø¯Ø±Ø§ Ø¨Û† Ø¦Û•Ø¯Ù…ÛŒÙ†ÛŒ "${target.username}"`);
+    await addAuditLog(db, requester.name || 'system', "Modify Admin Credentials", `دەسەڵات یان پاسوۆرد گۆڕدرا بۆ ئەدمینی "${target.username}"`);
     await saveDB(db);
-    res.json({ success: true, message: 'Ú•ÛŽÚ©Ø®Ø³ØªÙ†Û•Ú©Ø§Ù† Ø¨Û• Ø³Û•Ø±Ú©Û•ÙˆØªÙˆÙˆÛŒÛŒ Ù†ÙˆÛŽÚ©Ø±Ø§Ù†Û•ÙˆÛ• âœ“' });
+    res.json({ success: true, message: 'ڕێکخستنەکان بە سەرکەوتوویی نوێکرانەوە ✓' });
   });
 
   app.post('/api/admin/m17/notifications/clear', async (req, res) => {
     const requester = requesterInfo(req);
     if (requester.level < 3) {
-      return res.status(403).json({ error: 'Ú©Ø±Ø¯Ø§Ø±Û•Ú©Û• Ú•Û•ØªÚ©Ø±Ø§ÛŒÛ•ÙˆÛ• Ú†ÙˆÙ†Ú©Û• Ø¯Û•Ø³Û•ÚµØ§ØªÛŒ Ù¾ÛŽÙˆÛŒØ³ØªØª Ù†ÛŒÛŒÛ•!' });
+      return res.status(403).json({ error: 'کردارەکە ڕەتکرایەوە چونکە دەسەڵاتی پێویستت نییە!' });
     }
 
     db.ownerNotifications = [];
     await saveDB(db);
-    res.json({ success: true, message: 'Ø¦Ø§Ú¯Ø§Ø¯Ø§Ø±ÛŒÛŒÛ•Ú©Ø§Ù† Ù¾Ø§Ú©Ú©Ø±Ø§Ù†Û•ÙˆÛ• âœ“' });
+    res.json({ success: true, message: 'ئاگادارییەکان پاککرانەوە ✓' });
   });
 
   // --- NEW USER MANAGEMENT ENDPOINTS ---
@@ -6969,7 +7316,7 @@ async function startServer() {
     syncRateLimits[clientIp] = syncRateLimits[clientIp].filter(ts => now - ts < 60000);
     if (syncRateLimits[clientIp].length >= 3) {
       console.warn(`[Sync Rate Limit] Rate limited request from IP: ${clientIp}`);
-      return res.status(429).json({ error: 'Ú†Ø§ÙˆÛ•Ú•ÙˆØ§Ù† Ø¨Û•! Ù†Ø§ØªÙˆØ§Ù†ÛŒØª Ù„Û• Ø®ÙˆÙ„Û•Ú©ÛŽÚ©Ø¯Ø§ Ø²ÛŒØ§ØªØ± Ù„Û• Ù£ Ø¬Ø§Ø± Ø¯Ø§Ø®ÚµÚ©Ø±Ø¯Ù† ÛŒØ§Ù† Ù‡Ø§ÙˆÚ©Ø§ØªÚ©Ø±Ø¯Ù† Ø¨Ú©Û•ÛŒØª.' });
+      return res.status(429).json({ error: 'چاوەڕوان بە! ناتوانیت لە خولەکێکدا زیاتر لە ٣ جار داخڵکردن یان هاوکاتکردن بکەیت.' });
     }
     syncRateLimits[clientIp].push(now);
 
@@ -7013,7 +7360,7 @@ async function startServer() {
       db.users.push(updatedUser);
     }
 
-    logUserActivity(db, userData.uniqueCode || "", "Sync Session", `Ú†ÙˆÙˆÙ†Û•Ù†Ø§Ùˆ Ùˆ Ù‡Ø§ÙˆÚ©Ø§ØªÚ©Ø±Ø¯Ù†ÛŒ Ø¯Ø§ØªØ§Ú©Ø§Ù†ÛŒ Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø± Ù„Û•Ú¯Û•Úµ Ø³ÛŽØ±Ú¤Û•Ø±`, clientIp);
+    logUserActivity(db, userData.uniqueCode || "", "Sync Session", `چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر`, clientIp);
     await saveDB(db);
     res.json({ success: true, user: index !== -1 ? db.users[index] : updatedUser });
   });
@@ -7079,7 +7426,7 @@ async function startServer() {
       try {
         uid = await verifyFirebaseIdToken(req.headers['authorization'] as string | undefined);
       } catch (authError: any) {
-        return res.status(authError?.status || 401).json({ error: authError?.message || 'Unauthorized' });
+        return respondAuthError(res, authError);
       }
 
       const body = req.body || {};
@@ -7240,7 +7587,7 @@ async function startServer() {
       res.json({ success: true, user: sanitizeUserRecord(merged) });
     } catch (err: any) {
       console.error('[profile-sync] error:', err?.message || err);
-      res.status(500).json({ error: err?.message || 'Profile save failed.' });
+      res.status(500).json({ error: 'پاشەکەوتکردنی پڕۆفایل سەرکەوتوو نەبوو؛ تکایە دواتر هەوڵبدەوە.' });
     }
   });
 
@@ -7250,7 +7597,7 @@ async function startServer() {
       try {
         uid = await verifyFirebaseIdToken(req.headers['authorization'] as string | undefined);
       } catch (authError: any) {
-        return res.status(authError?.status || 401).json({ error: authError?.message || 'Unauthorized' });
+        return respondAuthError(res, authError);
       }
       const requestedUid = String(req.params.uid || '');
       if (!requestedUid || uid !== requestedUid) {
@@ -7262,7 +7609,7 @@ async function startServer() {
       res.json({ success: true, user: sanitizeUserRecord(user) });
     } catch (err: any) {
       console.error('[profile-get] error:', err?.message || err);
-      res.status(500).json({ error: err?.message || 'Failed to load profile.' });
+      res.status(500).json({ error: 'بارکردنی پڕۆفایل سەرکەوتوو نەبوو؛ تکایە دواتر هەوڵبدەوە.' });
     }
   });
 
@@ -7279,7 +7626,7 @@ async function startServer() {
 
       const isAuthorized = adminName?.trim().toLowerCase() === 'dekan@123' || adminName?.trim().toLowerCase() === 'admin' || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'staff' || requesterRole === 'owner';
       if (!isAuthorized) {
-        return res.status(403).json({ error: 'Ø´Ø§ÛŒØ³ØªÛ•ÛŒ Ø¯Û•Ø³Û•ÚµØ§ØªÛŒ Ù¾ÛŽÙˆÛŒØ³Øª Ù†ÛŒÛŒÛ•! Ù†Ø§ØªÙˆØ§Ù†ÛŒØª Ø¦Û•Ù… Ø²Ø§Ù†ÛŒØ§Ø±ÛŒÛŒÛ• Ø¨Ø¨ÛŒÙ†ÛŒ Ú†ÙˆÙ†Ú©Û• Ø¦Û•Ú©Ø§ÙˆÙ†ØªÛ•Ú©Û•Øª Ø¦Û•Ø¯Ù…ÛŒÙ† Ù†ÛŒÛŒÛ•.' });
+        return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! ناتوانیت ئەم زانیارییە ببینی چونکە ئەکاونتەکەت ئەدمین نییە.' });
       }
 
       if (!db.users) db.users = [];
@@ -7293,7 +7640,7 @@ async function startServer() {
           password: fallbackPass,
           ip: devIp,
           deviceIp: devIp,
-          username: user.username || user.name || "Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø±"
+          username: user.username || user.name || "بەکارهێنەر"
         };
       });
 
@@ -7321,7 +7668,7 @@ async function startServer() {
       if (!db.users) db.users = [];
       const user = db.users.find((u: any) => (u.uniqueCode || '').trim().toUpperCase() === cleanCode);
       if (!user) {
-        return res.status(404).json({ error: 'Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø±Û•Ú©Û• Ù†Û•Ø¯Û†Ø²Ø±Ø§ÛŒÛ•ÙˆÛ•' });
+        return res.status(404).json({ error: 'بەکارهێنەرەکە نەدۆزرایەوە' });
       }
 
       // 1. Full history of all messages sent by that user (DMs and Room Messages)
@@ -7351,7 +7698,7 @@ async function startServer() {
         ...sentDms.map((dm: any) => ({
           id: dm.id,
           type: 'Direct Message',
-          destination: `${dm.receiverName || 'Ø¨Û•Ú©Ø§Ø±Ú¾ÛŽÙ†Û•Ø±'} (${dm.receiverCode || ''})`,
+          destination: `${dm.receiverName || 'بەکارھێنەر'} (${dm.receiverCode || ''})`,
           text: dm.message,
           timestamp: dm.timestamp
         })),
@@ -7374,12 +7721,12 @@ async function startServer() {
         registeredIp: user.deviceIp || user.ip || "Unknown",
         lastActive: user.lastActive || "Unknown",
         registrationDetails: {
-          phone: user.phone || "Ø¨ÛŽ Ù…Û†Ø¨Ø§ÛŒÙ„",
-          email: user.email || "Ø¨ÛŽ Ø¦ÛŒÙ…Û•ÛŒÚµ",
-          age: user.age || "Ø¯ÛŒØ§Ø±ÛŒ Ù†Û•Ú©Ø±Ø§ÙˆÛ•",
-          gender: user.gender || "Ø¯ÛŒØ§Ø±ÛŒ Ù†Û•Ú©Ø±Ø§ÙˆÛ•",
-          residence: user.residence || "Ø¯ÛŒØ§Ø±ÛŒ Ù†Û•Ú©Ø±Ø§ÙˆÛ•",
-          country: user.country || "Ø¯ÛŒØ§Ø±ÛŒ Ù†Û•Ú©Ø±Ø§ÙˆÛ•",
+          phone: user.phone || "بێ مۆبایل",
+          email: user.email || "بێ ئیمەیڵ",
+          age: user.age || "دیاری نەکراوە",
+          gender: user.gender || "دیاری نەکراوە",
+          residence: user.residence || "دیاری نەکراوە",
+          country: user.country || "دیاری نەکراوە",
         }
       };
 
@@ -7409,7 +7756,7 @@ async function startServer() {
     const requesterRole = adminRecord?.role || (adminName?.trim().toLowerCase() === 'dekan@123' ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
     const canDelete = adminName?.trim().toLowerCase() === 'dekan@123' || adminName?.trim().toLowerCase() === 'admin' || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'owner';
     if (!canDelete) {
-      return res.status(403).json({ error: 'Ø´Ø§ÛŒØ³ØªÛ•ÛŒ Ø¯Û•Ø³Û•ÚµØ§ØªÛŒ Ù¾ÛŽÙˆÛŒØ³Øª Ù†ÛŒÛŒÛ•! Ú©Ø§Ø±Ù…Û•Ù†Ø¯ (Staff) Ù†Ø§ØªÙˆØ§Ù†ÛŽØª Ø¨Û•Ú©Ø§Ø±Ù‡ÛŽÙ†Û•Ø±Ø§Ù† Ø¨Ø³Ú•ÛŽØªÛ•ÙˆÛ•.' });
+      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! کارمەند (Staff) ناتوانێت بەکارهێنەران بسڕێتەوە.' });
     }
 
     if (!db.users) db.users = [];
@@ -7455,7 +7802,7 @@ async function startServer() {
     const requesterRole = adminRecord?.role || (adminName?.trim().toLowerCase() === 'dekan@123' ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
     const canDelete = adminName?.trim().toLowerCase() === 'dekan@123' || adminName?.trim().toLowerCase() === 'admin' || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'owner';
     if (!canDelete) {
-      return res.status(403).json({ error: 'Ø´Ø§ÛŒØ³ØªÛ•ÛŒ Ø¯Û•Ø³Û•ÚµØ§ØªÛŒ Ù¾ÛŽÙˆÛŒØ³Øª Ù†ÛŒÛŒÛ•! Ú©Ø§Ø±Ù…Û•Ù†Ø¯ (Staff) Ù†Ø§ØªÙˆØ§Ù†ÛŽØª ÙÛŒÙ„Ù…Û•Ú©Ø§Ù† Ø¨Ø³Ú•ÛŽØªÛ•ÙˆÛ•.' });
+      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! کارمەند (Staff) ناتوانێت فیلمەکان بسڕێتەوە.' });
     }
 
     const targetMovie = db.manualMovies.find((m: any) => m.id === id);
@@ -7475,7 +7822,7 @@ async function startServer() {
     // doc and db.json entry are already gone.
     delete firestoreMoviesCache[id];
 
-    await addAuditLog(db, adminName, "Delete Movie", `ÙÛŒÙ„Ù…ÛŒ Ù¾Û†Ø³ØªÚ©Ø±Ø§Ùˆ Ø³Ú•Ø§ÛŒÛ•ÙˆÛ•: "${movieTitle}"`);
+    await addAuditLog(db, adminName, "Delete Movie", `فیلمی پۆستکراو سڕایەوە: "${movieTitle}"`);
     await saveDB(db);
     setMoviesCache(prev => prev.filter(m => m.id !== id));
 
@@ -7491,7 +7838,7 @@ async function startServer() {
 
     // Firestore is the durable source of truth the client reads (movies/{id}),
     // so persist the category change there FIRST. If that write fails, do not
-    // pretend success â€” the client keeps the previous selection on the grid.
+    // pretend success — the client keeps the previous selection on the grid.
     try {
       await saveMovieTagsToFirestore(id, tags);
     } catch (err: any) {
@@ -7529,7 +7876,7 @@ async function startServer() {
     if (!db.syncGroups[id]) {
       db.syncGroups[id] = {
         id,
-        name: id === 'global_room_official' ? 'Ú˜ÙˆÙˆØ±ÛŒ Ø³Û•Ø±Û•Ú©ÛŒ' : 'Ú˜ÙˆÙˆØ±ÛŒ ØªØ§ÛŒØ¨Û•Øª',
+        name: id === 'global_room_official' ? 'ژووری سەرەکی' : 'ژووری تایبەت',
         playback: { isPlaying: false, currentTime: 0, updatedAt: new Date().toISOString() }
       };
     }
@@ -7556,7 +7903,7 @@ async function startServer() {
     if (playlist && Array.isArray(playlist)) {
       db.heroConfig.heroPlaylist = playlist.filter(Boolean);
       db.heroConfig.heroVideoUrl = playlist[0] || '';
-      await addAuditLog(db, adminName, "Update Hero Playlist", `Ù¾Ù„ÛŒÙ„ÛŒØ³ØªÛŒ Ú¤ÛŒØ¯ÛŒÛ† Ù†ÙˆÛŽÚ©Ø±Ø§ÛŒÛ•ÙˆÛ•`);
+      await addAuditLog(db, adminName, "Update Hero Playlist", `پلیلیستی ڤیدیۆ نوێکرایەوە`);
       await saveDB(db);
     }
     res.json({ success: true, config: db.heroConfig });
@@ -7577,17 +7924,17 @@ async function startServer() {
 
   app.post('/api/admin/post-movie', async (req, res) => {
     if (!req.body) {
-      return res.status(400).json({ success: false, error: "Body is empty â€” check Content-Type header (use application/json or text/plain)" });
+      return res.status(400).json({ success: false, error: "Body is empty — check Content-Type header (use application/json or text/plain)" });
     }
     const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, mainTrailerUrl, streamingSourceUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, quality, tags, category, rating, year, type, duration, postType, subtitleText } = req.body;
 
     // VALIDATION: Detailed error reporting as requested
-    if (!title) return res.status(400).json({ success: false, error: "Ù†Ø§ÙˆÙ†ÛŒØ´Ø§Ù† Ù¾ÛŽÙˆÛŒØ³ØªÛ• (Title is required)" });
-    if (!category) return res.status(400).json({ success: false, error: "Ù¾Û†Ù„ÛŽÙ† Ù¾ÛŽÙˆÛŒØ³ØªÛ• (Category is required)" });
+    if (!title) return res.status(400).json({ success: false, error: "ناونیشان پێویستە (Title is required)" });
+    if (!category) return res.status(400).json({ success: false, error: "پۆلێن پێویستە (Category is required)" });
 
     // Primary video source - accept ANY valid URL
     const activeVideoSource = streamingUrl || videoUrl || req.body.external_link;
-    if (!activeVideoSource) return res.status(400).json({ success: false, error: "Ù„ÛŒÙ†Ú©ÛŒ Ú¤ÛŒØ¯ÛŒÛ† Ù¾ÛŽÙˆÛŒØ³ØªÛ• (Video source is required)" });
+    if (!activeVideoSource) return res.status(400).json({ success: false, error: "لینکی ڤیدیۆ پێویستە (Video source is required)" });
 
     const finalPoster = decodeStoredUrl(posterUrl || image || 'https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800');
 
@@ -7623,15 +7970,15 @@ async function startServer() {
       quality: quality || 'HD',
       date: new Date().toISOString(),
       isNetflixOriginal: title?.toLowerCase().includes('netflix'),
-      tags: Array.isArray(tags) ? tags : [category || "Ù‡Û•Ù…ÙˆÙˆÛŒ"],
-      category: category || "Ù‡Û•Ù…ÙˆÙˆÛŒ",
+      tags: Array.isArray(tags) ? tags : [category || "هەمووی"],
+      category: category || "هەمووی",
       rating: rating || "",
       year: year || "",
       duration: typeof duration === 'string' ? duration.trim() : "",
       type: type || "movie",
-      // Explicit Film/Drama post type ("Ø¬Û†Ø±ÛŒ Ù¾Û†Ø³Øª"). Primary way to tell
-      // dramas from films for Drama Rooms. Missing/non-drama â†’ "ÙÛŒÙ„Ù…".
-      postType: postType === "Ø¯Ø±Ø§Ù…Ø§" ? "Ø¯Ø±Ø§Ù…Ø§" : "ÙÛŒÙ„Ù…",
+      // Explicit Film/Drama post type ("جۆری پۆست"). Primary way to tell
+      // dramas from films for Drama Rooms. Missing/non-drama → "فیلم".
+      postType: postType === "دراما" ? "دراما" : "فیلم",
       // Raw pasted .srt/.vtt subtitle content from the admin movie form
       subtitleText: typeof subtitleText === "string" ? subtitleText.trim() : "",
       likes: 0,
@@ -7648,7 +7995,7 @@ async function startServer() {
 
     const adminName = req.body.adminName || "Admin";
     db.manualMovies.push(newMovie);
-    await addAuditLog(db, adminName, "Post Movie", `ÙÛŒÙ„Ù…ÛŒ Ù†ÙˆÛŽ Ø²ÛŒØ§Ø¯Ú©Ø±Ø§: "${newMovie.title}"`);
+    await addAuditLog(db, adminName, "Post Movie", `فیلمی نوێ زیادکرا: "${newMovie.title}"`);
     await saveDB(db);
     // Add to cache while preventing duplicates
     setMoviesCache(prev => [newMovie, ...prev.filter(m => m.id !== newMovie.id)]);
@@ -7688,7 +8035,7 @@ async function startServer() {
       const directMatch = text.match(directRegex);
 
       let videoUrl = null;
-      let title = "ÙÛŒÙ„Ù…ÛŒ Ù†ÙˆÛŽ (Ø¨Û• ÙˆÛ•ØªØ³Ø¦Û•Ù¾)";
+      let title = "فیلمی نوێ (بە وەتسئەپ)";
       let thumbnail = 'https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800';
       let isYouTube = false;
       let videoId = null;
@@ -7730,7 +8077,7 @@ async function startServer() {
       const newMovie = {
         id: `wa-auto-${Date.now()}`,
         title,
-        description: `Ø¨ÚµØ§ÙˆÚ©Ø±Ø§ÙˆÛ•ÛŒ Ø¦Û†ØªÛ†Ù…Ø§ØªÛŒÚ©ÛŒ Ù„Û• Ú•ÛŽÚ¯Û•ÛŒ Ú¯Ø±ÙˆÙˆÙ¾ÛŒ ÙˆØ§ØªØ³Ø¦Û•Ù¾Û•ÙˆÛ•.\n\nOriginal Text excerpt:\n${text.substring(0, 200)}`,
+        description: `بڵاوکراوەی ئۆتۆماتیکی لە ڕێگەی گرووپی واتسئەپەوە.\n\nOriginal Text excerpt:\n${text.substring(0, 200)}`,
         image: thumbnail,
         embedUrl: isYouTube ? `https://www.youtube.com/embed/${videoId}` : videoUrl,
         isYouTube,
@@ -7888,8 +8235,8 @@ async function startServer() {
       const heroPlaylist = db.heroConfig.heroPlaylist || [];
       const heroMovie: any = {
         id: 'hero-promo',
-        title: 'Ù¾Ø±Û†Ù…Û†ÛŒ ØªØ§ÛŒØ¨Û•Øª',
-        description: 'Ù†ÙˆÛŽØªØ±ÛŒÙ† Ø¨Û•Ø±Ù‡Û•Ù…ÛŒ CinamaChat Ø¨Ø¨ÛŒÙ†Û• Ù„ÛŽØ±Û• Ø¯Û•ØªÙˆØ§Ù†ÛŒØª Ø²Ø§Ù†ÛŒØ§Ø±ÛŒ Ø²ÛŒØ§ØªØ± ÙˆÛ•Ø±Ø¨Ú¯Ø±ÛŒØª.',
+        title: 'پرۆمۆی تایبەت',
+        description: 'نوێترین بەرهەمی CinamaChat ببینە لێرە دەتوانیت زانیاری زیاتر وەربگریت.',
         image: isYouTube ? `https://img.youtube.com/vi/${ytMatch![1]}/maxresdefault.jpg` : 'https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800',
         embedUrl: embedUrl,
         isYouTube: isYouTube,
@@ -8037,7 +8384,7 @@ async function startServer() {
         const movieTags = (Array.isArray(m.tags) ? m.tags : [])
           .concat(m.category ? [m.category] : [])
           .map((t: any) => normalizeSearch(String(t)));
-        // Genre filter (multi-select OR) â€” always applied when provided.
+        // Genre filter (multi-select OR) — always applied when provided.
         if (genreSet.size > 0) {
           const hasGenre = movieTags.some((t) => genreSet.has(t)) ||
             (genreSet.size === 1 && movieTags.some((t) => t.includes([...genreSet][0])));
@@ -8127,7 +8474,7 @@ async function startServer() {
         .map(([term, count]) => ({ term, count }));
       // Fall back to popular genre names when there is no recorded history yet.
       const fallback = top.length === 0
-        ? ['Ø¦Ø§Ú©Ø´Ù†', 'Ø¯Ø±Ø§Ù…Ø§', 'Ú©Û†Ù…ÛŒØ¯ÛŒ', 'ØªØ±Ø³Ù†Ø§Ú©', 'New Releases'].map((term) => ({ term, count: 0 }))
+        ? ['ئاکشن', 'دراما', 'کۆمیدی', 'ترسناک', 'New Releases'].map((term) => ({ term, count: 0 }))
         : [];
       res.json({ status: 'ok', results: top.length ? top : fallback });
     } catch (err: any) {
@@ -8183,7 +8530,7 @@ async function startServer() {
       `1. "keywords": up to 8 topical keywords that describe the film (e.g. space survival, zombies, time travel).\n` +
       `2. "genres": up to 4 matching genres (use standard genre names like Action, Drama, Comedy, Animation, Sci-Fi, Romance, Adventure, Crime, Fantasy, Thriller, Horror, Documentary, Family, Mystery, War).\n` +
       `3. "titles": up to 4 real movie/tv titles this description most likely refers to (their exact common English names).\n` +
-      `Respond with STRICT JSON only â€” no markdown, no commentary â€” in this exact shape:\n` +
+      `Respond with STRICT JSON only — no markdown, no commentary — in this exact shape:\n` +
       `{"keywords":[],"genres":[],"titles":[]}\n` +
       `User description: ${query.slice(0, 500)}`;
 
@@ -8351,7 +8698,7 @@ async function startServer() {
 
 
   // Generates SRT subtitles for a movie source on the server (ffmpeg + Whisper +
-  // optional Gemini translation). Used by the player's "Ø¯Ø±Ø³ØªÚ©Ø±Ø¯Ù†ÛŒ ÙˆÛ•Ø±Ú¯ÛŽÚ•Ø§Ù†" button.
+  // optional Gemini translation). Used by the player's "درستکردنی وەرگێڕان" button.
   // YouTube / streaming-source URLs use pure web caption extraction (timedtext +
   // player-response track discovery) without yt-dlp.
   // direct .mp4/.webm file URLs are downloaded with a plain HTTP fetch instead.
@@ -8359,7 +8706,7 @@ async function startServer() {
     const { url, subtitleUrl, lang, startSeconds, windowSeconds } = req.body || {};
 
     // Fast path: the movie already has a subtitle file attached (movie.subtitleUrl).
-    // Fetch that file and translate it with Gemini directly â€” no audio download, no
+    // Fetch that file and translate it with Gemini directly — no audio download, no
     // ffmpeg, no Whisper transcription. This is much faster and is used whenever the
     // caller provides a subtitleUrl. Whisper is only a fallback for movies WITHOUT
     // an existing subtitle file (see below).
@@ -8466,7 +8813,7 @@ let videoDownloaded = false;
         // is unavailable or returns nothing.
         const videoId = extractYoutubeVideoId(sourceUrl);
         if (!videoId) {
-          return res.status(400).json({ error: 'Unsupported URL â€” only direct video files and YouTube links are supported' });
+          return res.status(400).json({ error: 'Unsupported URL — only direct video files and YouTube links are supported' });
         }
         const youtubeWatchUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
         stepLog(`fetching YouTube captions for video ${videoId} via yt-dlp`);
@@ -8755,6 +9102,25 @@ let videoDownloaded = false;
     }
   });
 
+  // Private 1-to-1 ephemeral chat: resolve (create-or-return) the session id
+  // for an ACCEPTED friend connection. Only the two participants may resolve a
+  // session; everything else (message routing, lifecycle) happens over the
+  // /ws/private-chat WebSocket with in-memory state only.
+  app.post('/api/private-chat/session', async (req: any, res: any) => {
+    try {
+      const uid = await verifyFirebaseIdToken(req.headers.authorization);
+      const connectionId = String(req.body?.connectionId || '');
+      if (!connectionId) return res.status(400).json({ error: 'missing connectionId' });
+      const sessionId = await privateSessionIdForParticipant(uid, connectionId);
+      return res.json({ sessionId });
+    } catch (err: any) {
+      if (err?.status === 401 || err?.status === 503) {
+        return respondAuthError(res, err);
+      }
+      return res.status(err?.status || 500).json({ error: err?.message || 'internal error' });
+    }
+  });
+
   app.all('/api/*', (req, res, next) => {
     if (res.headersSent) return next();
     console.warn(`[${new Date().toISOString()}] 404 API: ${req.method} ${req.url}`);
@@ -8910,7 +9276,13 @@ let videoDownloaded = false;
     }
   }, 10000);
 
-  app.listen(PORT, '0.0.0.0', () => {
+  // The private-chat WebSocket shares the app's HTTP server on a dedicated
+  // path so the whole stack (static files, REST API, WS) runs on one port.
+  const httpServer = http.createServer(app);
+  const privateChatWss = new WebSocketServer({ server: httpServer, path: '/ws/private-chat' });
+  privateChatWss.on('connection', handlePrivateChatSocket);
+
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log('==================================================');
     console.log(`CinemaChat Server started on http://0.0.0.0:${PORT}`);
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);

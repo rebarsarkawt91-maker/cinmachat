@@ -665,6 +665,78 @@ service cloud.firestore {
       }
     }
 
+    // --- Friend Connections (Friend → Connect private flow) ---
+    // One doc per unordered account pair (doc id = the sorted pair key). The doc
+    // stores CONNECTION METADATA + STATUS ONLY — never message history. The
+    // actual 1-to-1 chat is EPHEMERAL: it lives exclusively in the server's
+    // in-memory private session (/ws/private-chat), never in Firestore. Only the
+    // two participants may read or mutate their connection; only the target can
+    // accept/reject, only the requester can cancel, and a closed connection can
+    // be re-opened as a fresh pending ask.
+    function isValidFriendConnection(data) {
+      return data.get('kind', '') == 'friend'
+        && data.get('requesterUid', '') is string
+        && data.get('requesterUid', '').size() > 0 && data.get('requesterUid', '').size() <= 128
+        && data.get('requesterName', '') is string
+        && data.get('requesterName', '').size() > 0 && data.get('requesterName', '').size() <= 200
+        && data.get('requesterCode', '') is string
+        && data.get('requesterCode', '').size() > 0 && data.get('requesterCode', '').size() <= 64
+        && (data.get('requesterAvatar', null) == null || data.requesterAvatar is string)
+        && data.get('targetUid', '') is string
+        && data.get('targetUid', '').size() > 0 && data.get('targetUid', '').size() <= 128
+        && data.get('targetName', '') is string
+        && data.get('targetName', '').size() > 0 && data.get('targetName', '').size() <= 200
+        && data.get('targetCode', '') is string
+        && data.get('targetCode', '').size() > 0 && data.get('targetCode', '').size() <= 64
+        && (data.get('targetAvatar', null) == null || data.targetAvatar is string)
+        && data.get('participants', []) is list
+        && data.get('participants', []).size() == 2
+        && data.get('participants', [])[0] is string
+        && data.get('participants', [])[1] is string
+        && (
+          (data.get('participants', [])[0] == data.get('requesterUid', '')
+            && data.get('participants', [])[1] == data.get('targetUid', ''))
+          || (data.get('participants', [])[0] == data.get('targetUid', '')
+            && data.get('participants', [])[1] == data.get('requesterUid', ''))
+        )
+        && data.get('status', '') in ['pending', 'accepted', 'rejected', 'cancelled']
+        && (data.get('createdAt', '') is string || data.get('createdAt', null) is timestamp)
+        && (data.get('updatedAt', null) == null || data.updatedAt is string || data.updatedAt is timestamp)
+        && (data.get('acceptedAt', null) == null || data.acceptedAt is string || data.acceptedAt is timestamp);
+    }
+
+    function isFriendConnectionParticipant(data) {
+      return isSignedIn() && request.auth.uid in data.get('participants', []);
+    }
+
+    match /friend_connections/{connectionId} {
+      allow read: if isFriendConnectionParticipant(resource.data);
+      allow create: if isValidFriendConnection(incoming())
+        && incoming().get('requesterUid', '') == request.auth.uid
+        && incoming().get('requesterUid', '') != incoming().get('targetUid', '')
+        && incoming().get('status', '') == 'pending';
+      allow update: if isFriendConnectionParticipant(resource.data)
+        && isValidFriendConnection(incoming())
+        && (
+          // Status transition: only the target may accept/reject a pending ask,
+          // only the requester may cancel it.
+          (incoming().get('status', '') in ['accepted', 'rejected']
+            && resource.data.get('targetUid', '') == request.auth.uid
+            && resource.data.get('status', '') == 'pending'
+            && incoming().diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt', 'acceptedAt']))
+          || (incoming().get('status', '') == 'cancelled'
+            && resource.data.get('requesterUid', '') == request.auth.uid
+            && resource.data.get('status', '') == 'pending'
+            && incoming().diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt', 'acceptedAt']))
+          // Re-open a closed connection as a fresh pending ask (requester may
+          // differ from the original asker — full rewrite of the pair doc).
+          || (incoming().get('status', '') == 'pending'
+            && resource.data.get('status', '') in ['rejected', 'cancelled']
+            && incoming().get('requesterUid', '') == request.auth.uid)
+        );
+      allow delete: if false;
+    }
+
     // --- Friends Room (ژوورەکانی هاوڕێیان) ---
     // Dedicated, isolated Firestore schema for the "Came Here Rooms" module.
     // friends_rooms/{roomId} holds the room (name, host code, generated unique

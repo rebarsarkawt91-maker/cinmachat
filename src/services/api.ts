@@ -2,11 +2,16 @@
  * API Service for CinemaChat
  */
 
+import { resolveApiUrl } from "./backendConfig";
+
+export { resolveApiUrl };
+
 export const api = {
   resolveApiUrl(url: string): string {
-    // Use same-origin relative paths so Firebase Hosting redirects /api/* to the
-    // Render backend via firebase.json redirects. No hardcoded Render URLs needed.
-    return url;
+    // Single centralized URL resolver (same-origin default; explicit remote only
+    // via the VITE_REMOTE_BACKEND dev flag). Firebase Hosting redirects /api/*
+    // to the Render backend via firebase.json redirects.
+    return resolveApiUrl(url);
   },
 
   async baseFetch(url: string, options: any = {}, retries = 5): Promise<any> {

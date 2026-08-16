@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   auth, 
   authPersistenceReady,
@@ -11,7 +12,7 @@ import {
   signInWithRedirect,
   getRedirectResult,
 } from '../../lib/firebase';
-import { X, User, Phone, Lock, Sparkles, LogIn, Calendar, Users, MapPin, Globe, Mail, QrCode, Eye, EyeOff, ArrowLeft, KeyRound } from 'lucide-react';
+import { X, User, Phone, Lock, Sparkles, LogIn, Calendar, Users, MapPin, Globe, Mail, QrCode, Eye, EyeOff, ArrowLeft, KeyRound, AlertTriangle } from 'lucide-react';
 import { handleFirestoreError, OperationType } from '../../lib/firestoreUtils';
 import { motion, AnimatePresence } from 'motion/react';
 import jsQR from 'jsqr';
@@ -21,6 +22,12 @@ interface RegistrationModalProps {
   isOpen: boolean;
   onClose: () => void;
   initialMode?: "landing" | "login" | "signup";
+  /**
+   * Called after a SUCCESSFUL sign-in/registration instead of reloading to "/".
+   * Used by the CinemaChat flow so the user returns to the Friend→Connect room
+   * (which re-evaluates account readiness) instead of losing their place.
+   */
+  onAuthSuccess?: () => void;
 }
 
 const inputBaseClass =
@@ -122,9 +129,31 @@ const isMobileAuthBrowser = () =>
   (window.matchMedia("(max-width: 767px)").matches ||
     /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent));
 
-const GOOGLE_AUTH_TIMEOUT_MS = 30000;
+const GOOGLE_AUTH_TIMEOUT_MS = 10000;
 const GOOGLE_AUTH_FLAG_KEY = "cinemachat_google_redirect_pending";
 const EMAIL_PASSWORD_AUTH_FLAG_KEY = "cinemachat_email_password_signin";
+
+/**
+ * Google sign-in state machine.
+ *
+ *   idle                nothing in flight
+ *   opening-popup       popup/redirect request sent, waiting for provider
+ *   waiting-provider    provider dialog/redirect open
+ *   callback-received   sign-in credential resolved, profile not yet saved
+ *   hydrating-profile   canonical CinemaChat profile being created/merged
+ *   complete            account + profile ready, flow continues
+ *   error               failed (message surfaced, user may retry/cancel)
+ *   timeout             exceeded the 10s cap (Retry/Cancel shown)
+ */
+type GoogleAuthState =
+  | "idle"
+  | "opening-popup"
+  | "waiting-provider"
+  | "callback-received"
+  | "hydrating-profile"
+  | "complete"
+  | "error"
+  | "timeout";
 
 const withTimeout = async <T,>(
   promise: Promise<T>,
@@ -177,29 +206,73 @@ const navigateToHome = () => {
   window.location.replace("/");
 };
 
-const GoogleAuthLoadingScreen = () => (
-  <div
-    className="fixed inset-0 z-[200000] flex items-center justify-center bg-black px-6 text-center text-white"
-    role="status"
-    aria-live="polite"
-  >
-    <div className="flex flex-col items-center">
-      <div className="text-3xl font-black italic tracking-tight text-white sm:text-5xl">
-        CINAMACHAT
+const GoogleAuthLoadingScreen = ({
+  timedOut = false,
+  onRetry,
+  onCancel,
+}: {
+  timedOut?: boolean;
+  onRetry?: () => void;
+  onCancel?: () => void;
+}) => {
+  const content = (
+    <div
+      className="fixed inset-0 z-[300] flex items-center justify-center bg-black px-6 text-center text-white"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="flex flex-col items-center">
+        <div className="text-3xl font-black italic tracking-tight text-white sm:text-5xl">
+          CINAMACHAT
+        </div>
+        <p className="mt-3 text-sm font-black uppercase tracking-[0.22em] text-red-400">
+          Signing in...
+        </p>
+        {timedOut ? (
+          <>
+            <div className="mt-8 flex h-10 w-10 items-center justify-center rounded-full border border-amber-400/40 bg-amber-400/10">
+              <AlertTriangle className="h-5 w-5 text-amber-400" />
+            </div>
+            <p className="mt-8 text-xl font-black leading-8 text-white kurdish-text" dir="rtl">
+              چوونەژوورەوە بە گووگڵ ماوەی تێپەڕاند.
+            </p>
+            <p className="mt-2 text-sm font-bold text-zinc-400">
+              Google sign-in timed out. Try again or cancel.
+            </p>
+            <div className="mt-8 grid w-full max-w-[280px] grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={onCancel}
+                className="h-11 rounded-xl border border-white/15 bg-white/[0.04] px-4 text-xs font-black text-white transition hover:bg-white/[0.08]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={onRetry}
+                className="h-11 rounded-xl bg-red-600 px-4 text-xs font-black text-white transition hover:bg-red-700"
+              >
+                Try again
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="mt-8 h-10 w-10 animate-spin rounded-full border-2 border-white/20 border-t-red-500" />
+            <p className="mt-8 text-xl font-black leading-8 text-white kurdish-text" dir="rtl">
+              چاوەڕێ بکە... بە هەژمارەکەت دەچیتە ژورەوە.
+            </p>
+            <p className="mt-2 text-sm font-bold text-zinc-400">
+              Please wait... Signing you in.
+            </p>
+          </>
+        )}
       </div>
-      <p className="mt-3 text-sm font-black uppercase tracking-[0.22em] text-red-400">
-        Signing in...
-      </p>
-      <div className="mt-8 h-10 w-10 animate-spin rounded-full border-2 border-white/20 border-t-red-500" />
-      <p className="mt-8 text-xl font-black leading-8 text-white kurdish-text" dir="rtl">
-        چاوەڕێ بکە... بە هەژمارەکەت دەچیتە ژورەوە.
-      </p>
-      <p className="mt-2 text-sm font-bold text-zinc-400">
-        Please wait... Signing you in.
-      </p>
     </div>
-  </div>
-);
+  );
+  if (typeof document === "undefined") return content;
+  return createPortal(content, document.body);
+};
 
 const GoogleAuthRecoveryPanel = ({
   message,
@@ -233,7 +306,7 @@ const GoogleAuthRecoveryPanel = ({
   </div>
 );
 
-export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, onClose, initialMode }) => {
+export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, onClose, initialMode, onAuthSuccess }) => {
   const [isLogin, setIsLogin] = useState(initialMode !== "signup");
   const [authStep, setAuthStep] = useState<"landing" | "form">(initialMode && initialMode !== "landing" ? "form" : "landing");
   const [authMethod, setAuthMethod] = useState<"email" | "phone">("email");
@@ -268,9 +341,9 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [showAdminBypass, setShowAdminBypass] = useState(false);
-  const [googleBusy, setGoogleBusy] = useState(false);
+  const [googleState, setGoogleState] = useState<GoogleAuthState>("idle");
   const [googleRedirectError, setGoogleRedirectError] = useState("");
-  const [googleRedirectTimedOut, setGoogleRedirectTimedOut] = useState(false);
+  const [googleError, setGoogleError] = useState<string | null>(null);
 
   const qrInputRef = React.useRef<HTMLInputElement>(null);
   const googleAttemptRef = React.useRef(0);
@@ -300,11 +373,20 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
     googleAttemptRef.current += 1;
     sessionStorage.removeItem(GOOGLE_AUTH_FLAG_KEY);
     cleanupAuthCallbackUrl();
-    setGoogleBusy(false);
+    setGoogleState("idle");
     setGoogleRedirectError("");
-    setGoogleRedirectTimedOut(false);
+    setGoogleError(null);
     setIsLoading(false);
   }, []);
+
+  // After a SUCCESSFUL sign-in/registration the flow either returns to the
+  // caller (CinemaChat) via onAuthSuccess or reloads to "/" (default, keeps the
+  // auth state re-established on the current page). Never do both.
+  const completeAuth = React.useCallback(() => {
+    onClose();
+    if (onAuthSuccess) onAuthSuccess();
+    else navigateToHome();
+  }, [onClose, onAuthSuccess]);
 
   const finalizeGoogleCinemaChatAccount = React.useCallback(async (user: any) => {
     if (!user?.uid) {
@@ -363,8 +445,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
       if (data.success && data.customToken) {
         const { signInWithCustomToken } = await import('firebase/auth');
         await signInWithCustomToken(auth, data.customToken);
-        onClose();
-        navigateToHome();
+        completeAuth();
       } else {
         setError('ئەم کۆدەی ID-یە هەڵەیە، تکایە جارێکی تر هەوڵ بدە');
       }
@@ -373,7 +454,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
       setError('ئەم کۆدەی ID-یە هەڵەیە، تکایە جارێکی تر هەوڵ بدە');
     } finally {
       setIsLoading(false);
-      setGoogleBusy(false);
+      setGoogleState("idle");
     }
   };
 
@@ -451,7 +532,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
       setSuccessMessage(recoveryMessage);
     } finally {
       setIsLoading(false);
-      setGoogleBusy(false);
+      setGoogleState("idle");
     }
   };
 
@@ -464,7 +545,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
     setShowPassword(false);
     setError(null);
     setGoogleRedirectError("");
-    setGoogleRedirectTimedOut(false);
+    setGoogleState("idle");
     setSuccessMessage(null);
   };
 
@@ -473,8 +554,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
     // credential. Navigate to "/" for a real reload so the auth state is
     // re-established and the current page never keeps stale content.
     setIsLoading(false);
-    onClose();
-    navigateToHome();
+    completeAuth();
   };
 
   const signInWithEmailPassword = async (email: string) => {
@@ -541,8 +621,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                 uniqueCode: "CC-ADM-001"
               }));
               localStorage.setItem("cinemachat_admin", JSON.stringify(verifyData.adminUser));
-              onClose();
-              navigateToHome();
+              completeAuth();
               return;
             }
           }
@@ -576,8 +655,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
           const data = await res.json();
           if (data.success && data.customToken) {
             await signInWithCustomToken(auth, data.customToken);
-            onClose();
-            navigateToHome();
+            completeAuth();
             return;
           }
         }
@@ -598,8 +676,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
           );
         }
         await signInWithCustomToken(auth, mobileData.customToken);
-        onClose();
-        navigateToHome();
+        completeAuth();
         return;
       } else {
         // Registration (email OR mobile): validate locally with readable Kurdish
@@ -707,8 +784,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
         }
       }
 
-      onClose();
-      navigateToHome();
+      completeAuth();
     } catch (err: any) {
       console.error("Auth error occurred:", err);
       let errorMsg = "هەڵەیەک ڕوویدا، تکایە دووبارە هەوڵبدەرەوە.";
@@ -736,6 +812,9 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
     }
   };
 
+  // Resume a Google redirect that was in flight when the page (re)loaded.
+  // Uses a single attempt-guarded promise chain (bounded by the 10s cap); the
+  // only authoritative auth listener lives in SocialAuthContext.
   React.useEffect(() => {
     let cancelled = false;
     if (
@@ -747,9 +826,8 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
     redirectResultHandledRef.current = true;
     const attemptId = ++googleAttemptRef.current;
 
-    setGoogleBusy(true);
+    setGoogleState("callback-received");
     setGoogleRedirectError("");
-    setGoogleRedirectTimedOut(false);
     setError(null);
     withTimeout(
       getRedirectResult(auth),
@@ -761,20 +839,20 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
         if (!result?.user) {
           sessionStorage.removeItem(GOOGLE_AUTH_FLAG_KEY);
           cleanupAuthCallbackUrl();
-          setGoogleRedirectTimedOut(false);
+          setGoogleState("idle");
           return;
         }
         sessionStorage.removeItem(GOOGLE_AUTH_FLAG_KEY);
         cleanupAuthCallbackUrl();
-        setGoogleRedirectTimedOut(false);
+        setGoogleState("hydrating-profile");
         await withTimeout(
           finalizeGoogleCinemaChatAccount(result.user),
           GOOGLE_AUTH_TIMEOUT_MS,
           "Google profile setup is taking longer than expected.",
         );
         if (cancelled || googleAttemptRef.current !== attemptId) return;
-        onClose();
-        navigateToHome();
+        setGoogleState("complete");
+        completeAuth();
       })
       .catch((err: any) => {
         if (cancelled || googleAttemptRef.current !== attemptId) return;
@@ -782,36 +860,43 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
         cleanupAuthCallbackUrl();
         console.error("Google redirect auth error:", err?.code || err?.message || err);
         const message = googleAuthMessage(err);
+        const timedOut = err?.code === "cinemachat/auth-timeout";
         setIsLogin(true);
         setAuthStep("landing");
         setGoogleRedirectError(message);
-        setGoogleRedirectTimedOut(err?.code === "cinemachat/auth-timeout");
+        setGoogleError(message);
+        setGoogleState(timedOut ? "timeout" : "error");
         setError(message);
       })
       .finally(() => {
         if (!cancelled && googleAttemptRef.current === attemptId) {
           setIsLoading(false);
-          setGoogleBusy(false);
         }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [finalizeGoogleCinemaChatAccount, onClose]);
+  }, [finalizeGoogleCinemaChatAccount, completeAuth]);
 
   const handleGoogleSignIn = async () => {
-    if (googleBusy || isLoading) return;
+    // No second popup while a Google attempt is in flight.
+    const inFlight = googleState === "opening-popup" ||
+      googleState === "waiting-provider" ||
+      googleState === "callback-received" ||
+      googleState === "hydrating-profile";
+    if (inFlight || isLoading) return;
     const attemptId = ++googleAttemptRef.current;
-    setGoogleBusy(true);
+    setGoogleState("opening-popup");
     setGoogleRedirectError("");
-    setGoogleRedirectTimedOut(false);
+    setGoogleError(null);
     setIsLoading(true);
     setError(null);
     const provider = new GoogleAuthProvider();
     provider.setCustomParameters({ prompt: "select_account" });
     try {
       await authPersistenceReady;
+      setGoogleState("waiting-provider");
       if (isMobileAuthBrowser()) {
         sessionStorage.setItem(GOOGLE_AUTH_FLAG_KEY, "1");
         await withTimeout(
@@ -824,6 +909,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
         throw redirectError;
       }
       sessionStorage.removeItem(GOOGLE_AUTH_FLAG_KEY);
+      setGoogleState("callback-received");
       const result = await withTimeout(
         signInWithPopup(auth, provider),
         GOOGLE_AUTH_TIMEOUT_MS,
@@ -833,46 +919,73 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
       if (!result?.user) {
         throw new Error("Google sign-in returned no user");
       }
+      setGoogleState("hydrating-profile");
       await withTimeout(
         finalizeGoogleCinemaChatAccount(result.user),
         GOOGLE_AUTH_TIMEOUT_MS,
         "Google profile setup is taking longer than expected.",
       );
       if (googleAttemptRef.current !== attemptId) return;
-      onClose();
-      navigateToHome();
+      setGoogleState("complete");
+      completeAuth();
     } catch (err: any) {
       sessionStorage.removeItem(GOOGLE_AUTH_FLAG_KEY);
       cleanupAuthCallbackUrl();
       console.error("Google auth error:", err);
       const message = googleAuthMessage(err);
+      const timedOut = err?.code === "cinemachat/auth-timeout";
       setIsLogin(true);
       setAuthStep("landing");
       setGoogleRedirectError(message);
-      setGoogleRedirectTimedOut(err?.code === "cinemachat/auth-timeout");
+      setGoogleError(message);
+      setGoogleState(timedOut ? "timeout" : "error");
       setError(message);
     } finally {
       setIsLoading(false);
-      if (
-        googleAttemptRef.current === attemptId &&
-        sessionStorage.getItem(GOOGLE_AUTH_FLAG_KEY) !== "1"
-      ) {
-        setGoogleBusy(false);
-      }
     }
   };
 
-  const isGoogleAuthLoading = googleBusy && !googleRedirectError && !googleRedirectTimedOut;
-  const shouldShowAuthDialog = isOpen || !!googleRedirectError || googleRedirectTimedOut;
+  const googleInFlight =
+    googleState === "opening-popup" ||
+    googleState === "waiting-provider" ||
+    googleState === "callback-received" ||
+    googleState === "hydrating-profile";
+  const isGoogleAuthLoading = googleInFlight && !googleRedirectError && !googleError;
+  const googleTimedOut = googleState === "timeout";
+  const shouldShowAuthDialog = isOpen || !!googleRedirectError || googleTimedOut;
 
   if (isGoogleAuthLoading) {
-    return <GoogleAuthLoadingScreen />;
+    return (
+      <GoogleAuthLoadingScreen
+        timedOut={false}
+        onRetry={() => void handleGoogleSignIn()}
+        onCancel={() => {
+          clearGoogleAuthState();
+          setError(null);
+          onClose();
+        }}
+      />
+    );
+  }
+
+  if (googleTimedOut) {
+    return (
+      <GoogleAuthLoadingScreen
+        timedOut
+        onRetry={() => void handleGoogleSignIn()}
+        onCancel={() => {
+          clearGoogleAuthState();
+          setError(null);
+          onClose();
+        }}
+      />
+    );
   }
 
   if (!shouldShowAuthDialog) return null;
 
-  return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center overflow-hidden bg-black/95 px-2 py-[calc(0.5rem+env(safe-area-inset-top))] pb-[calc(0.5rem+env(safe-area-inset-bottom))] backdrop-blur-md sm:p-5">
+  const modalContent = (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center overflow-hidden bg-black/95 px-2 py-[calc(0.5rem+env(safe-area-inset-top))] pb-[calc(0.5rem+env(safe-area-inset-bottom))] backdrop-blur-md sm:p-5">
       <motion.div
         initial={{ opacity: 0, y: 12, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -957,13 +1070,13 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
               <button
                 type="button"
                 onClick={handleGoogleSignIn}
-                disabled={isLoading || googleBusy}
+                disabled={isLoading || googleInFlight}
                 className="flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 text-sm font-black text-white transition hover:bg-white/[0.08] active:scale-[0.98] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-500/30 sm:h-12 sm:rounded-2xl"
               >
                 <Globe className="h-4 w-4" />
-                {googleBusy ? "Connecting..." : "Continue with Google"}
+                {googleInFlight ? "Connecting..." : "Continue with Google"}
               </button>
-              {(googleRedirectError || googleRedirectTimedOut) ? (
+              {(googleRedirectError || googleError) ? (
                 <GoogleAuthRecoveryPanel
                   message={googleRedirectError || "Google sign-in is taking longer than expected."}
                   onRetry={handleGoogleSignIn}
@@ -1016,7 +1129,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
               )}
               <button
                 type="submit"
-                disabled={isLoading || googleBusy}
+                disabled={isLoading || googleInFlight}
                 className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-red-600 px-4 text-sm font-black text-white shadow-lg shadow-red-950/30 transition hover:bg-red-700 active:scale-[0.98] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-500/30 kurdish-text sm:h-12 sm:rounded-2xl"
               >
                 {isLoading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/20 border-t-white" /> : "ناردنی ئیمەیڵی گەڕاندنەوە"}
@@ -1202,9 +1315,9 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                 </div>
               )}
 
-              {(googleRedirectError || googleRedirectTimedOut) ? (
+              {(googleRedirectError || googleError) ? (
                 <GoogleAuthRecoveryPanel
-                  message={googleRedirectError || "Google sign-in is taking longer than expected."}
+                  message={googleRedirectError || googleError || "Google sign-in is taking longer than expected."}
                   onRetry={handleGoogleSignIn}
                   onCancel={() => {
                     clearGoogleAuthState();
@@ -1220,7 +1333,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
 
               <button
                 type="submit"
-                disabled={isLoading || googleBusy}
+                disabled={isLoading || googleInFlight}
                 className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-red-600 px-4 text-sm font-black text-white shadow-lg shadow-red-950/30 transition hover:bg-red-700 active:scale-[0.98] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-500/30 kurdish-text sm:h-12 sm:rounded-2xl"
               >
                 {isLoading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/20 border-t-white" /> : isLogin ? "چوونەژوورەوە" : "دروستکردنی ئەکاونت"}
@@ -1235,11 +1348,11 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
               <button
                 type="button"
                 onClick={handleGoogleSignIn}
-                disabled={isLoading || googleBusy}
+                disabled={isLoading || googleInFlight}
                 className="flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 text-sm font-black text-white transition hover:bg-white/[0.08] active:scale-[0.98] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-500/30 sm:h-12 sm:rounded-2xl"
               >
                 <Globe className="h-4 w-4" />
-                {googleBusy ? "Connecting..." : "Continue with Google"}
+                {googleInFlight ? "Connecting..." : "Continue with Google"}
               </button>
 
               {isLogin && !showAdminBypass && (
@@ -1275,4 +1388,6 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
       </motion.div>
     </div>
   );
+
+  return createPortal(modalContent, document.body);
 };
