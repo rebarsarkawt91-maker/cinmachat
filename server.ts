@@ -30,6 +30,11 @@ import * as admin from 'firebase-admin';
 //   2. GOOGLE_APPLICATION_CREDENTIALS  -> path to a service-account JSON file
 //   3. FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY + FIREBASE_PROJECT_ID
 //
+// All three produce a ServiceAccountCredential (admin.credential.cert()) so
+// that Firebase Auth custom tokens are signed locally with the service-account
+// private key — the remote IAM signBlob path used by applicationDefault() is
+// not available on non-GCP hosts like Render.
+//
 // Local development may use the Firebase Auth Emulator instead, but ONLY when
 // it is explicitly enabled via FIREBASE_AUTH_EMULATOR_HOST (no credentials are
 // required in that mode). If neither credentials nor an explicit emulator is
@@ -60,10 +65,24 @@ function buildFirebaseAdminCredentialConfig() {
     };
   }
   if (googleApplicationCredentials) {
-    return {
-      projectId: FIREBASE_ADMIN_PROJECT_ID,
-      credential: admin.credential.applicationDefault(),
-    };
+    try {
+      // Load the service-account JSON file directly into admin.credential.cert().
+      // Using applicationDefault() here would produce an ApplicationDefaultCredential,
+      // which forces the SDK's crypto signer onto the remote GCP IAM signBlob API
+      // (unavailable on non-GCP hosts like Render) and breaks createCustomToken().
+      // cert() yields a ServiceAccountCredential that signs custom tokens LOCALLY.
+      const serviceAccountRaw = readFileSync(googleApplicationCredentials, 'utf8');
+      const serviceAccount = JSON.parse(serviceAccountRaw);
+      return {
+        projectId: serviceAccount.project_id || FIREBASE_ADMIN_PROJECT_ID,
+        credential: admin.credential.cert(serviceAccount),
+      };
+    } catch (err: any) {
+      console.error(
+        `[Firebase Admin] GOOGLE_APPLICATION_CREDENTIALS file could not be loaded: ${err?.message || err}`,
+      );
+      return null;
+    }
   }
   if (hasSplitCredentials) {
     return {
