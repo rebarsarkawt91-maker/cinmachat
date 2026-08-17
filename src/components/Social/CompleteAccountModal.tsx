@@ -190,6 +190,11 @@ export const CompleteAccountModal: React.FC<CompleteAccountModalProps> = ({
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const focusRef = useRef<string | null>(null);
+  /** Tracks whether the modal has already been initialized for the current open
+   *  cycle. Prevents the pre-fill useEffect from resetting wizard state when
+   *  `socialProfile` changes (e.g. after a successful save updates the context). */
+  const initializedRef = useRef(false);
+  const advanceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ---- profile fields (Step 1) ----
   const [displayName, setDisplayName] = useState("");
@@ -227,7 +232,23 @@ export const CompleteAccountModal: React.FC<CompleteAccountModalProps> = ({
 
   // ---- pre-fill on open ----
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      // Modal closed — allow re-initialization on next open.
+      initializedRef.current = false;
+      if (advanceTimeoutRef.current) {
+        clearTimeout(advanceTimeoutRef.current);
+        advanceTimeoutRef.current = null;
+      }
+      return;
+    }
+
+    // Only initialize wizard state once per open cycle. This prevents the
+    // effect from firing when `socialProfile` changes mid-session (e.g. after
+    // updateSocialProfile modifies the context object), which previously caused
+    // the modal to reset back to step 1 and wipe saved progress.
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+
     setCurrentStep(1);
     setError(null);
     setSaved(false);
@@ -246,6 +267,13 @@ export const CompleteAccountModal: React.FC<CompleteAccountModalProps> = ({
     setFriendError(null);
     setLaunching(false);
   }, [open, profile]);
+
+  // ---- cleanup advance timeout on unmount ----
+  useEffect(() => {
+    return () => {
+      if (advanceTimeoutRef.current) clearTimeout(advanceTimeoutRef.current);
+    };
+  }, []);
 
   // ---- fetch movies when reaching step 3 ----
   useEffect(() => {
@@ -360,13 +388,19 @@ export const CompleteAccountModal: React.FC<CompleteAccountModalProps> = ({
       await updateSocialProfile({
         displayName: trimmedName,
         username: trimmedUsername,
-        ...(hasPhone ? { phoneNumber: normalizedPhone } : {}),
+        ...(hasPhone ? { phone: normalizedPhone, phoneNumber: normalizedPhone } : {}),
         ...(hasEmail ? { email: trimmedEmail } : {}),
         ...(trimmedAge ? { age: String(ageNumber) } : {}),
         ...(trimmedAddress ? { address: trimmedAddress } : {}),
         ...(selectedMovie ? { moviePreference: selectedMovie } : {}),
       });
       setSaved(true);
+      // Auto-advance to step 5 after a brief success display so the user
+      // sees the confirmation before moving to the Friend Connect step.
+      advanceTimeoutRef.current = setTimeout(() => {
+        setCurrentStep(5);
+        advanceTimeoutRef.current = null;
+      }, 900);
     } catch (err: any) {
       const msg = err?.message || "پاشەکەوتکردن سەرکەوتوو نەبوو؛ دووبارە هەوڵبدەرەوە.";
       setError(String(msg));
