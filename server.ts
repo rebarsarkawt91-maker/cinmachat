@@ -1168,11 +1168,16 @@ function readSubtitleFromDir(
   return { srt: normalized, lang: fileLang, file: subtitleFile };
 }
 
+let ytDlpAvailable: boolean | null = null;
+
 async function fetchYoutubeCaptionsViaYtDlp(
   videoUrl: string,
   workDir: string,
   targetLang: string,
 ): Promise<{ srt: string; mode: string; lang: string }> {
+  if (ytDlpAvailable === false) {
+    throw Object.assign(new Error('yt-dlp not available'), { code: 'YTDLP_MISSING' });
+  }
   const lang = (targetLang || 'en').toLowerCase();
   const outputBase = path.join(workDir, 'subs');
   const captionLangs = lang === 'en'
@@ -1214,7 +1219,8 @@ async function fetchYoutubeCaptionsViaYtDlp(
     } catch (error: any) {
       const cause = error?.cause;
       if (cause?.code === 'ENOENT') {
-        throw new Error('yt-dlp not found on PATH. Rebuild the server with "pip install yt-dlp" (see render.yaml).');
+        ytDlpAvailable = false;
+        throw Object.assign(new Error('yt-dlp not found on PATH'), { code: 'YTDLP_MISSING' });
       }
       const subtitleResult = readSubtitleFromDir(workDir, attempt.captionLang);
       if (subtitleResult) {
@@ -1250,6 +1256,10 @@ async function resolveYoutubeDirectStreams(videoId: string, forceRefresh = false
   const cached = ytStreamCache.get(videoId);
   if (!forceRefresh && cached && Date.now() - cached.at < YT_STREAM_CACHE_TTL_MS) return cached.streams;
 
+  if (ytDlpAvailable === false) {
+    throw new Error('yt-dlp not available');
+  }
+
   const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
   // Prefer a progressive MP4 (plays natively in <video>); fall back to whatever
   // yt-dlp considers the single best stream.
@@ -1271,7 +1281,8 @@ async function resolveYoutubeDirectStreams(videoId: string, forceRefresh = false
     (error: any) => {
       // Convert "binary not installed" into a message the route can detect (501).
       if (error?.code === 'ENOENT' || error?.cause?.code === 'ENOENT') {
-        throw new Error('yt-dlp not found on PATH. Rebuild the server with "pip install yt-dlp" (see render.yaml).');
+        ytDlpAvailable = false;
+        throw new Error('yt-dlp not found on PATH');
       }
       throw error;
     },
@@ -9277,6 +9288,10 @@ let videoDownloaded = false;
               });
               return;
             } catch (soraniErr: any) {
+              if ((soraniErr as any)?.code === 'YTDLP_MISSING') {
+                stepLog('yt-dlp is not installed — skipping Sorani yt-dlp loop');
+                break;
+              }
               stepLog(`stable ${soraniSourceLang}-to-Sorani path failed: ${soraniErr?.message || soraniErr}`);
             }
           }
@@ -9433,6 +9448,10 @@ let videoDownloaded = false;
               });
               return;
             } catch (bridgeErr: any) {
+              if ((bridgeErr as any)?.code === 'YTDLP_MISSING') {
+                stepLog('yt-dlp is not installed — skipping bridge loop');
+                break;
+              }
               stepLog(`bridge ${bridgeLang} failed: ${bridgeErr?.message || bridgeErr}`);
             }
           }
