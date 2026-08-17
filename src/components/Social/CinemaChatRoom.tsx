@@ -77,6 +77,10 @@ import {
   PRESENCE_STALE_MS,
   PRESENCE_HEARTBEAT_MS,
 } from "../../services/cinemaChat";
+import {
+  createFriendConnection,
+  searchAccountByCCIdOrContact,
+} from "../../services/friendConnect";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CinemaChatRoom — the permanent two-person synchronized watch room
@@ -2491,6 +2495,21 @@ const Lobby = ({
           </div>
         )}
 
+        {/* Friend request by CC-ID or mobile — real persisted 1-to-1 connection,
+            available to every account user anywhere in the room */}
+        {hasValidAccount && (
+          <div className="md:col-span-2">
+            <FriendRequestPanel
+              identity={identity}
+              hasAccount={hasValidAccount}
+              accountLoading={accountLoading}
+              accountName={accountName}
+              accountCode={accountCode}
+              onRequestAccount={onRequestAccount}
+            />
+          </div>
+        )}
+
         {/* PAIRING panel — host approves the guest, guest waits */}
         {meIsHost && state.sessionState === SESSION_STATES.PAIRING && state.guest && (
           <div className="md:col-span-2 bg-zinc-900 border border-emerald-500/30 rounded-[2rem] p-7">
@@ -3686,6 +3705,171 @@ const AccountInvitePanel = ({
           <p className="text-[9px] text-gray-600 kurdish-text leading-relaxed">
             بانگهێشتەکە بە تەواوی لە فایریستۆر دەپارێزرێت و بۆ وەرگرەکە وەک
             ئاگادارکردنەوە دەردەکەوێت — دەتوانێت لە هەر شوێنێکبێت قبوڵی بکات.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Friend-request panel (Chat Rooms Part 1-2-3): lets an account user send a
+// real, persisted 1-to-1 friend request to any other account by CC-ID or mobile
+// number. Requests live in Firestore's friend_connections/{pairKey}, so the
+// recipient sees them anywhere in the app and the pair is impossible to
+// duplicate. Presence (online/offline) notifications for accepted friends are
+// handled globally by FriendPresenceNotification.
+const FriendRequestPanel = ({
+  identity,
+  hasAccount,
+  accountLoading,
+  accountName,
+  accountCode,
+  onRequestAccount,
+}: {
+  identity: CinemaChatParticipant;
+  hasAccount: boolean;
+  accountLoading: boolean;
+  accountName?: string;
+  accountCode?: string;
+  onRequestAccount?: () => void;
+}) => {
+  const [open, setOpen] = useState(false);
+  const [input, setInput] = useState("");
+  const [status, setStatus] = useState<
+    "idle" | "resolving" | "sending" | "done" | "error"
+  >("idle");
+  const [message, setMessage] = useState<string | null>(null);
+
+  const canSend = hasAccount && !accountLoading;
+
+  const handleSend = async () => {
+    const raw = input.trim();
+    if (!raw) {
+      setStatus("error");
+      setMessage("CC-ID یان ژمارەی مۆبایل بنووسە");
+      return;
+    }
+    setStatus("resolving");
+    setMessage(null);
+    try {
+      const target = await searchAccountByCCIdOrContact(raw);
+      if (!target) {
+        setStatus("error");
+        setMessage(
+          "هیچ بەکارهێنەرێک بەم CC-ID یان ژمارەیە نەدۆزرایەوە — بەکارهێنەرەکە دەبێت هەژماری هەبێت",
+        );
+        return;
+      }
+      if (target.uid === identity.id) {
+        setStatus("error");
+        setMessage("ناتوانیت بۆ خۆت داواکاری هاوڕێیەتی بنێریت");
+        return;
+      }
+      setStatus("sending");
+      const { duplicate } = await createFriendConnection({
+        requesterUid: identity.id,
+        requesterName: accountName || identity.name,
+        requesterCode: accountCode || identity.code,
+        requesterAvatar: identity.avatarUrl || null,
+        target,
+      });
+      setStatus("done");
+      setMessage(
+        duplicate
+          ? `داواکارییەکە پێشتر بۆ ${target.name} (${target.uniqueCode}) نێردراوە — چاوەڕوانی وەرگرتنەکەی بکە`
+          : `داواکاری هاوڕێیەتی نێردرا بۆ ${target.name} (${target.uniqueCode})`,
+      );
+      setInput("");
+    } catch {
+      setStatus("error");
+      setMessage("ناردنی داواکاری سەرکەوتوو نەبوو — دووبارە هەوڵبەرەوە");
+    }
+  };
+
+  return (
+    <div className="bg-zinc-900 border border-white/10 rounded-[2rem] p-5">
+      <button
+        type="button"
+        onClick={() => {
+          if (accountLoading) return;
+          if (!canSend) {
+            onRequestAccount?.();
+            return;
+          }
+          setOpen((v) => !v);
+        }}
+        disabled={accountLoading}
+        className="w-full flex items-center justify-between gap-3 text-right disabled:opacity-60"
+      >
+        <span className="flex items-center gap-2 text-sm font-black text-gray-300 kurdish-text">
+          <UserPlus className="w-4 h-4 text-brand-primary" />
+          داواکاری هاوڕێیەتی بە CC-ID یان ژمارەی مۆبایل
+        </span>
+        <ChevronDown
+          className={`w-4 h-4 text-gray-500 transition-transform ${
+            open ? "rotate-180" : ""
+          }`}
+        />
+      </button>
+
+      {accountLoading && (
+        <div className="mt-4 h-10 rounded-2xl bg-white/5 border border-white/10 animate-pulse" />
+      )}
+
+      {!accountLoading && !canSend && (
+        <p className="mt-4 text-[10px] text-gray-500 kurdish-text leading-relaxed">
+          بۆ ناردنی داواکاری هاوڕێیەتی بە CC-ID یان ژمارە پێویستە هەژمارێک
+          هەبێت. کرتە لە سەرەوە بکە بۆ دروستکردن یان بەستنەوەی هەژمار.
+        </p>
+      )}
+
+      {open && canSend && (
+        <div className="mt-4 flex flex-col gap-3">
+          <input
+            type="text"
+            inputMode="text"
+            value={input}
+            onChange={(e) => {
+              setInput(e.target.value);
+              setMessage(null);
+              setStatus("idle");
+            }}
+            onKeyDown={(e) => e.key === "Enter" && handleSend()}
+            placeholder="CC-ID (CC-8291) یان ژمارەی مۆبایل"
+            className="w-full bg-black/40 border-2 border-white/10 focus:border-brand-primary rounded-2xl px-5 py-3 text-white text-sm font-mono outline-none transition-all"
+          />
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleSend}
+              disabled={status === "resolving" || status === "sending"}
+              className="px-4 py-2.5 rounded-xl bg-brand-primary/20 hover:bg-brand-primary/40 border border-brand-primary/30 text-white text-xs font-black flex items-center gap-1.5 transition-all disabled:opacity-50"
+            >
+              {status === "resolving" || status === "sending" ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Send className="w-3.5 h-3.5" />
+              )}
+              ناردنی داواکاری
+            </button>
+            <span className="inline-flex items-center gap-1 text-[9px] text-gray-500 font-mono">
+              <AtSign className="w-3 h-3" />
+              {accountName || identity.name} · {accountCode || identity.code}
+            </span>
+          </div>
+          {message && (
+            <p
+              className={`flex items-center gap-1.5 text-[10px] font-bold kurdish-text ${
+                status === "error" ? "text-red-400" : "text-emerald-400"
+              }`}
+            >
+              <AlertCircle className="w-3 h-3 shrink-0" />
+              {message}
+            </p>
+          )}
+          <p className="text-[9px] text-gray-600 kurdish-text leading-relaxed">
+            داواکارییەکە بە تەواوی لە فایریستۆر دەپارێزرێت و بۆ وەرگرەکە وەک
+            ئاگادارکردنەوە دەردەکەوێت — دوای پەسەندکردن دەتوانن لە هەر کاتێکدا
+            پەیوەندی پێکەوە بکەن.
           </p>
         </div>
       )}

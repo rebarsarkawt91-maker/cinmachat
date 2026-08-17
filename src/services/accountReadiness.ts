@@ -28,11 +28,18 @@ export type MissingAccountField =
   | "memberCode"
   | "identity";
 
+/** Optional/recommended profile fields. Filling them is NOT required to enter
+ *  CinemaChat (the hard gate above stays), but the app gently prompts for them
+ *  so rooms and friend sync can show a richer profile (Name/Age/Address). */
+export type RecommendedMissingField = "age" | "address";
+
 export interface AccountReadiness {
   state: AccountReadinessState;
   ready: boolean;
   /** Human-understandable field keys the user still needs to fill in. */
   missingFields: MissingAccountField[];
+  /** Optional fields the user is missing (recommended, not required). */
+  recommendedMissingFields: RecommendedMissingField[];
   /** Set only when the readiness check itself failed (backend unreachable). */
   error?: string;
 }
@@ -71,11 +78,11 @@ export const getAccountReadiness = (
   loading: boolean,
 ): AccountReadiness => {
   if (loading) {
-    return { state: "checking", ready: false, missingFields: [] };
+    return { state: "checking", ready: false, missingFields: [], recommendedMissingFields: [] };
   }
 
   if (!user) {
-    return { state: "guest", ready: false, missingFields: [] };
+    return { state: "guest", ready: false, missingFields: [], recommendedMissingFields: [] };
   }
 
   // Only a real Firebase UID can own a canonical account. The local admin
@@ -83,7 +90,7 @@ export const getAccountReadiness = (
   const uid = String(user.uid || "");
   const isRealUid = uid.length >= 20 && !uid.includes("localhost");
   if (!isRealUid) {
-    return { state: "guest", ready: false, missingFields: [] };
+    return { state: "guest", ready: false, missingFields: [], recommendedMissingFields: [] };
   }
 
   if (!profile) {
@@ -91,6 +98,7 @@ export const getAccountReadiness = (
       state: "error",
       ready: false,
       missingFields: [],
+      recommendedMissingFields: [],
       error: "No canonical profile found for this account.",
     };
   }
@@ -113,9 +121,29 @@ export const getAccountReadiness = (
   const hasIdentity = hasVerifiedGoogleIdentity(user, profile) || !!phone;
   if (!hasIdentity) missingFields.push("identity");
 
-  if (missingFields.length > 0) {
-    return { state: "authenticated-incomplete", ready: false, missingFields };
+  // Optional (recommended, non-blocking) fields — Name/Age/Address that friend
+  // sync and profile display prefer to have. Never gates entry.
+  const recommendedMissingFields: RecommendedMissingField[] = [];
+  const ageValue = String(profile.age ?? "").trim();
+  if (!ageValue || isPlaceholderProfileValue(ageValue)) recommendedMissingFields.push("age");
+  const addressValue = String(profile.address ?? "").trim();
+  if (!addressValue || isPlaceholderProfileValue(addressValue)) {
+    recommendedMissingFields.push("address");
   }
 
-  return { state: "ready", ready: true, missingFields: [] };
+  if (missingFields.length > 0) {
+    return {
+      state: "authenticated-incomplete",
+      ready: false,
+      missingFields,
+      recommendedMissingFields,
+    };
+  }
+
+  return {
+    state: "ready",
+    ready: true,
+    missingFields: [],
+    recommendedMissingFields,
+  };
 };

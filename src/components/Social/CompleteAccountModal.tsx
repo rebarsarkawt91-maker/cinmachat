@@ -102,12 +102,18 @@ export const CompleteAccountModal: React.FC<CompleteAccountModalProps> = ({
   const [username, setUsername] = useState("");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
+  const [age, setAge] = useState("");
+  const [address, setAddress] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const focusRef = useRef<string | null>(null);
 
   const profile = socialProfile;
   const missing = useMemo(() => new Set(readiness.missingFields), [readiness]);
+  const recommended = useMemo(
+    () => new Set(readiness.recommendedMissingFields),
+    [readiness],
+  );
 
   // Pre-fill from the canonical profile every time the modal opens.
   useEffect(() => {
@@ -116,6 +122,8 @@ export const CompleteAccountModal: React.FC<CompleteAccountModalProps> = ({
     setUsername(cleanProfileText(profile?.username, 32));
     setPhone(cleanProfilePhone(profile?.phoneNumber || profile?.phone));
     setEmail(cleanProfileText(profile?.email, 120));
+    setAge(cleanProfileText(String(profile?.age ?? ""), 3));
+    setAddress(cleanProfileText(profile?.address, 200));
     setError(null);
   }, [open, profile]);
 
@@ -166,12 +174,27 @@ export const CompleteAccountModal: React.FC<CompleteAccountModalProps> = ({
       return;
     }
 
+    // Age is optional/recommended; when provided it must be a sane number.
+    const trimmedAge = age.trim();
+    const trimmedAddress = cleanProfileText(address, 200);
+    if (trimmedAge && !/^\d{1,3}$/.test(trimmedAge)) {
+      failValidation("تەمەن دەبێت ژمارەیەک بێت.", "complete-age");
+      return;
+    }
+    const ageNumber = trimmedAge ? Number(trimmedAge) : 0;
+    if (trimmedAge && (ageNumber < 13 || ageNumber > 120)) {
+      failValidation("تەمەن دەبێت لە نێوان ١٣ و ١٢٠ بێت.", "complete-age");
+      return;
+    }
+
     try {
       await updateSocialProfile({
         displayName: trimmedName,
         username: trimmedUsername,
         ...(hasPhone ? { phoneNumber: normalizedPhone } : {}),
         ...(hasEmail ? { email: trimmedEmail } : {}),
+        ...(trimmedAge ? { age: ageNumber } : {}),
+        ...(trimmedAddress ? { address: trimmedAddress } : {}),
       });
       onClose();
     } catch (err: any) {
@@ -261,6 +284,38 @@ export const CompleteAccountModal: React.FC<CompleteAccountModalProps> = ({
               dir="ltr"
               invalid={missing.has("identity")}
             />
+
+            {recommended.size > 0 && (
+              <div className="rounded-xl border border-sky-500/15 bg-sky-500/5 px-3 py-2 text-[10px] leading-5 text-sky-300/90 kurdish-text sm:rounded-2xl sm:text-[11px]">
+                <p className="font-black">زانیاری پێشنیارکراو (بەدڵی خۆت):</p>
+                <p>
+                  ئەم خانانە پێویست نین، بەڵام پڕکردنەوەیان وێنەی بەکارهێنەر و
+                  پەیوەندییەکانت زیاتر تەواو دەکات — تەمەن و ناونیشان.
+                </p>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
+              <FloatingField
+                id="complete-age"
+                label="تەمەن (پێشنیارکراو)"
+                value={age}
+                onChange={setAge}
+                type="number"
+                autoComplete="age"
+                dir="ltr"
+                invalid={recommended.has("age")}
+              />
+              <FloatingField
+                id="complete-address"
+                label="ناونیشان (پێشنیارکراو)"
+                value={address}
+                onChange={setAddress}
+                type="text"
+                autoComplete="street-address"
+                invalid={recommended.has("address")}
+              />
+            </div>
 
             {getPublicMemberCode(profile, currentUser?.uid) && (
               <p className="rounded-xl border border-emerald-500/10 bg-emerald-500/5 p-2.5 text-center text-[11px] font-bold leading-5 text-emerald-300 kurdish-text sm:rounded-2xl sm:p-3">

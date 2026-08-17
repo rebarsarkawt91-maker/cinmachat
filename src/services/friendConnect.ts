@@ -174,6 +174,67 @@ export const searchAccountByContact = async (
   return null;
 };
 
+/** Resolve a CC-ID (any spelling: "CC-CC-9803", "CC-9803", "9803") to a
+ *  registered account. Codes are public identifiers, so no privacy opt-in is
+ *  required (unlike phone/email lookups). Returns null when nothing matches. */
+export const searchAccountByCCId = async (
+  raw: string,
+): Promise<ContactSearchResult | null> => {
+  const core = normalizeJoinCode(raw);
+  if (!core) return null;
+  const codeCandidates = [core, `CC-${core}`, `CC-CC-${core}`].filter(
+    (c, i, arr) => c && arr.indexOf(c) === i,
+  );
+  for (const code of codeCandidates) {
+    try {
+      const q = query(collection(db, "users"), where("uniqueCode", "==", code), limit(1));
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        const d = snap.docs[0].data() as any;
+        // CC-IDs are public; the profile's contact info is NOT returned here.
+        return {
+          uid: snap.docs[0].id,
+          name: d?.name || d?.displayName || "بەکارهێنەر",
+          uniqueCode: d?.uniqueCode || "",
+          avatarUrl:
+            typeof d?.avatarUrl === "string"
+              ? d.avatarUrl
+              : typeof d?.avatar === "string"
+                ? d.avatar
+                : undefined,
+        };
+      }
+    } catch {
+      /* keep trying normalized code spellings */
+    }
+  }
+  return null;
+};
+
+/** One-stop lookup for the in-room friend request panel: accepts a CC-ID, a
+ *  mobile number or an email and returns the public profile (phone lookups
+ *  still respect each account's privacy settings). */
+export const searchAccountByCCIdOrContact = async (
+  raw: string,
+): Promise<ContactSearchResult | null> => {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return null;
+
+  // Emails are handled by the existing contact search directly.
+  if (trimmed.includes("@")) return searchAccountByContact(trimmed);
+
+  const digits = trimmed.replace(/\D/g, "");
+  const isPhoneLike = digits.length >= 7 && /^[\d+\s-]*$/.test(trimmed);
+
+  // Not obviously a phone → try the CC-ID path first (codes are public).
+  if (!isPhoneLike) {
+    const byCode = await searchAccountByCCId(trimmed);
+    if (byCode) return byCode;
+  }
+  // Fall back to the contact search (email already handled above, phone here).
+  return searchAccountByContact(trimmed);
+};
+
 // ---------------------------------------------------------------------------
 // Connections (create / respond / cancel / subscribe)
 // ---------------------------------------------------------------------------

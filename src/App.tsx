@@ -174,6 +174,11 @@ const MultiLevelAdminModule = React.lazy(() =>
     default: m.MultiLevelAdminModule,
   })),
 );
+const UserAnalyticsModule = React.lazy(() =>
+  import("./components/Admin/UserAnalyticsModule").then((m) => ({
+    default: m.UserAnalyticsModule,
+  })),
+);
 import { VIPRoomModal } from "./components/Social/VIPRoomModal";
 import { CinemaWindowModal } from "./components/Social/CinemaWindowModal";
 import { AccountCenter } from "./components/Social/AccountCenter";
@@ -194,6 +199,7 @@ import {
 } from "./utils/search";
 import type { SemanticSignals } from "./utils/search";
 import UserActivityMonitor from "./components/Admin/UserActivityMonitor";
+import FriendPresenceNotification from "./components/Social/FriendPresenceNotification";
 
 import { 
   db, 
@@ -8549,6 +8555,11 @@ export default function App() {
   const [showSocialModal, setShowSocialModal] = useState(false);
   const [modalMode, setModalMode] = useState<"landing" | "login" | "signup">("landing");
   const [showCompleteAccount, setShowCompleteAccount] = useState(false);
+  // Soft profile-completion notice: once dismissed, it stays hidden until the
+  // user clears it (the notice disappears on its own once Age/Address are set).
+  const [profileNoticeDismissed, setProfileNoticeDismissed] = useState(
+    () => localStorage.getItem("cinemachat_profile_notice_dismissed") === "1",
+  );
 
   // Whether the auth modal was opened from the CinemaChat flow (Friend→Connect).
   // When true, a successful sign-in returns to the room instead of reloading.
@@ -12133,19 +12144,24 @@ export default function App() {
     refreshDramaRooms();
   }, [refreshDramaRooms]);
 
-  // Save (create or update) a drama room through the public API.
+  // Save (create or update) a drama room through the admin-guarded API. The
+  // acting admin's username travels as an x-admin-username header so the server
+  // can enforce its own privilege check (owner/super_admin/deputy_manager).
   const handleSaveDramaRoom = useCallback(
     async (payload: any) => {
+      const adminName = currentUser?.username || socialProfile?.username || "";
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (adminName) headers["x-admin-username"] = adminName;
       if (editingDramaRoom) {
         await api.baseFetch(`/api/drama-rooms/${editingDramaRoom.id}`, {
           method: "PUT",
-          headers: { "Content-Type": "application/json" },
+          headers,
           body: JSON.stringify(payload),
         }, 2);
       } else {
         await api.baseFetch("/api/drama-rooms", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
           body: JSON.stringify(payload),
         }, 2);
       }
@@ -12153,23 +12169,26 @@ export default function App() {
       setEditingDramaRoom(null);
       await refreshDramaRooms();
     },
-    [editingDramaRoom, refreshDramaRooms],
+    [editingDramaRoom, refreshDramaRooms, currentUser, socialProfile],
   );
 
-  // Delete a drama room through the public API (confirm first).
+  // Delete a drama room through the admin-guarded API (confirm first).
   const handleDeleteDramaRoom = useCallback(
     async (room: any) => {
       if (!room?.id) return;
       if (!window.confirm(`دڵنیایت لە سڕینەوەی ژووری "${room.title}"؟`)) return;
       try {
-        await api.baseFetch(`/api/drama-rooms/${room.id}`, { method: "DELETE" }, 2);
+        const adminName = currentUser?.username || socialProfile?.username || "";
+        const headers: Record<string, string> = {};
+        if (adminName) headers["x-admin-username"] = adminName;
+        await api.baseFetch(`/api/drama-rooms/${room.id}`, { method: "DELETE", headers }, 2);
         setSelectedDramaRoom((prev: any) => (prev?.id === room.id ? null : prev));
         await refreshDramaRooms();
       } catch (e) {
         console.warn("Failed to delete drama room:", e);
       }
     },
-    [refreshDramaRooms],
+    [refreshDramaRooms, currentUser, socialProfile],
   );
 
   // Drama category filter: shows only rooms that contain at least one movie
@@ -13455,6 +13474,10 @@ export default function App() {
           onOpenRoom={() => setShowCinemaChatRoom(true)}
         />
       )}
+
+      {/* Global friend presence (online/offline) notifications — accepted friends
+          only, mounted OUTSIDE the room so users see toasts anywhere in the app */}
+      <FriendPresenceNotification />
 
       {/* Point 14/15/16: Detailed Movie View (Selection) */}
       <AnimatePresence>
@@ -14923,6 +14946,13 @@ export default function App() {
                         />
 
                         <SidebarItem
+                          icon={BarChart2}
+                          active={adminTab === "user-analytics"}
+                          label="٢٠. زانیاری و شیکاری بەکارهێنەران"
+                          onClick={() => setAdminTab("user-analytics")}
+                        />
+
+                        <SidebarItem
                           icon={Settings}
                           label="ڕێکخستنەکان (گشتی)"
                           active={adminTab === "settings"}
@@ -15710,6 +15740,12 @@ const trailerId = movie.trailerUrl
                         <BroadcastControlModule />
                       )}
 
+                      {adminTab === "user-analytics" && (
+                        <SafeRender fallbackName="UserAnalyticsModule">
+                          <UserAnalyticsModule currentUser={currentUser} />
+                        </SafeRender>
+                      )}
+
                       {adminTab === "channel" && (
                         <ChannelSettingsModule
                           youtubeUrl={config.youtubeUrl}
@@ -15967,6 +16003,47 @@ const trailerId = movie.trailerUrl
         onClose={() => setShowCompleteAccount(false)}
         readiness={accountReadiness}
       />
+
+      {/* Soft profile-completion notice (Chat Rooms Part 2): users who are READY
+          but missing the recommended Age/Address fields get a gentle, dismissible
+          nudge — never a hard block. */}
+      {accountReadiness.state === "ready" &&
+        accountReadiness.recommendedMissingFields.length > 0 &&
+        !profileNoticeDismissed && (
+          <div className="fixed bottom-6 left-4 z-[120] flex max-w-[min(92vw,360px)] items-start gap-3 rounded-2xl border border-sky-500/20 bg-[#0f1013]/95 p-4 shadow-2xl shadow-black/50 backdrop-blur">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-sky-500/20 bg-sky-500/10 text-sky-400">
+              <AlertCircle className="h-5 w-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-black text-white kurdish-text">
+                تەواوکردنی پڕۆفایل (بەدڵی خۆت)
+              </p>
+              <p className="mt-0.5 text-[11px] leading-5 text-gray-400 kurdish-text">
+                تەمەن و ناونیشانت زیاد بکە بۆ ئەوەی هاوڕێکان و ژوورەکان وێنەیەکی
+                تەواوتر ببینن. پێویست نییە، بەڵام پێشنیار دەکرێت.
+              </p>
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowCompleteAccount(true)}
+                  className="rounded-xl bg-sky-500/20 px-3 py-1.5 text-[11px] font-black text-sky-300 kurdish-text transition hover:bg-sky-500/30"
+                >
+                  تەواوکردن
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    localStorage.setItem("cinemachat_profile_notice_dismissed", "1");
+                    setProfileNoticeDismissed(true);
+                  }}
+                  className="rounded-xl bg-white/5 px-3 py-1.5 text-[11px] font-bold text-gray-400 kurdish-text transition hover:bg-white/10 hover:text-white"
+                >
+                  دوا بکەوە
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
       {/* Smart Entry Modal for Joining Rooms */}
       <AnimatePresence>

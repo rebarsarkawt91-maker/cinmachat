@@ -737,6 +737,16 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // --- Drama Rooms (server-managed persistent mirror) ---
+    // The server writes/reads drama_rooms/{id} through the Admin SDK (which
+    // bypasses these rules) as the durable source for curated Drama Rooms, while
+    // db.json stays a fast cache. Direct frontend writes are denied: room
+    // creation/updates/deletes flow through the admin-guarded REST API only.
+    match /drama_rooms/{roomId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
     // --- Friends Room (ژوورەکانی هاوڕێیان) ---
     // Dedicated, isolated Firestore schema for the "Came Here Rooms" module.
     // friends_rooms/{roomId} holds the room (name, host code, generated unique
