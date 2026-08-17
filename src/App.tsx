@@ -10159,6 +10159,28 @@ export default function App() {
   const [cinemaWindowSubtitleMessage, setCinemaWindowSubtitleMessage] = useState("");
   const [cinemaWindowSubtitleRetryKey, setCinemaWindowSubtitleRetryKey] = useState(0);
 
+  // Gate: subtitle fetching, translation, and CC overlay are only active when
+  // the user is inside one of the three main watch rooms. Outside these rooms
+  // all subtitle-related network requests and overlay rendering are disabled.
+  const isInMainWatchRoom = !!activeCinemaWindowRoom || !!selectedDramaRoom || !!showCinemaChatRoom;
+
+  // Central entry point for AI subtitle generation. Every caller (the subtitle
+  // useEffect, manual retry, etc.) must route through this so the room-gate is
+  // enforced in a single place.
+  const handleGenerateAiSubtitles = useCallback(
+    async (
+      sourceUrl: string,
+      lang: string,
+      signal?: AbortSignal,
+      windowOptions?: { startSeconds?: number; windowSeconds?: number },
+      subtitleUrl?: string,
+    ) => {
+      if (!isInMainWatchRoom) return null;
+      return requestCinemaWindowSubtitle(sourceUrl, lang, signal, windowOptions, subtitleUrl);
+    },
+    [isInMainWatchRoom],
+  );
+
   const [dashboardRooms, setDashboardRooms] = useState<any[]>([]);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [dashboardCreateRoomName, setDashboardCreateRoomName] = useState("");
@@ -10301,7 +10323,7 @@ export default function App() {
     setCinemaWindowSubtitleStatus("idle");
     setCinemaWindowSubtitleMessage("");
 
-    if (socialTab !== "cinema_window" || !activeCinemaWindowRoom || !activeCinemaWindowSourceUrl) {
+    if (!isInMainWatchRoom || !activeCinemaWindowSourceUrl) {
       return () => {
         cancelled = true;
       };
@@ -10341,7 +10363,7 @@ export default function App() {
 
     const loadSubtitle = async () => {
       try {
-        return await requestCinemaWindowSubtitle(
+        return await handleGenerateAiSubtitles(
           activeCinemaWindowSourceUrl,
           selectedSubtitleLanguage.code,
           controller.signal,
@@ -10363,7 +10385,7 @@ export default function App() {
 
           if (!fallbackSubtitle?.rawText) {
             try {
-              fallbackSubtitle = await requestCinemaWindowSubtitle(
+              fallbackSubtitle = await handleGenerateAiSubtitles(
                 activeCinemaWindowSourceUrl,
                 fallbackLang,
                 controller.signal,
@@ -10398,6 +10420,7 @@ export default function App() {
 
     loadSubtitle()
       .then((subtitle) => {
+        if (!subtitle) return;
         const { vttText } = subtitle;
         cinemaWindowSubtitleCache.set(cacheKey, subtitle);
         objectUrl = URL.createObjectURL(new Blob([vttText], { type: "text/vtt" }));
@@ -10434,8 +10457,7 @@ export default function App() {
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [
-    socialTab,
-    activeCinemaWindowRoom,
+    isInMainWatchRoom,
     activeCinemaWindowSourceUrl,
     cinemaWindowSubtitleLang,
     cinemaWindowSubtitleWindowIndex,
@@ -12713,7 +12735,7 @@ export default function App() {
                             onError={handleCinemaWindowNativeVideoFailure}
                             onStalled={handleCinemaWindowNativeVideoFailure}
                           />
-                          {cinemaWindowActiveSubtitleText && (
+                          {isInMainWatchRoom && cinemaWindowActiveSubtitleText && (
                             <div className="pointer-events-none absolute inset-x-3 bottom-16 z-10 flex justify-center">
                               <div
                                 dir="auto"
@@ -12723,7 +12745,7 @@ export default function App() {
                               </div>
                             </div>
                           )}
-                          {cinemaWindowSubtitleStatus === "loading" && !cinemaWindowActiveSubtitleText && (
+                          {isInMainWatchRoom && cinemaWindowSubtitleStatus === "loading" && !cinemaWindowActiveSubtitleText && (
                             <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center gap-2 px-4 py-3 pointer-events-none">
                               <div className="flex items-center gap-2 rounded-xl bg-black/70 px-3 py-2 text-xs text-amber-300">
                                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -12731,7 +12753,7 @@ export default function App() {
                               </div>
                             </div>
                           )}
-                          {cinemaWindowSubtitleStatus === "error" && (
+                          {isInMainWatchRoom && cinemaWindowSubtitleStatus === "error" && (
                             <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center px-4 py-3">
                               <div className="flex items-center gap-2 rounded-xl bg-red-950/80 border border-red-500/20 px-3 py-2 text-xs text-red-300">
                                 <AlertCircle className="w-3.5 h-3.5 shrink-0" />
