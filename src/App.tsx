@@ -6785,11 +6785,12 @@ const requestCinemaWindowSubtitle = async (
   lang: string,
   signal?: AbortSignal,
   windowOptions?: { startSeconds?: number; windowSeconds?: number },
+  subtitleUrl?: string,
 ) => {
   const response = await fetch("/api/subtitle/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url: sourceUrl, lang, ...windowOptions }),
+    body: JSON.stringify({ url: sourceUrl, lang, subtitleUrl: subtitleUrl || undefined, ...windowOptions }),
     signal,
   });
   const data = await response.json().catch(() => ({}));
@@ -10156,6 +10157,7 @@ export default function App() {
   const [cinemaWindowSubtitleLang, setCinemaWindowSubtitleLang] = useState("ckb");
   const [cinemaWindowSubtitleStatus, setCinemaWindowSubtitleStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [cinemaWindowSubtitleMessage, setCinemaWindowSubtitleMessage] = useState("");
+  const [cinemaWindowSubtitleRetryKey, setCinemaWindowSubtitleRetryKey] = useState(0);
 
   const [dashboardRooms, setDashboardRooms] = useState<any[]>([]);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
@@ -10197,6 +10199,11 @@ export default function App() {
 
   const cinemaWindowSubtitleWindowIndex =
     cinemaWindowSubtitleLang === "ckb" ? Math.floor(cinemaWindowPlaybackTime / 90) : 0;
+
+  const cinemaWindowMovieSubtitleUrl = useMemo(() => {
+    if (!activeCinemaWindowRoom?.movieId) return "";
+    return movies.find((m) => m.id === activeCinemaWindowRoom.movieId)?.subtitleUrl || "";
+  }, [activeCinemaWindowRoom?.movieId, movies]);
 
   useEffect(() => {
     setCinemaWindowStreamRefreshKey(0);
@@ -10300,6 +10307,8 @@ export default function App() {
       };
     }
 
+    const movieSubtitleUrl = cinemaWindowMovieSubtitleUrl;
+
     const selectedSubtitleLanguage = getCinemaWindowSubtitleLanguage(cinemaWindowSubtitleLang);
     const subtitleWindowOptions =
       selectedSubtitleLanguage.code === "ckb"
@@ -10337,6 +10346,7 @@ export default function App() {
           selectedSubtitleLanguage.code,
           controller.signal,
           subtitleWindowOptions,
+          movieSubtitleUrl,
         );
       } catch (targetErr) {
         if (selectedSubtitleLanguage.code === "en") throw targetErr;
@@ -10358,6 +10368,7 @@ export default function App() {
                 fallbackLang,
                 controller.signal,
                 subtitleWindowOptions,
+                movieSubtitleUrl,
               );
               fallbackSourceLang = fallbackSubtitle.sourceLang || fallbackLang;
               cinemaWindowSubtitleCache.set(fallbackCacheKey, fallbackSubtitle);
@@ -10428,6 +10439,8 @@ export default function App() {
     activeCinemaWindowSourceUrl,
     cinemaWindowSubtitleLang,
     cinemaWindowSubtitleWindowIndex,
+    cinemaWindowMovieSubtitleUrl,
+    cinemaWindowSubtitleRetryKey,
   ]);
 
   // Sync dashboardCreateHostCode with socialProfile when defined
@@ -12707,6 +12720,29 @@ export default function App() {
                                 className="max-w-[92%] whitespace-pre-line rounded-lg bg-black/70 px-3 py-2 text-center text-lg md:text-2xl font-bold leading-snug text-white shadow-[0_2px_14px_rgba(0,0,0,0.55)]"
                               >
                                 {cinemaWindowActiveSubtitleText}
+                              </div>
+                            </div>
+                          )}
+                          {cinemaWindowSubtitleStatus === "loading" && !cinemaWindowActiveSubtitleText && (
+                            <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center gap-2 px-4 py-3 pointer-events-none">
+                              <div className="flex items-center gap-2 rounded-xl bg-black/70 px-3 py-2 text-xs text-amber-300">
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                <span className="kurdish-text">{cinemaWindowSubtitleMessage || "وەردەگێڕدرێت..."}</span>
+                              </div>
+                            </div>
+                          )}
+                          {cinemaWindowSubtitleStatus === "error" && (
+                            <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center px-4 py-3">
+                              <div className="flex items-center gap-2 rounded-xl bg-red-950/80 border border-red-500/20 px-3 py-2 text-xs text-red-300">
+                                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                <span className="kurdish-text">{cinemaWindowSubtitleMessage || "بەردەست نییە"}</span>
+                                <button
+                                  onClick={() => setCinemaWindowSubtitleRetryKey((k) => k + 1)}
+                                  className="ml-1 p-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-200 transition-colors shrink-0 cursor-pointer"
+                                  title="Retry subtitle generation"
+                                >
+                                  <RefreshCw className="w-3 h-3" />
+                                </button>
                               </div>
                             </div>
                           )}

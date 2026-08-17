@@ -443,6 +443,25 @@ function buildGenericTimedtextCandidates(videoId: string, lang: string): string[
   return candidates;
 }
 
+function buildGoogleTranslateTimedtextCandidates(videoId: string, targetLang: string): string[] {
+  const candidates: string[] = [];
+  const add = (url: string) => {
+    if (!candidates.includes(url)) candidates.push(url);
+  };
+
+  const sourceLangs = ['en', 'ar', 'es', 'tr', 'ku', 'fa'];
+  for (const host of ['https://www.youtube.com/api/timedtext', 'https://video.google.com/timedtext']) {
+    for (const srcLang of sourceLangs) {
+      if (srcLang === targetLang) continue;
+      const base = `${host}?v=${encodeURIComponent(videoId)}&lang=${srcLang}&tlang=${encodeURIComponent(targetLang)}`;
+      add(`${base}&fmt=vtt`);
+      add(`${base}&kind=asr&fmt=vtt`);
+      add(`${base}`);
+    }
+  }
+  return candidates;
+}
+
 function buildTrackTimedtextCandidates(track: YouTubeCaptionTrack, videoId: string, targetLang: string): string[] {
   const candidates: string[] = [];
   const add = (url: string) => {
@@ -915,10 +934,16 @@ type InvidiousCaption = {
 };
 
 const INVIDIOUS_INSTANCES = [
-  'https://yewtu.be',
   'https://inv.nadeko.net',
-  'https://invidious.jing.rocks',
+  'https://invidious.nerdvpn.de',
+  'https://invidious.protokoll-11.dev',
+  'https://invidious.perennialte.ch',
+  'https://iv.ggtyler.dev',
+  'https://yt.drgnz.club',
   'https://invidious.privacyredirect.com',
+  'https://yewtu.be',
+  'https://vid.puffyan.us',
+  'https://invidious.lunar.icu',
 ];
 
 function pickBestInvidiousCaption(captions: InvidiousCaption[], targetLang: string): InvidiousCaption | null {
@@ -1043,6 +1068,10 @@ async function fetchYouTubeCaptionsFromWeb(
         pushCandidate(u, `track-en-fallback-${trackLang}`);
       }
     }
+  }
+
+  for (const u of buildGoogleTranslateTimedtextCandidates(videoId, lang)) {
+    pushCandidate(u, `google-translate-${lang}`);
   }
 
   for (const candidate of candidates) {

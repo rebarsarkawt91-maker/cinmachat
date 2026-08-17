@@ -3,8 +3,12 @@ services:
     name: cinemachat-server
     env: node
     autoDeploy: true
-    buildCommand: npm install && npm run build && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o yt-dlp && chmod +x yt-dlp
-    startCommand: export PATH="$PWD:$PATH" && node dist/server.cjs
+    buildCommand: >
+      npm install && npm run build &&
+      (pip install yt-dlp 2>/dev/null || true) &&
+      (curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp 2>/dev/null && chmod +x /usr/local/bin/yt-dlp || true) &&
+      (curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o yt-dlp 2>/dev/null && chmod +x yt-dlp || true)
+    startCommand: node dist/server.cjs
     envVars:
       - key: NODE_ENV
         value: production
