@@ -34,23 +34,23 @@
       "phoneNumber": "",
       "avatar": "",
       "deviceIp": "127.0.0.1",
-      "lastActive": "2026-08-17T20:03:36.586Z",
+      "lastActive": "2026-08-17T21:15:00.742Z",
       "role": "Member",
       "active": true,
       "kicked": false,
-      "updatedAt": "2026-08-17T19:33:57.358Z",
+      "updatedAt": "2026-08-17T20:31:43.183Z",
       "displayName": "rebarsarkawt 911",
       "username": "",
       "email": "rebarsarkawt91@gmail.com",
       "emailLower": "rebarsarkawt91@gmail.com",
       "bio": "",
-      "gender": "ner",
+      "gender": "",
       "birthday": "",
-      "country": "kurdstan",
-      "city": "slemani",
+      "country": "",
+      "city": "",
       "language": "ckb",
       "avatarUrl": "https:&#x2F;&#x2F;lh3.googleusercontent.com&#x2F;a&#x2F;ACg8ocJ7mG9jQ-gc31dqUfygu4bsKwmhvHYEzoytqDAnFqwzCOZf23QF=s96-c",
-      "cover": "rty",
+      "cover": "",
       "uniqueCode": "",
       "memberCode": "",
       "referenceId": ""
@@ -366,6 +366,818 @@
     }
   ],
   "systemErrorLogs": [
+    {
+      "id": "err-hxdgxp1",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:06:54.684Z"
+    },
+    {
+      "id": "err-mmjs98b",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:06:54.435Z"
+    },
+    {
+      "id": "err-nkj0vwr",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:06:16.061Z"
+    },
+    {
+      "id": "err-i9n9ba7",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:06:15.999Z"
+    },
+    {
+      "id": "err-dpm2tfs",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:05:55.699Z"
+    },
+    {
+      "id": "err-k2brp1h",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:05:55.697Z"
+    },
+    {
+      "id": "err-m2x30f0",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:05:55.689Z"
+    },
+    {
+      "id": "err-68vliqu",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:05:55.683Z"
+    },
+    {
+      "id": "err-yqajt9d",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:05:41.014Z"
+    },
+    {
+      "id": "err-u8vhuoc",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:05:41.011Z"
+    },
+    {
+      "id": "err-8x9jihc",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:05:41.006Z"
+    },
+    {
+      "id": "err-ywogeeq",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:05:41.003Z"
+    },
+    {
+      "id": "err-abtyb4v",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:05:25.705Z"
+    },
+    {
+      "id": "err-tc0no72",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:05:25.702Z"
+    },
+    {
+      "id": "err-cz5sedp",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:05:25.689Z"
+    },
+    {
+      "id": "err-s6w742m",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:05:25.685Z"
+    },
+    {
+      "id": "err-8dhgxoc",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:05:11.593Z"
+    },
+    {
+      "id": "err-vxs2dpq",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:05:11.587Z"
+    },
+    {
+      "id": "err-vss5xgg",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:05:11.584Z"
+    },
+    {
+      "id": "err-knzpi37",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:05:11.578Z"
+    },
+    {
+      "id": "err-njv6leu",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:04:55.702Z"
+    },
+    {
+      "id": "err-rnp4e39",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:04:55.692Z"
+    },
+    {
+      "id": "err-cs64gjj",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:04:55.687Z"
+    },
+    {
+      "id": "err-cz4ro8u",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:04:55.683Z"
+    },
+    {
+      "id": "err-2m8ne7f",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:04:40.704Z"
+    },
+    {
+      "id": "err-1x8hg1h",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:04:40.695Z"
+    },
+    {
+      "id": "err-63ei28e",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:04:40.689Z"
+    },
+    {
+      "id": "err-2qerj6w",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:04:40.684Z"
+    },
+    {
+      "id": "err-zqk9ibh",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:04:25.704Z"
+    },
+    {
+      "id": "err-ixffzuo",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:04:25.695Z"
+    },
+    {
+      "id": "err-zksrpz0",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:04:25.690Z"
+    },
+    {
+      "id": "err-tmxr0pf",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:04:25.686Z"
+    },
+    {
+      "id": "err-lpbf7qm",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:04:10.694Z"
+    },
+    {
+      "id": "err-g7iagqo",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:04:10.691Z"
+    },
+    {
+      "id": "err-d7mz4od",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:04:10.688Z"
+    },
+    {
+      "id": "err-ieebv3q",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:04:10.684Z"
+    },
+    {
+      "id": "err-qsbuu8c",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:03:55.698Z"
+    },
+    {
+      "id": "err-64yjdep",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:03:55.693Z"
+    },
+    {
+      "id": "err-u8u6fcx",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:03:55.690Z"
+    },
+    {
+      "id": "err-27hrup1",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:03:55.687Z"
+    },
+    {
+      "id": "err-x9llzo4",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:03:41.011Z"
+    },
+    {
+      "id": "err-nf2gz5b",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:03:41.008Z"
+    },
+    {
+      "id": "err-bzsst6p",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:03:41.005Z"
+    },
+    {
+      "id": "err-rao0qe6",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:03:40.998Z"
+    },
+    {
+      "id": "err-q4g3ccd",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:03:40.287Z"
+    },
+    {
+      "id": "err-4xjf5wb",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:03:25.709Z"
+    },
+    {
+      "id": "err-9ecifnf",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:03:25.701Z"
+    },
+    {
+      "id": "err-dcclepk",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:03:25.694Z"
+    },
+    {
+      "id": "err-aprvz7n",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:03:25.690Z"
+    },
+    {
+      "id": "err-9lxucis",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:03:10.707Z"
+    },
+    {
+      "id": "err-fkgw4fn",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:03:10.700Z"
+    },
+    {
+      "id": "err-ae9d45c",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:03:10.696Z"
+    },
+    {
+      "id": "err-hxrhf8r",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:03:10.691Z"
+    },
+    {
+      "id": "err-168f9q2",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:02:55.708Z"
+    },
+    {
+      "id": "err-06e199v",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:02:55.698Z"
+    },
+    {
+      "id": "err-n4gx5wd",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:02:55.695Z"
+    },
+    {
+      "id": "err-76h0tof",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:02:55.685Z"
+    },
+    {
+      "id": "err-2689qk5",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:02:40.709Z"
+    },
+    {
+      "id": "err-7h4iomp",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:02:40.702Z"
+    },
+    {
+      "id": "err-u2kyt4f",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:02:40.697Z"
+    },
+    {
+      "id": "err-lprr60o",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:02:40.684Z"
+    },
+    {
+      "id": "err-lmp16oc",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:02:25.718Z"
+    },
+    {
+      "id": "err-599gmpo",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:02:25.713Z"
+    },
+    {
+      "id": "err-0miukh9",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:02:25.706Z"
+    },
+    {
+      "id": "err-s1jtoaj",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:02:25.697Z"
+    },
+    {
+      "id": "err-z2d6p4x",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:02:10.715Z"
+    },
+    {
+      "id": "err-ts6j9tf",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:02:10.707Z"
+    },
+    {
+      "id": "err-e4ifale",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:02:10.701Z"
+    },
+    {
+      "id": "err-lvmjcmc",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:02:10.687Z"
+    },
+    {
+      "id": "err-24xtotl",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:01:55.727Z"
+    },
+    {
+      "id": "err-tjkqt7v",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:01:55.713Z"
+    },
+    {
+      "id": "err-rcwp183",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:01:55.697Z"
+    },
+    {
+      "id": "err-tj56xbd",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:01:55.684Z"
+    },
+    {
+      "id": "err-rnmfxg1",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:01:40.726Z"
+    },
+    {
+      "id": "err-exthojz",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:01:40.714Z"
+    },
+    {
+      "id": "err-bssr9ja",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:01:40.695Z"
+    },
+    {
+      "id": "err-lakvpde",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:01:40.686Z"
+    },
+    {
+      "id": "err-7spkts2",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:01:25.709Z"
+    },
+    {
+      "id": "err-drn9kf3",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:01:25.702Z"
+    },
+    {
+      "id": "err-tqdqshd",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:01:25.688Z"
+    },
+    {
+      "id": "err-wigboob",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:01:25.685Z"
+    },
+    {
+      "id": "err-vfa1w3a",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:01:10.719Z"
+    },
+    {
+      "id": "err-7wm6p61",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:01:10.706Z"
+    },
+    {
+      "id": "err-ov72p78",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:01:10.697Z"
+    },
+    {
+      "id": "err-vb6dlza",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:01:10.687Z"
+    },
+    {
+      "id": "err-q6nk8c4",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:00:55.703Z"
+    },
+    {
+      "id": "err-k7hqv2e",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:00:55.691Z"
+    },
+    {
+      "id": "err-lc76b6j",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:00:55.687Z"
+    },
+    {
+      "id": "err-aql29sz",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:00:55.683Z"
+    },
+    {
+      "id": "err-tx7ebh5",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:00:40.722Z"
+    },
+    {
+      "id": "err-f57m2dt",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:00:40.714Z"
+    },
+    {
+      "id": "err-2a7k79x",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:00:40.699Z"
+    },
+    {
+      "id": "err-wqmonuu",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:00:40.688Z"
+    },
+    {
+      "id": "err-tkxan1c",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:00:25.727Z"
+    },
+    {
+      "id": "err-3os0vbj",
+      "source": "GET /api/admin/snapshots",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:00:25.724Z"
+    },
+    {
+      "id": "err-rjpqiik",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:00:25.717Z"
+    },
+    {
+      "id": "err-74ap1ly",
+      "source": "GET /api/admin/banned-ips",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:00:25.715Z"
+    },
+    {
+      "id": "err-jiikz17",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:00:25.707Z"
+    },
+    {
+      "id": "err-p2u31dr",
+      "source": "GET /api/admin/intrusion-attempts",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:00:25.704Z"
+    },
+    {
+      "id": "err-c1j9kjf",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:00:25.684Z"
+    },
+    {
+      "id": "err-cb3fzrc",
+      "source": "GET /api/admin/error-logs",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:00:25.682Z"
+    },
+    {
+      "id": "err-b1pdbr4",
+      "source": "GET /api/admin/smart-analytics",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:00:24.174Z"
+    },
+    {
+      "id": "err-kdukfp0",
+      "source": "GET /api/admin/smart-analytics",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T21:00:24.170Z"
+    },
+    {
+      "id": "err-6c13rdb",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T20:58:55.166Z"
+    },
+    {
+      "id": "err-03gqkg4",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T20:58:55.085Z"
+    },
+    {
+      "id": "err-m7m4j8v",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T20:41:55.543Z"
+    },
+    {
+      "id": "err-dve84xi",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T20:41:54.926Z"
+    },
+    {
+      "id": "err-1i46dr9",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T20:35:23.255Z"
+    },
+    {
+      "id": "err-wruqnsi",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T20:35:23.253Z"
+    },
+    {
+      "id": "err-peimm3a",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T20:32:04.234Z"
+    },
+    {
+      "id": "err-x2xfe82",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T20:13:31.919Z"
+    },
+    {
+      "id": "err-j36n2yc",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T20:10:28.744Z"
+    },
+    {
+      "id": "err-jkvzxvk",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T20:10:28.349Z"
+    },
+    {
+      "id": "err-fc6g1l6",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T20:04:21.556Z"
+    },
+    {
+      "id": "err-93ire8j",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T20:04:21.545Z"
+    },
+    {
+      "id": "err-nhk9vh4",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T20:03:38.574Z"
+    },
     {
       "id": "err-1w0jhri",
       "source": "POST /api/resolve-stream",
@@ -953,692 +1765,6 @@
       "message": "شکست لە داواکاری بە کۆدی HTTP 422",
       "details": "ئایپی بەکارهێنەر: 127.0.0.1",
       "timestamp": "2026-08-16T14:35:22.745Z"
-    },
-    {
-      "id": "err-i6bibvf",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T14:24:02.069Z"
-    },
-    {
-      "id": "err-vy1ufrs",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T14:23:59.116Z"
-    },
-    {
-      "id": "err-k35dgqn",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T14:22:39.782Z"
-    },
-    {
-      "id": "err-jpmkwlh",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T14:22:39.696Z"
-    },
-    {
-      "id": "err-ax052vi",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T14:20:30.159Z"
-    },
-    {
-      "id": "err-hu73pdz",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T14:19:54.081Z"
-    },
-    {
-      "id": "err-62qnqce",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T14:19:53.789Z"
-    },
-    {
-      "id": "err-ok4kgbq",
-      "source": "GET /api/users/profile/foo",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 503",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T14:14:54.309Z"
-    },
-    {
-      "id": "err-9oekw3t",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:55:43.805Z"
-    },
-    {
-      "id": "err-85hawf1",
-      "source": "POST /api/users/profile-sync",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 503",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:51:51.227Z"
-    },
-    {
-      "id": "err-g6dxyik",
-      "source": "POST /api/users/profile-sync",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 503",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:51:50.527Z"
-    },
-    {
-      "id": "err-rlt87z4",
-      "source": "POST /api/users/profile-sync",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 503",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:51:46.476Z"
-    },
-    {
-      "id": "err-vsw7nxp",
-      "source": "POST /api/users/profile-sync",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 503",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:50:28.079Z"
-    },
-    {
-      "id": "err-la5sdmq",
-      "source": "POST /api/users/profile-sync",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 503",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:49:08.215Z"
-    },
-    {
-      "id": "err-s2yxxz5",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:49:02.331Z"
-    },
-    {
-      "id": "err-40fk5sd",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:49:02.252Z"
-    },
-    {
-      "id": "err-8ti3wa0",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:48:09.913Z"
-    },
-    {
-      "id": "err-ufuo7if",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:46:16.576Z"
-    },
-    {
-      "id": "err-dgzdlsb",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:41:14.741Z"
-    },
-    {
-      "id": "err-gu6s9ob",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:40:43.973Z"
-    },
-    {
-      "id": "err-1t4vkd6",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:40:43.884Z"
-    },
-    {
-      "id": "err-d0fon85",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:35:29.543Z"
-    },
-    {
-      "id": "err-69g4gdb",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:35:29.373Z"
-    },
-    {
-      "id": "err-wr8gut2",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:31:13.858Z"
-    },
-    {
-      "id": "err-afboxtp",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:31:12.689Z"
-    },
-    {
-      "id": "err-1c24mi0",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:30:42.539Z"
-    },
-    {
-      "id": "err-u3guvoz",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:30:42.531Z"
-    },
-    {
-      "id": "err-8yials7",
-      "source": "POST /api/users/sync",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 429",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:25:17.003Z"
-    },
-    {
-      "id": "err-bi6o9aq",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:25:15.026Z"
-    },
-    {
-      "id": "err-ijlet8k",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:24:41.043Z"
-    },
-    {
-      "id": "err-of4zt15",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T13:24:18.503Z"
-    },
-    {
-      "id": "err-fl15dhm",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T12:44:43.748Z"
-    },
-    {
-      "id": "err-5yb7a09",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T12:44:43.741Z"
-    },
-    {
-      "id": "err-0jbjvq0",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T12:42:54.620Z"
-    },
-    {
-      "id": "err-uq3x5k5",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T12:41:50.384Z"
-    },
-    {
-      "id": "err-8onm8sv",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T12:41:49.524Z"
-    },
-    {
-      "id": "err-eafr3hw",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T12:38:15.638Z"
-    },
-    {
-      "id": "err-mswpb87",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T12:38:15.629Z"
-    },
-    {
-      "id": "err-3235gmv",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T12:38:02.403Z"
-    },
-    {
-      "id": "err-mjr1hig",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T12:38:02.285Z"
-    },
-    {
-      "id": "err-284iins",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T12:37:45.631Z"
-    },
-    {
-      "id": "err-f4sgiab",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T12:37:45.215Z"
-    },
-    {
-      "id": "err-5obzrx5",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T12:36:51.826Z"
-    },
-    {
-      "id": "err-d4yqp37",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T12:36:51.589Z"
-    },
-    {
-      "id": "err-ssefonq",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T12:28:47.236Z"
-    },
-    {
-      "id": "err-2qd6vuv",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T12:28:47.209Z"
-    },
-    {
-      "id": "err-du99gad",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-16T12:23:13.546Z"
-    },
-    {
-      "id": "err-pj4e62n",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-15T23:19:46.054Z"
-    },
-    {
-      "id": "err-m09ezya",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-15T23:12:05.954Z"
-    },
-    {
-      "id": "err-9a0yr9z",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-15T23:12:05.867Z"
-    },
-    {
-      "id": "err-qtyl3h5",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-15T22:22:18.734Z"
-    },
-    {
-      "id": "err-flzdkqn",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-15T20:33:59.136Z"
-    },
-    {
-      "id": "err-h6il6nv",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-15T20:33:58.626Z"
-    },
-    {
-      "id": "err-lmn01d4",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-15T20:33:41.002Z"
-    },
-    {
-      "id": "err-jiw9ajw",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-15T20:33:40.998Z"
-    },
-    {
-      "id": "err-gnesesk",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-15T20:33:34.250Z"
-    },
-    {
-      "id": "err-rgqaoni",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-15T20:33:34.199Z"
-    },
-    {
-      "id": "err-lmxpxb8",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-15T20:33:27.688Z"
-    },
-    {
-      "id": "err-b27d11e",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-15T20:33:12.471Z"
-    },
-    {
-      "id": "err-71dq3dt",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-15T20:33:11.067Z"
-    },
-    {
-      "id": "err-3jgle6p",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-15T20:33:04.845Z"
-    },
-    {
-      "id": "err-exo5u1u",
-      "source": "POST /api/users/profile-sync",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 503",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-15T20:12:56.310Z"
-    },
-    {
-      "id": "err-4plw0j7",
-      "source": "POST /api/users/profile-sync",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 503",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-15T20:12:07.150Z"
-    },
-    {
-      "id": "err-kypnncw",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-15T20:07:51.587Z"
-    },
-    {
-      "id": "err-ov0yddr",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-15T20:07:51.568Z"
-    },
-    {
-      "id": "err-o1o4she",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-15T19:50:48.552Z"
-    },
-    {
-      "id": "err-yawt5vl",
-      "source": "POST /api/resolve-stream",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-15T19:50:48.507Z"
-    },
-    {
-      "id": "err-5gs5q51",
-      "source": "DELETE /api/drama-rooms/drama_1786118383377_o1lhf",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 404",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-07T16:00:29.230Z"
-    },
-    {
-      "id": "err-frzvdqu",
-      "source": "GET /api/admin/monitored-users?adminName=staff1",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 403",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-07T00:55:58.762Z"
-    },
-    {
-      "id": "err-mu9t09m",
-      "source": "GET /api/admin/monitored-users?adminName=staff1",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 403",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-07T00:55:58.758Z"
-    },
-    {
-      "id": "err-j468war",
-      "source": "POST /api/admin/login",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-07T00:45:41.793Z"
-    },
-    {
-      "id": "err-3y8fdpb",
-      "source": "POST /api/admin/login",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-07T00:45:31.953Z"
-    },
-    {
-      "id": "err-9o9w9ca",
-      "source": "GET /api/admin/m17/status?adminName=Owner",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 403",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-07T00:39:19.778Z"
-    },
-    {
-      "id": "err-0qymns7",
-      "source": "GET /api/admin/m17/status?adminName=Owner",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 403",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-07T00:39:07.968Z"
-    },
-    {
-      "id": "err-milnxka",
-      "source": "GET /api/admin/m17/status",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-07T00:38:48.770Z"
-    },
-    {
-      "id": "err-lrit117",
-      "source": "GET /api/admin/m17/status",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-07T00:38:24.873Z"
-    },
-    {
-      "id": "err-h47winu",
-      "source": "GET /api/admin/m17/status",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-07T00:38:11.368Z"
-    },
-    {
-      "id": "err-any2z6h",
-      "source": "GET /api/admin",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 404",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-07T00:36:24.196Z"
-    },
-    {
-      "id": "err-xn7v8hk",
-      "source": "GET /api/admin",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 404",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-07T00:34:29.749Z"
-    },
-    {
-      "id": "err-msytsd0",
-      "source": "PATCH /api/admin/movies/manual-1785976786159/tags",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-07T00:08:57.307Z"
-    },
-    {
-      "id": "err-tvvsnol",
-      "source": "POST /api/subtitle/generate",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 400",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-06T23:23:14.812Z"
-    },
-    {
-      "id": "err-qsxwy8k",
-      "source": "POST /api/subtitle/generate",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 400",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-06T23:22:33.411Z"
-    },
-    {
-      "id": "err-dosie0n",
-      "source": "POST /api/subtitle/generate",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 400",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-06T22:54:30.771Z"
-    },
-    {
-      "id": "err-j9ozv2z",
-      "source": "POST /api/subtitle/generate",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 400",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-06T22:53:14.436Z"
-    },
-    {
-      "id": "err-ng9yowg",
-      "source": "POST /api/movies",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 404",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-06T14:48:43.016Z"
-    },
-    {
-      "id": "err-ghlxd83",
-      "source": "POST /api/subtitle/generate",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 400",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-06T12:44:06.651Z"
-    },
-    {
-      "id": "err-c0t783r",
-      "source": "GET /api/admin/users",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-08-03T00:38:23.209Z"
-    },
-    {
-      "id": "err-9oxw6r7",
-      "source": "GET /api/admin/hero",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-07-25T15:38:46.066Z"
-    },
-    {
-      "id": "err-l311hzt",
-      "source": "GET /api/admin/hero",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-07-25T15:38:46.063Z"
-    },
-    {
-      "id": "err-gs4aq7s",
-      "source": "GET /api/admin/categories",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-07-25T15:38:40.871Z"
-    },
-    {
-      "id": "err-wc64x4c",
-      "source": "GET /api/admin/categories",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-07-25T15:38:40.867Z"
-    },
-    {
-      "id": "err-3w4eksp",
-      "source": "POST /api/auth/login-by-id",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 400",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-07-12T13:17:09.963Z"
-    },
-    {
-      "id": "err-4kcz8k8",
-      "source": "POST /api/auth/login-by-id",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 400",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-07-12T13:16:14.796Z"
-    },
-    {
-      "id": "err-9xd02tk",
-      "source": "POST /api/auth/login-by-id",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 400",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-07-12T13:16:12.390Z"
-    },
-    {
-      "id": "err-ffnl6l7",
-      "source": "POST /api/admin/login",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 401",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-07-12T13:13:35.476Z"
-    },
-    {
-      "id": "err-7yz3k6v",
-      "source": "POST /api/auth/login-by-id",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 400",
-      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
-      "timestamp": "2026-07-11T18:36:43.551Z"
-    },
-    {
-      "id": "err-3xsvzcu",
-      "source": "POST /api/vip/verify",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 404",
-      "details": "ئایپی بەکارهێنەر: 176.222.60.215",
-      "timestamp": "2026-06-21T14:28:31.392Z"
-    },
-    {
-      "id": "err-5624mkx",
-      "source": "POST /api/rooms/CC-ADM-001/join",
-      "message": "شکست لە داواکاری بە کۆدی HTTP 404",
-      "details": "ئایپی بەکارهێنەر: 176.222.60.215",
-      "timestamp": "2026-06-21T13:42:48.907Z"
     }
   ],
   "intrusionAttempts": [],
@@ -1873,6 +1999,118 @@
     }
   },
   "userActivities": [
+    {
+      "id": "act-kqwwpxo",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T21:15:00.742Z"
+    },
+    {
+      "id": "act-91wkb4d",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T21:06:55.075Z"
+    },
+    {
+      "id": "act-030q1m8",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T21:06:53.976Z"
+    },
+    {
+      "id": "act-xwpbrdk",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T21:06:15.440Z"
+    },
+    {
+      "id": "act-s5hnkwb",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T21:03:38.038Z"
+    },
+    {
+      "id": "act-3k0331i",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T20:58:51.341Z"
+    },
+    {
+      "id": "act-faz4an1",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T20:41:54.241Z"
+    },
+    {
+      "id": "act-ry2e705",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T20:41:53.598Z"
+    },
+    {
+      "id": "act-71vg9ah",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T20:41:49.259Z"
+    },
+    {
+      "id": "act-iyre7k5",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T20:35:21.631Z"
+    },
+    {
+      "id": "act-9hbgoap",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T20:32:43.518Z"
+    },
+    {
+      "id": "act-8bcc6sn",
+      "uniqueCode": "DQTVFXOQZZYZO88OBBFD7OU8QEE2",
+      "action": "Profile Sync",
+      "details": "User saved their profile",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T20:32:43.422Z"
+    },
+    {
+      "id": "act-nnfwgoy",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T20:32:01.649Z"
+    },
+    {
+      "id": "act-1j6n3fn",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T20:10:27.012Z"
+    },
     {
       "id": "act-ulihwpe",
       "uniqueCode": "",
