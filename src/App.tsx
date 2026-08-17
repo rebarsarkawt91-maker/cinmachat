@@ -6691,7 +6691,22 @@ const CINEMA_WINDOW_SUBTITLE_LANGUAGES = [
   { code: "en", label: "English", shortLabel: "English CC" },
   { code: "ar", label: "العربية", shortLabel: "Arabic CC" },
   { code: "fa", label: "فارسی", shortLabel: "Persian CC" },
-  { code: "tr", label: "Turkce", shortLabel: "Turkish CC" },
+  { code: "tr", label: "Türkçe", shortLabel: "Turkish CC" },
+  { code: "es", label: "Español", shortLabel: "Spanish CC" },
+  { code: "fr", label: "Français", shortLabel: "French CC" },
+  { code: "de", label: "Deutsch", shortLabel: "German CC" },
+  { code: "ru", label: "Русский", shortLabel: "Russian CC" },
+  { code: "zh", label: "中文", shortLabel: "Chinese CC" },
+  { code: "ja", label: "日本語", shortLabel: "Japanese CC" },
+  { code: "ko", label: "한국어", shortLabel: "Korean CC" },
+  { code: "pt", label: "Português", shortLabel: "Portuguese CC" },
+  { code: "it", label: "Italiano", shortLabel: "Italian CC" },
+  { code: "hi", label: "हिन्दी", shortLabel: "Hindi CC" },
+  { code: "ur", label: "اردو", shortLabel: "Urdu CC" },
+  { code: "sw", label: "Kiswahili", shortLabel: "Swahili CC" },
+  { code: "th", label: "ไทย", shortLabel: "Thai CC" },
+  { code: "ms", label: "Bahasa Melayu", shortLabel: "Malay CC" },
+  { code: "id", label: "Bahasa Indonesia", shortLabel: "Indonesian CC" },
 ];
 
 const getCinemaWindowSubtitleLanguage = (code: string) =>
