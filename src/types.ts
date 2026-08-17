@@ -93,6 +93,8 @@ export interface SocialUser {
   country?: string;
   role?: string;
   userRole?: string;
+  /** Optional movie/watch preference chosen during onboarding (movie id or title). */
+  moviePreference?: string;
 }
 
 export interface PlaylistItem {

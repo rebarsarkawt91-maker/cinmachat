@@ -40,6 +40,7 @@ import type { AccountReadiness } from "../../services/accountReadiness";
 //   FRIEND 1   search by phone or email → found card → پێشەوە (NEXT)
 //   CONNECT 2  invitation sent → waiting for acceptance → auto-open on accept
 //   CHAT       3  private ephemeral chat (server in-memory session only)
+//   MOVIE      4  movie / watch-party selection within the active chat
 //
 // NO general/global chat lives here: every message is scoped to the accepted
 // connection's private session, and messages are held ONLY in React state —
@@ -1069,13 +1070,14 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
 
         <div className="flex-1 overflow-y-auto p-5 custom-scrollbar min-h-0">{renderContent()}</div>
 
-        {/* Step indicator — 1 FRIEND → 2 CONNECT → 3 CHAT */}
+        {/* Step indicator — 1 FRIEND → 2 CONNECT → 3 CHAT → 4 MOVIE */}
         <div className="px-5 py-3 bg-black/30 border-t border-white/10 flex-shrink-0">
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-4 gap-2">
             {[
               { n: 1, label: "Friend" },
               { n: 2, label: "Connect" },
               { n: 3, label: "Chat" },
+              { n: 4, label: "Movie" },
             ].map((step) => {
               const ready = readiness.state === "ready";
               const stepNum = !ready || !myUid ? 0 : inChat ? 3 : activeConn ? 2 : 1;

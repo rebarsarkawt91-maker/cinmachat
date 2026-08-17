@@ -42,6 +42,7 @@ type ProfileUpdateInput = Partial<Pick<
   | 'avatar'
   | 'avatarUrl'
   | 'cover'
+  | 'moviePreference'
 >>;
 
 interface SocialAuthContextType {
@@ -378,6 +379,7 @@ export const SocialAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       payload.avatarUrl = avatar;
     }
     if (updates.cover !== undefined) payload.cover = cleanProfileText(updates.cover, 500);
+    if (updates.moviePreference !== undefined) payload.moviePreference = cleanProfileText(updates.moviePreference, 200);
 
     if (currentUser.uid === 'admin_local_bypass') {
       const mergedProfile = { ...socialProfile, ...payload } as SocialUser;

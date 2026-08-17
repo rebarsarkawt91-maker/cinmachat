@@ -30,8 +30,8 @@ export type MissingAccountField =
 
 /** Optional/recommended profile fields. Filling them is NOT required to enter
  *  CinemaChat (the hard gate above stays), but the app gently prompts for them
- *  so rooms and friend sync can show a richer profile (Name/Age/Address). */
-export type RecommendedMissingField = "age" | "address";
+ *  so rooms and friend sync can show a richer profile (Name/Age/Address/Movie). */
+export type RecommendedMissingField = "age" | "address" | "moviePreference";
 
 export interface AccountReadiness {
   state: AccountReadinessState;
@@ -121,8 +121,8 @@ export const getAccountReadiness = (
   const hasIdentity = hasVerifiedGoogleIdentity(user, profile) || !!phone;
   if (!hasIdentity) missingFields.push("identity");
 
-  // Optional (recommended, non-blocking) fields — Name/Age/Address that friend
-  // sync and profile display prefer to have. Never gates entry.
+  // Optional (recommended, non-blocking) fields — Name/Age/Address/Movie that
+  // friend sync and profile display prefer to have. Never gates entry.
   const recommendedMissingFields: RecommendedMissingField[] = [];
   const ageValue = String(profile.age ?? "").trim();
   if (!ageValue || isPlaceholderProfileValue(ageValue)) recommendedMissingFields.push("age");
@@ -130,6 +130,8 @@ export const getAccountReadiness = (
   if (!addressValue || isPlaceholderProfileValue(addressValue)) {
     recommendedMissingFields.push("address");
   }
+  const moviePref = String(profile.moviePreference ?? "").trim();
+  if (!moviePref) recommendedMissingFields.push("moviePreference");
 
   if (missingFields.length > 0) {
     return {
