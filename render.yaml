@@ -2,6 +2,7 @@ services:
   - type: web
     name: cinemachat-server
     env: node
+    autoDeploy: true
     buildCommand: npm install && npm run build && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o yt-dlp && chmod +x yt-dlp
     startCommand: export PATH="$PWD:$PATH" && node dist/server.cjs
     envVars:
