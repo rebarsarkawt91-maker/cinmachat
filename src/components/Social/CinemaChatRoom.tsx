@@ -38,6 +38,7 @@ import {
   ImageUp,
   ScanLine,
   BadgeCheck,
+  Captions,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import jsQR from "jsqr";
@@ -125,6 +126,22 @@ interface CinemaChatRoomProps {
   accountCode?: string;
   /** Opens the app's account create/connect modal from inside the room. */
   onRequestAccount?: () => void;
+  /** AI subtitle cues for overlay rendering. */
+  subtitleCues?: Array<{ start: number; end: number; text: string }>;
+  /** Current subtitle language code. */
+  subtitleLang?: string;
+  /** Subtitle generation status. */
+  subtitleStatus?: "idle" | "loading" | "ready" | "error";
+  /** Status/error message for subtitle generation. */
+  subtitleMessage?: string;
+  /** Available subtitle languages for the language picker. */
+  subtitleLanguages?: Array<{ code: string; label: string; shortLabel: string }>;
+  /** Called when user picks a different subtitle language. */
+  onSubtitleLangChange?: (langCode: string) => void;
+  /** Called when user clicks the retry button after a subtitle error. */
+  onSubtitleRetry?: () => void;
+  /** Reports the current video source URL back to the parent for subtitle generation. */
+  onSourceUrl?: (url: string) => void;
 }
 const PLAYBACK_HEARTBEAT_MS = 8000;
 const MAX_VOICE_SECONDS = 12;
@@ -250,6 +267,14 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
   accountName,
   accountCode,
   onRequestAccount,
+  subtitleCues,
+  subtitleLang = "ckb",
+  subtitleStatus = "idle",
+  subtitleMessage,
+  subtitleLanguages,
+  onSubtitleLangChange,
+  onSubtitleRetry,
+  onSourceUrl,
 }) => {
   const myId = identity.id;
 
@@ -266,6 +291,7 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
   const [joinError, setJoinError] = useState<string | null>(null);
   const [joinBusy, setJoinBusy] = useState(false);
   const [showMoviePicker, setShowMoviePicker] = useState(false);
+  const [showCcMenu, setShowCcMenu] = useState(false);
   const [movieSearch, setMovieSearch] = useState("");
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -342,6 +368,13 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
   const sourceUrl = useMemo(() => resolveMovieSourceUrl(movieData), [movieData]);
   const sourceKind = classifySource(sourceUrl);
   const playerKey = `${movieData?.id || "none"}:${sourceUrl || ""}`;
+
+  // Report the current video source URL to the parent so the subtitle pipeline
+  // can fetch/translate/generate subtitles for this room.
+  useEffect(() => {
+    if (sourceUrl) onSourceUrl?.(sourceUrl);
+  }, [sourceUrl, onSourceUrl]);
+
   const safeLink = useMemo(
     () =>
       `cinemachat://cinema-room?room=${CINEMA_CHAT_ROOM_ID}&code=${encodeURIComponent(
@@ -1271,7 +1304,7 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                               title={movieData?.title}
                             />
                           )}
-                          {sourceKind === "direct" && (
+                           {sourceKind === "direct" && (
                             <video
                               key={playerKey}
                               id="cinemachat-room-direct-video"
@@ -1282,6 +1315,94 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                               playsInline
                               className="w-full h-full object-contain bg-black"
                             />
+                          )}
+                          {/* AI subtitle overlay for CinemaChat — renders on top
+                              of whichever player type is active. */}
+                          {subtitleCues && displayTime > 0 && (() => {
+                            const activeCue = subtitleCues.find(
+                              (c) => displayTime >= c.start && displayTime <= c.end,
+                            );
+                            return activeCue ? (
+                              <div className="pointer-events-none absolute inset-x-3 bottom-16 z-10 flex justify-center">
+                                <div
+                                  dir="auto"
+                                  className="max-w-[92%] whitespace-pre-line rounded-lg bg-black/70 px-3 py-2 text-center text-sm md:text-lg font-bold leading-snug text-white shadow-[0_2px_14px_rgba(0,0,0,0.55)]"
+                                >
+                                  {activeCue.text}
+                                </div>
+                              </div>
+                            ) : null;
+                          })()}
+                          {subtitleStatus === "loading" && (
+                            <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center gap-2 px-4 py-3 pointer-events-none">
+                              <div className="flex items-center gap-2 rounded-xl bg-black/70 px-3 py-2 text-[10px] text-amber-300">
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                                <span>{subtitleMessage || "وەردەگێڕدرێت..."}</span>
+                              </div>
+                            </div>
+                          )}
+                          {subtitleStatus === "error" && (
+                            <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center px-4 py-3">
+                              <div className="flex items-center gap-2 rounded-xl bg-red-950/80 border border-red-500/20 px-3 py-2 text-[10px] text-red-300">
+                                <AlertCircle className="w-3 h-3 shrink-0" />
+                                <span>{subtitleMessage || "بەردەست نییە"}</span>
+                                <button
+                                  onClick={onSubtitleRetry}
+                                  className="ml-1 p-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-200 transition-colors shrink-0 cursor-pointer"
+                                  title="Retry subtitle"
+                                >
+                                  <RotateCcw className="w-2.5 h-2.5" />
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                          {/* CC language toggle for CinemaChat */}
+                          {subtitleLanguages && subtitleLanguages.length > 0 && (
+                            <div className="absolute top-2 right-2 z-10">
+                              <div className="relative">
+                                <button
+                                  type="button"
+                                  onClick={() => setShowCcMenu((v) => !v)}
+                                  className={`w-8 h-8 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border border-white/10 ${
+                                    subtitleStatus === "ready"
+                                      ? "bg-brand-primary text-white"
+                                      : subtitleStatus === "loading"
+                                        ? "bg-amber-600 text-white"
+                                        : "bg-black/60 hover:bg-white/10 text-white"
+                                  }`}
+                                  title="زمانی ژێرنوس (Subtitles)"
+                                >
+                                  <Captions className="w-4 h-4" />
+                                </button>
+                                {showCcMenu && (
+                                  <>
+                                    <div
+                                      className="fixed inset-0 z-[55]"
+                                      onClick={() => setShowCcMenu(false)}
+                                    />
+                                    <div className="absolute top-full right-0 mt-1 z-[60] w-36 rounded-xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-1.5 shadow-2xl">
+                                      {subtitleLanguages.map((lang) => (
+                                        <button
+                                          key={lang.code}
+                                          type="button"
+                                          onClick={() => {
+                                            onSubtitleLangChange?.(lang.code);
+                                            setShowCcMenu(false);
+                                          }}
+                                          className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[11px] font-black transition-all cursor-pointer ${
+                                            subtitleLang === lang.code
+                                              ? "bg-brand-primary text-white"
+                                              : "bg-white/5 hover:bg-white/10 text-zinc-300"
+                                          }`}
+                                        >
+                                          <span>{lang.label}</span>
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+                            </div>
                           )}
                         </div>
                       ) : (

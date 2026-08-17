@@ -7624,7 +7624,7 @@ export default function App() {
 
   // Immersive cinematic player: zoom multiplier and active menu.
   const [immersiveScale, setImmersiveScale] = useState(1);
-  const [playerMenu, setPlayerMenu] = useState<null | "quality" | "speed">(null);
+  const [playerMenu, setPlayerMenu] = useState<null | "quality" | "speed" | "subtitle">(null);
 
   // Progress / seek bar state.
   const [playerCurrentTime, setPlayerCurrentTime] = useState(0);
@@ -10186,6 +10186,7 @@ export default function App() {
   const [dashboardCreateRoomName, setDashboardCreateRoomName] = useState("");
   const [dashboardCreateHostCode, setDashboardCreateHostCode] = useState("");
   const [dashboardCreateMovieUrl, setDashboardCreateMovieUrl] = useState("");
+  const [cinemaChatSourceUrl, setCinemaChatSourceUrl] = useState("");
   const [dashboardIsLoading, setDashboardIsLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState("");
   const [dashboardSuccess, setDashboardSuccess] = useState("");
@@ -10211,21 +10212,51 @@ export default function App() {
     [activeCinemaWindowRoom],
   );
 
+  // ---------------------------------------------------------------------------
+  // Unified subtitle source resolution — the subtitle pipeline activates when
+  // ANY of the three main watch rooms has a playable video URL.
+  // ---------------------------------------------------------------------------
+  const isDramaRoomActive = !!selectedDramaRoom && showPlayer && !!activeServerUrl;
+  const isCinemaChatActive = !!showCinemaChatRoom;
+
+  const subtitleSourceUrl = useMemo(() => {
+    if (activeCinemaWindowRoom && activeCinemaWindowSourceUrl) return activeCinemaWindowSourceUrl;
+    if (isDramaRoomActive) return activeServerUrl || "";
+    if (isCinemaChatActive && cinemaChatSourceUrl) return cinemaChatSourceUrl;
+    return "";
+  }, [activeCinemaWindowRoom, activeCinemaWindowSourceUrl, isDramaRoomActive, activeServerUrl, isCinemaChatActive, cinemaChatSourceUrl]);
+
+  // Playback time used for subtitle cue matching. Cinema Window tracks its own
+  // time from the native <video>; Drama Rooms reuse `playerCurrentTime`.
+  const subtitlePlaybackTime = activeCinemaWindowRoom
+    ? cinemaWindowPlaybackTime
+    : playerCurrentTime;
+
+  // Windowed subtitle index (Sorani splits into 90-second chunks).
+  const subtitleWindowIndex =
+    cinemaWindowSubtitleLang === "ckb" ? Math.floor(subtitlePlaybackTime / 90) : 0;
+
+  // The movie's stored subtitle file URL (pre-existing .srt/.vtt, not AI).
+  const subtitleMovieFileUrl = useMemo(() => {
+    if (activeCinemaWindowRoom?.movieId) {
+      return movies.find((m) => m.id === activeCinemaWindowRoom.movieId)?.subtitleUrl || "";
+    }
+    if (selectedDramaRoom && selectedMovie?.id) {
+      return selectedMovie.subtitleUrl || "";
+    }
+    return "";
+  }, [activeCinemaWindowRoom?.movieId, selectedDramaRoom, selectedMovie?.id, movies]);
+
   const cinemaWindowActiveSubtitleText = useMemo(() => {
     if (!cinemaWindowSubtitleCues.length) return "";
     const activeCue = cinemaWindowSubtitleCues.find(
-      (cue) => cinemaWindowPlaybackTime >= cue.start && cinemaWindowPlaybackTime <= cue.end,
+      (cue) => subtitlePlaybackTime >= cue.start && subtitlePlaybackTime <= cue.end,
     );
     return activeCue?.text || "";
-  }, [cinemaWindowPlaybackTime, cinemaWindowSubtitleCues]);
+  }, [subtitlePlaybackTime, cinemaWindowSubtitleCues]);
 
   const cinemaWindowSubtitleWindowIndex =
-    cinemaWindowSubtitleLang === "ckb" ? Math.floor(cinemaWindowPlaybackTime / 90) : 0;
-
-  const cinemaWindowMovieSubtitleUrl = useMemo(() => {
-    if (!activeCinemaWindowRoom?.movieId) return "";
-    return movies.find((m) => m.id === activeCinemaWindowRoom.movieId)?.subtitleUrl || "";
-  }, [activeCinemaWindowRoom?.movieId, movies]);
+    cinemaWindowSubtitleLang === "ckb" ? Math.floor(subtitlePlaybackTime / 90) : 0;
 
   useEffect(() => {
     setCinemaWindowStreamRefreshKey(0);
@@ -10323,26 +10354,26 @@ export default function App() {
     setCinemaWindowSubtitleStatus("idle");
     setCinemaWindowSubtitleMessage("");
 
-    if (!isInMainWatchRoom || !activeCinemaWindowSourceUrl) {
+    if (!isInMainWatchRoom || !subtitleSourceUrl) {
       return () => {
         cancelled = true;
       };
     }
 
-    const movieSubtitleUrl = cinemaWindowMovieSubtitleUrl;
+    const movieSubtitleUrl = subtitleMovieFileUrl;
 
     const selectedSubtitleLanguage = getCinemaWindowSubtitleLanguage(cinemaWindowSubtitleLang);
     const subtitleWindowOptions =
       selectedSubtitleLanguage.code === "ckb"
         ? {
-            startSeconds: Math.max(0, cinemaWindowSubtitleWindowIndex * 90 - 10),
+            startSeconds: Math.max(0, subtitleWindowIndex * 90 - 10),
             windowSeconds: 130,
           }
         : undefined;
     const subtitleWindowKey = subtitleWindowOptions
       ? `::${subtitleWindowOptions.startSeconds}-${subtitleWindowOptions.windowSeconds}`
       : "";
-    const cacheKey = `${activeCinemaWindowSourceUrl}::${selectedSubtitleLanguage.code}${subtitleWindowKey}`;
+    const cacheKey = `${subtitleSourceUrl}::${selectedSubtitleLanguage.code}${subtitleWindowKey}`;
     const cachedSubtitle = cinemaWindowSubtitleCache.get(cacheKey);
     if (cachedSubtitle?.vttText) {
       objectUrl = URL.createObjectURL(new Blob([cachedSubtitle.vttText], { type: "text/vtt" }));
@@ -10364,7 +10395,7 @@ export default function App() {
     const loadSubtitle = async () => {
       try {
         return await handleGenerateAiSubtitles(
-          activeCinemaWindowSourceUrl,
+          subtitleSourceUrl,
           selectedSubtitleLanguage.code,
           controller.signal,
           subtitleWindowOptions,
@@ -10379,14 +10410,14 @@ export default function App() {
         let lastFallbackError = targetErr;
 
         for (const fallbackLang of fallbackLangs) {
-          const fallbackCacheKey = `${activeCinemaWindowSourceUrl}::${fallbackLang}${subtitleWindowKey}`;
+          const fallbackCacheKey = `${subtitleSourceUrl}::${fallbackLang}${subtitleWindowKey}`;
           let fallbackSubtitle = cinemaWindowSubtitleCache.get(fallbackCacheKey);
           let fallbackSourceLang = fallbackLang;
 
           if (!fallbackSubtitle?.rawText) {
             try {
               fallbackSubtitle = await handleGenerateAiSubtitles(
-                activeCinemaWindowSourceUrl,
+                subtitleSourceUrl,
                 fallbackLang,
                 controller.signal,
                 subtitleWindowOptions,
@@ -10458,10 +10489,11 @@ export default function App() {
     };
   }, [
     isInMainWatchRoom,
-    activeCinemaWindowSourceUrl,
+    subtitleSourceUrl,
     cinemaWindowSubtitleLang,
-    cinemaWindowSubtitleWindowIndex,
-    cinemaWindowMovieSubtitleUrl,
+    subtitleWindowIndex,
+    subtitleMovieFileUrl,
+    subtitlePlaybackTime,
     cinemaWindowSubtitleRetryKey,
   ]);
 
@@ -13503,6 +13535,17 @@ export default function App() {
               setModalMode("signup");
               setShowSocialModal(true);
             }}
+            subtitleCues={showCinemaChatRoom ? cinemaWindowSubtitleCues : []}
+            subtitleLang={cinemaWindowSubtitleLang}
+            subtitleStatus={showCinemaChatRoom ? cinemaWindowSubtitleStatus : "idle"}
+            subtitleMessage={showCinemaChatRoom ? cinemaWindowSubtitleMessage : ""}
+            subtitleLanguages={CINEMA_WINDOW_SUBTITLE_LANGUAGES}
+            onSubtitleLangChange={(lang: string) => {
+              setCinemaWindowSubtitleLang(lang);
+              setCinemaWindowSubtitleRetryKey((k) => k + 1);
+            }}
+            onSubtitleRetry={() => setCinemaWindowSubtitleRetryKey((k) => k + 1)}
+            onSourceUrl={(url: string) => setCinemaChatSourceUrl(url)}
           />
           {/* CinemaChat private Friend → Connect (ephemeral 1-to-1 chat). The
               CinemaChat card opens THIS modal; the watch room above stays
@@ -13665,6 +13708,44 @@ export default function App() {
                             options={plyrOptions}
                           />
                         </div> // Plyr Player for direct video files
+                      )}
+
+                      {/* AI subtitle overlay for Drama Rooms — renders on top of
+                          whatever player type is active (YouTube, embed, or Plyr).
+                          Cinema Window renders its own overlay inside its native
+                          <video> block; this covers the main App player only. */}
+                      {isDramaRoomActive && cinemaWindowActiveSubtitleText && (
+                        <div className="pointer-events-none absolute inset-x-3 bottom-16 z-10 flex justify-center">
+                          <div
+                            dir="auto"
+                            className="max-w-[92%] whitespace-pre-line rounded-lg bg-black/70 px-3 py-2 text-center text-lg md:text-2xl font-bold leading-snug text-white shadow-[0_2px_14px_rgba(0,0,0,0.55)]"
+                          >
+                            {cinemaWindowActiveSubtitleText}
+                          </div>
+                        </div>
+                      )}
+                      {isDramaRoomActive && cinemaWindowSubtitleStatus === "loading" && !cinemaWindowActiveSubtitleText && (
+                        <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center gap-2 px-4 py-3 pointer-events-none">
+                          <div className="flex items-center gap-2 rounded-xl bg-black/70 px-3 py-2 text-xs text-amber-300">
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span className="kurdish-text">{cinemaWindowSubtitleMessage || "وەردەگێڕدرێت..."}</span>
+                          </div>
+                        </div>
+                      )}
+                      {isDramaRoomActive && cinemaWindowSubtitleStatus === "error" && (
+                        <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center px-4 py-3">
+                          <div className="flex items-center gap-2 rounded-xl bg-red-950/80 border border-red-500/20 px-3 py-2 text-xs text-red-300">
+                            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                            <span className="kurdish-text">{cinemaWindowSubtitleMessage || "بەردەست نییە"}</span>
+                            <button
+                              onClick={() => setCinemaWindowSubtitleRetryKey((k) => k + 1)}
+                              className="ml-1 p-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-200 transition-colors shrink-0 cursor-pointer"
+                              title="Retry subtitle generation"
+                            >
+                              <RefreshCw className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
                       )}
 
                       {/* Playback speed HUD (shows after a speed change via the
@@ -14022,6 +14103,67 @@ export default function App() {
                             </>
                           )}
                         </div>
+
+                        {/* [1.5] Subtitle Language Toggle — Drama Room only. Lets
+                            the user switch subtitle language from inside the main
+                            player without needing the Cinema Window sidebar. */}
+                        {isDramaRoomActive && (
+                          <div className="relative">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setPlayerMenu(
+                                  playerMenu === "subtitle" ? null : "subtitle",
+                                )
+                              }
+                              className={`w-10 h-10 md:w-11 md:h-11 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border border-white/10 ${
+                                cinemaWindowSubtitleStatus === "ready"
+                                  ? "bg-brand-primary text-white"
+                                  : cinemaWindowSubtitleStatus === "loading"
+                                    ? "bg-amber-600 text-white"
+                                    : "bg-black/60 hover:bg-white/10 text-white"
+                              }`}
+                              title="زمانی ژێرنوس (Subtitles)"
+                            >
+                              <Captions className="w-4.5 h-4.5 md:w-5 md:h-5" />
+                            </button>
+
+                            {playerMenu === "subtitle" && (
+                              <>
+                                <div
+                                  className="fixed inset-0 z-[55]"
+                                  onClick={() => setPlayerMenu(null)}
+                                />
+                                <div className="absolute bottom-full right-0 mb-2 z-[60] w-44 rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-2 shadow-2xl">
+                                  <div className="px-3 pb-2 text-[9px] font-black text-zinc-400 uppercase tracking-widest kurdish-text">
+                                    زمانی ژێرنوس
+                                  </div>
+                                  {CINEMA_WINDOW_SUBTITLE_LANGUAGES.map((lang) => (
+                                    <button
+                                      key={lang.code}
+                                      type="button"
+                                      onClick={() => {
+                                        setCinemaWindowSubtitleLang(lang.code);
+                                        setCinemaWindowSubtitleRetryKey((k) => k + 1);
+                                        setPlayerMenu(null);
+                                      }}
+                                      className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                                        cinemaWindowSubtitleLang === lang.code
+                                          ? "bg-brand-primary text-white"
+                                          : "bg-white/5 hover:bg-white/10 text-zinc-300"
+                                      }`}
+                                    >
+                                      <span>{lang.label}</span>
+                                      {cinemaWindowSubtitleLang === lang.code && (
+                                        <CheckCircle2 className="w-4 h-4" />
+                                      )}
+                                    </button>
+                                  ))}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        )}
 
                         {/* [1] Fullscreen Expand (rightmost of the cluster) */}
                         <button
