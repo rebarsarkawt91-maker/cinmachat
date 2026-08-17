@@ -16002,6 +16002,8 @@ const trailerId = movie.trailerUrl
         open={showCompleteAccount}
         onClose={() => setShowCompleteAccount(false)}
         readiness={accountReadiness}
+        onFriendConnect={() => setShowFriendConnect(true)}
+        onWatchTogether={() => setShowCinemaChatRoom(true)}
       />
 
       {/* Soft profile-completion notice (Chat Rooms Part 2): users who are READY

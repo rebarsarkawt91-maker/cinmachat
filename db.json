@@ -34,22 +34,26 @@
       "phoneNumber": "",
       "avatar": "",
       "deviceIp": "127.0.0.1",
-      "lastActive": "2026-08-17T00:06:32.318Z",
+      "lastActive": "2026-08-17T20:03:36.586Z",
       "role": "Member",
       "active": true,
-      "kicked": false
-    },
-    {
-      "uid": "E3LJj4UbIjVYXkGn7ZUbC4zN9vJ2",
-      "name": "dekan sarkawt",
-      "phone": "",
-      "phoneNumber": "",
-      "avatar": "",
-      "deviceIp": "127.0.0.1",
-      "lastActive": "2026-08-17T00:00:17.787Z",
-      "role": "Member",
-      "active": true,
-      "kicked": false
+      "kicked": false,
+      "updatedAt": "2026-08-17T19:33:57.358Z",
+      "displayName": "rebarsarkawt 911",
+      "username": "",
+      "email": "rebarsarkawt91@gmail.com",
+      "emailLower": "rebarsarkawt91@gmail.com",
+      "bio": "",
+      "gender": "ner",
+      "birthday": "",
+      "country": "kurdstan",
+      "city": "slemani",
+      "language": "ckb",
+      "avatarUrl": "https:&#x2F;&#x2F;lh3.googleusercontent.com&#x2F;a&#x2F;ACg8ocJ7mG9jQ-gc31dqUfygu4bsKwmhvHYEzoytqDAnFqwzCOZf23QF=s96-c",
+      "cover": "rty",
+      "uniqueCode": "",
+      "memberCode": "",
+      "referenceId": ""
     }
   ],
   "categories": [
@@ -362,6 +366,97 @@
     }
   ],
   "systemErrorLogs": [
+    {
+      "id": "err-1w0jhri",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T20:02:21.310Z"
+    },
+    {
+      "id": "err-jeakuzt",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T19:56:00.164Z"
+    },
+    {
+      "id": "err-nczhc5q",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T19:30:22.797Z"
+    },
+    {
+      "id": "err-csm9ueo",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T19:27:57.276Z"
+    },
+    {
+      "id": "err-dr3qr1a",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T19:27:57.272Z"
+    },
+    {
+      "id": "err-gzc6nsz",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T09:51:01.688Z"
+    },
+    {
+      "id": "err-rzgd7os",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T09:51:00.734Z"
+    },
+    {
+      "id": "err-sa1dv1u",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T09:10:10.728Z"
+    },
+    {
+      "id": "err-ze9pufu",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T09:10:10.726Z"
+    },
+    {
+      "id": "err-38sgse8",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T09:10:00.950Z"
+    },
+    {
+      "id": "err-8gcdn1y",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T09:09:59.887Z"
+    },
+    {
+      "id": "err-l9oqqr4",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T08:58:53.188Z"
+    },
+    {
+      "id": "err-qs5wr57",
+      "source": "POST /api/resolve-stream",
+      "message": "شکست لە داواکاری بە کۆدی HTTP 422",
+      "details": "ئایپی بەکارهێنەر: 127.0.0.1",
+      "timestamp": "2026-08-17T08:58:53.187Z"
+    },
     {
       "id": "err-jsxmm90",
       "source": "GET /api/admin/smart-analytics",
@@ -1739,7 +1834,20 @@
     "manual-1786146914350": 15,
     "testmovie": 1
   },
-  "dramaRooms": {},
+  "dramaRooms": {
+    "drama_1786925945813_wv5bk": {
+      "id": "drama_1786925945813_wv5bk",
+      "title": "usff",
+      "description": "ghj",
+      "coverUrl": "",
+      "dramas": [
+        "manual-1786148727529",
+        "manual-1786148542233"
+      ],
+      "createdAt": "2026-08-17T00:19:05.813Z",
+      "updatedAt": "2026-08-17T00:19:05.813Z"
+    }
+  },
   "cinemaWindows": {
     "cinema_1": {
       "id": "cinema_1",
@@ -1765,6 +1873,134 @@
     }
   },
   "userActivities": [
+    {
+      "id": "act-ulihwpe",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T20:03:36.586Z"
+    },
+    {
+      "id": "act-677acfh",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T20:02:20.231Z"
+    },
+    {
+      "id": "act-8veu8yf",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T19:58:49.312Z"
+    },
+    {
+      "id": "act-fv3tvgj",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T19:55:58.362Z"
+    },
+    {
+      "id": "act-93lmomw",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T19:33:58.273Z"
+    },
+    {
+      "id": "act-f1p0zdp",
+      "uniqueCode": "DQTVFXOQZZYZO88OBBFD7OU8QEE2",
+      "action": "Profile Sync",
+      "details": "User saved their profile",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T19:33:58.229Z"
+    },
+    {
+      "id": "act-6waqip8",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T19:33:50.236Z"
+    },
+    {
+      "id": "act-i8354gr",
+      "uniqueCode": "DQTVFXOQZZYZO88OBBFD7OU8QEE2",
+      "action": "Profile Sync",
+      "details": "User saved their profile",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T19:33:50.163Z"
+    },
+    {
+      "id": "act-e0g3bgo",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T19:30:09.739Z"
+    },
+    {
+      "id": "act-zhkeet0",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T19:28:17.037Z"
+    },
+    {
+      "id": "act-iev5kd3",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T19:27:21.832Z"
+    },
+    {
+      "id": "act-tvtonan",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T19:27:08.146Z"
+    },
+    {
+      "id": "act-zwnthbk",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T09:50:56.956Z"
+    },
+    {
+      "id": "act-wibk91j",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T09:10:10.424Z"
+    },
+    {
+      "id": "act-gu1scr1",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T09:09:59.615Z"
+    },
+    {
+      "id": "act-qnwaait",
+      "uniqueCode": "",
+      "action": "Sync Session",
+      "details": "چوونەناو و هاوکاتکردنی داتاکانی بەکارهێنەر لەگەڵ سێرڤەر",
+      "ip": "127.0.0.1",
+      "timestamp": "2026-08-17T08:58:53.130Z"
+    },
     {
       "id": "act-vgrcfm1",
       "uniqueCode": "",
@@ -2261,5 +2497,6 @@
       "ip": "127.0.0.1",
       "timestamp": "2026-08-15T20:08:16.299Z"
     }
-  ]
+  ],
+  "deletedAccountKeys": []
 }
