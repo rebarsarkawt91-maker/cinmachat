@@ -14891,67 +14891,65 @@ export default function App() {
                           onClick={() => setAdminTab("security-control")}
                         />
                         <SidebarItem
+                          icon={BarChart2}
+                          active={adminTab === "user-analytics"}
+                          label="١١. زانیاری و شیکاری بەکارهێنەران"
+                          onClick={() => setAdminTab("user-analytics")}
+                        />
+                        <SidebarItem
                           icon={ShieldCheck}
                           active={adminTab === "security-shield"}
-                          label="١١. قەڵخان و ئایپی ڕەش"
+                          label="١٢. قەڵخان و ئایپی ڕەش"
                           onClick={() => setAdminTab("security-shield")}
                         />
                         <SidebarItem
                           icon={Database}
                           active={adminTab === "database-audit"}
-                          label="١٢. بنکەدراوە و هەڵەکان"
+                          label="١٣. بنکەدراوە و هەڵەکان"
                           onClick={() => setAdminTab("database-audit")}
                         />
                         <SidebarItem
                           icon={BarChart2}
                           active={adminTab === "smart-analytics"}
-                          label="١٣. شیکارکاری ژیر"
+                          label="١٤. شیکارکاری ژیر"
                           onClick={() => setAdminTab("smart-analytics")}
                         />
                         <SidebarItem
                           icon={Ticket}
                           active={adminTab === "ticket-vip"}
-                          label="١٤. سیستەمی بلیت VIP"
+                          label="١٥. سیستەمی بلیت VIP"
                           onClick={() => setAdminTab("ticket-vip")}
                         />
                         <SidebarItem
                           icon={Shield}
                           active={adminTab === "system-hub"}
-                          label="١٥. سەنتەری سیستەم"
+                          label="١٦. سەنتەری سیستەم"
                           onClick={() => setAdminTab("system-hub")}
                         />
                         <SidebarItem
                           icon={TrendingUp}
                           active={adminTab === "growth"}
-                          label="١٦. مارکێتینگ و گەشە"
+                          label="١٧. مارکێتینگ و گەشە"
                           onClick={() => setAdminTab("growth")}
                         />
                         <SidebarItem
                           icon={ShieldAlert}
                           active={adminTab === "m17-auth"}
-                          label="١٧. ڕێگەپێدانی فرە-ئاستی"
+                          label="١٨. ڕێگەپێدانی فرە-ئاستی"
                           onClick={() => setAdminTab("m17-auth")}
                         />
                         <SidebarItem
                           icon={MessageSquare}
                           active={adminTab === "whatsapp-automation"}
-                          label="١٨. ئۆتۆمەیشنی وەتسئەپ (Webhook)"
+                          label="١٩. ئۆتۆمەیشنی وەتسئەپ (Webhook)"
                           onClick={() => setAdminTab("whatsapp-automation")}
                         />
                         <SidebarItem
                           icon={Tv}
                           active={adminTab === "broadcast-main"}
-                          label="١٩. پەخشی گشتی (Main Broadcast)"
+                          label="٢٠. پەخشی گشتی (Main Broadcast)"
                           onClick={() => setAdminTab("broadcast-main")}
                         />
-
-                        <SidebarItem
-                          icon={BarChart2}
-                          active={adminTab === "user-analytics"}
-                          label="٢٠. زانیاری و شیکاری بەکارهێنەران"
-                          onClick={() => setAdminTab("user-analytics")}
-                        />
-
                         <SidebarItem
                           icon={Settings}
                           label="ڕێکخستنەکان (گشتی)"
