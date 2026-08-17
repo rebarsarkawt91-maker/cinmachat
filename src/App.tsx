@@ -14891,16 +14891,16 @@ export default function App() {
                           onClick={() => setAdminTab("security-control")}
                         />
                         <SidebarItem
-                          icon={BarChart2}
-                          active={adminTab === "user-analytics"}
-                          label="١١. زانیاری و شیکاری بەکارهێنەران"
-                          onClick={() => setAdminTab("user-analytics")}
-                        />
-                        <SidebarItem
                           icon={ShieldCheck}
                           active={adminTab === "security-shield"}
-                          label="١٢. قەڵخان و ئایپی ڕەش"
+                          label="١١. قەڵخان و ئایپی ڕەش"
                           onClick={() => setAdminTab("security-shield")}
+                        />
+                        <SidebarItem
+                          icon={BarChart2}
+                          active={adminTab === "user-analytics"}
+                          label="١٢. زانیاری و شیکاری بەکارهێنەران"
+                          onClick={() => setAdminTab("user-analytics")}
                         />
                         <SidebarItem
                           icon={Database}
