@@ -8144,6 +8144,44 @@ async function startServer() {
       res.status(404).json({ error: 'User not found' });
     }
   });
+
+  // PUT /api/admin/managed-users/:uid — update arbitrary user fields (roles, blocking, etc.)
+  app.put('/api/admin/managed-users/:uid', async (req, res) => {
+    const { uid } = req.params;
+    const adminName = (req.query.adminName || req.headers['x-admin-username'] || "") as string;
+    const cleanAdminName = adminName?.trim().toLowerCase();
+
+    const adminRecord = db.admins.find((a: any) => a.username?.toLowerCase() === cleanAdminName);
+    const requesterRole = adminRecord?.role || (cleanAdminName === 'dekan@123' ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
+    const canEdit = cleanAdminName === 'dekan@123' || cleanAdminName === 'admin' || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'owner';
+    if (!canEdit) {
+      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! کارمەند (Staff) ناتوانێت زانیاری بەکارهێنەر بگۆڕێت.' });
+    }
+
+    if (!uid || !String(uid).trim()) {
+      return res.status(400).json({ error: 'Missing uid' });
+    }
+
+    if (!db.users) db.users = [];
+    const index = db.users.findIndex((u: any) => u.uid === uid);
+    if (index === -1) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const allowedFields = [
+      'isAdmin', 'isOwner', 'isDeputyManager', 'isBlocked',
+      'blockedUntil', 'blockReason', 'reasonOfBlocking',
+      'email', 'username', 'role',
+    ];
+    const incoming = req.body || {};
+    for (const key of allowedFields) {
+      if (key in incoming) {
+        db.users[index][key] = incoming[key];
+      }
+    }
+    await saveDB(db);
+    res.json({ success: true, user: db.users[index] });
+  });
   // -------------------------------------
 
   app.delete('/api/admin/movies/:id', async (req, res) => {
