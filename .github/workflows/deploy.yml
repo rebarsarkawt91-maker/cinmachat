@@ -1,4 +1,14 @@
-name: Deploy to Firebase Hosting
+# .github/workflows/deploy.yml
+# Deploys frontend to Firebase Hosting AND triggers Render backend deploy.
+#
+# SETUP (one-time):
+#   1. Get your Render Deploy Hook URL:
+#      https://dashboard.render.com → cinemachat-server → Settings → Build & Deploy → Deploy Hook
+#   2. In GitHub repo: Settings → Secrets and variables → Actions
+#   3. Add secret: RENDER_DEPLOY_HOOK = (the URL from step 1)
+#   4. Ensure other secrets (VITE_*, FIREBASE_SERVICE_ACCOUNT) are still set.
+
+name: Deploy to Firebase + Render
 
 on:
   push:
@@ -17,21 +27,12 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      # npm install (instead of npm ci) to avoid the npm optional-dependencies
-      # bug (npm/cli#4828) that skips @tailwindcss/oxide native bindings on CI,
-      # which caused the build to fail with "Cannot find native binding".
       - name: Install dependencies
         run: npm install
 
-      # Install yt-dlp so the subtitle API can download YouTube videos
-      # and fetch captions when the server runs on Render.
       - name: Install yt-dlp
         run: pip install yt-dlp
 
-      # Inline the real production configuration. The repo's .env is gitignored
-      # and absent on CI, so without this the built bundle falls back to empty
-      # env values (hidden WhatsApp CTAs, wrong Firestore database, no Agora).
-      # These values are already configured as GitHub Actions secrets.
       - name: Build
         env:
           VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
@@ -57,3 +58,16 @@ jobs:
           firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_GEN_LANG_CLIENT_0240212572 }}'
           channelId: live
           projectId: gen-lang-client-0240212572
+
+      - name: Trigger Render deploy
+        if: success()
+        run: |
+          if [ -z "${{ secrets.RENDER_DEPLOY_HOOK }}" ]; then
+            echo "RENDER_DEPLOY_HOOK not set — skipping Render deploy."
+            echo "To enable: GitHub repo → Settings → Secrets → Add RENDER_DEPLOY_HOOK"
+            exit 0
+          fi
+          echo "Triggering Render deploy..."
+          curl -sf -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"
+          echo ""
+          echo "Render deploy triggered."
