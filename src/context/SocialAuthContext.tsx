@@ -43,6 +43,7 @@ type ProfileUpdateInput = Partial<Pick<
   | 'avatarUrl'
   | 'cover'
   | 'moviePreference'
+  | 'location'
 >>;
 
 interface SocialAuthContextType {
@@ -380,6 +381,17 @@ export const SocialAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
     if (updates.cover !== undefined) payload.cover = cleanProfileText(updates.cover, 500);
     if (updates.moviePreference !== undefined) payload.moviePreference = cleanProfileText(updates.moviePreference, 200);
+    if (updates.location !== undefined && updates.location !== null) {
+      const loc = updates.location as { latitude?: number; longitude?: number; region?: string; address?: string };
+      if (typeof loc.latitude === "number" && typeof loc.longitude === "number") {
+        payload.location = {
+          latitude: loc.latitude,
+          longitude: loc.longitude,
+          ...(loc.region ? { region: cleanProfileText(loc.region, 100) } : {}),
+          ...(loc.address ? { address: cleanProfileText(loc.address, 200) } : {}),
+        };
+      }
+    }
 
     if (currentUser.uid === 'admin_local_bypass') {
       const mergedProfile = { ...socialProfile, ...payload } as SocialUser;

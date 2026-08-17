@@ -74,6 +74,13 @@ type AccountProfileForm = {
   avatar: string;
   avatarUrl?: string;
   cover: string;
+  /** Dedicated location field — stores the user's pinned coordinate object. */
+  location: {
+    latitude: number;
+    longitude: number;
+    region?: string;
+    address?: string;
+  } | null;
 };
 
 const getDisplayName = (profile?: SocialUser | null) =>
@@ -113,6 +120,14 @@ const makeProfileForm = (profile?: SocialUser | null): AccountProfileForm => ({
   language: profile?.language || "ckb",
   avatar: profile?.avatarUrl || profile?.avatar || (profile as any)?.googlePhotoUrl || "",
   cover: profile?.cover || "",
+  location: profile?.location && typeof profile.location === "object"
+    ? {
+        latitude: profile.location.latitude ?? 0,
+        longitude: profile.location.longitude ?? 0,
+        region: profile.location.region || undefined,
+        address: profile.location.address || undefined,
+      }
+    : null,
 });
 
 const validateProfileForm = (form: AccountProfileForm) => {
@@ -1054,18 +1069,30 @@ export const AccountCenter: React.FC<AccountCenterProps> = ({
                               setFormError("ئەم وێبگەڕە current location پشتگیری ناکات.");
                               return;
                             }
+                            setFormError("");
+                            setFormSuccess("شوێن دەگیرێت...");
                             navigator.geolocation.getCurrentPosition(
                               (position) => {
-                                setFormSuccess(`شوێن وەرگیرا: ${position.coords.latitude.toFixed(3)}, ${position.coords.longitude.toFixed(3)}`);
+                                const { latitude, longitude } = position.coords;
+                                setForm((prev) => ({
+                                  ...prev,
+                                  location: {
+                                    latitude,
+                                    longitude,
+                                    region: prev.location?.region,
+                                    address: prev.location?.address,
+                                  },
+                                }));
+                                setFormSuccess(`شوێن وەرگیرا: ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
                               },
                               () => setFormError("ڕێگەدان بە location نەدرا؛ دەتوانیت بە دەستی بنووسیت."),
-                              { timeout: 8000, maximumAge: 60000 },
+                              { timeout: 8000, maximumAge: 60000, enableHighAccuracy: true },
                             );
                           }}
                           className="flex h-9 items-center justify-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 text-[10px] font-black text-amber-300 transition hover:bg-amber-500/15"
                         >
                           <MapPin className="h-4 w-4" />
-                          Current Location
+                          {form.location ? "شوێن داخرا ✓" : "Current Location"}
                         </button>
 
                         {formError && (
