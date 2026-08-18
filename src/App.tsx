@@ -10493,7 +10493,6 @@ export default function App() {
     cinemaWindowSubtitleLang,
     subtitleWindowIndex,
     subtitleMovieFileUrl,
-    subtitlePlaybackTime,
     cinemaWindowSubtitleRetryKey,
   ]);
 
