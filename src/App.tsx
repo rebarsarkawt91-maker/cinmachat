@@ -7859,13 +7859,21 @@ export default function App() {
       if (directVideo) {
         t = typeof directVideo.currentTime === "number" ? directVideo.currentTime : 0;
         d = typeof directVideo.duration === "number" && Number.isFinite(directVideo.duration) ? directVideo.duration : 0;
+        localClockRef.current = t;
       } else if (plyrRef.current?.plyr) {
         const p = plyrRef.current.plyr;
         t = typeof p.currentTime === "number" ? p.currentTime : 0;
         d = typeof p.duration === "number" && Number.isFinite(p.duration) ? p.duration : 0;
+        localClockRef.current = t;
       } else if (isYouTube) {
         t = ytCurrentTimeRef.current;
+        localClockRef.current = t;
       } else {
+        // External cross-origin embed (ImmersiveShieldedPlayer) — we cannot
+        // read the iframe's currentTime, so advance the drift clock by the
+        // tick interval (~250 ms).  This is approximate (ignores pauses /
+        // buffering) but good enough for subtitle cue matching.
+        localClockRef.current += 0.25;
         t = localClockRef.current;
       }
       // Duration fallback: keep the last reported duration when the player reports none.
@@ -12770,7 +12778,8 @@ export default function App() {
                             <div className="pointer-events-none absolute inset-x-3 bottom-16 z-10 flex justify-center">
                               <div
                                 dir="auto"
-                                className="max-w-[92%] whitespace-pre-line rounded-lg bg-black/70 px-3 py-2 text-center text-lg md:text-2xl font-bold leading-snug text-white shadow-[0_2px_14px_rgba(0,0,0,0.55)]"
+                                className="max-w-[92%] whitespace-pre-line rounded-lg bg-black/80 px-3 py-2 text-center text-lg md:text-2xl font-bold leading-snug text-white shadow-[0_2px_14px_rgba(0,0,0,0.75)]"
+                                style={{ textShadow: "0 1px 6px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,1)" }}
                               >
                                 {cinemaWindowActiveSubtitleText}
                               </div>
@@ -13717,7 +13726,8 @@ export default function App() {
                         <div className="pointer-events-none absolute inset-x-3 bottom-16 z-10 flex justify-center">
                           <div
                             dir="auto"
-                            className="max-w-[92%] whitespace-pre-line rounded-lg bg-black/70 px-3 py-2 text-center text-lg md:text-2xl font-bold leading-snug text-white shadow-[0_2px_14px_rgba(0,0,0,0.55)]"
+                            className="max-w-[92%] whitespace-pre-line rounded-lg bg-black/80 px-3 py-2 text-center text-lg md:text-2xl font-bold leading-snug text-white shadow-[0_2px_14px_rgba(0,0,0,0.75)]"
+                            style={{ textShadow: "0 1px 6px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,1)" }}
                           >
                             {cinemaWindowActiveSubtitleText}
                           </div>
@@ -14115,7 +14125,7 @@ export default function App() {
                                   playerMenu === "subtitle" ? null : "subtitle",
                                 )
                               }
-                              className={`w-10 h-10 md:w-11 md:h-11 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border border-white/10 ${
+                              className={`w-8 h-8 md:w-9 md:h-9 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border border-white/10 ${
                                 cinemaWindowSubtitleStatus === "ready"
                                   ? "bg-brand-primary text-white"
                                   : cinemaWindowSubtitleStatus === "loading"
@@ -14124,7 +14134,7 @@ export default function App() {
                               }`}
                               title="زمانی ژێرنوس (Subtitles)"
                             >
-                              <Captions className="w-4.5 h-4.5 md:w-5 md:h-5" />
+                              <Captions className="w-3.5 h-3.5 md:w-4 md:h-4" />
                             </button>
 
                             {playerMenu === "subtitle" && (
@@ -14133,8 +14143,8 @@ export default function App() {
                                   className="fixed inset-0 z-[55]"
                                   onClick={() => setPlayerMenu(null)}
                                 />
-                                <div className="absolute bottom-full right-0 mb-2 z-[60] w-44 rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-2 shadow-2xl">
-                                  <div className="px-3 pb-2 text-[9px] font-black text-zinc-400 uppercase tracking-widest kurdish-text">
+                                <div className="absolute bottom-full right-0 mb-2 z-[60] w-36 rounded-xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-1.5 shadow-2xl">
+                                  <div className="px-2.5 pb-1.5 text-[8px] font-black text-zinc-400 uppercase tracking-widest kurdish-text">
                                     زمانی ژێرنوس
                                   </div>
                                   {CINEMA_WINDOW_SUBTITLE_LANGUAGES.map((lang) => (
@@ -14146,7 +14156,7 @@ export default function App() {
                                         setCinemaWindowSubtitleRetryKey((k) => k + 1);
                                         setPlayerMenu(null);
                                       }}
-                                      className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                                      className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[11px] font-black transition-all cursor-pointer ${
                                         cinemaWindowSubtitleLang === lang.code
                                           ? "bg-brand-primary text-white"
                                           : "bg-white/5 hover:bg-white/10 text-zinc-300"
@@ -14154,7 +14164,7 @@ export default function App() {
                                     >
                                       <span>{lang.label}</span>
                                       {cinemaWindowSubtitleLang === lang.code && (
-                                        <CheckCircle2 className="w-4 h-4" />
+                                        <CheckCircle2 className="w-3.5 h-3.5" />
                                       )}
                                     </button>
                                   ))}

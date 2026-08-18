@@ -1358,12 +1358,12 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                           )}
                           {/* CC language toggle for CinemaChat */}
                           {subtitleLanguages && subtitleLanguages.length > 0 && (
-                            <div className="absolute top-2 right-2 z-10">
+                            <div className="absolute top-1.5 right-1.5 z-10">
                               <div className="relative">
                                 <button
                                   type="button"
                                   onClick={() => setShowCcMenu((v) => !v)}
-                                  className={`w-8 h-8 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border border-white/10 ${
+                                  className={`w-7 h-7 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border border-white/10 ${
                                     subtitleStatus === "ready"
                                       ? "bg-brand-primary text-white"
                                       : subtitleStatus === "loading"
@@ -1372,7 +1372,7 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                                   }`}
                                   title="زمانی ژێرنوس (Subtitles)"
                                 >
-                                  <Captions className="w-4 h-4" />
+                                  <Captions className="w-3 h-3" />
                                 </button>
                                 {showCcMenu && (
                                   <>
@@ -1380,7 +1380,7 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                                       className="fixed inset-0 z-[55]"
                                       onClick={() => setShowCcMenu(false)}
                                     />
-                                    <div className="absolute top-full right-0 mt-1 z-[60] w-36 rounded-xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-1.5 shadow-2xl">
+                                    <div className="absolute top-full right-0 mt-1 z-[60] w-32 rounded-xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-1 shadow-2xl">
                                       {subtitleLanguages.map((lang) => (
                                         <button
                                           key={lang.code}
@@ -1389,7 +1389,7 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                                             onSubtitleLangChange?.(lang.code);
                                             setShowCcMenu(false);
                                           }}
-                                          className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[11px] font-black transition-all cursor-pointer ${
+                                          className={`w-full flex items-center justify-between px-2 py-1 rounded-lg text-[10px] font-black transition-all cursor-pointer ${
                                             subtitleLang === lang.code
                                               ? "bg-brand-primary text-white"
                                               : "bg-white/5 hover:bg-white/10 text-zinc-300"
