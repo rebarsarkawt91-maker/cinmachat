@@ -10,3 +10,4 @@ coverage/
 *firebase-adminsdk*.json
 gen-lang-client-0240212572-*.json
 auth-records.json
+db.json

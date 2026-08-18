@@ -76,7 +76,7 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
   const currentUserName = String(currentUser?.username || "").toLowerCase();
   const currentRole = String(currentUser?.role || "").toLowerCase();
   const currentLevel =
-    currentUserName === "admin" || currentUserName === "dekan@123" || currentRole === "owner"
+    currentRole === "owner"
       ? 4
       : currentRole === "super_admin"
         ? 3
@@ -86,7 +86,7 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
   const isPrivileged = currentLevel >= 3; // owner / super_admin
   const levelOf = (admin: AdminUser) => {
     const name = String(admin.username || "").toLowerCase();
-    if (name === "admin" || name === "dekan@123" || admin.role === "owner") return 4;
+    if (admin.role === "owner") return 4;
     if (admin.role === "super_admin") return 3;
     if (admin.role === "deputy_manager") return 2;
     return 1;

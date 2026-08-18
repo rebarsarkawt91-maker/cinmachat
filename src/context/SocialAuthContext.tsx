@@ -242,7 +242,7 @@ export const SocialAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         setCurrentUser({
           uid: "admin_local_bypass",
           displayName: adminData.name || "admin",
-          email: "admin@cinemachat.com",
+          email: adminData.email || "admin@localhost.local",
           emailVerified: true,
           getIdToken: async () => "local_admin_token"
         } as any);
@@ -251,7 +251,7 @@ export const SocialAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           name: adminData.name || "admin",
           role: "super_admin",
           userRole: "super_admin",
-          phone: adminData.phone || "07701966640",
+          phone: adminData.phone || "",
           uniqueCode: adminData.uniqueCode || "CC-ADM-001",
           avatar: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde",
           isOnline: true

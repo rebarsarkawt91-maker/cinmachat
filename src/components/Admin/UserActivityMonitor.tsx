@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { 
-  Search, Eye, EyeOff, User, History, Globe, Activity, Mail, 
+  Search, User, History, Globe, Activity, Mail, 
   Lock, Clock, X, Calendar, MapPin, RefreshCw, ChevronLeft, Layout
 } from "lucide-react";
 
@@ -20,9 +20,6 @@ export default function UserActivityMonitor({ currentUser, fetchApi }: UserActiv
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [inspectModalOpen, setInspectModalOpen] = useState(false);
   const [activeSubTab, setActiveSubTab] = useState<"messages" | "activities" | "metadata">("messages");
-
-  // Passwords toggle display states
-  const [showPassMap, setShowPassMap] = useState<Record<string, boolean>>({});
 
   const fetchUsers = async () => {
     try {
@@ -56,13 +53,6 @@ export default function UserActivityMonitor({ currentUser, fetchApi }: UserActiv
   useEffect(() => {
     fetchUsers();
   }, [currentUser]);
-
-  const togglePasswordVisibility = (uid: string) => {
-    setShowPassMap(prev => ({
-      ...prev,
-      [uid]: !prev[uid]
-    }));
-  };
 
   const handleInspectUser = async (uniqueCode: string) => {
     try {
@@ -172,7 +162,6 @@ export default function UserActivityMonitor({ currentUser, fetchApi }: UserActiv
               <tbody className="divide-y divide-white/5">
                 {filteredUsers.map((user) => {
                   const uId = user.uid || user.uniqueCode || Math.random().toString();
-                  const showPass = !!showPassMap[uId];
                   return (
                     <tr 
                       key={uId} 
@@ -211,21 +200,11 @@ export default function UserActivityMonitor({ currentUser, fetchApi }: UserActiv
                         </span>
                       </td>
 
-                      {/* Password (Admin visual) */}
+                      {/* Password (masked — hashes must never be exposed in UI) */}
                       <td className="px-6 py-4.5 font-mono" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center gap-2">
-                          <span className={`text-[11px] px-2.5 py-1 rounded-lg border leading-tight ${showPass ? "bg-red-950/10 border-red-500/20 text-red-400 font-bold" : "bg-zinc-900 border-white/5 text-gray-500 font-medium"}`}>
-                            {showPass ? (user.password || "********") : "••••••••"}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => togglePasswordVisibility(uId)}
-                            className="p-1 px-1.5 bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-gray-400 hover:text-white rounded-lg transition-all"
-                            title={showPass ? "شاردنەوەی پاسوۆرد" : "پیشاندانی پاسوۆرد"}
-                          >
-                            {showPass ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                          </button>
-                        </div>
+                        <span className="text-[11px] px-2.5 py-1 rounded-lg border leading-tight bg-zinc-900 border-white/5 text-gray-500 font-medium">
+                          {"••••••••"}
+                        </span>
                       </td>
 
                       {/* Click-to-View Action */}
@@ -449,8 +428,8 @@ export default function UserActivityMonitor({ currentUser, fetchApi }: UserActiv
 
                           <div className="flex justify-between items-center bg-zinc-900/35 p-2 rounded-lg">
                             <span className="text-gray-400 kurdish-text">وشەی تێپەڕی نهێنی</span>
-                            <span className="text-red-400 font-mono font-bold">
-                              {selectedUser.user?.password}
+                            <span className="text-gray-500 font-mono text-xs">
+                              ●●●●●●●●
                             </span>
                           </div>
                         </div>

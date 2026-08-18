@@ -1394,6 +1394,13 @@ const FIREBASE_API_KEY =
 // (rules: allow read, write: if true — no deploy of firestore.rules needed).
 const MOVIE_VIEWS_DOC = process.env.MOVIE_VIEWS_DOC || 'config/movieViews';
 
+// Owner/superadmin usernames — configurable via env var so no privileged
+// usernames are hardcoded in source code.  Comma-separated list.
+const OWNER_USERNAMES: string[] = (process.env.OWNER_USERNAMES || 'admin')
+  .split(',')
+  .map((s: string) => s.trim().toLowerCase())
+  .filter(Boolean);
+
 // Initial DB Structure
 const INITIAL_DB = {
   admins: [
@@ -5481,14 +5488,14 @@ async function startServer() {
   const DRAMA_ROOMS_FS_COLLECTION = 'drama_rooms';
 
   // Resolves the acting admin from header/query/body. Only owner, super_admin,
-  // deputy_manager (or the built-in admin/dekan@123 shells) may mutate rooms.
+  // deputy_manager (or the built-in owner accounts) may mutate rooms.
   const canManageDramaRooms = (req: express.Request): string | null => {
     const name = String(
       req.headers['x-admin-username'] || (req as any).query?.adminName || (req as any).body?.adminName || '',
     ).trim();
     if (!name) return null;
     const lower = name.toLowerCase();
-    if (lower === 'admin' || lower === 'dekan@123') return lower;
+    if (OWNER_USERNAMES.includes(lower)) return lower;
     const record = (db.admins || []).find((a: any) => a.username?.toLowerCase() === lower);
     const role = String(record?.role || (record?.isSuper ? 'deputy_manager' : '')).toLowerCase();
     return ['owner', 'super_admin', 'deputy_manager', 'admin'].includes(role) ? lower : null;
@@ -5788,8 +5795,8 @@ async function startServer() {
     const adminName = req.query.adminName as string;
 
     const adminRecord = db.admins.find((a: any) => a.username?.toLowerCase() === adminName?.trim().toLowerCase());
-    const requesterRole = adminRecord?.role || (adminName?.trim().toLowerCase() === 'dekan@123' ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
-    const canDelete = adminName?.trim().toLowerCase() === 'dekan@123' || adminName?.trim().toLowerCase() === 'admin' || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'owner';
+    const requesterRole = adminRecord?.role || (OWNER_USERNAMES.includes(adminName?.trim().toLowerCase()) ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
+    const canDelete = OWNER_USERNAMES.includes(adminName?.trim().toLowerCase()) || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'owner';
     if (!canDelete) {
       return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! کارمەند (Staff) ناتوانێت پۆلێنەکان بسڕێتەوە.' });
     }
@@ -7222,7 +7229,7 @@ async function startServer() {
     const cleanLoginUsername = String(username || '').trim().toLowerCase();
     // Owner usernames — the ONLY identities allowed to fall back to the master
     // secret key. Never grant sub-admin/staff usernames the master bypass.
-    const OWNER_USERNAMES = ['admin', 'dekan@123'];
+    // (Defined at module level from OWNER_USERNAMES env var.)
 
     // verifyStoredPassword authenticates a password against a SINGLE account's
     // OWN stored credential only (legacy plaintext, legacy sha256, or bcrypt).
@@ -7271,7 +7278,7 @@ async function startServer() {
       // accidental future block (bad creds testing, security rules) is only a
       // temporary 1-minute exemption, never a permanent ban for the owner.
       const ownerName = String(admin.username || '').toLowerCase();
-      if (ownerName === "admin" || ownerName === "dekan@123") {
+      if (OWNER_USERNAMES.includes(ownerName)) {
         whitelistOwnerIp(cleanIp);
         if (cleanDeviceId) whitelistOwnerDevice(cleanDeviceId);
       }
@@ -7284,12 +7291,12 @@ async function startServer() {
       // keeps exactly the role that was assigned to it at creation time — the
       // secret key can no longer silently upgrade a staff/deputy account.
       let responseRole = admin.role || (admin.isSuper ? "deputy_manager" : "staff");
-      if (ownerName === "admin" || ownerName === "dekan@123") {
+      if (OWNER_USERNAMES.includes(ownerName)) {
         responseRole = "owner";
       }
 
       const isSuperAdmin = responseRole === "ROLE_SUPER_ADMIN" || responseRole === "super_admin" || responseRole === "owner";
-      const isOwner = ownerName === "admin" || ownerName === "dekan@123" || responseRole === "owner";
+      const isOwner = OWNER_USERNAMES.includes(ownerName) || responseRole === "owner";
 
       res.json({
         success: true,
@@ -7385,14 +7392,14 @@ async function startServer() {
   const roleLevel = (admin: any): number => {
     if (!admin) return 0;
     const name = String(admin.username || '').toLowerCase();
-    if (name === 'admin' || name === 'dekan@123' || admin.role === 'owner') return 4;
+    if (OWNER_USERNAMES.includes(name) || admin.role === 'owner') return 4;
     return ROLE_LEVEL[admin.role || ''] || (admin.isSuper ? 2 : 1);
   };
   const requesterInfo = (req: any) => {
     const name = (req.query.adminName as string || req.headers['x-admin-username'] as string || '').trim().toLowerCase();
     const record = db.admins.find((a: any) => a.username?.toLowerCase() === name) || null;
     let level = roleLevel(record);
-    if (!record && (name === 'admin' || name === 'dekan@123')) level = 4;
+    if (!record && OWNER_USERNAMES.includes(name)) level = 4;
     return { name, record, level };
   };
   const VALID_ROLES = ['staff', 'deputy_manager', 'super_admin'];
@@ -7401,7 +7408,7 @@ async function startServer() {
     const { username, password, isSuper, role } = req.body || {};
     const requester = requesterInfo(req);
     if (requester.level < 2) {
-      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیار (dekan@123 یان بەڕێوەبەری سەرەکی کەنالەکە) دەتوانێت ئەدمین بەڕێوەببات.' });
+      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیار (بەڕێوەبەری سەرەکی کەنالەکە) دەتوانێت ئەدمین بەڕێوەببات.' });
     }
 
     // Input validation — strict length + charset, never expose internals
@@ -7452,7 +7459,7 @@ async function startServer() {
     const { username } = req.params;
     const requester = requesterInfo(req);
     if (requester.level < 2) {
-      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیار (dekan@123 یان بەڕێوەبەر) دەتوانێت ئەدمین بسڕێتەوە.' });
+      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیار (بەڕێوەبەر) دەتوانێت ئەدمین بسڕێتەوە.' });
     }
 
     const targetName = String(username || '').trim().toLowerCase();
@@ -7460,7 +7467,7 @@ async function startServer() {
     if (!target) return res.status(404).json({ error: 'ئەم ئەدمینە نەدۆزرایەوە' });
 
     if (requester.name === targetName) return res.status(400).json({ error: 'تۆ ناتوانیت ئەکاونتی خۆت بسڕیتەوە' });
-    if (targetName === 'admin' || targetName === 'dekan@123') return res.status(400).json({ error: 'ناتوانرێت ئەدمینی سەرەکی بسڕدرێتەوە' });
+    if (OWNER_USERNAMES.includes(targetName)) return res.status(400).json({ error: 'ناتوانرێت ئەدمینی سەرەکی بسڕدرێتەوە' });
 
     // Can never delete an account at or above your own privilege level
     if (roleLevel(target) >= requester.level) {
@@ -7479,10 +7486,10 @@ async function startServer() {
 
     // Strict Route Guard for Module 17
     const adminRecord = db.admins.find((a: any) => a.username?.toLowerCase() === requester);
-    const requesterRole = adminRecord?.role || (requester === 'dekan@123' ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
-    const isAuthorized = requester === 'dekan@123' || requester === 'admin' || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'owner';
+    const requesterRole = adminRecord?.role || (OWNER_USERNAMES.includes(requester) ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
+    const isAuthorized = OWNER_USERNAMES.includes(requester) || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'owner';
     if (!isAuthorized) {
-      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیاری باڵا (dekan@123 یان بەڕێوەبەر) دەتوانێت بچێتە ناو بەشی ڕێگەپێدانی ئاستەکان.' });
+      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیاری باڵا (بەڕێوەبەر) دەتوانێت بچێتە ناو بەشی ڕێگەپێدانی ئاستەکان.' });
     }
 
     res.json({
@@ -7506,7 +7513,7 @@ async function startServer() {
   app.post('/api/admin/m17/admins/password', async (req, res) => {
     const requester = requesterInfo(req);
     if (requester.level < 2) {
-      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیاری باڵا (dekan@123 یان super_admin) دەتوانێت وشەی تێپەڕی ئەدمینەکان بگۆڕێت.' });
+      return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیاری باڵا (بەڕێوەبەر) دەتوانێت وشەی تێپەڕی ئەدمینەکان بگۆڕێت.' });
     }
 
     const { targetUsername, newPassword, isSuper } = req.body || {};
@@ -7521,7 +7528,7 @@ async function startServer() {
     // You may always reset your own password, or the password of an account
     // with strictly less privilege — never the platform owner's password.
     if (requester.name !== targetName) {
-      if (targetName === 'admin' || targetName === 'dekan@123') {
+      if (OWNER_USERNAMES.includes(targetName)) {
         return res.status(403).json({ error: 'ناتوانیت وشەی تێپەڕی خاوەن پلاتفۆرم بگۆڕیت' });
       }
       if (roleLevel(target) >= requester.level) {
@@ -7906,9 +7913,9 @@ async function startServer() {
     try {
       const adminName = (req.query.adminName || req.headers['x-admin-username'] || "") as string;
       const adminRecord = db.admins.find((a: any) => a.username?.toLowerCase() === adminName?.trim().toLowerCase());
-      const requesterRole = adminRecord?.role || (adminName?.trim().toLowerCase() === 'dekan@123' ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
+      const requesterRole = adminRecord?.role || (OWNER_USERNAMES.includes(adminName?.trim().toLowerCase()) ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
 
-      const isAuthorized = adminName?.trim().toLowerCase() === 'dekan@123' || adminName?.trim().toLowerCase() === 'admin' || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'staff' || requesterRole === 'owner';
+      const isAuthorized = OWNER_USERNAMES.includes(adminName?.trim().toLowerCase()) || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'staff' || requesterRole === 'owner';
       if (!isAuthorized) {
         return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! ناتوانیت ئەم زانیارییە ببینی چونکە ئەکاونتەکەت ئەدمین نییە.' });
       }
@@ -7941,9 +7948,9 @@ async function startServer() {
       const cleanCode = uniqueCode.trim().toUpperCase();
       const adminName = (req.query.adminName || req.headers['x-admin-username'] || "") as string;
       const adminRecord = db.admins.find((a: any) => a.username?.toLowerCase() === adminName?.trim().toLowerCase());
-      const requesterRole = adminRecord?.role || (adminName?.trim().toLowerCase() === 'dekan@123' ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
+      const requesterRole = adminRecord?.role || (OWNER_USERNAMES.includes(adminName?.trim().toLowerCase()) ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
 
-      const isAuthorized = adminName?.trim().toLowerCase() === 'dekan@123' || adminName?.trim().toLowerCase() === 'admin' || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'staff' || requesterRole === 'owner';
+      const isAuthorized = OWNER_USERNAMES.includes(adminName?.trim().toLowerCase()) || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'staff' || requesterRole === 'owner';
       if (!isAuthorized) {
         return res.status(403).json({ error: 'Access Denied' });
       }
@@ -8140,8 +8147,8 @@ async function startServer() {
     const cleanAdminName = adminName?.trim().toLowerCase();
 
     const adminRecord = db.admins.find((a: any) => a.username?.toLowerCase() === cleanAdminName);
-    const requesterRole = adminRecord?.role || (cleanAdminName === 'dekan@123' ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
-    const canDelete = cleanAdminName === 'dekan@123' || cleanAdminName === 'admin' || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'owner';
+    const requesterRole = adminRecord?.role || (OWNER_USERNAMES.includes(cleanAdminName) ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
+    const canDelete = OWNER_USERNAMES.includes(cleanAdminName) || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'owner';
     if (!canDelete) {
       return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! کارمەند (Staff) ناتوانێت بەکارهێنەران بسڕێتەوە.' });
     }
@@ -8192,8 +8199,8 @@ async function startServer() {
     const cleanAdminName = adminName?.trim().toLowerCase();
 
     const adminRecord = db.admins.find((a: any) => a.username?.toLowerCase() === cleanAdminName);
-    const requesterRole = adminRecord?.role || (cleanAdminName === 'dekan@123' ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
-    const canEdit = cleanAdminName === 'dekan@123' || cleanAdminName === 'admin' || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'owner';
+    const requesterRole = adminRecord?.role || (OWNER_USERNAMES.includes(cleanAdminName) ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
+    const canEdit = OWNER_USERNAMES.includes(cleanAdminName) || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'owner';
     if (!canEdit) {
       return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! کارمەند (Staff) ناتوانێت زانیاری بەکارهێنەر بگۆڕێت.' });
     }
@@ -8229,8 +8236,8 @@ async function startServer() {
     const adminName = (req.query.adminName || req.body.adminName || "Admin") as string;
 
     const adminRecord = db.admins.find((a: any) => a.username?.toLowerCase() === adminName?.trim().toLowerCase());
-    const requesterRole = adminRecord?.role || (adminName?.trim().toLowerCase() === 'dekan@123' ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
-    const canDelete = adminName?.trim().toLowerCase() === 'dekan@123' || adminName?.trim().toLowerCase() === 'admin' || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'owner';
+    const requesterRole = adminRecord?.role || (OWNER_USERNAMES.includes(adminName?.trim().toLowerCase()) ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
+    const canDelete = OWNER_USERNAMES.includes(adminName?.trim().toLowerCase()) || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'owner';
     if (!canDelete) {
       return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! کارمەند (Staff) ناتوانێت فیلمەکان بسڕێتەوە.' });
     }
