@@ -168,11 +168,15 @@ async function translateSrtViaGemini(srtText, targetLang) {
   const translateChunk = async (subtitleChunk) => {
     const targetLanguageName = subtitleTargetLanguageName(targetLang);
     const prompt =
-      `Translate ONLY the spoken-dialogue text lines in the subtitle file below into ` +
-      `${targetLanguageName}. The file may be SRT or WebVTT. Keep the ` +
-      `file's structure and every cue number, cue identifier and timestamp EXACTLY ` +
-      `the same. Return the complete file in the exact same format, adding or ` +
-      `removing no lines.\n\n${subtitleChunk}`;
+      `You are a professional subtitle translator. Translate the subtitle file below into ${targetLanguageName}.\n\n` +
+      `STRICT RULES — follow exactly:\n` +
+      `1. Translate ONLY the dialogue/text content of each cue. Do NOT add any extra words, explanations, notes, speaker labels, or text that does not exist in the original.\n` +
+      `2. Preserve EVERY cue's number, timestamp line, and file structure exactly. Do NOT merge, split, reorder, or skip any cues.\n` +
+      `3. Return the COMPLETE file — every single cue must appear in your output. Never output a partial file or summary.\n` +
+      `4. Translate faithfully and naturally. If a phrase is idiomatic, translate its meaning — do not transliterate.\n` +
+      `5. Keep the original line breaks within each cue. If a cue has two lines, your translation should also have two lines.\n` +
+      `6. Do NOT wrap the output in markdown code fences or any other formatting. Return ONLY the raw subtitle file content.\n\n` +
+      `Input subtitle file:\n\n${subtitleChunk}`;
 
     const headers = { "Content-Type": "application/json" };
     if (process.env.GEMINI_REFERER) headers["Referer"] = process.env.GEMINI_REFERER;

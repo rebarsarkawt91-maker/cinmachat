@@ -6675,6 +6675,8 @@ type CinemaWindowSubtitlePayload = {
   vttText: string;
   sourceLang: string;
   source: string;
+  originalRawText?: string;
+  originalVttText?: string;
 };
 
 const cinemaWindowSubtitleCache = new Map<string, CinemaWindowSubtitlePayload>();
@@ -6701,6 +6703,34 @@ type CinemaWindowSubtitleCue = {
   end: number;
   text: string;
 };
+
+type CcSettings = {
+  fontSize: 'sm' | 'md' | 'lg' | 'xl';
+  bgOpacity: number;
+  textColor: string;
+  showSubtitle: boolean;
+  showOriginal: boolean;
+};
+
+const CC_SETTINGS_STORAGE_KEY = 'cinemachat-cc-settings';
+const DEFAULT_CC_SETTINGS: CcSettings = { fontSize: 'md', bgOpacity: 0.8, textColor: '#ffffff', showSubtitle: true, showOriginal: false };
+const CC_FONT_SIZES: { key: CcSettings['fontSize']; label: string; cls: string; mobileCls: string }[] = [
+  { key: 'sm', label: 'A-', cls: 'text-sm md:text-base', mobileCls: 'text-[11px]' },
+  { key: 'md', label: 'A', cls: 'text-lg md:text-2xl', mobileCls: 'text-base' },
+  { key: 'lg', label: 'A+', cls: 'text-xl md:text-3xl', mobileCls: 'text-lg' },
+  { key: 'xl', label: 'A++', cls: 'text-2xl md:text-4xl', mobileCls: 'text-xl' },
+];
+const CC_TEXT_COLORS = ['#ffffff', '#FFFF00', '#00FFFF', '#00FF00', '#FF8800', '#FF5555'];
+
+function loadCcSettings(): CcSettings {
+  try {
+    const raw = localStorage.getItem(CC_SETTINGS_STORAGE_KEY);
+    if (!raw) return DEFAULT_CC_SETTINGS;
+    const parsed = JSON.parse(raw);
+    return { ...DEFAULT_CC_SETTINGS, ...parsed };
+  } catch { return DEFAULT_CC_SETTINGS; }
+}
+function saveCcSettings(s: CcSettings) { try { localStorage.setItem(CC_SETTINGS_STORAGE_KEY, JSON.stringify(s)); } catch { /* */ } }
 
 const parseCinemaWindowSubtitleTime = (value: string) => {
   const normalized = value.trim().replace(",", ".");
@@ -6783,11 +6813,15 @@ const requestCinemaWindowSubtitle = async (
   const rawText = String(data?.srt || "");
   const vttText = subtitleTextToVtt(rawText);
   if (!vttText) throw new Error("Subtitle file is empty");
+  const originalRaw = String(data?.originalSrt || "");
+  const originalVtt = originalRaw ? subtitleTextToVtt(originalRaw) : "";
   return {
     rawText,
     vttText,
     sourceLang: String(data?.lang || lang),
     source: String(data?.source || ""),
+    originalRawText: originalRaw || undefined,
+    originalVttText: originalVtt || undefined,
   };
 };
 
@@ -6815,6 +6849,8 @@ const translateCinemaWindowSubtitle = async (
     vttText,
     sourceLang: String(data?.lang || targetLang),
     source: String(data?.source || ""),
+    originalRawText: subtitleText || undefined,
+    originalVttText: subtitleText ? subtitleTextToVtt(subtitleText) : undefined,
   };
 };
 
@@ -10144,11 +10180,15 @@ export default function App() {
   const [cinemaWindowVideoStatus, setCinemaWindowVideoStatus] = useState<"idle" | "loading" | "ready" | "fallback">("idle");
   const [cinemaWindowSubtitleUrl, setCinemaWindowSubtitleUrl] = useState("");
   const [cinemaWindowSubtitleCues, setCinemaWindowSubtitleCues] = useState<CinemaWindowSubtitleCue[]>([]);
+  const [originalCinemaWindowSubtitleCues, setOriginalCinemaWindowSubtitleCues] = useState<CinemaWindowSubtitleCue[]>([]);
   const [cinemaWindowPlaybackTime, setCinemaWindowPlaybackTime] = useState(0);
   const [cinemaWindowSubtitleLang, setCinemaWindowSubtitleLang] = useState("ckb");
   const [cinemaWindowSubtitleStatus, setCinemaWindowSubtitleStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [cinemaWindowSubtitleMessage, setCinemaWindowSubtitleMessage] = useState("");
   const [cinemaWindowSubtitleRetryKey, setCinemaWindowSubtitleRetryKey] = useState(0);
+  const [ccSettings, setCcSettings] = useState<CcSettings>(loadCcSettings);
+  const [showCcPanel, setShowCcPanel] = useState(false);
+  useEffect(() => { saveCcSettings(ccSettings); }, [ccSettings]);
 
   // Gate: subtitle fetching, translation, and CC overlay are only active when
   // the user is inside one of the three main watch rooms. Outside these rooms
@@ -10248,6 +10288,21 @@ export default function App() {
     );
     return activeCue?.text || "";
   }, [subtitlePlaybackTime, cinemaWindowSubtitleCues]);
+
+  const cinemaWindowActiveOriginalText = useMemo(() => {
+    if (!ccSettings.showOriginal || !originalCinemaWindowSubtitleCues.length) return "";
+    const activeCue = originalCinemaWindowSubtitleCues.find(
+      (cue) => subtitlePlaybackTime >= cue.start && subtitlePlaybackTime <= cue.end,
+    );
+    return activeCue?.text || "";
+  }, [subtitlePlaybackTime, originalCinemaWindowSubtitleCues, ccSettings.showOriginal]);
+
+  const ccFontSizeEntry = useMemo(() => CC_FONT_SIZES.find((e) => e.key === ccSettings.fontSize) || CC_FONT_SIZES[1], [ccSettings.fontSize]);
+  const ccSubtitleStyle = useMemo<React.CSSProperties>(() => ({
+    color: ccSettings.textColor,
+    backgroundColor: ccSettings.textColor === '#ffffff' ? `rgba(0,0,0,${ccSettings.bgOpacity})` : `rgba(0,0,0,${Math.min(ccSettings.bgOpacity + 0.1, 1)})`,
+    textShadow: '0 1px 6px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,1)',
+  }), [ccSettings.textColor, ccSettings.bgOpacity]);
 
   const cinemaWindowSubtitleWindowIndex =
     cinemaWindowSubtitleLang === "ckb" ? Math.floor(subtitlePlaybackTime / 90) : 0;
@@ -10364,6 +10419,7 @@ export default function App() {
     if (langChanged || sourceChanged) {
       setCinemaWindowSubtitleUrl("");
       setCinemaWindowSubtitleCues([]);
+      setOriginalCinemaWindowSubtitleCues([]);
     }
 
     const movieSubtitleUrl = subtitleMovieFileUrl;
@@ -10385,6 +10441,11 @@ export default function App() {
       objectUrl = URL.createObjectURL(new Blob([cachedSubtitle.vttText], { type: "text/vtt" }));
       setCinemaWindowSubtitleUrl(objectUrl);
       setCinemaWindowSubtitleCues(parseCinemaWindowSubtitleCues(cachedSubtitle.vttText));
+      if (cachedSubtitle.originalVttText) {
+        setOriginalCinemaWindowSubtitleCues(parseCinemaWindowSubtitleCues(cachedSubtitle.originalVttText));
+      } else {
+        setOriginalCinemaWindowSubtitleCues([]);
+      }
       setCinemaWindowSubtitleStatus("ready");
       setCinemaWindowSubtitleMessage(`${selectedSubtitleLanguage.label} ئامادەیە`);
       return () => {
@@ -10396,7 +10457,7 @@ export default function App() {
     setCinemaWindowSubtitleStatus("loading");
     setCinemaWindowSubtitleMessage(`وەرگێڕانی ژێرنوس بۆ ${selectedSubtitleLanguage.label}...`);
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 60000);
+    const timeoutId = window.setTimeout(() => controller.abort(), 120000);
 
     const loadSubtitle = async () => {
       try {
@@ -10468,6 +10529,11 @@ export default function App() {
         if (!cancelled) {
           setCinemaWindowSubtitleUrl(objectUrl);
           setCinemaWindowSubtitleCues(parseCinemaWindowSubtitleCues(vttText));
+          if (subtitle.originalVttText) {
+            setOriginalCinemaWindowSubtitleCues(parseCinemaWindowSubtitleCues(subtitle.originalVttText));
+          } else {
+            setOriginalCinemaWindowSubtitleCues([]);
+          }
           setCinemaWindowSubtitleStatus("ready");
           setCinemaWindowSubtitleMessage(`${selectedSubtitleLanguage.label} ئامادەیە`);
         }
@@ -12772,12 +12838,21 @@ export default function App() {
                             onError={handleCinemaWindowNativeVideoFailure}
                             onStalled={handleCinemaWindowNativeVideoFailure}
                           />
-                          {isInMainWatchRoom && cinemaWindowActiveSubtitleText && (
-                            <div className="pointer-events-none absolute inset-x-3 bottom-16 z-10 flex justify-center">
+                          {isInMainWatchRoom && cinemaWindowActiveSubtitleText && ccSettings.showSubtitle && (
+                            <div className="pointer-events-none absolute inset-x-3 bottom-16 z-10 flex flex-col items-center gap-1">
+                              {cinemaWindowActiveOriginalText && (
+                                <div
+                                  dir="auto"
+                                  className={`max-w-[92%] whitespace-pre-line rounded-lg px-3 py-1.5 text-center font-bold leading-snug opacity-70 ${ccFontSizeEntry.mobileCls} md:${ccFontSizeEntry.cls.replace(/text-\S+/g, (m) => m)}`}
+                                  style={{ color: '#cccccc', backgroundColor: 'rgba(0,0,0,0.5)', textShadow: '0 1px 4px rgba(0,0,0,0.8)' }}
+                                >
+                                  {cinemaWindowActiveOriginalText}
+                                </div>
+                              )}
                               <div
                                 dir="auto"
-                                className="max-w-[92%] whitespace-pre-line rounded-lg bg-black/80 px-3 py-2 text-center text-lg md:text-2xl font-bold leading-snug text-white shadow-[0_2px_14px_rgba(0,0,0,0.75)]"
-                                style={{ textShadow: "0 1px 6px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,1)" }}
+                                className={`max-w-[92%] whitespace-pre-line rounded-lg px-3 py-2 text-center font-bold leading-snug shadow-[0_2px_14px_rgba(0,0,0,0.75)] ${ccFontSizeEntry.mobileCls} md:${ccFontSizeEntry.cls}`}
+                                style={ccSubtitleStyle}
                               >
                                 {cinemaWindowActiveSubtitleText}
                               </div>
@@ -12785,13 +12860,14 @@ export default function App() {
                           )}
                           {isInMainWatchRoom && cinemaWindowSubtitleStatus === "loading" && !cinemaWindowActiveSubtitleText && (
                             <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center gap-2 px-4 py-3 pointer-events-none">
-                              <div className="flex items-center gap-2 rounded-xl bg-black/70 px-3 py-2 text-xs text-amber-300">
+                              <div className="flex items-center gap-2 rounded-xl bg-black/70 px-3 py-2 text-xs text-red-400">
                                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
                                 <span className="kurdish-text">{cinemaWindowSubtitleMessage || "وەردەگێڕدرێت..."}</span>
                               </div>
                             </div>
                           )}
-                          {isInMainWatchRoom && cinemaWindowSubtitleStatus === "error" && (
+                        {/* Error indicator with retry */}
+                        {isInMainWatchRoom && cinemaWindowSubtitleStatus === "error" && (
                             <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center px-4 py-3">
                               <div className="flex items-center gap-2 rounded-xl bg-red-950/80 border border-red-500/20 px-3 py-2 text-xs text-red-300">
                                 <AlertCircle className="w-3.5 h-3.5 shrink-0" />
@@ -12912,6 +12988,74 @@ export default function App() {
                         {cinemaWindowSubtitleMessage}
                       </p>
                     )}
+
+                    {/* Original subtitle toggle */}
+                    <div className="flex items-center justify-between border-t border-white/10 pt-3">
+                      <span className="text-zinc-500 text-xs">ژێرنووسی ڕەسەن</span>
+                      <button
+                        type="button"
+                        onClick={() => setCcSettings((s) => ({ ...s, showOriginal: !s.showOriginal }))}
+                        className={`w-10 h-5 rounded-full transition-all cursor-pointer ${ccSettings.showOriginal ? 'bg-emerald-500' : 'bg-zinc-600'}`}
+                      >
+                        <span className={`block w-4 h-4 rounded-full bg-white shadow transition-transform ${ccSettings.showOriginal ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                      </button>
+                    </div>
+
+                    {/* Font size selector */}
+                    <div className="border-t border-white/10 pt-3">
+                      <span className="text-zinc-500 text-xs block mb-2">ئەreciozani</span>
+                      <div className="flex gap-1">
+                        {CC_FONT_SIZES.map((fs) => (
+                          <button
+                            key={fs.key}
+                            type="button"
+                            onClick={() => setCcSettings((s) => ({ ...s, fontSize: fs.key }))}
+                            className={`flex-1 py-1.5 rounded-lg text-[10px] font-black transition-all cursor-pointer ${
+                              ccSettings.fontSize === fs.key
+                                ? "bg-brand-primary text-white"
+                                : "bg-white/5 hover:bg-white/10 text-zinc-400"
+                            }`}
+                          >
+                            {fs.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Opacity slider */}
+                    <div className="border-t border-white/10 pt-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-zinc-500 text-xs">کاڵکردنەوە</span>
+                        <span className="text-[10px] text-zinc-600">{Math.round(ccSettings.bgOpacity * 100)}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0.2}
+                        max={1}
+                        step={0.1}
+                        value={ccSettings.bgOpacity}
+                        onChange={(e) => setCcSettings((s) => ({ ...s, bgOpacity: Number(e.target.value) }))}
+                        className="w-full h-1 accent-brand-primary cursor-pointer"
+                      />
+                    </div>
+
+                    {/* Text color */}
+                    <div className="border-t border-white/10 pt-3">
+                      <span className="text-zinc-500 text-xs block mb-2">ڕەنگ</span>
+                      <div className="flex gap-2">
+                        {CC_TEXT_COLORS.map((color) => (
+                          <button
+                            key={color}
+                            type="button"
+                            onClick={() => setCcSettings((s) => ({ ...s, textColor: color }))}
+                            className={`w-6 h-6 rounded-full border-2 transition-all cursor-pointer ${
+                              ccSettings.textColor === color ? 'border-white scale-110' : 'border-zinc-600 hover:border-zinc-400'
+                            }`}
+                            style={{ backgroundColor: color }}
+                          />
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 </aside>
               </div>
@@ -13555,6 +13699,12 @@ export default function App() {
             }}
             onSubtitleRetry={() => setCinemaWindowSubtitleRetryKey((k) => k + 1)}
             onSourceUrl={(url: string) => setCinemaChatSourceUrl(url)}
+            originalSubtitleCues={showCinemaChatRoom ? originalCinemaWindowSubtitleCues : []}
+            ccSettings={ccSettings}
+            ccFontSizeEntry={ccFontSizeEntry}
+            ccSubtitleStyle={ccSubtitleStyle}
+            onToggleCcPanel={() => setShowCcPanel((v) => !v)}
+            showCcPanel={showCcPanel}
           />
           {/* CinemaChat private Friend → Connect (ephemeral 1-to-1 chat). The
               CinemaChat card opens THIS modal; the watch room above stays
@@ -13723,12 +13873,21 @@ export default function App() {
                           whatever player type is active (YouTube, embed, or Plyr).
                           Cinema Window renders its own overlay inside its native
                           <video> block; this covers the main App player only. */}
-                      {isDramaRoomActive && cinemaWindowActiveSubtitleText && (
-                        <div className="pointer-events-none absolute inset-x-3 bottom-16 z-10 flex justify-center">
+                      {isDramaRoomActive && cinemaWindowActiveSubtitleText && ccSettings.showSubtitle && (
+                        <div className="pointer-events-none absolute inset-x-3 bottom-16 z-10 flex flex-col items-center gap-1">
+                          {cinemaWindowActiveOriginalText && (
+                            <div
+                              dir="auto"
+                              className={`max-w-[92%] whitespace-pre-line rounded-lg px-3 py-1.5 text-center font-bold leading-snug opacity-70 ${ccFontSizeEntry.mobileCls} md:${ccFontSizeEntry.cls}`}
+                              style={{ color: '#cccccc', backgroundColor: 'rgba(0,0,0,0.5)', textShadow: '0 1px 4px rgba(0,0,0,0.8)' }}
+                            >
+                              {cinemaWindowActiveOriginalText}
+                            </div>
+                          )}
                           <div
                             dir="auto"
-                            className="max-w-[92%] whitespace-pre-line rounded-lg bg-black/80 px-3 py-2 text-center text-lg md:text-2xl font-bold leading-snug text-white shadow-[0_2px_14px_rgba(0,0,0,0.75)]"
-                            style={{ textShadow: "0 1px 6px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,1)" }}
+                            className={`max-w-[92%] whitespace-pre-line rounded-lg px-3 py-2 text-center font-bold leading-snug shadow-[0_2px_14px_rgba(0,0,0,0.75)] ${ccFontSizeEntry.mobileCls} md:${ccFontSizeEntry.cls}`}
+                            style={ccSubtitleStyle}
                           >
                             {cinemaWindowActiveSubtitleText}
                           </div>
@@ -13736,13 +13895,13 @@ export default function App() {
                       )}
                       {isDramaRoomActive && cinemaWindowSubtitleStatus === "loading" && !cinemaWindowActiveSubtitleText && (
                         <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center gap-2 px-4 py-3 pointer-events-none">
-                          <div className="flex items-center gap-2 rounded-xl bg-black/70 px-3 py-2 text-xs text-amber-300">
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            <span className="kurdish-text">{cinemaWindowSubtitleMessage || "وەردەگێڕدرێت..."}</span>
-                          </div>
-                        </div>
-                      )}
-                      {isDramaRoomActive && cinemaWindowSubtitleStatus === "error" && (
+                              <div className="flex items-center gap-2 rounded-xl bg-black/70 px-3 py-2 text-xs text-red-400">
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                <span className="kurdish-text">{cinemaWindowSubtitleMessage || "وەردەگێڕدرێت..."}</span>
+                              </div>
+                            </div>
+                          )}
+{isDramaRoomActive && cinemaWindowSubtitleStatus === "error" && (
                         <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center px-4 py-3">
                           <div className="flex items-center gap-2 rounded-xl bg-red-950/80 border border-red-500/20 px-3 py-2 text-xs text-red-300">
                             <AlertCircle className="w-3.5 h-3.5 shrink-0" />
@@ -14130,7 +14289,7 @@ export default function App() {
                                 cinemaWindowSubtitleStatus === "ready"
                                   ? "bg-brand-primary text-white"
                                   : cinemaWindowSubtitleStatus === "loading"
-                                    ? "bg-amber-600 text-white"
+                                    ? "bg-red-600 text-white animate-pulse"
                                     : "bg-black/60 hover:bg-white/10 text-white"
                               }`}
                               title="زمانی ژێرنوس (Subtitles)"
@@ -14144,8 +14303,8 @@ export default function App() {
                                   className="fixed inset-0 z-[55]"
                                   onClick={() => setPlayerMenu(null)}
                                 />
-                                <div className="absolute bottom-full right-0 mb-2 z-[60] w-36 rounded-xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-1.5 shadow-2xl">
-                                  <div className="px-2.5 pb-1.5 text-[8px] font-black text-zinc-400 uppercase tracking-widest kurdish-text">
+                                <div className="absolute bottom-full right-0 mb-2 z-[60] w-44 rounded-xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-2 shadow-2xl space-y-1.5">
+                                  <div className="px-1 pb-1 text-[8px] font-black text-zinc-400 uppercase tracking-widest kurdish-text">
                                     زمانی ژێرنوس
                                   </div>
                                   {CINEMA_WINDOW_SUBTITLE_LANGUAGES.map((lang) => (
@@ -14155,7 +14314,6 @@ export default function App() {
                                       onClick={() => {
                                         setCinemaWindowSubtitleLang(lang.code);
                                         setCinemaWindowSubtitleRetryKey((k) => k + 1);
-                                        setPlayerMenu(null);
                                       }}
                                       className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[11px] font-black transition-all cursor-pointer ${
                                         cinemaWindowSubtitleLang === lang.code
@@ -14169,10 +14327,131 @@ export default function App() {
                                       )}
                                     </button>
                                   ))}
+                                  <div className="border-t border-white/10 pt-1.5 space-y-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setCcSettings((s) => ({ ...s, showOriginal: !s.showOriginal }));
+                                      }}
+                                      className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
+                                        ccSettings.showOriginal
+                                          ? "bg-emerald-600/80 text-white"
+                                          : "bg-white/5 hover:bg-white/10 text-zinc-300"
+                                      }`}
+                                    >
+                                      <span>ژێرنووسی ڕەسەن</span>
+                                      <span className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${ccSettings.showOriginal ? 'border-emerald-400 bg-emerald-500' : 'border-zinc-500'}`}>
+                                        {ccSettings.showOriginal && <span className="text-white text-[7px]">✓</span>}
+                                      </span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setPlayerMenu(null);
+                                        setShowCcPanel(true);
+                                      }}
+                                      className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[10px] font-bold bg-white/5 hover:bg-white/10 text-zinc-300 cursor-pointer transition-all"
+                                    >
+                                      <span>⚙️ ڕێکخستن</span>
+                                    </button>
+                                  </div>
                                 </div>
                               </>
                             )}
                           </div>
+                        )}
+
+                        {/* CC Settings Panel — floating popup for font, color, opacity controls */}
+                        {showCcPanel && (
+                          <>
+                            <div className="fixed inset-0 z-[65]" onClick={() => setShowCcPanel(false)} />
+                            <div className="absolute bottom-full right-0 mb-2 z-[70] w-56 rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-3 shadow-2xl space-y-3">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[9px] font-black text-zinc-400 uppercase tracking-widest kurdish-text">ڕێکخستنی ژێرنوس</span>
+                                <button onClick={() => setShowCcPanel(false)} className="text-zinc-500 hover:text-white text-xs cursor-pointer">✕</button>
+                              </div>
+
+                              {/* Show/Hide toggle */}
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] font-bold text-zinc-300">show / hide</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setCcSettings((s) => ({ ...s, showSubtitle: !s.showSubtitle }))}
+                                  className={`w-8 h-4 rounded-full transition-all cursor-pointer ${ccSettings.showSubtitle ? 'bg-brand-primary' : 'bg-zinc-600'}`}
+                                >
+                                  <span className={`block w-3 h-3 rounded-full bg-white shadow transition-transform ${ccSettings.showSubtitle ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                                </button>
+                              </div>
+
+                              {/* Original subtitle toggle */}
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] font-bold text-zinc-300">ژێرنووسی ڕەسەن</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setCcSettings((s) => ({ ...s, showOriginal: !s.showOriginal }))}
+                                  className={`w-8 h-4 rounded-full transition-all cursor-pointer ${ccSettings.showOriginal ? 'bg-emerald-500' : 'bg-zinc-600'}`}
+                                >
+                                  <span className={`block w-3 h-3 rounded-full bg-white shadow transition-transform ${ccSettings.showOriginal ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                                </button>
+                              </div>
+
+                              {/* Font size */}
+                              <div>
+                                <span className="text-[9px] font-bold text-zinc-500 block mb-1">ئەreciozani</span>
+                                <div className="flex gap-1">
+                                  {CC_FONT_SIZES.map((fs) => (
+                                    <button
+                                      key={fs.key}
+                                      type="button"
+                                      onClick={() => setCcSettings((s) => ({ ...s, fontSize: fs.key }))}
+                                      className={`flex-1 py-1 rounded-lg text-[10px] font-black transition-all cursor-pointer ${
+                                        ccSettings.fontSize === fs.key
+                                          ? "bg-brand-primary text-white"
+                                          : "bg-white/5 hover:bg-white/10 text-zinc-400"
+                                      }`}
+                                    >
+                                      {fs.label}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+
+                              {/* Background opacity */}
+                              <div>
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="text-[9px] font-bold text-zinc-500">کاڵکردنەوە</span>
+                                  <span className="text-[8px] text-zinc-600">{Math.round(ccSettings.bgOpacity * 100)}%</span>
+                                </div>
+                                <input
+                                  type="range"
+                                  min={0.2}
+                                  max={1}
+                                  step={0.1}
+                                  value={ccSettings.bgOpacity}
+                                  onChange={(e) => setCcSettings((s) => ({ ...s, bgOpacity: Number(e.target.value) }))}
+                                  className="w-full h-1 accent-brand-primary cursor-pointer"
+                                />
+                              </div>
+
+                              {/* Text color */}
+                              <div>
+                                <span className="text-[9px] font-bold text-zinc-500 block mb-1">ڕەنگ</span>
+                                <div className="flex gap-1.5">
+                                  {CC_TEXT_COLORS.map((color) => (
+                                    <button
+                                      key={color}
+                                      type="button"
+                                      onClick={() => setCcSettings((s) => ({ ...s, textColor: color }))}
+                                      className={`w-5 h-5 rounded-full border-2 transition-all cursor-pointer ${
+                                        ccSettings.textColor === color ? 'border-white scale-110' : 'border-zinc-600 hover:border-zinc-400'
+                                      }`}
+                                      style={{ backgroundColor: color }}
+                                    />
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          </>
                         )}
 
                         {/* [1] Fullscreen Expand (rightmost of the cluster) */}

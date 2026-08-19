@@ -142,6 +142,18 @@ interface CinemaChatRoomProps {
   onSubtitleRetry?: () => void;
   /** Reports the current video source URL back to the parent for subtitle generation. */
   onSourceUrl?: (url: string) => void;
+  /** Original (untranslated) subtitle cues for dual-line display. */
+  originalSubtitleCues?: Array<{ start: number; end: number; text: string }>;
+  /** CC display settings from parent. */
+  ccSettings?: { fontSize: string; bgOpacity: number; textColor: string; showSubtitle: boolean; showOriginal: boolean };
+  /** Font size entry for current CC setting. */
+  ccFontSizeEntry?: { key: string; label: string; cls: string; mobileCls: string };
+  /** Computed subtitle style from parent. */
+  ccSubtitleStyle?: React.CSSProperties;
+  /** Toggle CC settings panel. */
+  onToggleCcPanel?: () => void;
+  /** Whether CC settings panel is open. */
+  showCcPanel?: boolean;
 }
 const PLAYBACK_HEARTBEAT_MS = 8000;
 const MAX_VOICE_SECONDS = 12;
@@ -275,6 +287,12 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
   onSubtitleLangChange,
   onSubtitleRetry,
   onSourceUrl,
+  originalSubtitleCues,
+  ccSettings,
+  ccFontSizeEntry,
+  ccSubtitleStyle,
+  onToggleCcPanel,
+  showCcPanel,
 }) => {
   const myId = identity.id;
 
@@ -1318,15 +1336,28 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                           )}
                           {/* AI subtitle overlay for CinemaChat — renders on top
                               of whichever player type is active. */}
-                          {subtitleCues && displayTime > 0 && (() => {
+                          {subtitleCues && displayTime > 0 && (ccSettings?.showSubtitle !== false) && (() => {
                             const activeCue = subtitleCues.find(
                               (c) => displayTime >= c.start && displayTime <= c.end,
                             );
+                            const originalCue = originalSubtitleCues?.find(
+                              (c) => displayTime >= c.start && displayTime <= c.end,
+                            );
                             return activeCue ? (
-                              <div className="pointer-events-none absolute inset-x-3 bottom-16 z-10 flex justify-center">
+                              <div className="pointer-events-none absolute inset-x-3 bottom-16 z-10 flex flex-col items-center gap-1">
+                                {originalCue && ccSettings?.showOriginal && (
+                                  <div
+                                    dir="auto"
+                                    className={`max-w-[92%] whitespace-pre-line rounded-lg px-3 py-1.5 text-center font-bold leading-snug opacity-70 ${ccFontSizeEntry?.mobileCls || 'text-[11px]'}`}
+                                    style={{ color: '#cccccc', backgroundColor: 'rgba(0,0,0,0.5)', textShadow: '0 1px 4px rgba(0,0,0,0.8)' }}
+                                  >
+                                    {originalCue.text}
+                                  </div>
+                                )}
                                 <div
                                   dir="auto"
-                                  className="max-w-[92%] whitespace-pre-line rounded-lg bg-black/70 px-3 py-2 text-center text-sm md:text-lg font-bold leading-snug text-white shadow-[0_2px_14px_rgba(0,0,0,0.55)]"
+                                  className={`max-w-[92%] whitespace-pre-line rounded-lg px-3 py-2 text-center font-bold leading-snug shadow-[0_2px_14px_rgba(0,0,0,0.55)] ${ccFontSizeEntry?.mobileCls || 'text-[11px]'} ${ccFontSizeEntry?.cls || ''}`}
+                                  style={ccSubtitleStyle || { backgroundColor: 'rgba(0,0,0,0.7)', color: '#ffffff', textShadow: '0 1px 6px rgba(0,0,0,0.9)' }}
                                 >
                                   {activeCue.text}
                                 </div>
@@ -1335,7 +1366,7 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                           })()}
                           {subtitleStatus === "loading" && (
                             <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center gap-2 px-4 py-3 pointer-events-none">
-                              <div className="flex items-center gap-2 rounded-xl bg-black/70 px-3 py-2 text-[10px] text-amber-300">
+                              <div className="flex items-center gap-2 rounded-xl bg-black/70 px-3 py-2 text-[10px] text-red-400">
                                 <Loader2 className="w-3 h-3 animate-spin" />
                                 <span>{subtitleMessage || "وەردەگێڕدرێت..."}</span>
                               </div>
@@ -1367,7 +1398,7 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                                     subtitleStatus === "ready"
                                       ? "bg-brand-primary text-white"
                                       : subtitleStatus === "loading"
-                                        ? "bg-amber-600 text-white"
+                                        ? "bg-red-600 text-white animate-pulse"
                                         : "bg-black/60 hover:bg-white/10 text-white"
                                   }`}
                                   title="زمانی ژێرنوس (Subtitles)"
@@ -1380,14 +1411,14 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                                       className="fixed inset-0 z-[55]"
                                       onClick={() => setShowCcMenu(false)}
                                     />
-                                    <div className="absolute top-full right-0 mt-1 z-[60] w-32 rounded-xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-1 shadow-2xl">
+                                    <div className="absolute top-full right-0 mt-1 z-[60] w-44 rounded-xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-2 shadow-2xl space-y-1.5">
+                                      <div className="text-[8px] font-black text-zinc-400 uppercase tracking-widest px-1 kurdish-text">زمانی ژێرنوس</div>
                                       {subtitleLanguages.map((lang) => (
                                         <button
                                           key={lang.code}
                                           type="button"
                                           onClick={() => {
                                             onSubtitleLangChange?.(lang.code);
-                                            setShowCcMenu(false);
                                           }}
                                           className={`w-full flex items-center justify-between px-2 py-1 rounded-lg text-[10px] font-black transition-all cursor-pointer ${
                                             subtitleLang === lang.code
@@ -1396,13 +1427,106 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                                           }`}
                                         >
                                           <span>{lang.label}</span>
+                                          {subtitleLang === lang.code && <span className="text-[8px] opacity-70">✓</span>}
                                         </button>
                                       ))}
+                                      <div className="border-t border-white/10 pt-1.5 space-y-1">
+                                        <button
+                                          type="button"
+                                          onClick={() => onToggleCcPanel?.()}
+                                          className="w-full flex items-center gap-2 px-2 py-1 rounded-lg text-[10px] font-bold bg-white/5 hover:bg-white/10 text-zinc-300 cursor-pointer transition-all"
+                                        >
+                                          <span>⚙️ ڕێکخستن</span>
+                                          {showCcPanel && <span className="ml-auto text-[8px] text-brand-primary">●</span>}
+                                        </button>
+                                      </div>
                                     </div>
                                   </>
                                 )}
                               </div>
                             </div>
+                          )}
+
+                          {/* CC Settings Panel for CinemaChat */}
+                          {showCcPanel && (
+                            <>
+                              <div className="fixed inset-0 z-[65]" onClick={() => onToggleCcPanel?.()} />
+                              <div className="absolute top-12 right-1.5 z-[70] w-48 rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-2.5 shadow-2xl space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[8px] font-black text-zinc-400 uppercase tracking-widest">CC Settings</span>
+                                  <button onClick={() => onToggleCcPanel?.()} className="text-zinc-500 hover:text-white text-[10px] cursor-pointer">✕</button>
+                                </div>
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[9px] font-bold text-zinc-300">show / hide</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {}}
+                                    className={`w-7 h-3.5 rounded-full transition-all cursor-pointer ${ccSettings?.showSubtitle !== false ? 'bg-brand-primary' : 'bg-zinc-600'}`}
+                                  >
+                                    <span className={`block w-2.5 h-2.5 rounded-full bg-white shadow transition-transform ${ccSettings?.showSubtitle !== false ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+                                  </button>
+                                </div>
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[9px] font-bold text-zinc-300">ژێرنووسی ڕەسەن</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {}}
+                                    className={`w-7 h-3.5 rounded-full transition-all cursor-pointer ${ccSettings?.showOriginal ? 'bg-emerald-500' : 'bg-zinc-600'}`}
+                                  >
+                                    <span className={`block w-2.5 h-2.5 rounded-full bg-white shadow transition-transform ${ccSettings?.showOriginal ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+                                  </button>
+                                </div>
+                                <div>
+                                  <span className="text-[8px] font-bold text-zinc-500 block mb-1">ئەreciozani</span>
+                                  <div className="flex gap-0.5">
+                                    {[{ key: 'sm', label: 'A-' }, { key: 'md', label: 'A' }, { key: 'lg', label: 'A+' }, { key: 'xl', label: 'A++' }].map((fs) => (
+                                      <button
+                                        key={fs.key}
+                                        type="button"
+                                        onClick={() => {}}
+                                        className={`flex-1 py-0.5 rounded text-[9px] font-black transition-all cursor-pointer ${
+                                          ccSettings?.fontSize === fs.key ? 'bg-brand-primary text-white' : 'bg-white/5 text-zinc-400'
+                                        }`}
+                                      >
+                                        {fs.label}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                                <div>
+                                  <div className="flex items-center justify-between mb-0.5">
+                                    <span className="text-[8px] font-bold text-zinc-500">کاڵکردنەوە</span>
+                                    <span className="text-[7px] text-zinc-600">{Math.round((ccSettings?.bgOpacity ?? 0.8) * 100)}%</span>
+                                  </div>
+                                  <input
+                                    type="range"
+                                    min={0.2}
+                                    max={1}
+                                    step={0.1}
+                                    value={ccSettings?.bgOpacity ?? 0.8}
+                                    onChange={() => {}}
+                                    className="w-full h-0.5 accent-brand-primary cursor-pointer"
+                                  />
+                                </div>
+                                <div>
+                                  <span className="text-[8px] font-bold text-zinc-500 block mb-1">ڕەنگ</span>
+                                  <div className="flex gap-1">
+                                    {['#ffffff', '#FFFF00', '#00FFFF', '#00FF00', '#FF8800', '#FF5555'].map((color) => (
+                                      <button
+                                        key={color}
+                                        type="button"
+                                        onClick={() => {}}
+                                        className={`w-4 h-4 rounded-full border-2 transition-all cursor-pointer ${
+                                          ccSettings?.textColor === color ? 'border-white scale-110' : 'border-zinc-600'
+                                        }`}
+                                        style={{ backgroundColor: color }}
+                                      />
+                                    ))}
+                                  </div>
+                                </div>
+                                <p className="text-[7px] text-zinc-600 text-center">Settings controlled from main player</p>
+                              </div>
+                            </>
                           )}
                         </div>
                       ) : (

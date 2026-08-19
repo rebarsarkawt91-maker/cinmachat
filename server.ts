@@ -9207,7 +9207,7 @@ async function startServer() {
         stepLogSub(
           `translated ${srtText.length} chars in ${((Date.now() - startedSub) / 1000).toFixed(1)}s`,
         );
-        res.json({ success: true, srt: srtText, lang: targetLangSub, source: 'subtitle-file' });
+        res.json({ success: true, srt: srtText, lang: targetLangSub, source: 'subtitle-file', originalSrt: normalized });
       } catch (err: any) {
         console.error(`[${new Date().toISOString()}] [subtitle-api] subtitle-file ERROR:`, err?.message || err);
         res.status(500).json({ error: err?.message || 'Subtitle translation failed' });
@@ -9324,6 +9324,7 @@ let videoDownloaded = false;
                 srt: translatedSrt,
                 lang: targetLang,
                 source: `youtube-captions-${sourceCaptionResult.mode}-sorani-translate`,
+                originalSrt: sourceSrtForSorani || sourceCaptionResult.srt,
               });
               return;
             } catch (soraniErr: any) {
@@ -9404,6 +9405,7 @@ let videoDownloaded = false;
               srt: translatedSrt,
               lang: targetLang,
               source: `youtube-captions-${ytDlpResult.mode}-translate`,
+              originalSrt: ytDlpResult.srt,
             });
           } catch (translateErr: any) {
             const message = translateErr?.message || 'Subtitle translation failed';
@@ -9436,6 +9438,7 @@ let videoDownloaded = false;
                 srt: translatedSrt,
                 lang: targetLang,
                 source: `youtube-captions-web-${webCaptionResult.source}-translate`,
+                originalSrt: webCaptionResult.srt,
               });
             } catch (translateErr: any) {
               const message = translateErr?.message || 'Subtitle translation failed';
@@ -9484,6 +9487,7 @@ let videoDownloaded = false;
                 srt: translatedSrt,
                 lang: targetLang,
                 source: `youtube-captions-bridge-${bridgeResult.mode}-translate`,
+                originalSrt: bridgeResult.srt,
               });
               return;
             } catch (bridgeErr: any) {
@@ -9517,6 +9521,7 @@ let videoDownloaded = false;
                 srt: translatedSrt,
                 lang: targetLang,
                 source: `youtube-captions-web-en-translate-${enCaptionResult.source}`,
+                originalSrt: enCaptionResult.srt,
               });
               return;
             } catch (geminiFallbackErr: any) {
