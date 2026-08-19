@@ -10357,12 +10357,12 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     let objectUrl = "";
-    setCinemaWindowSubtitleUrl("");
-    setCinemaWindowSubtitleCues([]);
-    setCinemaWindowSubtitleStatus("idle");
-    setCinemaWindowSubtitleMessage("");
 
     if (!isInMainWatchRoom || !subtitleSourceUrl) {
+      setCinemaWindowSubtitleUrl("");
+      setCinemaWindowSubtitleCues([]);
+      setCinemaWindowSubtitleStatus("idle");
+      setCinemaWindowSubtitleMessage("");
       return () => {
         cancelled = true;
       };
