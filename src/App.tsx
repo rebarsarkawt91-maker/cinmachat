@@ -10266,7 +10266,8 @@ export default function App() {
     ? cinemaWindowPlaybackTime
     : playerCurrentTime;
 
-  // Windowed subtitle index (Sorani splits into 90-second chunks).
+  // Windowed subtitle index — Sorani splits into 60-second chunks so each
+  // request fetches only a small portion of the video's captions.
   const subtitleWindowIndex =
     cinemaWindowSubtitleLang === "ckb" ? Math.floor(subtitlePlaybackTime / 60) : 0;
 
@@ -10303,9 +10304,6 @@ export default function App() {
     backgroundColor: ccSettings.textColor === '#ffffff' ? `rgba(0,0,0,${ccSettings.bgOpacity})` : `rgba(0,0,0,${Math.min(ccSettings.bgOpacity + 0.1, 1)})`,
     textShadow: '0 1px 6px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,1)',
   }), [ccSettings.textColor, ccSettings.bgOpacity]);
-
-  const cinemaWindowSubtitleWindowIndex =
-    cinemaWindowSubtitleLang === "ckb" ? Math.floor(subtitlePlaybackTime / 90) : 0;
 
   useEffect(() => {
     setCinemaWindowStreamRefreshKey(0);
@@ -10526,17 +10524,15 @@ export default function App() {
           URL.revokeObjectURL(objectUrl);
           return;
         }
-        if (!cancelled) {
-          setCinemaWindowSubtitleUrl(objectUrl);
-          setCinemaWindowSubtitleCues(parseCinemaWindowSubtitleCues(vttText));
-          if (subtitle.originalVttText) {
-            setOriginalCinemaWindowSubtitleCues(parseCinemaWindowSubtitleCues(subtitle.originalVttText));
-          } else {
-            setOriginalCinemaWindowSubtitleCues([]);
-          }
-          setCinemaWindowSubtitleStatus("ready");
-          setCinemaWindowSubtitleMessage(`${selectedSubtitleLanguage.label} ئامادەیە`);
+        setCinemaWindowSubtitleUrl(objectUrl);
+        setCinemaWindowSubtitleCues(parseCinemaWindowSubtitleCues(vttText));
+        if (subtitle.originalVttText) {
+          setOriginalCinemaWindowSubtitleCues(parseCinemaWindowSubtitleCues(subtitle.originalVttText));
+        } else {
+          setOriginalCinemaWindowSubtitleCues([]);
         }
+        setCinemaWindowSubtitleStatus("ready");
+        setCinemaWindowSubtitleMessage(`${selectedSubtitleLanguage.label} ئامادەیە`);
       })
       .catch((err) => {
         if (!cancelled) {
@@ -12844,7 +12840,7 @@ export default function App() {
                               {cinemaWindowActiveOriginalText && (
                                 <div
                                   dir="auto"
-                                  className={`max-w-[92%] whitespace-pre-line rounded-lg px-3 py-1.5 text-center font-bold leading-snug opacity-70 ${ccFontSizeEntry.mobileCls} md:${ccFontSizeEntry.cls.replace(/text-\S+/g, (m) => m)}`}
+                                  className={`max-w-[92%] whitespace-pre-line rounded-lg px-3 py-1.5 text-center font-bold leading-snug opacity-70 ${ccFontSizeEntry.mobileCls} md:${ccFontSizeEntry.cls}`}
                                   style={{ color: '#cccccc', backgroundColor: 'rgba(0,0,0,0.5)', textShadow: '0 1px 4px rgba(0,0,0,0.8)' }}
                                 >
                                   {cinemaWindowActiveOriginalText}
@@ -12970,9 +12966,11 @@ export default function App() {
                         className={`text-right text-xs font-bold ${
                           cinemaWindowSubtitleStatus === "ready"
                             ? "text-emerald-400"
-                            : cinemaWindowSubtitleStatus === "error"
-                              ? "text-amber-300"
-                              : "text-zinc-300"
+                            : cinemaWindowSubtitleStatus === "loading"
+                              ? "text-red-400"
+                              : cinemaWindowSubtitleStatus === "error"
+                                ? "text-amber-300"
+                                : "text-zinc-300"
                         }`}
                       >
                         {cinemaWindowSubtitleStatus === "loading"
@@ -13004,7 +13002,7 @@ export default function App() {
 
                     {/* Font size selector */}
                     <div className="border-t border-white/10 pt-3">
-                      <span className="text-zinc-500 text-xs block mb-2">ئەreciozani</span>
+                      <span className="text-zinc-500 text-xs block mb-2">ئەندازەی فۆنت</span>
                       <div className="flex gap-1">
                         {CC_FONT_SIZES.map((fs) => (
                           <button
@@ -13897,27 +13895,27 @@ export default function App() {
                       )}
                       {isDramaRoomActive && cinemaWindowSubtitleStatus === "loading" && !cinemaWindowActiveSubtitleText && (
                         <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center gap-2 px-4 py-3 pointer-events-none">
-                              <div className="flex items-center gap-2 rounded-xl bg-black/70 px-3 py-2 text-xs text-red-400">
-                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                <span className="kurdish-text">{cinemaWindowSubtitleMessage || "وەردەگێڕدرێت..."}</span>
-                              </div>
-                            </div>
-                          )}
-{isDramaRoomActive && cinemaWindowSubtitleStatus === "error" && (
-                        <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center px-4 py-3">
-                          <div className="flex items-center gap-2 rounded-xl bg-red-950/80 border border-red-500/20 px-3 py-2 text-xs text-red-300">
-                            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                            <span className="kurdish-text">{cinemaWindowSubtitleMessage || "بەردەست نییە"}</span>
-                            <button
-                              onClick={() => setCinemaWindowSubtitleRetryKey((k) => k + 1)}
-                              className="ml-1 p-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-200 transition-colors shrink-0 cursor-pointer"
-                              title="Retry subtitle generation"
-                            >
-                              <RefreshCw className="w-3 h-3" />
-                            </button>
+                          <div className="flex items-center gap-2 rounded-xl bg-black/70 px-3 py-2 text-xs text-red-400">
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span className="kurdish-text">{cinemaWindowSubtitleMessage || "وەردەگێڕدرێت..."}</span>
                           </div>
                         </div>
                       )}
+                          {isDramaRoomActive && cinemaWindowSubtitleStatus === "error" && (
+                            <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center px-4 py-3">
+                              <div className="flex items-center gap-2 rounded-xl bg-red-950/80 border border-red-500/20 px-3 py-2 text-xs text-red-300">
+                                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                <span className="kurdish-text">{cinemaWindowSubtitleMessage || "بەردەست نییە"}</span>
+                                <button
+                                  onClick={() => setCinemaWindowSubtitleRetryKey((k) => k + 1)}
+                                  className="ml-1 p-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-200 transition-colors shrink-0 cursor-pointer"
+                                  title="Retry subtitle generation"
+                                >
+                                  <RefreshCw className="w-3 h-3" />
+                                </button>
+                              </div>
+                            </div>
+                          )}
 
                       {/* Playback speed HUD (shows after a speed change via the
                           speed menu or press-and-hold on the video). */}
@@ -14305,7 +14303,7 @@ export default function App() {
                                   className="fixed inset-0 z-[55]"
                                   onClick={() => setPlayerMenu(null)}
                                 />
-                                <div className="absolute bottom-full right-0 mb-2 z-[60] w-44 rounded-xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-2 shadow-2xl space-y-1.5">
+                                <div className="absolute bottom-full right-0 mb-2 z-[60] w-44 max-h-[60vh] overflow-y-auto rounded-xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-2 shadow-2xl space-y-1.5 overscroll-contain">
                                   <div className="px-1 pb-1 text-[8px] font-black text-zinc-400 uppercase tracking-widest kurdish-text">
                                     زمانی ژێرنوس
                                   </div>
@@ -14356,11 +14354,100 @@ export default function App() {
                                     >
                                       <span>⚙️ ڕێکخستن</span>
                                     </button>
-                                   </div>
-                                 </div>
-                               </>
-                             )}
-                           </div>
+                                  </div>
+                                </div>
+                              </>
+                            )}
+
+                            {/* CC Settings Panel — floating popup inside the relative
+                                container so it positions above the control bar. */}
+                            {showCcPanel && (
+                              <>
+                                <div className="fixed inset-0 z-[65]" onClick={() => setShowCcPanel(false)} />
+                                <div className="absolute bottom-full right-0 mb-2 z-[70] w-56 max-h-[65vh] overflow-y-auto rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-3 shadow-2xl space-y-3 overscroll-contain">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[9px] font-black text-zinc-400 uppercase tracking-widest kurdish-text">ڕێکخستنی ژێرنوس</span>
+                                    <button onClick={() => setShowCcPanel(false)} className="text-zinc-500 hover:text-white text-xs cursor-pointer">✕</button>
+                                  </div>
+
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[10px] font-bold text-zinc-300">show / hide</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => setCcSettings((s) => ({ ...s, showSubtitle: !s.showSubtitle }))}
+                                      className={`w-8 h-4 rounded-full transition-all cursor-pointer ${ccSettings.showSubtitle ? 'bg-brand-primary' : 'bg-zinc-600'}`}
+                                    >
+                                      <span className={`block w-3 h-3 rounded-full bg-white shadow transition-transform ${ccSettings.showSubtitle ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                                    </button>
+                                  </div>
+
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[10px] font-bold text-zinc-300">ژێرنووسی ڕەسەن</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => setCcSettings((s) => ({ ...s, showOriginal: !s.showOriginal }))}
+                                      className={`w-8 h-4 rounded-full transition-all cursor-pointer ${ccSettings.showOriginal ? 'bg-emerald-500' : 'bg-zinc-600'}`}
+                                    >
+                                      <span className={`block w-3 h-3 rounded-full bg-white shadow transition-transform ${ccSettings.showOriginal ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                                    </button>
+                                  </div>
+
+                                  <div>
+                                    <span className="text-[9px] font-bold text-zinc-500 block mb-1">ئەندازەی فۆنت</span>
+                                    <div className="flex gap-1">
+                                      {CC_FONT_SIZES.map((fs) => (
+                                        <button
+                                          key={fs.key}
+                                          type="button"
+                                          onClick={() => setCcSettings((s) => ({ ...s, fontSize: fs.key }))}
+                                          className={`flex-1 py-1 rounded-lg text-[10px] font-black transition-all cursor-pointer ${
+                                            ccSettings.fontSize === fs.key
+                                              ? "bg-brand-primary text-white"
+                                              : "bg-white/5 hover:bg-white/10 text-zinc-400"
+                                          }`}
+                                        >
+                                          {fs.label}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+
+                                  <div>
+                                    <div className="flex items-center justify-between mb-1">
+                                      <span className="text-[9px] font-bold text-zinc-500">کاڵکردنەوە</span>
+                                      <span className="text-[8px] text-zinc-600">{Math.round(ccSettings.bgOpacity * 100)}%</span>
+                                    </div>
+                                    <input
+                                      type="range"
+                                      min={0.2}
+                                      max={1}
+                                      step={0.1}
+                                      value={ccSettings.bgOpacity}
+                                      onChange={(e) => setCcSettings((s) => ({ ...s, bgOpacity: Number(e.target.value) }))}
+                                      className="w-full h-1 accent-brand-primary cursor-pointer"
+                                    />
+                                  </div>
+
+                                  <div>
+                                    <span className="text-[9px] font-bold text-zinc-500 block mb-1">ڕەنگ</span>
+                                    <div className="flex gap-1.5">
+                                      {CC_TEXT_COLORS.map((color) => (
+                                        <button
+                                          key={color}
+                                          type="button"
+                                          onClick={() => setCcSettings((s) => ({ ...s, textColor: color }))}
+                                          className={`w-5 h-5 rounded-full border-2 transition-all cursor-pointer ${
+                                            ccSettings.textColor === color ? 'border-white scale-110' : 'border-zinc-600 hover:border-zinc-400'
+                                          }`}
+                                          style={{ backgroundColor: color }}
+                                        />
+                                      ))}
+                                    </div>
+                                  </div>
+                                </div>
+                              </>
+                            )}
+                          </div>
                          )}
 
                         {/* [1] Fullscreen Expand (rightmost of the cluster) */}

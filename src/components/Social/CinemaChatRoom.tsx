@@ -1414,7 +1414,7 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                                       className="fixed inset-0 z-[55]"
                                       onClick={() => setShowCcMenu(false)}
                                     />
-                                    <div className="absolute top-full right-0 mt-1 z-[60] w-44 rounded-xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-2 shadow-2xl space-y-1.5">
+                                    <div className="absolute top-full right-0 mt-1 z-[60] w-44 max-h-[60vh] overflow-y-auto rounded-xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-2 shadow-2xl space-y-1.5 overscroll-contain">
                                       <div className="text-[8px] font-black text-zinc-400 uppercase tracking-widest px-1 kurdish-text">زمانی ژێرنوس</div>
                                       {subtitleLanguages.map((lang) => (
                                         <button
@@ -1454,7 +1454,7 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                           {showCcPanel && (
                             <>
                               <div className="fixed inset-0 z-[65]" onClick={() => onToggleCcPanel?.()} />
-                              <div className="absolute top-12 right-1.5 z-[70] w-48 rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-2.5 shadow-2xl space-y-2">
+                              <div className="absolute top-12 right-1.5 z-[70] w-48 max-h-[65vh] overflow-y-auto rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-2.5 shadow-2xl space-y-2 overscroll-contain">
                                 <div className="flex items-center justify-between">
                                   <span className="text-[8px] font-black text-zinc-400 uppercase tracking-widest">CC Settings</span>
                                   <button onClick={() => onToggleCcPanel?.()} className="text-zinc-500 hover:text-white text-[10px] cursor-pointer">✕</button>
