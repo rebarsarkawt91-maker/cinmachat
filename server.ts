@@ -449,7 +449,7 @@ function buildGoogleTranslateTimedtextCandidates(videoId: string, targetLang: st
     if (!candidates.includes(url)) candidates.push(url);
   };
 
-  const sourceLangs = ['en', 'ar', 'es', 'tr', 'ku', 'fa'];
+  const sourceLangs = ['en', 'ar', 'es', 'tr', 'ku', 'fa', 'fr', 'de', 'it', 'pt', 'ru', 'ja', 'ko', 'zh', 'hi', 'id', 'ms', 'th', 'vi', 'pl', 'nl', 'sv', 'uk'];
   for (const host of ['https://www.youtube.com/api/timedtext', 'https://video.google.com/timedtext']) {
     for (const srcLang of sourceLangs) {
       if (srcLang === targetLang) continue;
@@ -9256,7 +9256,7 @@ let videoDownloaded = false;
         stepLog(`fetching YouTube captions for video ${videoId} via yt-dlp`);
 
         if (targetLang === 'ckb') {
-          const soraniSourceLangs = ['ku', 'en', 'ar', 'es', 'tr', 'fa'];
+          const soraniSourceLangs = ['ku', 'en', 'ar', 'es', 'tr', 'fa', 'fr', 'de', 'ru', 'id'];
           for (const soraniSourceLang of soraniSourceLangs) {
             try {
               stepLog(`Sorani requested; fetching ${soraniSourceLang} captions first, then translating to ckb`);
@@ -9423,7 +9423,7 @@ let videoDownloaded = false;
         } catch (webErr: any) {
           stepLog(`timedtext/web caption fetch failed: ${webErr?.message || webErr}`);
 
-          const bridgeCaptionLangs = ['ar', 'en', 'ku', 'es', 'tr', 'fa'].filter(
+          const bridgeCaptionLangs = ['ar', 'en', 'ku', 'es', 'fr', 'de', 'ru', 'tr', 'fa', 'hi', 'id'].filter(
             (captionLang) => captionLang !== targetLang,
           );
           for (const bridgeLang of bridgeCaptionLangs) {

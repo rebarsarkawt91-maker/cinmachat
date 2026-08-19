@@ -6691,22 +6691,58 @@ const CINEMA_WINDOW_SUBTITLE_LANGUAGES = [
   { code: "en", label: "English", shortLabel: "English CC" },
   { code: "ar", label: "العربية", shortLabel: "Arabic CC" },
   { code: "fa", label: "فارسی", shortLabel: "Persian CC" },
+  { code: "ur", label: "اردو", shortLabel: "Urdu CC" },
+  { code: "hi", label: "हिन्दी", shortLabel: "Hindi CC" },
+  { code: "bn", label: "বাংলা", shortLabel: "Bengali CC" },
+  { code: "ta", label: "தமிழ்", shortLabel: "Tamil CC" },
+  { code: "te", label: "తెలుగు", shortLabel: "Telugu CC" },
+  { code: "mr", label: "मराठी", shortLabel: "Marathi CC" },
+  { code: "ne", label: "नेपाली", shortLabel: "Nepali CC" },
+  { code: "si", label: "සිංහල", shortLabel: "Sinhala CC" },
   { code: "tr", label: "Türkçe", shortLabel: "Turkish CC" },
+  { code: "az", label: "Azərbaycanca", shortLabel: "Azerbaijani CC" },
+  { code: "kk", label: "Қазақша", shortLabel: "Kazakh CC" },
+  { code: "uz", label: "O'zbek", shortLabel: "Uzbek CC" },
+  { code: "tg", label: "Тоҷикӣ", shortLabel: "Tajik CC" },
+  { code: "ps", label: "پښتو", shortLabel: "Pashto CC" },
+  { code: "ku", label: "Kurmancî", shortLabel: "Kurdish CC" },
   { code: "es", label: "Español", shortLabel: "Spanish CC" },
   { code: "fr", label: "Français", shortLabel: "French CC" },
   { code: "de", label: "Deutsch", shortLabel: "German CC" },
+  { code: "it", label: "Italiano", shortLabel: "Italian CC" },
+  { code: "pt", label: "Português", shortLabel: "Portuguese CC" },
+  { code: "nl", label: "Nederlands", shortLabel: "Dutch CC" },
+  { code: "pl", label: "Polski", shortLabel: "Polish CC" },
+  { code: "sv", label: "Svenska", shortLabel: "Swedish CC" },
+  { code: "no", label: "Norsk", shortLabel: "Norwegian CC" },
+  { code: "da", label: "Dansk", shortLabel: "Danish CC" },
+  { code: "fi", label: "Suomi", shortLabel: "Finnish CC" },
+  { code: "cs", label: "Čeština", shortLabel: "Czech CC" },
+  { code: "sk", label: "Slovenčina", shortLabel: "Slovak CC" },
+  { code: "ro", label: "Română", shortLabel: "Romanian CC" },
+  { code: "hu", label: "Magyar", shortLabel: "Hungarian CC" },
+  { code: "el", label: "Ελληνικά", shortLabel: "Greek CC" },
+  { code: "bg", label: "Български", shortLabel: "Bulgarian CC" },
+  { code: "hr", label: "Hrvatski", shortLabel: "Croatian CC" },
+  { code: "sr", label: "Српски", shortLabel: "Serbian CC" },
+  { code: "sl", label: "Slovenščina", shortLabel: "Slovenian CC" },
+  { code: "uk", label: "Українська", shortLabel: "Ukrainian CC" },
   { code: "ru", label: "Русский", shortLabel: "Russian CC" },
+  { code: "ka", label: "ქართული", shortLabel: "Georgian CC" },
+  { code: "hy", label: "Հայերեն", shortLabel: "Armenian CC" },
+  { code: "he", label: "עברית", shortLabel: "Hebrew CC" },
+  { code: "id", label: "Bahasa Indonesia", shortLabel: "Indonesian CC" },
+  { code: "ms", label: "Bahasa Melayu", shortLabel: "Malay CC" },
+  { code: "th", label: "ไทย", shortLabel: "Thai CC" },
+  { code: "vi", label: "Tiếng Việt", shortLabel: "Vietnamese CC" },
   { code: "zh", label: "中文", shortLabel: "Chinese CC" },
   { code: "ja", label: "日本語", shortLabel: "Japanese CC" },
   { code: "ko", label: "한국어", shortLabel: "Korean CC" },
-  { code: "pt", label: "Português", shortLabel: "Portuguese CC" },
-  { code: "it", label: "Italiano", shortLabel: "Italian CC" },
-  { code: "hi", label: "हिन्दी", shortLabel: "Hindi CC" },
-  { code: "ur", label: "اردو", shortLabel: "Urdu CC" },
   { code: "sw", label: "Kiswahili", shortLabel: "Swahili CC" },
-  { code: "th", label: "ไทย", shortLabel: "Thai CC" },
-  { code: "ms", label: "Bahasa Melayu", shortLabel: "Malay CC" },
-  { code: "id", label: "Bahasa Indonesia", shortLabel: "Indonesian CC" },
+  { code: "am", label: "አማርኛ", shortLabel: "Amharic CC" },
+  { code: "ha", label: "Hausa", shortLabel: "Hausa CC" },
+  { code: "yo", label: "Yorùbá", shortLabel: "Yoruba CC" },
+  { code: "zu", label: "isiZulu", shortLabel: "Zulu CC" },
 ];
 
 const getCinemaWindowSubtitleLanguage = (code: string) =>
@@ -10234,6 +10270,9 @@ export default function App() {
     return "";
   }, [activeCinemaWindowRoom, activeCinemaWindowSourceUrl, isDramaRoomActive, activeServerUrl, isCinemaChatActive, cinemaChatSourceUrl]);
 
+  const prevSubtitleLangRef = useRef(cinemaWindowSubtitleLang);
+  const prevSubtitleSourceRef = useRef(subtitleSourceUrl);
+
   // Playback time used for subtitle cue matching. Cinema Window tracks its own
   // time from the native <video>; Drama Rooms reuse `playerCurrentTime`.
   const subtitlePlaybackTime = activeCinemaWindowRoom
@@ -10363,9 +10402,21 @@ export default function App() {
       setCinemaWindowSubtitleCues([]);
       setCinemaWindowSubtitleStatus("idle");
       setCinemaWindowSubtitleMessage("");
+      prevSubtitleLangRef.current = cinemaWindowSubtitleLang;
+      prevSubtitleSourceRef.current = subtitleSourceUrl;
       return () => {
         cancelled = true;
       };
+    }
+
+    const langChanged = prevSubtitleLangRef.current !== cinemaWindowSubtitleLang;
+    const sourceChanged = prevSubtitleSourceRef.current !== subtitleSourceUrl;
+    prevSubtitleLangRef.current = cinemaWindowSubtitleLang;
+    prevSubtitleSourceRef.current = subtitleSourceUrl;
+
+    if (langChanged || sourceChanged) {
+      setCinemaWindowSubtitleUrl("");
+      setCinemaWindowSubtitleCues([]);
     }
 
     const movieSubtitleUrl = subtitleMovieFileUrl;
@@ -10412,7 +10463,7 @@ export default function App() {
       } catch (targetErr) {
         if (selectedSubtitleLanguage.code === "en") throw targetErr;
 
-        const fallbackLangs = ["en", "ar", "es", "ku", "tr", "fa"].filter(
+        const fallbackLangs = ["en", "ar", "es", "fr", "de", "ru", "tr", "fa", "ku", "hi", "id"].filter(
           (fallbackLang) => fallbackLang !== selectedSubtitleLanguage.code,
         );
         let lastFallbackError = targetErr;
@@ -12871,9 +12922,12 @@ export default function App() {
                         <Globe className="w-4 h-4" />
                         زمانی ژێرنوس
                       </span>
-                      <select
+                       <select
                         value={cinemaWindowSubtitleLang}
-                        onChange={(event) => setCinemaWindowSubtitleLang(event.target.value)}
+                        onChange={(event) => {
+                          setCinemaWindowSubtitleLang(event.target.value);
+                          setCinemaWindowSubtitleRetryKey((k) => k + 1);
+                        }}
                         className="w-full rounded-xl border border-white/10 bg-black/50 px-3 py-2 text-sm font-bold text-white outline-none focus:border-amber-400"
                       >
                         {CINEMA_WINDOW_SUBTITLE_LANGUAGES.map((language) => (
