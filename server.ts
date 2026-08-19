@@ -379,7 +379,7 @@ const YT_HTTP_HEADERS: Record<string, string> = {
   'Accept-Language': 'en-US,en;q=0.9',
 };
 
-async function fetchTextWithTimeout(url: string, timeoutMs = 20000, init: RequestInit = {}): Promise<string> {
+async function fetchTextWithTimeout(url: string, timeoutMs = 10000, init: RequestInit = {}): Promise<string> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -449,7 +449,7 @@ function buildGoogleTranslateTimedtextCandidates(videoId: string, targetLang: st
     if (!candidates.includes(url)) candidates.push(url);
   };
 
-  const sourceLangs = ['en', 'ar', 'es', 'tr', 'ku', 'fa', 'fr', 'de', 'it', 'pt', 'ru', 'ja', 'ko', 'zh', 'hi', 'id', 'ms', 'th', 'vi', 'pl', 'nl', 'sv', 'uk'];
+  const sourceLangs = ['en', 'ar', 'ku'];
   for (const host of ['https://www.youtube.com/api/timedtext', 'https://video.google.com/timedtext']) {
     for (const srcLang of sourceLangs) {
       if (srcLang === targetLang) continue;
@@ -609,9 +609,9 @@ async function translateTextViaMyMemory(text: string, targetLang: string, source
     `&langpair=${encodeURIComponent(`${source}|${targetLang}`)}`;
   let memoryData: any = null;
   let lastError: any = null;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      memoryData = await fetchJsonWithTimeout<any>(memoryUrl, 60000, {
+      memoryData = await fetchJsonWithTimeout<any>(memoryUrl, 15000, {
         headers: { 'Accept-Language': 'en-US,en;q=0.9' },
       });
       lastError = null;
@@ -619,8 +619,8 @@ async function translateTextViaMyMemory(text: string, targetLang: string, source
     } catch (err: any) {
       lastError = err;
       const message = err?.message || String(err);
-      if (!/HTTP (429|500|502|503|504)/.test(message) || attempt === 2) break;
-      await new Promise((resolve) => setTimeout(resolve, 2000 * (attempt + 1)));
+      if (!/HTTP (429|500|502|503|504)/.test(message) || attempt === 1) break;
+      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
     }
   }
   if (lastError) throw lastError;
@@ -644,7 +644,7 @@ async function translateTextViaGoogleCloud(text: string, targetLang: string, sou
 
   const response = await fetchJsonWithTimeout<any>(
     `https://translation.googleapis.com/language/translate/v2?key=${encodeURIComponent(apiKey)}`,
-    60000,
+    20000,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -680,11 +680,11 @@ async function translateTextViaGoogle(text: string, targetLang: string, sourceLa
   });
   let data: any = null;
   let lastError: any = null;
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       data = await fetchJsonWithTimeout<any>(
         'https://translate.googleapis.com/translate_a/single',
-        60000,
+        20000,
         {
           method: 'POST',
           headers: {
@@ -699,8 +699,8 @@ async function translateTextViaGoogle(text: string, targetLang: string, sourceLa
     } catch (err: any) {
       lastError = err;
       const message = err?.message || String(err);
-      if (/HTTP 429/.test(message) || !/HTTP (500|502|503|504)/.test(message) || attempt === 3) break;
-      await new Promise((resolve) => setTimeout(resolve, 2500 * (attempt + 1)));
+      if (/HTTP 429/.test(message) || !/HTTP (500|502|503|504)/.test(message) || attempt === 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
     }
   }
   if (lastError) {
@@ -764,7 +764,7 @@ async function translateSubtitleViaGoogle(
         return true;
       });
       let nextJobIndex = 0;
-      const workerCount = Math.min(2, Math.max(1, uniqueJobs.length));
+      const workerCount = Math.min(6, Math.max(1, uniqueJobs.length));
 
       const translateOne = async (text: string) => {
         if (text.length <= 450) {
@@ -796,7 +796,7 @@ async function translateSubtitleViaGoogle(
     }
 
     const marker = 'CINEMACHATCUEBREAK123';
-    const maxBatchChars = targetLang === 'ckb' ? 900 : 4500;
+const maxBatchChars = targetLang === 'ckb' ? 2500 : 4500;
     for (let start = 0; start < filteredCueJobs.length;) {
       const batch: typeof cueJobs = [];
       let chars = 0;
@@ -835,7 +835,7 @@ async function translateSubtitleViaGoogle(
 
   if (!jobs.length) return subtitleText;
 
-  const maxBatchChars = targetLang === 'ckb' ? 900 : 4500;
+const maxBatchChars = targetLang === 'ckb' ? 2500 : 4500;
   for (let start = 0; start < jobs.length;) {
     const batch: typeof jobs = [];
     let chars = 0;
@@ -1076,7 +1076,7 @@ async function fetchYouTubeCaptionsFromWeb(
 
   for (const candidate of candidates) {
     try {
-      const raw = await fetchTextWithTimeout(candidate.url, 15000);
+      const raw = await fetchTextWithTimeout(candidate.url, 8000);
       if (!isLikelyCaptionPayload(raw)) {
         errors.push(`${candidate.source}: non-caption payload (${raw.length} chars)`);
         continue;
@@ -1208,7 +1208,7 @@ async function fetchYoutubeCaptionsViaYtDlp(
     try {
       const { stdout, stderr } = await execFileText('yt-dlp', attempt.args, {
         cwd: workDir,
-        timeoutMs: 120000,
+        timeoutMs: 30000,
       });
       const subtitleResult = readSubtitleFromDir(workDir, attempt.captionLang);
       if (!subtitleResult) {
@@ -9134,6 +9134,30 @@ async function startServer() {
   });
 
 
+  // Server-side LRU cache for translated subtitles (avoids re-fetch + re-translate).
+  const subtitleCache = new Map<string, { srt: string; lang: string; source: string; ts: number }>();
+  const SUBTITLE_CACHE_MAX = 50;
+  const SUBTITLE_CACHE_TTL_MS = 30 * 60 * 1000;
+  function subtitleCacheKey(url: string, lang: string, start: number | null, dur: number | null) {
+    return `${url}|${lang}|${start ?? 'n'}|${dur ?? 'n'}`;
+  }
+  function getSubtitleCache(key: string) {
+    const entry = subtitleCache.get(key);
+    if (!entry) return null;
+    if (Date.now() - entry.ts > SUBTITLE_CACHE_TTL_MS) { subtitleCache.delete(key); return null; }
+    return entry;
+  }
+  function setSubtitleCache(key: string, srt: string, lang: string, source: string) {
+    if (subtitleCache.size >= SUBTITLE_CACHE_MAX) {
+      let oldestKey = '';
+      let oldestTs = Infinity;
+      for (const [k, v] of subtitleCache) { if (v.ts < oldestTs) { oldestTs = v.ts; oldestKey = k; } }
+      if (oldestKey) subtitleCache.delete(oldestKey);
+    }
+    subtitleCache.set(key, { srt, lang, source, ts: Date.now() });
+  }
+
+
   // Generates SRT subtitles for a movie source on the server (ffmpeg + Whisper +
   // optional Gemini translation). Used by the player's "درستکردنی وەرگێڕان" button.
   // YouTube / streaming-source URLs use pure web caption extraction (timedtext +
@@ -9205,6 +9229,14 @@ async function startServer() {
       return res.status(400).json({ error: 'Source must be a valid http(s) URL' });
     }
 
+    // Server-side cache check — skip expensive yt-dlp/translate if we already have it.
+    const cacheKey = subtitleCacheKey(sourceUrl, targetLang, subtitleWindowStart, subtitleWindowDuration);
+    const cached = getSubtitleCache(cacheKey);
+    if (cached) {
+      console.log(`[${new Date().toISOString()}] [subtitle-api] cache HIT for ${sourceUrl.slice(0, 60)} lang=${targetLang}`);
+      return res.json({ success: true, srt: cached.srt, lang: cached.lang, source: `cache-${cached.source}` });
+    }
+
 const osMod = await import('os');
 const fsMod = await import('fs');
 const workDir = fsMod.mkdtempSync(path.join(osMod.tmpdir(), 'cinemachat-sub-api-'));
@@ -9256,7 +9288,7 @@ let videoDownloaded = false;
         stepLog(`fetching YouTube captions for video ${videoId} via yt-dlp`);
 
         if (targetLang === 'ckb') {
-          const soraniSourceLangs = ['ku', 'en', 'ar', 'es', 'tr', 'fa', 'fr', 'de', 'ru', 'id'];
+          const soraniSourceLangs = ['en', 'ar', 'ku'];
           for (const soraniSourceLang of soraniSourceLangs) {
             try {
               stepLog(`Sorani requested; fetching ${soraniSourceLang} captions first, then translating to ckb`);
@@ -9423,7 +9455,7 @@ let videoDownloaded = false;
         } catch (webErr: any) {
           stepLog(`timedtext/web caption fetch failed: ${webErr?.message || webErr}`);
 
-          const bridgeCaptionLangs = ['ar', 'en', 'ku', 'es', 'fr', 'de', 'ru', 'tr', 'fa', 'hi', 'id'].filter(
+          const bridgeCaptionLangs = ['en', 'ar', 'ku'].filter(
             (captionLang) => captionLang !== targetLang,
           );
           for (const bridgeLang of bridgeCaptionLangs) {

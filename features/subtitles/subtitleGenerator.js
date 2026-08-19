@@ -24,7 +24,7 @@ const GEMINI_MAX_SUBTITLE_CHARS = Number(process.env.SUBTITLE_GEMINI_MAX_CHARS) 
 const TIMEOUTS = {
   ffmpeg: Number(process.env.SUBTITLE_FFMPEG_TIMEOUT) || 120000,
   whisper: Number(process.env.SUBTITLE_WHISPER_TIMEOUT) || 600000,
-  gemini: Number(process.env.SUBTITLE_GEMINI_TIMEOUT) || 180000,
+  gemini: Number(process.env.SUBTITLE_GEMINI_TIMEOUT) || 60000,
 };
 
 const subtitleRuntime = {
@@ -156,62 +156,9 @@ async function runWhisper(wavFilePath, outputDir) {
 function subtitleTargetLanguageName(targetLang) {
   const code = String(targetLang || "").toLowerCase();
   if (code === "ckb") return `Kurdish Sorani (Central Kurdish, Arabic script; language code "${targetLang}")`;
-  if (code === "ku") return `Kurdish Kurmancî (language code "${targetLang}")`;
   if (code === "ar") return `Arabic (language code "${targetLang}")`;
-  if (code === "fa") return `Persian/Farsi (language code "${targetLang}")`;
-  if (code === "tr") return `Turkish (language code "${targetLang}")`;
   if (code === "en") return `English (language code "${targetLang}")`;
-  if (code === "fr") return `French (language code "${targetLang}")`;
-  if (code === "de") return `German (language code "${targetLang}")`;
-  if (code === "es") return `Spanish (language code "${targetLang}")`;
-  if (code === "pt") return `Portuguese (language code "${targetLang}")`;
-  if (code === "it") return `Italian (language code "${targetLang}")`;
-  if (code === "ru") return `Russian (language code "${targetLang}")`;
-  if (code === "zh") return `Chinese (language code "${targetLang}")`;
-  if (code === "ja") return `Japanese (language code "${targetLang}")`;
-  if (code === "ko") return `Korean (language code "${targetLang}")`;
-  if (code === "hi") return `Hindi in Devanagari script (language code "${targetLang}")`;
-  if (code === "ur") return `Urdu in Nastaliq/Arabic script (language code "${targetLang}")`;
-  if (code === "bn") return `Bengali/Bangla (language code "${targetLang}")`;
-  if (code === "ta") return `Tamil (language code "${targetLang}")`;
-  if (code === "te") return `Telugu (language code "${targetLang}")`;
-  if (code === "mr") return `Marathi (language code "${targetLang}")`;
-  if (code === "ne") return `Nepali (language code "${targetLang}")`;
-  if (code === "si") return `Sinhala (language code "${targetLang}")`;
-  if (code === "id") return `Indonesian/Bahasa Indonesia (language code "${targetLang}")`;
-  if (code === "ms") return `Malay/Bahasa Melayu (language code "${targetLang}")`;
-  if (code === "th") return `Thai (language code "${targetLang}")`;
-  if (code === "vi") return `Vietnamese (language code "${targetLang}")`;
-  if (code === "pl") return `Polish (language code "${targetLang}")`;
-  if (code === "nl") return `Dutch (language code "${targetLang}")`;
-  if (code === "sv") return `Swedish (language code "${targetLang}")`;
-  if (code === "no") return `Norwegian (language code "${targetLang}")`;
-  if (code === "da") return `Danish (language code "${targetLang}")`;
-  if (code === "fi") return `Finnish (language code "${targetLang}")`;
-  if (code === "cs") return `Czech (language code "${targetLang}")`;
-  if (code === "sk") return `Slovak (language code "${targetLang}")`;
-  if (code === "ro") return `Romanian (language code "${targetLang}")`;
-  if (code === "hu") return `Hungarian (language code "${targetLang}")`;
-  if (code === "el") return `Greek (language code "${targetLang}")`;
-  if (code === "bg") return `Bulgarian (language code "${targetLang}")`;
-  if (code === "hr") return `Croatian (language code "${targetLang}")`;
-  if (code === "sr") return `Serbian (language code "${targetLang}")`;
-  if (code === "sl") return `Slovenian (language code "${targetLang}")`;
-  if (code === "uk") return `Ukrainian (language code "${targetLang}")`;
-  if (code === "ka") return `Georgian (language code "${targetLang}")`;
-  if (code === "hy") return `Armenian (language code "${targetLang}")`;
-  if (code === "he") return `Hebrew (language code "${targetLang}")`;
-  if (code === "az") return `Azerbaijani (language code "${targetLang}")`;
-  if (code === "kk") return `Kazakh (language code "${targetLang}")`;
-  if (code === "uz") return `Uzbek (language code "${targetLang}")`;
-  if (code === "tg") return `Tajik (language code "${targetLang}")`;
-  if (code === "ps") return `Pashto (language code "${targetLang}")`;
-  if (code === "sw") return `Swahili (language code "${targetLang}")`;
-  if (code === "am") return `Amharic (language code "${targetLang}")`;
-  if (code === "ha") return `Hausa (language code "${targetLang}")`;
-  if (code === "yo") return `Yoruba (language code "${targetLang}")`;
-  if (code === "zu") return `Zulu (language code "${targetLang}")`;
-  return `the language "${targetLang}"`;
+  return `language code "${targetLang}"`;
 }
 
 async function translateSrtViaGemini(srtText, targetLang) {
@@ -280,11 +227,9 @@ async function translateSrtViaGemini(srtText, targetLang) {
   const chunks = splitIntoChunks(srtText);
   if (chunks.length > 1) {
     log(`step 3/3: translating ${srtText.trim().split("\n").length} lines in ${chunks.length} Gemini chunks to "${targetLang}" (${GEMINI_MODEL})`);
-    const translatedChunks = [];
-    for (let i = 0; i < chunks.length; i++) {
-      log(`  Gemini chunk ${i + 1}/${chunks.length} (${chunks[i].length} chars)`);
-      translatedChunks.push((await translateChunk(chunks[i])).replace(/\n+$/g, ""));
-    }
+    chunks.forEach((c, i) => log(`  Gemini chunk ${i + 1}/${chunks.length} (${c.length} chars)`));
+    const results = await Promise.all(chunks.map((chunk) => translateChunk(chunk)));
+    const translatedChunks = results.map((r) => r.replace(/\n+$/g, ""));
     const trailingNewline = /\n$/.test(srtText) ? "\n" : "";
     return `${translatedChunks.join("\n\n")}${trailingNewline}`;
   }
