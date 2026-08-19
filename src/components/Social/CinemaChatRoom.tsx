@@ -154,6 +154,8 @@ interface CinemaChatRoomProps {
   onToggleCcPanel?: () => void;
   /** Whether CC settings panel is open. */
   showCcPanel?: boolean;
+  /** Callback to update CC settings from the panel. */
+  onUpdateCcSettings?: (updater: (prev: { fontSize: 'sm' | 'md' | 'lg' | 'xl'; bgOpacity: number; textColor: string; showSubtitle: boolean; showOriginal: boolean }) => { fontSize: 'sm' | 'md' | 'lg' | 'xl'; bgOpacity: number; textColor: string; showSubtitle: boolean; showOriginal: boolean }) => void;
 }
 const PLAYBACK_HEARTBEAT_MS = 8000;
 const MAX_VOICE_SECONDS = 12;
@@ -293,6 +295,7 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
   ccSubtitleStyle,
   onToggleCcPanel,
   showCcPanel,
+  onUpdateCcSettings,
 }) => {
   const myId = identity.id;
 
@@ -1460,7 +1463,7 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                                   <span className="text-[9px] font-bold text-zinc-300">show / hide</span>
                                   <button
                                     type="button"
-                                    onClick={() => {}}
+                                    onClick={() => onUpdateCcSettings?.((s) => ({ ...s, showSubtitle: !s.showSubtitle }))}
                                     className={`w-7 h-3.5 rounded-full transition-all cursor-pointer ${ccSettings?.showSubtitle !== false ? 'bg-brand-primary' : 'bg-zinc-600'}`}
                                   >
                                     <span className={`block w-2.5 h-2.5 rounded-full bg-white shadow transition-transform ${ccSettings?.showSubtitle !== false ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
@@ -1470,20 +1473,20 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                                   <span className="text-[9px] font-bold text-zinc-300">ژێرنووسی ڕەسەن</span>
                                   <button
                                     type="button"
-                                    onClick={() => {}}
+                                    onClick={() => onUpdateCcSettings?.((s) => ({ ...s, showOriginal: !s.showOriginal }))}
                                     className={`w-7 h-3.5 rounded-full transition-all cursor-pointer ${ccSettings?.showOriginal ? 'bg-emerald-500' : 'bg-zinc-600'}`}
                                   >
                                     <span className={`block w-2.5 h-2.5 rounded-full bg-white shadow transition-transform ${ccSettings?.showOriginal ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
                                   </button>
                                 </div>
                                 <div>
-                                  <span className="text-[8px] font-bold text-zinc-500 block mb-1">ئەreciozani</span>
+                                  <span className="text-[8px] font-bold text-zinc-500 block mb-1">ئەندازەی فۆنت</span>
                                   <div className="flex gap-0.5">
-                                    {[{ key: 'sm', label: 'A-' }, { key: 'md', label: 'A' }, { key: 'lg', label: 'A+' }, { key: 'xl', label: 'A++' }].map((fs) => (
+                                    {[{ key: 'sm' as const, label: 'A-' }, { key: 'md' as const, label: 'A' }, { key: 'lg' as const, label: 'A+' }, { key: 'xl' as const, label: 'A++' }].map((fs) => (
                                       <button
                                         key={fs.key}
                                         type="button"
-                                        onClick={() => {}}
+                                        onClick={() => onUpdateCcSettings?.((s) => ({ ...s, fontSize: fs.key }))}
                                         className={`flex-1 py-0.5 rounded text-[9px] font-black transition-all cursor-pointer ${
                                           ccSettings?.fontSize === fs.key ? 'bg-brand-primary text-white' : 'bg-white/5 text-zinc-400'
                                         }`}
@@ -1504,7 +1507,7 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                                     max={1}
                                     step={0.1}
                                     value={ccSettings?.bgOpacity ?? 0.8}
-                                    onChange={() => {}}
+                                    onChange={(e) => onUpdateCcSettings?.((s) => ({ ...s, bgOpacity: Number(e.target.value) }))}
                                     className="w-full h-0.5 accent-brand-primary cursor-pointer"
                                   />
                                 </div>
@@ -1515,7 +1518,7 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                                       <button
                                         key={color}
                                         type="button"
-                                        onClick={() => {}}
+                                        onClick={() => onUpdateCcSettings?.((s) => ({ ...s, textColor: color }))}
                                         className={`w-4 h-4 rounded-full border-2 transition-all cursor-pointer ${
                                           ccSettings?.textColor === color ? 'border-white scale-110' : 'border-zinc-600'
                                         }`}

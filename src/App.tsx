@@ -10541,6 +10541,7 @@ export default function App() {
       .catch((err) => {
         if (!cancelled) {
           setCinemaWindowSubtitleCues([]);
+          setOriginalCinemaWindowSubtitleCues([]);
           setCinemaWindowSubtitleStatus("error");
           setCinemaWindowSubtitleMessage(
             err?.name === "AbortError"
@@ -13705,6 +13706,7 @@ export default function App() {
             ccSubtitleStyle={ccSubtitleStyle}
             onToggleCcPanel={() => setShowCcPanel((v) => !v)}
             showCcPanel={showCcPanel}
+            onUpdateCcSettings={(fn) => setCcSettings(fn)}
           />
           {/* CinemaChat private Friend → Connect (ephemeral 1-to-1 chat). The
               CinemaChat card opens THIS modal; the watch room above stays
@@ -14354,105 +14356,12 @@ export default function App() {
                                     >
                                       <span>⚙️ ڕێکخستن</span>
                                     </button>
-                                  </div>
-                                </div>
-                              </>
-                            )}
-                          </div>
-                        )}
-
-                        {/* CC Settings Panel — floating popup for font, color, opacity controls */}
-                        {showCcPanel && (
-                          <>
-                            <div className="fixed inset-0 z-[65]" onClick={() => setShowCcPanel(false)} />
-                            <div className="absolute bottom-full right-0 mb-2 z-[70] w-56 rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-3 shadow-2xl space-y-3">
-                              <div className="flex items-center justify-between">
-                                <span className="text-[9px] font-black text-zinc-400 uppercase tracking-widest kurdish-text">ڕێکخستنی ژێرنوس</span>
-                                <button onClick={() => setShowCcPanel(false)} className="text-zinc-500 hover:text-white text-xs cursor-pointer">✕</button>
-                              </div>
-
-                              {/* Show/Hide toggle */}
-                              <div className="flex items-center justify-between">
-                                <span className="text-[10px] font-bold text-zinc-300">show / hide</span>
-                                <button
-                                  type="button"
-                                  onClick={() => setCcSettings((s) => ({ ...s, showSubtitle: !s.showSubtitle }))}
-                                  className={`w-8 h-4 rounded-full transition-all cursor-pointer ${ccSettings.showSubtitle ? 'bg-brand-primary' : 'bg-zinc-600'}`}
-                                >
-                                  <span className={`block w-3 h-3 rounded-full bg-white shadow transition-transform ${ccSettings.showSubtitle ? 'translate-x-4' : 'translate-x-0.5'}`} />
-                                </button>
-                              </div>
-
-                              {/* Original subtitle toggle */}
-                              <div className="flex items-center justify-between">
-                                <span className="text-[10px] font-bold text-zinc-300">ژێرنووسی ڕەسەن</span>
-                                <button
-                                  type="button"
-                                  onClick={() => setCcSettings((s) => ({ ...s, showOriginal: !s.showOriginal }))}
-                                  className={`w-8 h-4 rounded-full transition-all cursor-pointer ${ccSettings.showOriginal ? 'bg-emerald-500' : 'bg-zinc-600'}`}
-                                >
-                                  <span className={`block w-3 h-3 rounded-full bg-white shadow transition-transform ${ccSettings.showOriginal ? 'translate-x-4' : 'translate-x-0.5'}`} />
-                                </button>
-                              </div>
-
-                              {/* Font size */}
-                              <div>
-                                <span className="text-[9px] font-bold text-zinc-500 block mb-1">ئەreciozani</span>
-                                <div className="flex gap-1">
-                                  {CC_FONT_SIZES.map((fs) => (
-                                    <button
-                                      key={fs.key}
-                                      type="button"
-                                      onClick={() => setCcSettings((s) => ({ ...s, fontSize: fs.key }))}
-                                      className={`flex-1 py-1 rounded-lg text-[10px] font-black transition-all cursor-pointer ${
-                                        ccSettings.fontSize === fs.key
-                                          ? "bg-brand-primary text-white"
-                                          : "bg-white/5 hover:bg-white/10 text-zinc-400"
-                                      }`}
-                                    >
-                                      {fs.label}
-                                    </button>
-                                  ))}
-                                </div>
-                              </div>
-
-                              {/* Background opacity */}
-                              <div>
-                                <div className="flex items-center justify-between mb-1">
-                                  <span className="text-[9px] font-bold text-zinc-500">کاڵکردنەوە</span>
-                                  <span className="text-[8px] text-zinc-600">{Math.round(ccSettings.bgOpacity * 100)}%</span>
-                                </div>
-                                <input
-                                  type="range"
-                                  min={0.2}
-                                  max={1}
-                                  step={0.1}
-                                  value={ccSettings.bgOpacity}
-                                  onChange={(e) => setCcSettings((s) => ({ ...s, bgOpacity: Number(e.target.value) }))}
-                                  className="w-full h-1 accent-brand-primary cursor-pointer"
-                                />
-                              </div>
-
-                              {/* Text color */}
-                              <div>
-                                <span className="text-[9px] font-bold text-zinc-500 block mb-1">ڕەنگ</span>
-                                <div className="flex gap-1.5">
-                                  {CC_TEXT_COLORS.map((color) => (
-                                    <button
-                                      key={color}
-                                      type="button"
-                                      onClick={() => setCcSettings((s) => ({ ...s, textColor: color }))}
-                                      className={`w-5 h-5 rounded-full border-2 transition-all cursor-pointer ${
-                                        ccSettings.textColor === color ? 'border-white scale-110' : 'border-zinc-600 hover:border-zinc-400'
-                                      }`}
-                                      style={{ backgroundColor: color }}
-                                    />
-                                  ))}
-                                </div>
-                              </div>
-                            </div>
-                          </>
-                        )}
+                                   </div>
+                                 </div>
+                               </>
+                             )}
+                           </div>
+                         )}
 
                         {/* [1] Fullscreen Expand (rightmost of the cluster) */}
                         <button

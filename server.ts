@@ -379,7 +379,7 @@ const YT_HTTP_HEADERS: Record<string, string> = {
   'Accept-Language': 'en-US,en;q=0.9',
 };
 
-async function fetchTextWithTimeout(url: string, timeoutMs = 10000, init: RequestInit = {}): Promise<string> {
+async function fetchTextWithTimeout(url: string, timeoutMs = 20000, init: RequestInit = {}): Promise<string> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -611,7 +611,7 @@ async function translateTextViaMyMemory(text: string, targetLang: string, source
   let lastError: any = null;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      memoryData = await fetchJsonWithTimeout<any>(memoryUrl, 15000, {
+      memoryData = await fetchJsonWithTimeout<any>(memoryUrl, 30000, {
         headers: { 'Accept-Language': 'en-US,en;q=0.9' },
       });
       lastError = null;
@@ -9135,7 +9135,7 @@ async function startServer() {
 
 
   // Server-side LRU cache for translated subtitles (avoids re-fetch + re-translate).
-  const subtitleCache = new Map<string, { srt: string; lang: string; source: string; ts: number }>();
+  const subtitleCache = new Map<string, { srt: string; lang: string; source: string; originalSrt?: string; ts: number }>();
   const SUBTITLE_CACHE_MAX = 50;
   const SUBTITLE_CACHE_TTL_MS = 30 * 60 * 1000;
   function subtitleCacheKey(url: string, lang: string, start: number | null, dur: number | null) {
@@ -9147,14 +9147,14 @@ async function startServer() {
     if (Date.now() - entry.ts > SUBTITLE_CACHE_TTL_MS) { subtitleCache.delete(key); return null; }
     return entry;
   }
-  function setSubtitleCache(key: string, srt: string, lang: string, source: string) {
+  function setSubtitleCache(key: string, srt: string, lang: string, source: string, originalSrt?: string) {
     if (subtitleCache.size >= SUBTITLE_CACHE_MAX) {
       let oldestKey = '';
       let oldestTs = Infinity;
       for (const [k, v] of subtitleCache) { if (v.ts < oldestTs) { oldestTs = v.ts; oldestKey = k; } }
       if (oldestKey) subtitleCache.delete(oldestKey);
     }
-    subtitleCache.set(key, { srt, lang, source, ts: Date.now() });
+    subtitleCache.set(key, { srt, lang, source, originalSrt, ts: Date.now() });
   }
 
 
@@ -9207,6 +9207,8 @@ async function startServer() {
         stepLogSub(
           `translated ${srtText.length} chars in ${((Date.now() - startedSub) / 1000).toFixed(1)}s`,
         );
+        const subCacheKey = subtitleCacheKey(subtitleSource, targetLangSub, null, null);
+        setSubtitleCache(subCacheKey, srtText, targetLangSub, 'subtitle-file', normalized);
         res.json({ success: true, srt: srtText, lang: targetLangSub, source: 'subtitle-file', originalSrt: normalized });
       } catch (err: any) {
         console.error(`[${new Date().toISOString()}] [subtitle-api] subtitle-file ERROR:`, err?.message || err);
@@ -9234,7 +9236,7 @@ async function startServer() {
     const cached = getSubtitleCache(cacheKey);
     if (cached) {
       console.log(`[${new Date().toISOString()}] [subtitle-api] cache HIT for ${sourceUrl.slice(0, 60)} lang=${targetLang}`);
-      return res.json({ success: true, srt: cached.srt, lang: cached.lang, source: `cache-${cached.source}` });
+      return res.json({ success: true, srt: cached.srt, lang: cached.lang, source: `cache-${cached.source}`, ...(cached.originalSrt ? { originalSrt: cached.originalSrt } : {}) });
     }
 
 const osMod = await import('os');
@@ -9319,6 +9321,7 @@ let videoDownloaded = false;
               stepLog(
                 `translated ${sourceCaptionResult.lang} captions to Sorani (${translatedSrt.length} chars, source=${sourceCaptionResult.mode})`,
               );
+              setSubtitleCache(cacheKey, translatedSrt, targetLang, `youtube-captions-${sourceCaptionResult.mode}-sorani-translate`, sourceSrtForSorani || sourceCaptionResult.srt);
               res.json({
                 success: true,
                 srt: translatedSrt,
@@ -9352,6 +9355,7 @@ let videoDownloaded = false;
             stepLog(
               `returned YouTube captions via yt-dlp (${ytDlpResult.mode}, ${ytDlpResult.srt.length} chars)`,
             );
+            setSubtitleCache(cacheKey, ytDlpResult.srt, targetLang, `youtube-captions-${ytDlpResult.mode}`);
             res.json({
               success: true,
               srt: ytDlpResult.srt,
@@ -9368,6 +9372,7 @@ let videoDownloaded = false;
                 stepLog(
                   `returned YouTube auto-translated captions (${webTranslatedResult.source}, ${webTranslatedResult.srt.length} chars)`,
                 );
+                setSubtitleCache(cacheKey, webTranslatedResult.srt, targetLang, `youtube-captions-web-${webTranslatedResult.source}`);
                 res.json({
                   success: true,
                   srt: webTranslatedResult.srt,
@@ -9384,11 +9389,13 @@ let videoDownloaded = false;
                 targetLang,
                 webTranslatedResult.lang || 'auto',
               );
+              setSubtitleCache(cacheKey, webTranslatedSrt, targetLang, `youtube-captions-web-${webTranslatedResult.source}-translate`, webTranslatedResult.srt);
               res.json({
                 success: true,
                 srt: webTranslatedSrt,
                 lang: targetLang,
                 source: `youtube-captions-web-${webTranslatedResult.source}-translate`,
+                originalSrt: webTranslatedResult.srt,
               });
               return;
             } catch (webTranslateErr: any) {
@@ -9400,6 +9407,7 @@ let videoDownloaded = false;
           try {
             const translatedSrt = await translateSubtitleWithFallback(ytDlpResult.srt, targetLang, ytDlpResult.lang || 'auto');
             stepLog(`translated yt-dlp captions via public fallback (${translatedSrt.length} chars, mode=${ytDlpResult.mode})`);
+            setSubtitleCache(cacheKey, translatedSrt, targetLang, `youtube-captions-${ytDlpResult.mode}-translate`, ytDlpResult.srt);
             res.json({
               success: true,
               srt: translatedSrt,
@@ -9433,6 +9441,7 @@ let videoDownloaded = false;
               stepLog(
                 `translated web captions ${webCaptionResult.lang} to ${targetLang} via public fallback (${translatedSrt.length} chars, source=${webCaptionResult.source})`,
               );
+              setSubtitleCache(cacheKey, translatedSrt, targetLang, `youtube-captions-web-${webCaptionResult.source}-translate`, webCaptionResult.srt);
               res.json({
                 success: true,
                 srt: translatedSrt,
@@ -9448,6 +9457,7 @@ let videoDownloaded = false;
             }
             return;
           }
+          setSubtitleCache(cacheKey, webCaptionResult.srt, targetLang, `youtube-captions-web-${webCaptionResult.source}`);
           res.json({
             success: true,
             srt: webCaptionResult.srt,
@@ -9482,6 +9492,7 @@ let videoDownloaded = false;
               stepLog(
                 `translated bridge captions (${bridgeResult.lang}/${bridgeResult.mode}) to ${targetLang} (${translatedSrt.length} chars)`,
               );
+              setSubtitleCache(cacheKey, translatedSrt, targetLang, `youtube-captions-bridge-${bridgeResult.mode}-translate`, bridgeResult.srt);
               res.json({
                 success: true,
                 srt: translatedSrt,
@@ -9516,6 +9527,7 @@ let videoDownloaded = false;
               stepLog(
                 `translated fallback English captions via public fallback (${translatedSrt.length} chars, source=${enCaptionResult.source})`,
               );
+              setSubtitleCache(cacheKey, translatedSrt, targetLang, `youtube-captions-web-en-translate-${enCaptionResult.source}`, enCaptionResult.srt);
               res.json({
                 success: true,
                 srt: translatedSrt,
