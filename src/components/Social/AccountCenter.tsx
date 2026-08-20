@@ -23,6 +23,7 @@ import {
   Settings,
   Shield,
   Share2,
+  Sparkles,
   Trash2,
   UserPlus,
   X,
@@ -296,6 +297,10 @@ export const AccountCenter: React.FC<AccountCenterProps> = ({
     newPassword: "",
     confirmPassword: "",
   });
+  const [geminiApiKey, setGeminiApiKey] = useState(() => {
+    try { return localStorage.getItem("user_gemini_api_key") || ""; } catch { return ""; }
+  });
+  const [geminiKeySaved, setGeminiKeySaved] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState("");
   const avatarButtonRef = useRef<HTMLButtonElement>(null);
@@ -1195,6 +1200,59 @@ export const AccountCenter: React.FC<AccountCenterProps> = ({
                             )}
                             {securityMode === "add" ? "ADD PASSWORD" : "CHANGE PASSWORD"}
                           </button>
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-white/10 bg-black/30 p-2.5">
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                          <span className="flex items-center gap-2 text-xs font-black text-white">
+                            <Sparkles className="h-4 w-4 text-amber-400" />
+                            کلیل وەرگێڕانی جیمینی بۆ ژێرنووس
+                          </span>
+                          <span className="text-[10px] font-bold text-zinc-500">
+                            Gemini API Key
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-1 gap-2">
+                          <input
+                            type="password"
+                            value={geminiApiKey}
+                            onChange={(e) => { setGeminiApiKey(e.target.value); setGeminiKeySaved(false); }}
+                            placeholder="AIza..."
+                            autoComplete="off"
+                            spellCheck={false}
+                            className="h-10 rounded-xl border border-white/10 bg-black/40 px-3 text-left text-xs font-bold text-white outline-none focus:border-amber-400 font-mono"
+                          />
+                          {geminiKeySaved && (
+                            <p className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-[11px] font-bold text-emerald-300 kurdish-text">
+                              کلیلی جیمینی پاشەکەوتکرا ✓
+                            </p>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              try {
+                                const trimmed = geminiApiKey.trim();
+                                if (trimmed) {
+                                  localStorage.setItem("user_gemini_api_key", trimmed);
+                                } else {
+                                  localStorage.removeItem("user_gemini_api_key");
+                                }
+                                setGeminiKeySaved(true);
+                              } catch { /* */ }
+                            }}
+                            className="flex min-h-10 items-center justify-center gap-2 rounded-xl bg-amber-500/20 border border-amber-500/30 px-3 text-[10px] font-black text-amber-300 transition hover:bg-amber-500/30"
+                          >
+                            <Save className="h-4 w-4" />
+                            پاشەکەوتکردن
+                          </button>
+                        </div>
+                        <div className="mt-2.5 rounded-xl border border-white/5 bg-white/[0.02] p-2.5">
+                          <p className="mb-1.5 text-[9px] font-black text-zinc-400 uppercase tracking-widest">ڕێنمایی</p>
+                          <ol className="space-y-1 text-[10px] leading-relaxed text-zinc-500 kurdish-text list-decimal list-inside">
+                            <li>بۆ وەرگرتنی کلیل، سەردانی <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" className="text-amber-400 hover:underline">Google AI Studio</a> بکە.</li>
+                            <li>کلیلی خۆت دروست بکە (Create API Key) و کۆپی بکە.</li>
+                            <li>لێرەدا پەیستی بکە و پاشەکەوتی بکە تاوەکو وەرگێڕانی کوردی بۆ ژێرنووسەکانت لەسەر ئەکاونتی خۆت کار بکات.</li>
+                          </ol>
                         </div>
                       </div>
                       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">

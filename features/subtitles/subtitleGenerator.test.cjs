@@ -9,6 +9,8 @@ const { EventEmitter } = require("node:events");
 
 const {
   generateSubtitle,
+  sanitizeSubtitleText,
+  translateSrtViaGemini,
   __setSubtitleTestHooks,
   __resetSubtitleTestHooks,
 } = require("./subtitleGenerator.js");
@@ -32,6 +34,30 @@ const SORANI_SRT = [
   "2",
   "00:00:03,500 --> 00:00:05,500",
   "شەوەکە چێژ لە فیلمەکە وەرگرە.",
+  "",
+].join("\n");
+
+const WATERMARKED_ENGLISH_SRT = [
+  "1",
+  "00:00:01,000 --> 00:00:03,000",
+  "Welcome to CinemaChat. - translated by Kurd Zhin",
+  "Kurd Zhin",
+  "",
+  "2",
+  "00:00:03,500 --> 00:00:05,500",
+  "Enjoy the movie tonight.",
+  "Telegram: t.me/kurdzhin",
+  "",
+].join("\n");
+
+const CLEAN_WATERMARKED_ENGLISH_SRT = [
+  "1",
+  "00:00:01,000 --> 00:00:03,000",
+  "Welcome to CinemaChat.",
+  "",
+  "2",
+  "00:00:03,500 --> 00:00:05,500",
+  "Enjoy the movie tonight.",
   "",
 ].join("\n");
 
@@ -142,6 +168,8 @@ test("translates English subtitles to Kurdish Sorani through Gemini while preser
 
     assert.equal(writtenSrt, SORANI_SRT);
   assert.match(geminiPrompt, /language code "ku"/);
+  assert.match(geminiPrompt, /1:1 mapping/);
+  assert.match(geminiPrompt, /Never add words/);
   assert.match(geminiPrompt, /00:00:01,000 --> 00:00:03,000/);
   assert.match(geminiPrompt, /Welcome to CinemaChat\./);
 
@@ -151,4 +179,126 @@ test("translates English subtitles to Kurdish Sorani through Gemini while preser
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });
   }
+});
+
+test("rejects Gemini subtitle translations that change cue timing", async () => {
+  process.env.GEMINI_API_KEY = "test-key";
+
+  __setSubtitleTestHooks({
+    fetch: async () => ({
+      ok: true,
+      json: async () => ({
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  text: ENGLISH_SRT.replace(
+                    "00:00:03,500 --> 00:00:05,500",
+                    "00:00:04,000 --> 00:00:05,500",
+                  ),
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    }),
+  });
+
+  await assert.rejects(
+    () => translateSrtViaGemini(ENGLISH_SRT, "ckb"),
+    /changed subtitle timing/,
+  );
+});
+
+test("strips subtitle watermarks and metadata without changing cue timing", () => {
+  const cleaned = sanitizeSubtitleText(WATERMARKED_ENGLISH_SRT);
+
+  assert.equal(cleaned, CLEAN_WATERMARKED_ENGLISH_SRT);
+  assert.doesNotMatch(cleaned, /Kurd Zhin/i);
+  assert.deepEqual(
+    cleaned.match(/\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}/g),
+    ENGLISH_SRT.match(/\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}/g),
+  );
+});
+
+test("sanitizes Gemini prompt input and returned subtitle metadata", async () => {
+  process.env.GEMINI_API_KEY = "test-key";
+
+  let geminiPrompt = "";
+  __setSubtitleTestHooks({
+    fetch: async (_url, request) => {
+      const payload = JSON.parse(String(request.body || "{}"));
+      geminiPrompt = payload?.contents?.[0]?.parts?.[0]?.text || "";
+      return {
+        ok: true,
+        json: async () => ({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    text: [
+                      "```srt",
+                      "1",
+                      "00:00:01,000 --> 00:00:03,000",
+                      "بەخێربێیت بۆ CinemaChat. - Kurd Zhin",
+                      "",
+                      "2",
+                      "00:00:03,500 --> 00:00:05,500",
+                      "شەوەکە چێژ لە فیلمەکە وەرگرە.",
+                      "Subtitle by Kurd Zhin",
+                      "```",
+                    ].join("\n"),
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      };
+    },
+  });
+
+  const translated = await translateSrtViaGemini(WATERMARKED_ENGLISH_SRT, "ckb");
+
+  assert.doesNotMatch(geminiPrompt, /Kurd Zhin/i);
+  assert.doesNotMatch(translated, /Kurd Zhin/i);
+  assert.match(translated, /بەخێربێیت بۆ CinemaChat\./);
+  assert.deepEqual(
+    translated.match(/\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}/g),
+    ENGLISH_SRT.match(/\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}/g),
+  );
+});
+
+test("uses Kurdish Sorani target wording for ckb subtitles while preserving timing", async () => {
+  process.env.GEMINI_API_KEY = "test-key";
+
+  let geminiPrompt = "";
+  __setSubtitleTestHooks({
+    fetch: async (_url, request) => {
+      const payload = JSON.parse(String(request.body || "{}"));
+      geminiPrompt = payload?.contents?.[0]?.parts?.[0]?.text || "";
+      return {
+        ok: true,
+        json: async () => ({
+          candidates: [
+            {
+              content: {
+                parts: [{ text: SORANI_SRT }],
+              },
+            },
+          ],
+        }),
+      };
+    },
+  });
+
+  const translated = await translateSrtViaGemini(ENGLISH_SRT, "ckb");
+
+  assert.equal(translated, SORANI_SRT);
+  assert.match(geminiPrompt, /Kurdish Sorani/);
+  assert.match(geminiPrompt, /language code "ckb"/);
+  assert.match(geminiPrompt, /Preserve every cue number/);
 });

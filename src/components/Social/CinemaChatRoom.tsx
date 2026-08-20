@@ -45,6 +45,11 @@ import jsQR from "jsqr";
 import { Movie, SocialUser } from "../../types";
 import YouTubeResilientPlayer from "../Player/YouTubeResilientPlayer";
 import ImmersiveShieldedPlayer from "../Player/ImmersiveShieldedPlayer";
+import VideoLoadOverlay from "../Player/VideoLoadOverlay";
+import {
+  hasPlayableBuffer,
+  type NativeVideoLoadState,
+} from "../../utils/videoBuffering";
 import { ProfileCard } from "./ProfileCard";
 import {
   CINEMA_CHAT_ROOM_ID,
@@ -128,6 +133,8 @@ interface CinemaChatRoomProps {
   onRequestAccount?: () => void;
   /** AI subtitle cues for overlay rendering. */
   subtitleCues?: Array<{ start: number; end: number; text: string }>;
+  /** Original/source subtitle cues for optional dual-line display. */
+  originalSubtitleCues?: Array<{ start: number; end: number; text: string }>;
   /** Current subtitle language code. */
   subtitleLang?: string;
   /** Subtitle generation status. */
@@ -142,8 +149,6 @@ interface CinemaChatRoomProps {
   onSubtitleRetry?: () => void;
   /** Reports the current video source URL back to the parent for subtitle generation. */
   onSourceUrl?: (url: string) => void;
-  /** Original (untranslated) subtitle cues for dual-line display. */
-  originalSubtitleCues?: Array<{ start: number; end: number; text: string }>;
   /** CC display settings from parent. */
   ccSettings?: { fontSize: string; bgOpacity: number; textColor: string; showSubtitle: boolean; showOriginal: boolean };
   /** Font size entry for current CC setting. */
@@ -282,6 +287,7 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
   accountCode,
   onRequestAccount,
   subtitleCues,
+  originalSubtitleCues,
   subtitleLang = "ckb",
   subtitleStatus = "idle",
   subtitleMessage,
@@ -289,7 +295,6 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
   onSubtitleLangChange,
   onSubtitleRetry,
   onSourceUrl,
-  originalSubtitleCues,
   ccSettings,
   ccFontSizeEntry,
   ccSubtitleStyle,
@@ -317,6 +322,9 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [playerKind, setPlayerKind] = useState<SourceKind>("none");
+  const [directVideoStatus, setDirectVideoStatus] =
+    useState<NativeVideoLoadState>("idle");
+  const [directVideoRetryKey, setDirectVideoRetryKey] = useState(0);
 
   // Fullscreen + floating chat overlay over the video.
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -345,6 +353,7 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const recTimerRef = useRef<number | null>(null);
   const recElapsedRef = useRef(0);
+  const directVideoSlowTimerRef = useRef<number | null>(null);
   // Guards: one-shot movie-focus auto-collapse + unread message key tracking.
   const movieFocusedRef = useRef(false);
   const knownMsgKeysRef = useRef<Set<string> | null>(null);
@@ -389,6 +398,50 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
   const sourceUrl = useMemo(() => resolveMovieSourceUrl(movieData), [movieData]);
   const sourceKind = classifySource(sourceUrl);
   const playerKey = `${movieData?.id || "none"}:${sourceUrl || ""}`;
+
+  const clearDirectVideoSlowTimer = useCallback(() => {
+    if (directVideoSlowTimerRef.current !== null) {
+      window.clearTimeout(directVideoSlowTimerRef.current);
+      directVideoSlowTimerRef.current = null;
+    }
+  }, []);
+
+  const armDirectVideoSlowTimer = useCallback(() => {
+    clearDirectVideoSlowTimer();
+    directVideoSlowTimerRef.current = window.setTimeout(() => {
+      setDirectVideoStatus((status) =>
+        status === "ready" || status === "error" ? status : "buffering",
+      );
+    }, 12000);
+  }, [clearDirectVideoSlowTimer]);
+
+  useEffect(() => {
+    if (sourceKind !== "direct" || !sourceUrl) {
+      setDirectVideoStatus("idle");
+      clearDirectVideoSlowTimer();
+      return;
+    }
+    setDirectVideoStatus("loading");
+    armDirectVideoSlowTimer();
+    return clearDirectVideoSlowTimer;
+  }, [
+    sourceKind,
+    sourceUrl,
+    playerKey,
+    directVideoRetryKey,
+    armDirectVideoSlowTimer,
+    clearDirectVideoSlowTimer,
+  ]);
+
+  const clearDirectVideoIfBuffered = useCallback(
+    (event: React.SyntheticEvent<HTMLVideoElement>) => {
+      if (hasPlayableBuffer(event.currentTarget)) {
+        clearDirectVideoSlowTimer();
+        setDirectVideoStatus("ready");
+      }
+    },
+    [clearDirectVideoSlowTimer],
+  );
 
   // Report the current video source URL to the parent so the subtitle pipeline
   // can fetch/translate/generate subtitles for this room.
@@ -1325,49 +1378,111 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                               title={movieData?.title}
                             />
                           )}
-                           {sourceKind === "direct" && (
+                          {sourceKind === "direct" && (
                             <video
-                              key={playerKey}
+                              key={`${playerKey}:${directVideoRetryKey}`}
                               id="cinemachat-room-direct-video"
                               src={sourceUrl}
                               poster={movieData?.image}
                               controls
                               autoPlay
                               playsInline
+                              preload="auto"
                               className="w-full h-full object-contain bg-black"
+                              onLoadStart={() => {
+                                setDirectVideoStatus("loading");
+                                armDirectVideoSlowTimer();
+                              }}
+                              onLoadedMetadata={() => setDirectVideoStatus("buffering")}
+                              onLoadedData={clearDirectVideoIfBuffered}
+                              onCanPlay={() => {
+                                clearDirectVideoSlowTimer();
+                                setDirectVideoStatus("ready");
+                              }}
+                              onPlaying={() => {
+                                clearDirectVideoSlowTimer();
+                                setDirectVideoStatus("ready");
+                              }}
+                              onWaiting={() => setDirectVideoStatus("buffering")}
+                              onStalled={() => setDirectVideoStatus("buffering")}
+                              onProgress={clearDirectVideoIfBuffered}
+                              onTimeUpdate={clearDirectVideoIfBuffered}
+                              onError={() => {
+                                clearDirectVideoSlowTimer();
+                                setDirectVideoStatus("error");
+                              }}
                             />
                           )}
+                          {sourceKind === "direct" &&
+                            directVideoStatus !== "ready" &&
+                            directVideoStatus !== "idle" && (
+                              <VideoLoadOverlay
+                                status={
+                                  directVideoStatus === "error"
+                                    ? "error"
+                                    : directVideoStatus === "buffering"
+                                      ? "buffering"
+                                      : "loading"
+                                }
+                                message={
+                                  directVideoStatus === "error"
+                                    ? "Video could not be loaded. Please try again."
+                                    : directVideoStatus === "buffering"
+                                      ? "Network is slow. Buffering video..."
+                                      : "Preparing video..."
+                                }
+                                onRetry={
+                                  directVideoStatus === "loading"
+                                    ? undefined
+                                    : () => setDirectVideoRetryKey((key) => key + 1)
+                                }
+                              />
+                            )}
                           {/* AI subtitle overlay for CinemaChat — renders on top
                               of whichever player type is active. */}
-                          {subtitleCues && displayTime > 0 && (ccSettings?.showSubtitle !== false) && (() => {
+                          {subtitleCues && displayTime > 0 && subtitleLang !== "off" && (ccSettings?.showSubtitle !== false) && (() => {
                             const activeCue = subtitleCues.find(
                               (c) => displayTime >= c.start && displayTime <= c.end,
                             );
-                            const originalCue = originalSubtitleCues?.find(
-                              (c) => displayTime >= c.start && displayTime <= c.end,
-                            );
-                            return activeCue ? (
+                            const activeOriginalCue =
+                              subtitleLang === "both"
+                                ? originalSubtitleCues?.find(
+                                    (c) => displayTime >= c.start && displayTime <= c.end,
+                                  )
+                                : undefined;
+                            if (!activeCue && !activeOriginalCue) return null;
+                            return (
                               <div className="pointer-events-none absolute inset-x-3 bottom-16 z-10 flex flex-col items-center gap-1">
-                                {originalCue && ccSettings?.showOriginal && (
+                                {activeOriginalCue && (
                                   <div
                                     dir="auto"
-                                    className={`max-w-[92%] whitespace-pre-line rounded-lg px-3 py-1.5 text-center font-bold leading-snug opacity-70 ${ccFontSizeEntry?.mobileCls || 'text-[11px]'}`}
-                                    style={{ color: '#cccccc', backgroundColor: 'rgba(0,0,0,0.5)', textShadow: '0 1px 4px rgba(0,0,0,0.8)' }}
+                                    className={`max-w-[92%] whitespace-pre-line rounded-lg px-3 py-1.5 text-center font-bold leading-snug opacity-80 shadow-[0_2px_12px_rgba(0,0,0,0.55)] ${ccFontSizeEntry?.mobileCls || 'text-[11px]'} ${ccFontSizeEntry?.cls || ''}`}
+                                    style={{
+                                      ...(ccSubtitleStyle || {
+                                        backgroundColor: 'rgba(0,0,0,0.55)',
+                                        color: '#e5e7eb',
+                                        textShadow: '0 1px 6px rgba(0,0,0,0.9)',
+                                      }),
+                                      color: '#e5e7eb',
+                                      backgroundColor: `rgba(0,0,0,${Math.max((ccSettings?.bgOpacity ?? 0.7) - 0.15, 0.35)})`,
+                                    }}
                                   >
-                                    {originalCue.text}
+                                    {activeOriginalCue.text}
                                   </div>
                                 )}
-                                <div
-                                  dir="auto"
-                                  className={`max-w-[92%] whitespace-pre-line rounded-lg px-3 py-2 text-center font-bold leading-snug shadow-[0_2px_14px_rgba(0,0,0,0.55)] ${ccFontSizeEntry?.mobileCls || 'text-[11px]'} ${ccFontSizeEntry?.cls || ''}`}
-                                  style={ccSubtitleStyle || { backgroundColor: 'rgba(0,0,0,0.7)', color: '#ffffff', textShadow: '0 1px 6px rgba(0,0,0,0.9)' }}
-                                >
-                                  {activeCue.text}
-                                </div>
+                                {activeCue && (
+                                  <div
+                                    dir="auto"
+                                    className={`max-w-[92%] whitespace-pre-line rounded-lg px-3 py-2 text-center font-bold leading-snug shadow-[0_2px_14px_rgba(0,0,0,0.55)] ${ccFontSizeEntry?.mobileCls || 'text-[11px]'} ${ccFontSizeEntry?.cls || ''}`}
+                                    style={ccSubtitleStyle || { backgroundColor: 'rgba(0,0,0,0.7)', color: '#ffffff', textShadow: '0 1px 6px rgba(0,0,0,0.9)' }}
+                                  >
+                                    {activeCue.text}
+                                  </div>
+                                )}
                               </div>
-                            ) : null;
+                            );
                           })()}
-                          {subtitleStatus === "loading" && (
+                          {subtitleLang !== "off" && subtitleStatus === "loading" && (
                             <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center gap-2 px-4 py-3 pointer-events-none">
                               <div className="flex items-center gap-2 rounded-xl bg-black/70 px-3 py-2 text-[10px] text-red-400">
                                 <Loader2 className="w-3 h-3 animate-spin" />
@@ -1375,7 +1490,7 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                               </div>
                             </div>
                           )}
-                          {subtitleStatus === "error" && (
+                          {subtitleLang !== "off" && subtitleStatus === "error" && (
                             <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center px-4 py-3">
                               <div className="flex items-center gap-2 rounded-xl bg-red-950/80 border border-red-500/20 px-3 py-2 text-[10px] text-red-300">
                                 <AlertCircle className="w-3 h-3 shrink-0" />
@@ -1392,8 +1507,8 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                           )}
                           {/* CC language toggle for CinemaChat */}
                           {subtitleLanguages && subtitleLanguages.length > 0 && (
-                            <div className="absolute top-1.5 right-1.5 z-10">
-                              <div className="relative">
+                            <div className="absolute bottom-[74px] right-4 z-[80] overflow-visible">
+                              <div className="relative overflow-visible">
                                 <button
                                   type="button"
                                   onClick={() => setShowCcMenu((v) => !v)}
@@ -1414,7 +1529,7 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                                       className="fixed inset-0 z-[55]"
                                       onClick={() => setShowCcMenu(false)}
                                     />
-                                    <div className="absolute top-full right-0 mt-1 z-[60] w-44 max-h-[60vh] overflow-y-auto rounded-xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-2 shadow-2xl space-y-1.5 overscroll-contain">
+                                    <div className="absolute bottom-[44px] right-0 z-[90] w-44 max-h-[60vh] overflow-y-auto rounded-xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-2 shadow-2xl space-y-1.5 overscroll-contain">
                                       <div className="text-[8px] font-black text-zinc-400 uppercase tracking-widest px-1 kurdish-text">زمانی ژێرنوس</div>
                                       {subtitleLanguages.map((lang) => (
                                         <button
@@ -1454,7 +1569,7 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                           {showCcPanel && (
                             <>
                               <div className="fixed inset-0 z-[65]" onClick={() => onToggleCcPanel?.()} />
-                              <div className="absolute top-12 right-1.5 z-[70] w-48 max-h-[65vh] overflow-y-auto rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-2.5 shadow-2xl space-y-2 overscroll-contain">
+                              <div className="absolute bottom-[118px] right-4 z-[100] w-52 max-h-[65vh] overflow-y-auto rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-2.5 shadow-2xl space-y-2 overscroll-contain">
                                 <div className="flex items-center justify-between">
                                   <span className="text-[8px] font-black text-zinc-400 uppercase tracking-widest">CC Settings</span>
                                   <button onClick={() => onToggleCcPanel?.()} className="text-zinc-500 hover:text-white text-[10px] cursor-pointer">✕</button>
@@ -1463,20 +1578,13 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                                   <span className="text-[9px] font-bold text-zinc-300">show / hide</span>
                                   <button
                                     type="button"
-                                    onClick={() => onUpdateCcSettings?.((s) => ({ ...s, showSubtitle: !s.showSubtitle }))}
+                                    onClick={() => {
+                                      const shouldShow = ccSettings?.showSubtitle === false || subtitleLang === "off";
+                                      onSubtitleLangChange?.(shouldShow ? "ckb" : "off");
+                                    }}
                                     className={`w-7 h-3.5 rounded-full transition-all cursor-pointer ${ccSettings?.showSubtitle !== false ? 'bg-brand-primary' : 'bg-zinc-600'}`}
                                   >
                                     <span className={`block w-2.5 h-2.5 rounded-full bg-white shadow transition-transform ${ccSettings?.showSubtitle !== false ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
-                                  </button>
-                                </div>
-                                <div className="flex items-center justify-between">
-                                  <span className="text-[9px] font-bold text-zinc-300">ژێرنووسی ڕەسەن</span>
-                                  <button
-                                    type="button"
-                                    onClick={() => onUpdateCcSettings?.((s) => ({ ...s, showOriginal: !s.showOriginal }))}
-                                    className={`w-7 h-3.5 rounded-full transition-all cursor-pointer ${ccSettings?.showOriginal ? 'bg-emerald-500' : 'bg-zinc-600'}`}
-                                  >
-                                    <span className={`block w-2.5 h-2.5 rounded-full bg-white shadow transition-transform ${ccSettings?.showOriginal ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
                                   </button>
                                 </div>
                                 <div>

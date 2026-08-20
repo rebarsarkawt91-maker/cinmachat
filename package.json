@@ -10,7 +10,8 @@
     "start:prod": "cross-env NODE_ENV=production node dist/server.cjs",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "test:subtitles": "node --test features/subtitles/subtitleGenerator.test.cjs"
+    "test:subtitles": "node --test features/subtitles/subtitleGenerator.test.cjs",
+    "check:video": "node scripts/video-load-check.mjs"
   },
   "dependencies": {
     "@google/genai": "^1.51.0",

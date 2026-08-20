@@ -348,6 +348,113 @@ function decodeSubtitleEntities(rawText: string): string {
   return text;
 }
 
+const SUBTITLE_METADATA_LINE_PATTERNS = [
+  /\bkurd\s*[-_.]*\s*zhin\b/i,
+  /\bkurdzhin\b/i,
+  /کورد\s*ژین/i,
+  /\b(?:translated|subtitle(?:s)?|caption(?:s)?|sync(?:ed)?|provided|uploaded|encoded|edited)\s+(?:by|from)\b/i,
+  /\b(?:telegram|t\.me\/|instagram|facebook|youtube\s+channel|subscribe|follow\s+us)\b/i,
+  /^\s*(?:https?:\/\/|www\.)\S+\s*$/i,
+  /^\s*[@#][\w.-]{3,}\s*$/i,
+];
+
+const SUBTITLE_SYSTEM_INJECTION_PATTERNS = [
+  /^```[\w-]*$/i,
+  /^(?:here(?:'s| is)|below is|this is)\s+(?:the\s+)?(?:translated\s+)?(?:subtitle|srt|vtt|translation)/i,
+  /^(?:translated subtitle|translation|output subtitle|input subtitle file|raw subtitle file)\s*:?\s*$/i,
+  /^#+\s*(?:subtitle|translation|output)/i,
+];
+
+function subtitleMetadataProbe(rawLine: string): string {
+  return decodeSubtitleEntities(String(rawLine || ''))
+    .replace(/<\d{2}:\d{2}:\d{2}[\.,]\d{3}>/g, '')
+    .replace(/<\/?c[^>]*>/g, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .trim();
+}
+
+function isSubtitleStructureLine(line: string): boolean {
+  const trimmed = String(line || '').trim();
+  return (
+    !trimmed ||
+    /^WEBVTT$/i.test(trimmed) ||
+    /^\d+$/.test(trimmed) ||
+    /\d{2}:\d{2}:\d{2}[\.,]\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}[\.,]\d{3}/.test(trimmed)
+  );
+}
+
+function isSubtitleMetadataLine(line: string): boolean {
+  const clean = subtitleMetadataProbe(line);
+  if (!clean) return false;
+  if (/^(Kind|Language|X-TIMESTAMP-MAP):/i.test(clean)) return true;
+  if (/^(NOTE|STYLE|REGION)(?:\s|$)/i.test(clean)) return true;
+  return (
+    SUBTITLE_SYSTEM_INJECTION_PATTERNS.some((pattern) => pattern.test(clean)) ||
+    SUBTITLE_METADATA_LINE_PATTERNS.some((pattern) => pattern.test(clean))
+  );
+}
+
+function stripSubtitleMetadataFragments(line: string): string {
+  if (isSubtitleStructureLine(line)) return line;
+  return String(line || '')
+    .replace(/\bkurd\s*[-_.]*\s*zhin\b/gi, '')
+    .replace(/\bkurdzhin\b/gi, '')
+    .replace(/کورد\s*ژین/g, '')
+    .replace(/\s*(?:[-–—|•]+)\s*(?:translated|subtitle(?:s)?|caption(?:s)?)\s+(?:by|from)\s+.*$/i, '')
+    .replace(/(?:https?:\/\/|www\.)\S+/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/^\s*[-–—|•:]+|[-–—|•:]+\s*$/g, '')
+    .trim();
+}
+
+function sanitizeSubtitleText(rawText: string): string {
+  const normalized = String(rawText || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/^\uFEFF/, '');
+  const keepTrailingNewline = /\n\s*$/.test(normalized);
+  const output: string[] = [];
+  let skipBlock = false;
+
+  for (const line of normalized.split('\n')) {
+    const trimmed = line.trim();
+    if (/^(NOTE|STYLE|REGION)(?:\s|$)/i.test(trimmed)) {
+      skipBlock = true;
+      continue;
+    }
+    if (skipBlock) {
+      if (!trimmed) {
+        skipBlock = false;
+        output.push(line);
+      }
+      continue;
+    }
+
+    const stripped = stripSubtitleMetadataFragments(line);
+    if (!isSubtitleStructureLine(line) && isSubtitleMetadataLine(stripped)) continue;
+    if (stripped || isSubtitleStructureLine(line)) output.push(stripped);
+  }
+
+  const cleaned = output.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return cleaned && keepTrailingNewline ? `${cleaned}\n` : cleaned;
+}
+
+function extractSubtitleTimingLinesForValidation(text: string): string[] {
+  return String(text || '').match(/\d{2}:\d{2}:\d{2}[,.]\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}[,.]\d{3}(?:[^\n]*)/g) || [];
+}
+
+function assertSubtitleTimingsUnchanged(sourceText: string, translatedText: string, label: string): void {
+  const sourceTimings = extractSubtitleTimingLinesForValidation(sourceText);
+  if (!sourceTimings.length) return;
+  const translatedTimings = extractSubtitleTimingLinesForValidation(translatedText);
+  if (translatedTimings.length !== sourceTimings.length) {
+    throw new Error(`${label} returned ${translatedTimings.length} subtitle timings; expected ${sourceTimings.length}`);
+  }
+  for (let i = 0; i < sourceTimings.length; i += 1) {
+    if (translatedTimings[i] !== sourceTimings[i]) {
+      throw new Error(`${label} changed subtitle timing at cue ${i + 1}`);
+    }
+  }
+}
+
 function normalizeSubtitleText(rawText: string): string {
   const cleanText = decodeSubtitleEntities(rawText)
     .replace(
@@ -357,12 +464,13 @@ function normalizeSubtitleText(rawText: string): string {
     .replace(/^\uFEFF/, '')
     .trim();
   if (!cleanText) return '';
-  return cleanText.startsWith('WEBVTT')
+  const withoutVttHeader = cleanText.startsWith('WEBVTT')
     ? cleanText
         .replace(/^WEBVTT\s*(\n|$)/, '')
         .replace(/\nNOTE[^\n]*(\n|$)/g, '\n')
         .trim()
     : cleanText;
+  return sanitizeSubtitleText(withoutVttHeader);
 }
 
 type YouTubeCaptionTrack = {
@@ -598,8 +706,53 @@ function isBadSubtitleTranslation(text: string, targetLang: string): boolean {
   const clean = decodeSubtitleEntities(String(text || '')).trim();
   if (!clean) return true;
   if (/\?{4,}/.test(clean)) return true;
-  if (targetLang === 'ckb' && !/[\u0600-\u06FF]/.test(clean)) return true;
+  if (targetLang === 'ckb' && !/[\u0600-\u06FF]/.test(clean)) {
+    const latinTokens = clean.match(/[A-Za-z][A-Za-z0-9.'-]*/g) || [];
+    const mostlyNameOrMarker = latinTokens.length <= 2 && clean.length <= 40;
+    if (!mostlyNameOrMarker) return true;
+  }
   return false;
+}
+
+function getSubtitleDialogueText(subtitleText: string): string {
+  return sanitizeSubtitleText(subtitleText)
+    .split(/\r?\n/)
+    .map((line) => stripSubtitleMetadataFragments(line).trim())
+    .filter((line) => line && !isSubtitleStructureLine(line) && !isSubtitleMetadataLine(line))
+    .join(' ');
+}
+
+function isLikelyNonKurdishSubtitleTrack(subtitleText: string): boolean {
+  const dialogueText = getSubtitleDialogueText(subtitleText);
+  if (!dialogueText) return false;
+  const arabicScriptChars = dialogueText.match(/[\u0600-\u06FF]/g)?.length || 0;
+  const latinChars = dialogueText.match(/[A-Za-z]/g)?.length || 0;
+  return arabicScriptChars === 0 && latinChars >= 20;
+}
+
+function ensureSubtitleTrackMatchesLang(subtitleText: string, lang: string, source: string): string {
+  const clean = sanitizeSubtitleText(subtitleText);
+  if (lang === 'ckb' && isLikelyNonKurdishSubtitleTrack(clean)) {
+    throw new Error(`Kurdish Sorani subtitles were requested, but ${source} returned a non-Kurdish/source caption track`);
+  }
+  return clean;
+}
+
+type SubtitleLangCode = 'original' | 'ckb';
+
+const SUPPORTED_SUBTITLE_LANGS = new Set<SubtitleLangCode>(['original', 'ckb']);
+
+function normalizeSubtitleLangCode(value: unknown, fallback: SubtitleLangCode = 'ckb'): SubtitleLangCode {
+  const raw = String(value || '').trim().toLowerCase();
+  const normalized =
+    raw === 'ku' || raw === 'kur' || raw === 'sorani' || raw === 'kurdish'
+      ? 'ckb'
+      : raw === 'orig' || raw === 'source' || raw === 'en'
+          ? 'original'
+          : raw;
+  return SUPPORTED_SUBTITLE_LANGS.has(normalized as SubtitleLangCode)
+    ? (normalized as SubtitleLangCode)
+    : fallback;
 }
 
 async function translateTextViaMyMemory(text: string, targetLang: string, sourceLang = 'auto'): Promise<string> {
@@ -628,7 +781,11 @@ async function translateTextViaMyMemory(text: string, targetLang: string, source
   if (!memoryTranslated || memoryData?.responseStatus >= 400 || isBadSubtitleTranslation(memoryTranslated, targetLang)) {
     throw new Error('Public subtitle translation fallback returned an empty result');
   }
-  return String(memoryTranslated);
+  const cleaned = stripSubtitleMetadataFragments(String(memoryTranslated));
+  if (isBadSubtitleTranslation(cleaned, targetLang)) {
+    throw new Error('Public subtitle translation fallback returned invalid text');
+  }
+  return cleaned;
 }
 
 async function translateTextViaGoogleCloud(text: string, targetLang: string, sourceLang = 'auto'): Promise<string> {
@@ -655,20 +812,20 @@ async function translateTextViaGoogleCloud(text: string, targetLang: string, sou
   if (!translated || !String(translated).trim()) {
     throw new Error('Google Cloud Translate returned an empty result');
   }
-  return decodeSubtitleEntities(String(translated));
+  const cleaned = stripSubtitleMetadataFragments(decodeSubtitleEntities(String(translated)));
+  if (isBadSubtitleTranslation(cleaned, targetLang)) {
+    throw new Error('Google Cloud Translate returned invalid subtitle text');
+  }
+  return cleaned;
 }
 
 async function translateTextViaGoogle(text: string, targetLang: string, sourceLang = 'auto'): Promise<string> {
-  if (process.env.GOOGLE_TRANSLATE_API_KEY || process.env.GOOGLE_CLOUD_TRANSLATE_API_KEY) {
-    return await translateTextViaGoogleCloud(text, targetLang, sourceLang);
+  if (targetLang !== 'ckb') {
+    throw new Error('Only Kurdish Sorani subtitle translation is supported');
   }
 
-  if (targetLang === 'ckb') {
-    try {
-      return await translateTextViaMyMemory(text, targetLang, sourceLang);
-    } catch {
-      // Fall through to Google as a secondary option.
-    }
+  if (process.env.GOOGLE_TRANSLATE_API_KEY || process.env.GOOGLE_CLOUD_TRANSLATE_API_KEY) {
+    return await translateTextViaGoogleCloud(text, targetLang, sourceLang);
   }
 
   const body = new URLSearchParams({
@@ -712,7 +869,11 @@ async function translateTextViaGoogle(text: string, targetLang: string, sourceLa
   }
   const translated = data?.[0]?.map((part: any[]) => part?.[0] || '').join('');
   if (!translated || !translated.trim()) throw new Error('Public subtitle translation returned an empty result');
-  return translated;
+  const cleaned = stripSubtitleMetadataFragments(decodeSubtitleEntities(String(translated)));
+  if (isBadSubtitleTranslation(cleaned, targetLang)) {
+    throw new Error('Public subtitle translation returned invalid text');
+  }
+  return cleaned;
 }
 
 async function translateSubtitleViaGoogle(
@@ -720,88 +881,115 @@ async function translateSubtitleViaGoogle(
   targetLang: string,
   sourceLang = 'auto',
 ): Promise<string> {
-  const normalizedText = subtitleText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  if (targetLang !== 'ckb') {
+    throw new Error('Only Kurdish Sorani subtitle translation is supported');
+  }
+
+  const normalizedText = sanitizeSubtitleText(subtitleText).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   const cueBlocks = normalizedText.split(/\n{2,}/);
   if (cueBlocks.some((block) => /-->/.test(block))) {
     const preparedBlocks = cueBlocks.map((block) => ({ lines: block.split('\n') }));
-    const cueJobs: Array<{ blockIndex: number; bodyIndexes: number[]; text: string }> = [];
+    const lineJobs: Array<{ blockIndex: number; lineIndex: number; text: string }> = [];
 
     preparedBlocks.forEach((prepared, blockIndex) => {
       const { lines } = prepared;
       const timingIndex = lines.findIndex((line) => /-->/.test(line));
       if (timingIndex < 0) return;
       const body = lines.slice(timingIndex + 1);
-      const translatableIndexes = body
+      body
         .map((line, index) => ({ line, index }))
-        .filter(({ line }) => shouldTranslateSubtitleLine(line));
-
-      if (!translatableIndexes.length) return;
-      cueJobs.push({
-        blockIndex,
-        bodyIndexes: translatableIndexes.map(({ index }) => timingIndex + 1 + index),
-        text: translatableIndexes
-          .map(({ line }) => cleanSubtitleDialogueForTranslation(line))
-          .filter(Boolean)
-          .join('\n'),
-      });
+        .filter(({ line }) => shouldTranslateSubtitleLine(line))
+        .forEach(({ line, index }) => {
+          const text = cleanSubtitleDialogueForTranslation(line);
+          if (text) lineJobs.push({ blockIndex, lineIndex: timingIndex + 1 + index, text });
+        });
     });
-    const filteredCueJobs = cueJobs.filter((job) => job.text.trim());
 
-    const applyCueTranslation = (job: (typeof cueJobs)[number], translatedText: string) => {
+    const applyLineTranslation = (job: (typeof lineJobs)[number], translatedText: string) => {
       const lines = preparedBlocks[job.blockIndex].lines;
-      lines[job.bodyIndexes[0]] = decodeSubtitleEntities(translatedText).trim() || lines[job.bodyIndexes[0]];
-      job.bodyIndexes.slice(1).forEach((lineIndex) => {
-        lines[lineIndex] = '';
-      });
+      const clean = sanitizeSubtitleText(decodeSubtitleEntities(String(translatedText || ''))).trim();
+      if (clean && isBadSubtitleTranslation(clean, targetLang)) {
+        throw new Error('Subtitle line translation returned invalid text');
+      }
+      lines[job.lineIndex] = clean || lines[job.lineIndex];
     };
 
     if (targetLang === 'ckb') {
       const translationCache = new Map<string, string>();
-      const uniqueJobs = filteredCueJobs.filter((job) => {
+      const uniqueJobs = lineJobs.filter((job) => {
         const key = job.text.trim();
         if (translationCache.has(key)) return false;
         translationCache.set(key, '');
         return true;
       });
-      let nextJobIndex = 0;
-      const workerCount = Math.min(6, Math.max(1, uniqueJobs.length));
 
       const translateOne = async (text: string) => {
         if (text.length <= 450) {
-          return decodeSubtitleEntities(await translateTextViaMyMemory(text, targetLang, sourceLang));
+          return decodeSubtitleEntities(await translateTextViaGoogle(text, targetLang, sourceLang));
         }
         const parts = text.match(/.{1,420}(?:\s|$)/gs)?.map((part) => part.trim()).filter(Boolean) || [text];
         const translatedParts: string[] = [];
         for (const part of parts) {
-          translatedParts.push(decodeSubtitleEntities(await translateTextViaMyMemory(part, targetLang, sourceLang)));
+          translatedParts.push(decodeSubtitleEntities(await translateTextViaGoogle(part, targetLang, sourceLang)));
         }
-        return translatedParts.join(' ').trim();
+        const translatedLongText = sanitizeSubtitleText(translatedParts.join(' ')).trim();
+        if (isBadSubtitleTranslation(translatedLongText, targetLang)) {
+          throw new Error('Public Sorani line translation returned invalid text');
+        }
+        return translatedLongText;
       };
 
-      await Promise.all(
-        Array.from({ length: workerCount }, async () => {
-          while (nextJobIndex < uniqueJobs.length) {
-            const job = uniqueJobs[nextJobIndex];
-            nextJobIndex += 1;
+      const marker = 'CINEMACHATCUEBREAK123';
+      const maxBatchChars = 2500;
+      for (let start = 0; start < uniqueJobs.length;) {
+        const batch: typeof uniqueJobs = [];
+        let chars = 0;
+        while (start < uniqueJobs.length) {
+          const next = uniqueJobs[start];
+          const nextChars = next.text.length + marker.length + 4;
+          if (batch.length && chars + nextChars > maxBatchChars) break;
+          batch.push(next);
+          chars += nextChars;
+          start += 1;
+        }
+
+        try {
+          const joined = batch.map((job) => job.text.trim()).join(`\n${marker}\n`);
+          const translated = await translateTextViaGoogle(joined, targetLang, sourceLang);
+          const translatedLines = translated.split(new RegExp(`\\s*${marker}\\s*`));
+          if (translatedLines.length !== batch.length) {
+            throw new Error('Public Sorani batch translation did not preserve cue boundaries');
+          }
+          batch.forEach((job, index) => {
+            const translatedLine = decodeSubtitleEntities(translatedLines[index]).trim();
+            if (isBadSubtitleTranslation(translatedLine, targetLang)) {
+              throw new Error('Public Sorani batch translation returned invalid text');
+            }
+            translationCache.set(job.text.trim(), translatedLine);
+          });
+        } catch {
+          for (const job of batch) {
             translationCache.set(job.text.trim(), await translateOne(job.text.trim()));
           }
-        }),
-      );
+        }
+      }
 
-      filteredCueJobs.forEach((job) => {
-        applyCueTranslation(job, translationCache.get(job.text.trim()) || job.text);
+      lineJobs.forEach((job) => {
+        applyLineTranslation(job, translationCache.get(job.text.trim()) || job.text);
       });
 
-      return preparedBlocks.map(({ lines }) => lines.filter((line) => line !== '').join('\n')).join('\n\n');
+      const translatedText = sanitizeSubtitleText(preparedBlocks.map(({ lines }) => lines.join('\n')).join('\n\n'));
+      assertSubtitleTimingsUnchanged(normalizedText, translatedText, 'Public Sorani translation');
+      return translatedText;
     }
 
     const marker = 'CINEMACHATCUEBREAK123';
-const maxBatchChars = targetLang === 'ckb' ? 2500 : 4500;
-    for (let start = 0; start < filteredCueJobs.length;) {
-      const batch: typeof cueJobs = [];
+    const maxBatchChars = 4500;
+    for (let start = 0; start < lineJobs.length;) {
+      const batch: typeof lineJobs = [];
       let chars = 0;
-      while (start < filteredCueJobs.length) {
-        const next = filteredCueJobs[start];
+      while (start < lineJobs.length) {
+        const next = lineJobs[start];
         const nextChars = next.text.length + marker.length + 4;
         if (batch.length && chars + nextChars > maxBatchChars) break;
         batch.push(next);
@@ -814,15 +1002,17 @@ const maxBatchChars = targetLang === 'ckb' ? 2500 : 4500;
       const translatedCues = translated.split(new RegExp(`\\s*${marker}\\s*`));
 
       if (translatedCues.length === batch.length) {
-        batch.forEach((job, offset) => applyCueTranslation(job, translatedCues[offset]));
+        batch.forEach((job, offset) => applyLineTranslation(job, translatedCues[offset]));
       } else {
         for (const job of batch) {
-          applyCueTranslation(job, await translateTextViaGoogle(job.text, targetLang, sourceLang));
+          applyLineTranslation(job, await translateTextViaGoogle(job.text, targetLang, sourceLang));
         }
       }
     }
 
-    return preparedBlocks.map(({ lines }) => lines.filter((line) => line !== '').join('\n')).join('\n\n');
+    const translatedText = sanitizeSubtitleText(preparedBlocks.map(({ lines }) => lines.join('\n')).join('\n\n'));
+    assertSubtitleTimingsUnchanged(normalizedText, translatedText, 'Public subtitle translation');
+    return translatedText;
   }
 
   const lines = normalizedText.split(/\n/);
@@ -833,9 +1023,9 @@ const maxBatchChars = targetLang === 'ckb' ? 2500 : 4500;
     if (shouldTranslateSubtitleLine(line)) jobs.push({ index, text: line });
   });
 
-  if (!jobs.length) return subtitleText;
+  if (!jobs.length) return normalizedText;
 
-const maxBatchChars = targetLang === 'ckb' ? 2500 : 4500;
+  const maxBatchChars = targetLang === 'ckb' ? 2500 : 4500;
   for (let start = 0; start < jobs.length;) {
     const batch: typeof jobs = [];
     let chars = 0;
@@ -863,25 +1053,59 @@ const maxBatchChars = targetLang === 'ckb' ? 2500 : 4500;
     }
   }
 
-  return lines.join('\n');
+  return sanitizeSubtitleText(lines.join('\n'));
+}
+
+let geminiSubtitleQuotaBlockedUntil = 0;
+
+function isGeminiQuotaError(err: any): boolean {
+  const message = String(err?.message || err || '');
+  return /Gemini API error 429|RESOURCE_EXHAUSTED|quota/i.test(message);
 }
 
 async function translateSubtitleWithFallback(
   subtitleText: string,
   targetLang: string,
   sourceLang = 'auto',
+  userGeminiApiKey?: string,
 ): Promise<string> {
-  try {
-    return await translateSubtitleViaGoogle(subtitleText, targetLang, sourceLang);
-  } catch (publicErr: any) {
+  if (targetLang === 'original') {
+    return sanitizeSubtitleText(subtitleText);
+  }
+  if (targetLang !== 'ckb') {
+    throw new Error('Only Kurdish Sorani subtitle translation is supported');
+  }
+  const sanitizedSource = sanitizeSubtitleText(subtitleText);
+  if (!sanitizedSource) {
+    throw new Error('Subtitle file is empty after metadata cleanup');
+  }
+
+  let geminiErr: any = null;
+  const shouldTryGemini = Date.now() >= geminiSubtitleQuotaBlockedUntil;
+  if (shouldTryGemini) {
     try {
-      return await translateSrtViaGemini(subtitleText, targetLang);
-    } catch (geminiErr: any) {
-      throw new Error(
-        `Public subtitle translation failed: ${publicErr?.message || publicErr}; ` +
-          `Gemini fallback failed: ${geminiErr?.message || geminiErr}`,
-      );
+      const translated = sanitizeSubtitleText(await translateSrtViaGemini(sanitizedSource, 'ckb', userGeminiApiKey));
+      assertSubtitleTimingsUnchanged(sanitizedSource, translated, 'Gemini Sorani translation');
+      return ensureSubtitleTrackMatchesLang(translated, 'ckb', 'Gemini Sorani translation');
+    } catch (err: any) {
+      geminiErr = err;
+      if (isGeminiQuotaError(err)) {
+        geminiSubtitleQuotaBlockedUntil = Date.now() + 60_000;
+      }
     }
+  } else {
+    geminiErr = new Error('Gemini Sorani translation temporarily skipped after quota/rate-limit response');
+  }
+
+  try {
+    const translated = sanitizeSubtitleText(await translateSubtitleViaGoogle(sanitizedSource, 'ckb', sourceLang));
+    assertSubtitleTimingsUnchanged(sanitizedSource, translated, 'Google/secondary Sorani translation');
+    return ensureSubtitleTrackMatchesLang(translated, 'ckb', 'Google/secondary Sorani translation');
+  } catch (publicErr: any) {
+    throw new Error(
+      `Gemini Sorani translation failed: ${geminiErr?.message || geminiErr}; ` +
+        `Google/secondary Sorani fallback failed: ${publicErr?.message || publicErr}`,
+    );
   }
 }
 
@@ -1107,6 +1331,44 @@ async function fetchYouTubeCaptionsFromWeb(
   throw new Error(`Web caption extractors failed. ${errors.join(' | ')}`);
 }
 
+async function fetchYoutubeOriginalCaptions(
+  youtubeWatchUrl: string,
+  videoId: string,
+  workDir: string,
+): Promise<{ srt: string; source: string; lang: string }> {
+  const preferredOriginalLangs = ['en', 'ar', 'ku'];
+  let lastError: any = null;
+
+  for (const captionLang of preferredOriginalLangs) {
+    try {
+      const result = await fetchYoutubeCaptionsViaYtDlp(youtubeWatchUrl, workDir, captionLang);
+      return {
+        srt: result.srt,
+        lang: result.lang || captionLang,
+        source: `youtube-original-${result.mode}`,
+      };
+    } catch (err: any) {
+      lastError = err;
+      if ((err as any)?.code === 'YTDLP_MISSING') break;
+    }
+  }
+
+  for (const captionLang of preferredOriginalLangs) {
+    try {
+      const result = await fetchYouTubeCaptionsFromWeb(videoId, captionLang);
+      return {
+        srt: result.srt,
+        lang: result.lang || captionLang,
+        source: `youtube-original-web-${result.source}`,
+      };
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  throw new Error(`Original captions were not found for this video: ${lastError?.message || lastError || 'no tracks'}`);
+}
+
 // ---------------------------------------------------------------------------
 // yt-dlp caption fetch. YouTube's timedtext URLs need a signature that the
 // player JS computes (attestation/botguard), which plain HTTP cannot obtain.
@@ -1178,11 +1440,12 @@ async function fetchYoutubeCaptionsViaYtDlp(
   if (ytDlpAvailable === false) {
     throw Object.assign(new Error('yt-dlp not available'), { code: 'YTDLP_MISSING' });
   }
-  const lang = (targetLang || 'en').toLowerCase();
+  const requestedLang = (targetLang || 'en').toLowerCase();
+  const lang = requestedLang;
   const outputBase = path.join(workDir, 'subs');
-  const captionLangs = lang === 'en'
+  const captionLangs = requestedLang === 'en'
     ? ['en']
-    : lang === 'ckb'
+    : requestedLang === 'ckb'
       ? ['ckb', 'ku', 'en']
       : [lang, 'en'];
   const attempts: Array<{ mode: string; captionLang: string; args: string[] }> = captionLangs.map((captionLang) => ({
@@ -1740,6 +2003,87 @@ const saveMovieViewsToFirestore = (counts: Record<string, number>): void => {
     })
     .catch((err: any) =>
       console.warn('[views] Firestore write-through failed:', err?.message || err)
+    );
+};
+
+// ── Hero Config Firestore persistence ──────────────────────────────────────
+// On Render the local db.json is wiped on every restart. Hero config must be
+// persisted to and rehydrated from Firestore so it survives deploys.
+
+const HERO_CONFIG_DOC = 'config/featured';
+
+const loadHeroConfigFromFirestore = async (): Promise<Record<string, any> | null> => {
+  const res = await fetchWithTimeout(
+    firestoreDocUrl(HERO_CONFIG_DOC, ''),
+    { headers: { Accept: 'application/json' } },
+    8000
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  const fields = data?.fields;
+  if (!fields || typeof fields !== 'object') return null;
+
+  const result: Record<string, any> = {};
+  for (const [key, val] of Object.entries(fields)) {
+    const v = val as any;
+    if (v.stringValue !== undefined) result[key] = v.stringValue;
+    else if (v.booleanValue !== undefined) result[key] = v.booleanValue;
+    else if (v.integerValue !== undefined) result[key] = Number(v.integerValue);
+    else if (v.doubleValue !== undefined) result[key] = v.doubleValue;
+    else if (v.arrayValue?.values) {
+      result[key] = v.arrayValue.values.map((item: any) =>
+        item.stringValue ?? item.integerValue ?? item.doubleValue ?? item.booleanValue ?? ''
+      );
+    } else if (v.mapValue?.fields) {
+      const nested: Record<string, any> = {};
+      for (const [nk, nv] of Object.entries(v.mapValue.fields)) {
+        const nvo = nv as any;
+        nested[nk] = nvo.stringValue ?? nvo.booleanValue ?? nvo.integerValue ?? nvo.doubleValue ?? '';
+      }
+      result[key] = nested;
+    }
+  }
+  return result;
+};
+
+const saveHeroConfigToFirestore = (heroConfig: Record<string, any>): void => {
+  if (!heroConfig || !FIREBASE_API_KEY || FIREBASE_API_KEY === '') return;
+  const fields: Record<string, any> = {};
+  if (heroConfig.heroVideoUrl) {
+    fields.heroVideoUrl = { stringValue: String(heroConfig.heroVideoUrl) };
+  }
+  if (Array.isArray(heroConfig.heroPlaylist)) {
+    fields.heroPlaylist = {
+      arrayValue: {
+        values: heroConfig.heroPlaylist
+          .filter(Boolean)
+          .map((url: string) => ({ stringValue: String(url) }))
+      }
+    };
+  }
+  if (Object.keys(fields).length === 0) return;
+  fields.updatedAt = { stringValue: new Date().toISOString() };
+
+  const url = firestoreDocUrl(
+    HERO_CONFIG_DOC,
+    '&updateMask.fieldPaths=heroVideoUrl&updateMask.fieldPaths=heroPlaylist&updateMask.fieldPaths=updatedAt'
+  );
+  fetchWithTimeout(
+    url,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields })
+    },
+    8000
+  )
+    .then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      console.log('[hero] Firestore write-through succeeded');
+    })
+    .catch((err: any) =>
+      console.warn('[hero] Firestore write-through failed:', err?.message || err)
     );
 };
 
@@ -2899,6 +3243,22 @@ async function startServer() {
     }
   } catch (err: any) {
     console.warn('[DB] Could not load view counts from Firestore:', err?.message || err);
+  }
+
+  // Re-hydrate hero config from Firestore so it survives Render restarts.
+  // The local db.json is ephemeral; Firestore is the durable source of truth.
+  try {
+    const remoteHero = await loadHeroConfigFromFirestore();
+    if (remoteHero && (remoteHero.heroVideoUrl || (Array.isArray(remoteHero.heroPlaylist) && remoteHero.heroPlaylist.length > 0))) {
+      if (!db.heroConfig) db.heroConfig = {};
+      if (remoteHero.heroVideoUrl) db.heroConfig.heroVideoUrl = remoteHero.heroVideoUrl;
+      if (Array.isArray(remoteHero.heroPlaylist) && remoteHero.heroPlaylist.length > 0) {
+        db.heroConfig.heroPlaylist = remoteHero.heroPlaylist;
+      }
+      console.log('[DB] Restored hero config from Firestore:', db.heroConfig.heroPlaylist?.length || 0, 'video(s)');
+    }
+  } catch (err: any) {
+    console.warn('[DB] Could not load hero config from Firestore:', err?.message || err);
   }
 
   // Mirror the Firestore movie catalog into the server cache at boot so
@@ -8336,14 +8696,30 @@ async function startServer() {
 
   app.post('/api/admin/hero', async (req, res) => {
     const playlist = req.body.heroPlaylist;
+    const singleUrl = req.body.heroVideoUrl;
     const { adminName } = req.body;
-    if (playlist && Array.isArray(playlist)) {
+
+    if (playlist && Array.isArray(playlist) && playlist.filter(Boolean).length > 0) {
       db.heroConfig.heroPlaylist = playlist.filter(Boolean);
       db.heroConfig.heroVideoUrl = playlist[0] || '';
       await addAuditLog(db, adminName, "Update Hero Playlist", `پلیلیستی ڤیدیۆ نوێکرایەوە`);
       await saveDB(db);
+      saveHeroConfigToFirestore(db.heroConfig);
+      return res.json({ success: true, config: db.heroConfig });
     }
-    res.json({ success: true, config: db.heroConfig });
+
+    // Fallback: accept a single heroVideoUrl directly
+    if (singleUrl && typeof singleUrl === 'string' && singleUrl.trim()) {
+      const clean = singleUrl.trim();
+      db.heroConfig.heroVideoUrl = clean;
+      db.heroConfig.heroPlaylist = [clean];
+      await addAuditLog(db, adminName, "Update Hero Video", `ڤیدیۆی سەرەکی نوێکرایەوە`);
+      await saveDB(db);
+      saveHeroConfigToFirestore(db.heroConfig);
+      return res.json({ success: true, config: db.heroConfig });
+    }
+
+    res.status(400).json({ success: false, error: "heroPlaylist or heroVideoUrl is required" });
   });
 
   // Alias for hero update
@@ -8354,6 +8730,7 @@ async function startServer() {
       db.heroConfig.heroPlaylist = playlist.filter(Boolean);
       db.heroConfig.heroVideoUrl = playlist[0] || '';
       await saveDB(db);
+      saveHeroConfigToFirestore(db.heroConfig);
       return res.json({ success: true, config: db.heroConfig });
     }
     res.status(400).json({ success: false, error: "heroPlaylist is required" });
@@ -8553,6 +8930,7 @@ async function startServer() {
       trackerText, // Expose tracker text
       socialLinks,
       heroVideoUrl: db.heroConfig?.heroVideoUrl || '',
+      heroPlaylist: db.heroConfig?.heroPlaylist || [],
       youtubeChannelUrl: db.youtubeUrl || db.youtubeChannelUrl || 'https://www.youtube.com/',
       youtubeUrl: db.youtubeUrl || 'https://www.youtube.com/',
       tiktokUrl: db.tiktokUrl || 'https://www.tiktok.com/',
@@ -8562,14 +8940,20 @@ async function startServer() {
   });
 
   app.post('/api/config', async (req, res) => {
-    const { ads: newAds, socialLinks: newSocialLinks, heroVideoUrl, youtubeChannelUrl, youtubeUrl, tiktokUrl, instagramUrl, facebookUrl, roomVideoUrl, trackerText: newTrackerText } = req.body;
+    const { ads: newAds, socialLinks: newSocialLinks, heroVideoUrl, heroPlaylist, youtubeChannelUrl, youtubeUrl, tiktokUrl, instagramUrl, facebookUrl, roomVideoUrl, trackerText: newTrackerText } = req.body;
     if (newAds) ads = newAds;
     if (newSocialLinks) socialLinks = newSocialLinks;
-    if (heroVideoUrl !== undefined) {
+    if (heroPlaylist && Array.isArray(heroPlaylist) && heroPlaylist.length > 0) {
+      if (!db.heroConfig) db.heroConfig = {};
+      db.heroConfig.heroPlaylist = heroPlaylist.filter(Boolean);
+      db.heroConfig.heroVideoUrl = heroPlaylist[0] || '';
+      saveHeroConfigToFirestore(db.heroConfig);
+    } else if (heroVideoUrl !== undefined) {
       if (!db.heroConfig) db.heroConfig = {};
       db.heroConfig.heroVideoUrl = heroVideoUrl;
       // Also update heroPlaylist if only heroVideoUrl is provided
       db.heroConfig.heroPlaylist = [heroVideoUrl];
+      saveHeroConfigToFirestore(db.heroConfig);
     }
     if (youtubeChannelUrl !== undefined) {
       db.youtubeChannelUrl = youtubeChannelUrl;
@@ -8598,6 +8982,7 @@ async function startServer() {
       ads,
       socialLinks,
       heroVideoUrl: db.heroConfig?.heroVideoUrl || '',
+      heroPlaylist: db.heroConfig?.heroPlaylist || [],
       roomVideoUrl: db.config?.roomVideoUrl || '',
       youtubeChannelUrl: db.youtubeUrl || db.youtubeChannelUrl,
       youtubeUrl: db.youtubeUrl,
@@ -8608,7 +8993,7 @@ async function startServer() {
   });
 
   app.post('/api/admin/config', async (req, res) => {
-    const { youtubeChannelUrl, youtubeUrl, tiktokUrl, instagramUrl, facebookUrl } = req.body;
+    const { youtubeChannelUrl, youtubeUrl, tiktokUrl, instagramUrl, facebookUrl, heroVideoUrl, heroPlaylist } = req.body;
     if (youtubeUrl !== undefined || youtubeChannelUrl !== undefined) {
       db.youtubeUrl = youtubeUrl || youtubeChannelUrl || 'https://www.youtube.com/';
       db.youtubeChannelUrl = db.youtubeUrl;
@@ -8622,6 +9007,17 @@ async function startServer() {
     if (facebookUrl !== undefined) {
       db.facebookUrl = facebookUrl || 'https://www.facebook.com/';
     }
+    if (heroPlaylist && Array.isArray(heroPlaylist) && heroPlaylist.length > 0) {
+      if (!db.heroConfig) db.heroConfig = {};
+      db.heroConfig.heroPlaylist = heroPlaylist.filter(Boolean);
+      db.heroConfig.heroVideoUrl = heroPlaylist[0] || '';
+      saveHeroConfigToFirestore(db.heroConfig);
+    } else if (heroVideoUrl !== undefined) {
+      if (!db.heroConfig) db.heroConfig = {};
+      db.heroConfig.heroVideoUrl = heroVideoUrl;
+      db.heroConfig.heroPlaylist = [heroVideoUrl];
+      saveHeroConfigToFirestore(db.heroConfig);
+    }
     await saveDB(db);
     res.json({
       success: true,
@@ -8629,7 +9025,9 @@ async function startServer() {
       youtubeUrl: db.youtubeUrl,
       tiktokUrl: db.tiktokUrl,
       instagramUrl: db.instagramUrl,
-      facebookUrl: db.facebookUrl
+      facebookUrl: db.facebookUrl,
+      heroVideoUrl: db.heroConfig?.heroVideoUrl || '',
+      heroPlaylist: db.heroConfig?.heroPlaylist || [],
     });
   });
 
@@ -9154,7 +9552,9 @@ async function startServer() {
       for (const [k, v] of subtitleCache) { if (v.ts < oldestTs) { oldestTs = v.ts; oldestKey = k; } }
       if (oldestKey) subtitleCache.delete(oldestKey);
     }
-    subtitleCache.set(key, { srt, lang, source, originalSrt, ts: Date.now() });
+    const cleanSrt = ensureSubtitleTrackMatchesLang(srt, lang, source);
+    const cleanOriginalSrt = originalSrt ? sanitizeSubtitleText(originalSrt) : undefined;
+    subtitleCache.set(key, { srt: cleanSrt, lang, source, originalSrt: cleanOriginalSrt, ts: Date.now() });
   }
 
 
@@ -9164,7 +9564,7 @@ async function startServer() {
   // player-response track discovery) without yt-dlp.
   // direct .mp4/.webm file URLs are downloaded with a plain HTTP fetch instead.
   app.post('/api/subtitle/generate', async (req, res) => {
-    const { url, subtitleUrl, lang, startSeconds, windowSeconds } = req.body || {};
+    const { url, subtitleUrl, lang, startSeconds, windowSeconds, geminiApiKey: userGeminiKey } = req.body || {};
 
     // Fast path: the movie already has a subtitle file attached (movie.subtitleUrl).
     // Fetch that file and translate it with Gemini directly — no audio download, no
@@ -9176,14 +9576,13 @@ async function startServer() {
       if (!/^https?:\/\//i.test(subtitleSource)) {
         return res.status(400).json({ error: 'subtitleUrl must be a valid http(s) URL' });
       }
-      const targetLangSub =
-        typeof lang === 'string' && /^[a-z]{2,3}$/i.test(lang) ? lang.toLowerCase() : 'en';
+      const targetLangSub = normalizeSubtitleLangCode(lang, 'ckb');
       const startedSub = Date.now();
       const stepLogSub = (msg: string) =>
         console.log(`[${new Date().toISOString()}] [subtitle-api] ${msg}`);
 
       try {
-        stepLogSub(`translating existing subtitle file ${subtitleSource.slice(0, 120)} (lang=${targetLangSub})`);
+        stepLogSub(`loading existing subtitle file ${subtitleSource.slice(0, 120)} (lang=${targetLangSub})`);
         const controller = new AbortController();
         const dlTimer = setTimeout(() => controller.abort(), 60000);
         let resp;
@@ -9203,13 +9602,27 @@ async function startServer() {
         if (!cleanText) throw new Error('Subtitle file is empty');
         const normalized = normalizeSubtitleText(cleanText);
 
-        const srtText = await translateSrtViaGemini(normalized, targetLangSub);
+        const srtText =
+          targetLangSub === 'original'
+            ? normalized
+            : await translateSubtitleWithFallback(normalized, targetLangSub, 'auto', userGeminiKey);
+        const responseSrt = ensureSubtitleTrackMatchesLang(
+          srtText,
+          targetLangSub,
+          targetLangSub === 'original' ? 'subtitle-file-original' : 'subtitle-file',
+        );
         stepLogSub(
-          `translated ${srtText.length} chars in ${((Date.now() - startedSub) / 1000).toFixed(1)}s`,
+          `${targetLangSub === 'original' ? 'returned original' : 'translated'} ${responseSrt.length} chars in ${((Date.now() - startedSub) / 1000).toFixed(1)}s`,
         );
         const subCacheKey = subtitleCacheKey(subtitleSource, targetLangSub, null, null);
-        setSubtitleCache(subCacheKey, srtText, targetLangSub, 'subtitle-file', normalized);
-        res.json({ success: true, srt: srtText, lang: targetLangSub, source: 'subtitle-file', originalSrt: normalized });
+        setSubtitleCache(subCacheKey, responseSrt, targetLangSub, targetLangSub === 'original' ? 'subtitle-file-original' : 'subtitle-file', targetLangSub === 'original' ? undefined : normalized);
+        res.json({
+          success: true,
+          srt: responseSrt,
+          lang: targetLangSub,
+          source: targetLangSub === 'original' ? 'subtitle-file-original' : 'subtitle-file',
+          ...(targetLangSub === 'original' ? {} : { originalSrt: normalized }),
+        });
       } catch (err: any) {
         console.error(`[${new Date().toISOString()}] [subtitle-api] subtitle-file ERROR:`, err?.message || err);
         res.status(500).json({ error: err?.message || 'Subtitle translation failed' });
@@ -9220,8 +9633,7 @@ async function startServer() {
     if (!url || typeof url !== 'string') {
       return res.status(400).json({ error: 'Missing or invalid "url" in request body' });
     }
-    const targetLang =
-      typeof lang === 'string' && /^[a-z]{2,3}$/i.test(lang) ? lang.toLowerCase() : 'en';
+    const targetLang = normalizeSubtitleLangCode(lang, 'ckb');
     const subtitleWindowStart =
       Number.isFinite(Number(startSeconds)) ? Math.max(0, Number(startSeconds)) : null;
     const subtitleWindowDuration =
@@ -9236,7 +9648,13 @@ async function startServer() {
     const cached = getSubtitleCache(cacheKey);
     if (cached) {
       console.log(`[${new Date().toISOString()}] [subtitle-api] cache HIT for ${sourceUrl.slice(0, 60)} lang=${targetLang}`);
-      return res.json({ success: true, srt: cached.srt, lang: cached.lang, source: `cache-${cached.source}`, ...(cached.originalSrt ? { originalSrt: cached.originalSrt } : {}) });
+      try {
+        const cachedSrt = ensureSubtitleTrackMatchesLang(cached.srt, targetLang, `cache-${cached.source}`);
+        return res.json({ success: true, srt: cachedSrt, lang: cached.lang, source: `cache-${cached.source}`, ...(cached.originalSrt ? { originalSrt: cached.originalSrt } : {}) });
+      } catch (cacheErr: any) {
+        console.log(`[${new Date().toISOString()}] [subtitle-api] cache rejected for ${sourceUrl.slice(0, 60)} lang=${targetLang}: ${cacheErr?.message || cacheErr}`);
+        subtitleCache.delete(cacheKey);
+      }
     }
 
 const osMod = await import('os');
@@ -9259,6 +9677,11 @@ let videoDownloaded = false;
     try {
       const isDirectVideo = /\.(mp4|m4v|webm|ogv)(\?|#|$)/i.test(sourceUrl);
       if (isDirectVideo) {
+        if (targetLang === 'original') {
+          return res.status(404).json({
+            error: 'Original subtitles are not available for this direct video unless an attached subtitle file is provided.',
+          });
+        }
         stepLog(`downloading direct video ${sourceUrl.slice(0, 80)}`);
         const controller = new AbortController();
         const dlTimer = setTimeout(() => controller.abort(), downloadTimeout);
@@ -9288,6 +9711,50 @@ let videoDownloaded = false;
         }
         const youtubeWatchUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
         stepLog(`fetching YouTube captions for video ${videoId} via yt-dlp`);
+        const scopeSubtitleForRequest = (srtText: string) =>
+          subtitleWindowStart !== null && subtitleWindowDuration !== null
+            ? trimSubtitleToTimeWindow(
+                srtText,
+                Math.max(0, subtitleWindowStart - 10),
+                subtitleWindowDuration + 20,
+              )
+            : srtText;
+
+        if (targetLang === 'original') {
+          try {
+            const originalCaptionResult = await fetchYoutubeOriginalCaptions(
+              youtubeWatchUrl,
+              videoId,
+              workDir,
+            );
+            const originalSrt =
+              subtitleWindowStart !== null && subtitleWindowDuration !== null
+                ? trimSubtitleToTimeWindow(
+                    originalCaptionResult.srt,
+                    Math.max(0, subtitleWindowStart - 10),
+                    subtitleWindowDuration + 20,
+                  )
+                : originalCaptionResult.srt;
+            if (!originalSrt.trim()) {
+              throw new Error('Original captions were empty in the requested time window');
+            }
+            stepLog(
+              `returned original captions (${originalCaptionResult.lang}, ${originalSrt.length} chars, source=${originalCaptionResult.source})`,
+            );
+            setSubtitleCache(cacheKey, originalSrt, originalCaptionResult.lang || targetLang, originalCaptionResult.source);
+            res.json({
+              success: true,
+              srt: originalSrt,
+              lang: originalCaptionResult.lang || 'original',
+              source: originalCaptionResult.source,
+            });
+            return;
+          } catch (originalErr: any) {
+            return res.status(404).json({
+              error: originalErr?.message || 'Original subtitles are not available for this video',
+            });
+          }
+        }
 
         if (targetLang === 'ckb') {
           const soraniSourceLangs = ['en', 'ar', 'ku'];
@@ -9317,6 +9784,7 @@ let videoDownloaded = false;
                 sourceSrtForSorani,
                 targetLang,
                 sourceCaptionResult.lang || soraniSourceLang,
+                userGeminiKey,
               );
               stepLog(
                 `translated ${sourceCaptionResult.lang} captions to Sorani (${translatedSrt.length} chars, source=${sourceCaptionResult.mode})`,
@@ -9351,69 +9819,92 @@ let videoDownloaded = false;
         }
 
         if (ytDlpResult) {
+          const ytDlpScopedSrt = scopeSubtitleForRequest(ytDlpResult.srt);
+          let ytDlpExactTrackRejected = false;
           if (ytDlpResult.lang === targetLang) {
-            stepLog(
-              `returned YouTube captions via yt-dlp (${ytDlpResult.mode}, ${ytDlpResult.srt.length} chars)`,
-            );
-            setSubtitleCache(cacheKey, ytDlpResult.srt, targetLang, `youtube-captions-${ytDlpResult.mode}`);
-            res.json({
-              success: true,
-              srt: ytDlpResult.srt,
-              lang: targetLang,
-              source: `youtube-captions-${ytDlpResult.mode}`,
-            });
-            return;
-          }
-          if (targetLang !== 'en') {
             try {
-              stepLog(`yt-dlp got ${ytDlpResult.lang} captions; trying YouTube auto-translate to ${targetLang}`);
-              const webTranslatedResult = await fetchYouTubeCaptionsFromWeb(videoId, targetLang);
-              if (webTranslatedResult.lang === targetLang) {
-                stepLog(
-                  `returned YouTube auto-translated captions (${webTranslatedResult.source}, ${webTranslatedResult.srt.length} chars)`,
-                );
-                setSubtitleCache(cacheKey, webTranslatedResult.srt, targetLang, `youtube-captions-web-${webTranslatedResult.source}`);
-                res.json({
-                  success: true,
-                  srt: webTranslatedResult.srt,
-                  lang: targetLang,
-                  source: `youtube-captions-web-${webTranslatedResult.source}`,
-                });
-                return;
-              }
-              stepLog(
-                `YouTube web captions returned ${webTranslatedResult.lang}; using public translation to ${targetLang}`,
-              );
-              const webTranslatedSrt = await translateSubtitleWithFallback(
-                webTranslatedResult.srt,
+              const verifiedScopedSrt = ensureSubtitleTrackMatchesLang(
+                ytDlpScopedSrt,
                 targetLang,
-                webTranslatedResult.lang || 'auto',
+                `youtube-captions-${ytDlpResult.mode}`,
               );
-              setSubtitleCache(cacheKey, webTranslatedSrt, targetLang, `youtube-captions-web-${webTranslatedResult.source}-translate`, webTranslatedResult.srt);
+              stepLog(
+                `returned YouTube captions via yt-dlp (${ytDlpResult.mode}, ${verifiedScopedSrt.length} chars)`,
+              );
+              setSubtitleCache(cacheKey, verifiedScopedSrt, targetLang, `youtube-captions-${ytDlpResult.mode}`);
               res.json({
                 success: true,
-                srt: webTranslatedSrt,
+                srt: verifiedScopedSrt,
                 lang: targetLang,
-                source: `youtube-captions-web-${webTranslatedResult.source}-translate`,
-                originalSrt: webTranslatedResult.srt,
+                source: `youtube-captions-${ytDlpResult.mode}`,
               });
               return;
-            } catch (webTranslateErr: any) {
-              stepLog(`YouTube auto-translate path failed: ${webTranslateErr?.message || webTranslateErr}`);
+            } catch (trackErr: any) {
+              ytDlpExactTrackRejected = true;
+              stepLog(`exact ${targetLang} yt-dlp caption rejected: ${trackErr?.message || trackErr}`);
             }
+          }
+          try {
+            stepLog(`yt-dlp got ${ytDlpResult.lang} captions; trying YouTube auto-translate to ${targetLang}`);
+            const webTranslatedResult = await fetchYouTubeCaptionsFromWeb(videoId, targetLang);
+            const webTranslatedScopedSrt = scopeSubtitleForRequest(webTranslatedResult.srt);
+            if (webTranslatedResult.lang === targetLang) {
+              const verifiedWebTranslatedSrt = ensureSubtitleTrackMatchesLang(
+                webTranslatedScopedSrt,
+                targetLang,
+                `youtube-captions-web-${webTranslatedResult.source}`,
+              );
+              stepLog(
+                `returned YouTube auto-translated captions (${webTranslatedResult.source}, ${verifiedWebTranslatedSrt.length} chars)`,
+              );
+              setSubtitleCache(cacheKey, verifiedWebTranslatedSrt, targetLang, `youtube-captions-web-${webTranslatedResult.source}`);
+              res.json({
+                success: true,
+                srt: verifiedWebTranslatedSrt,
+                lang: targetLang,
+                source: `youtube-captions-web-${webTranslatedResult.source}`,
+              });
+              return;
+            }
+            stepLog(
+              `YouTube web captions returned ${webTranslatedResult.lang}; using public translation to ${targetLang}`,
+            );
+            const webSourceSrt = scopeSubtitleForRequest(webTranslatedResult.srt);
+            const webTranslatedSrt = await translateSubtitleWithFallback(
+              webSourceSrt,
+              targetLang,
+              webTranslatedResult.lang || 'auto',
+              userGeminiKey,
+            );
+            setSubtitleCache(cacheKey, webTranslatedSrt, targetLang, `youtube-captions-web-${webTranslatedResult.source}-translate`, webSourceSrt);
+            res.json({
+              success: true,
+              srt: webTranslatedSrt,
+              lang: targetLang,
+              source: `youtube-captions-web-${webTranslatedResult.source}-translate`,
+              originalSrt: webSourceSrt,
+            });
+            return;
+          } catch (webTranslateErr: any) {
+            stepLog(`YouTube auto-translate path failed: ${webTranslateErr?.message || webTranslateErr}`);
           }
 
           stepLog(`yt-dlp got ${ytDlpResult.lang} captions for target ${targetLang}; translating via public fallback`);
           try {
-            const translatedSrt = await translateSubtitleWithFallback(ytDlpResult.srt, targetLang, ytDlpResult.lang || 'auto');
+            const translatedSrt = await translateSubtitleWithFallback(
+              ytDlpScopedSrt,
+              targetLang,
+              ytDlpExactTrackRejected ? 'auto' : ytDlpResult.lang || 'auto',
+              userGeminiKey,
+            );
             stepLog(`translated yt-dlp captions via public fallback (${translatedSrt.length} chars, mode=${ytDlpResult.mode})`);
-            setSubtitleCache(cacheKey, translatedSrt, targetLang, `youtube-captions-${ytDlpResult.mode}-translate`, ytDlpResult.srt);
+            setSubtitleCache(cacheKey, translatedSrt, targetLang, `youtube-captions-${ytDlpResult.mode}-translate`, ytDlpScopedSrt);
             res.json({
               success: true,
               srt: translatedSrt,
               lang: targetLang,
               source: `youtube-captions-${ytDlpResult.mode}-translate`,
-              originalSrt: ytDlpResult.srt,
+              originalSrt: ytDlpScopedSrt,
             });
           } catch (translateErr: any) {
             const message = translateErr?.message || 'Subtitle translation failed';
@@ -9428,26 +9919,28 @@ let videoDownloaded = false;
         // 2) Web timedtext extractors (fallback when yt-dlp is unavailable).
         try {
           const webCaptionResult = await fetchYouTubeCaptionsFromWeb(videoId, targetLang);
+          const webCaptionScopedSrt = scopeSubtitleForRequest(webCaptionResult.srt);
           stepLog(
-            `returned YouTube captions via web extractor (${webCaptionResult.source}, ${webCaptionResult.srt.length} chars)`,
+            `returned YouTube captions via web extractor (${webCaptionResult.source}, ${webCaptionScopedSrt.length} chars)`,
           );
           if (webCaptionResult.lang !== targetLang) {
             try {
               const translatedSrt = await translateSubtitleWithFallback(
-                webCaptionResult.srt,
+                webCaptionScopedSrt,
                 targetLang,
                 webCaptionResult.lang || 'auto',
+                userGeminiKey,
               );
               stepLog(
                 `translated web captions ${webCaptionResult.lang} to ${targetLang} via public fallback (${translatedSrt.length} chars, source=${webCaptionResult.source})`,
               );
-              setSubtitleCache(cacheKey, translatedSrt, targetLang, `youtube-captions-web-${webCaptionResult.source}-translate`, webCaptionResult.srt);
+              setSubtitleCache(cacheKey, translatedSrt, targetLang, `youtube-captions-web-${webCaptionResult.source}-translate`, webCaptionScopedSrt);
               res.json({
                 success: true,
                 srt: translatedSrt,
                 lang: targetLang,
                 source: `youtube-captions-web-${webCaptionResult.source}-translate`,
-                originalSrt: webCaptionResult.srt,
+                originalSrt: webCaptionScopedSrt,
               });
             } catch (translateErr: any) {
               const message = translateErr?.message || 'Subtitle translation failed';
@@ -9457,10 +9950,15 @@ let videoDownloaded = false;
             }
             return;
           }
-          setSubtitleCache(cacheKey, webCaptionResult.srt, targetLang, `youtube-captions-web-${webCaptionResult.source}`);
+          const verifiedWebCaptionSrt = ensureSubtitleTrackMatchesLang(
+            webCaptionScopedSrt,
+            targetLang,
+            `youtube-captions-web-${webCaptionResult.source}`,
+          );
+          setSubtitleCache(cacheKey, verifiedWebCaptionSrt, targetLang, `youtube-captions-web-${webCaptionResult.source}`);
           res.json({
             success: true,
-            srt: webCaptionResult.srt,
+            srt: verifiedWebCaptionSrt,
             lang: targetLang,
             source: `youtube-captions-web-${webCaptionResult.source}`,
           });
@@ -9475,30 +9973,41 @@ let videoDownloaded = false;
             try {
               stepLog(`trying yt-dlp bridge captions (${bridgeLang}) + public translation to ${targetLang}`);
               const bridgeResult = await fetchYoutubeCaptionsViaYtDlp(youtubeWatchUrl, workDir, bridgeLang);
+              const bridgeScopedSrt = scopeSubtitleForRequest(bridgeResult.srt);
               if (bridgeResult.lang === targetLang) {
-                res.json({
-                  success: true,
-                  srt: bridgeResult.srt,
-                  lang: targetLang,
-                  source: `youtube-captions-bridge-${bridgeResult.mode}`,
-                });
-                return;
+                try {
+                  const verifiedBridgeSrt = ensureSubtitleTrackMatchesLang(
+                    bridgeScopedSrt,
+                    targetLang,
+                    `youtube-captions-bridge-${bridgeResult.mode}`,
+                  );
+                  res.json({
+                    success: true,
+                    srt: verifiedBridgeSrt,
+                    lang: targetLang,
+                    source: `youtube-captions-bridge-${bridgeResult.mode}`,
+                  });
+                  return;
+                } catch (trackErr: any) {
+                  stepLog(`bridge ${targetLang} caption rejected: ${trackErr?.message || trackErr}`);
+                }
               }
               const translatedSrt = await translateSubtitleWithFallback(
-                bridgeResult.srt,
+                bridgeScopedSrt,
                 targetLang,
                 bridgeResult.lang || bridgeLang,
+                userGeminiKey,
               );
               stepLog(
                 `translated bridge captions (${bridgeResult.lang}/${bridgeResult.mode}) to ${targetLang} (${translatedSrt.length} chars)`,
               );
-              setSubtitleCache(cacheKey, translatedSrt, targetLang, `youtube-captions-bridge-${bridgeResult.mode}-translate`, bridgeResult.srt);
+              setSubtitleCache(cacheKey, translatedSrt, targetLang, `youtube-captions-bridge-${bridgeResult.mode}-translate`, bridgeScopedSrt);
               res.json({
                 success: true,
                 srt: translatedSrt,
                 lang: targetLang,
                 source: `youtube-captions-bridge-${bridgeResult.mode}-translate`,
-                originalSrt: bridgeResult.srt,
+                originalSrt: bridgeScopedSrt,
               });
               return;
             } catch (bridgeErr: any) {
@@ -9510,35 +10019,34 @@ let videoDownloaded = false;
             }
           }
 
-          if (targetLang !== 'en') {
-            stepLog(`trying English caption fallback + public translation for video ${videoId}`);
+          stepLog(`trying English caption fallback + public translation for video ${videoId}`);
+          try {
+            const enCaptionResult = await fetchYouTubeCaptionsFromWeb(videoId, 'en');
+            const enScopedSrt = scopeSubtitleForRequest(enCaptionResult.srt);
+            let translatedSrt = '';
             try {
-              const enCaptionResult = await fetchYouTubeCaptionsFromWeb(videoId, 'en');
-              let translatedSrt = '';
-              try {
-                translatedSrt = await translateSubtitleWithFallback(enCaptionResult.srt, targetLang, 'en');
-              } catch (translateErr: any) {
-                const message = translateErr?.message || 'Subtitle translation failed';
-                res.status(500).json({
-                  error: `Captions were found, but subtitle translation failed: ${message}`,
-                });
-                return;
-              }
-              stepLog(
-                `translated fallback English captions via public fallback (${translatedSrt.length} chars, source=${enCaptionResult.source})`,
-              );
-              setSubtitleCache(cacheKey, translatedSrt, targetLang, `youtube-captions-web-en-translate-${enCaptionResult.source}`, enCaptionResult.srt);
-              res.json({
-                success: true,
-                srt: translatedSrt,
-                lang: targetLang,
-                source: `youtube-captions-web-en-translate-${enCaptionResult.source}`,
-                originalSrt: enCaptionResult.srt,
+              translatedSrt = await translateSubtitleWithFallback(enScopedSrt, targetLang, 'en', userGeminiKey);
+            } catch (translateErr: any) {
+              const message = translateErr?.message || 'Subtitle translation failed';
+              res.status(500).json({
+                error: `Captions were found, but subtitle translation failed: ${message}`,
               });
               return;
-            } catch (geminiFallbackErr: any) {
-              stepLog(`English+Gemini fallback failed: ${geminiFallbackErr?.message || geminiFallbackErr}`);
             }
+            stepLog(
+              `translated fallback English captions via public fallback (${translatedSrt.length} chars, source=${enCaptionResult.source})`,
+            );
+            setSubtitleCache(cacheKey, translatedSrt, targetLang, `youtube-captions-web-en-translate-${enCaptionResult.source}`, enScopedSrt);
+            res.json({
+              success: true,
+              srt: translatedSrt,
+              lang: targetLang,
+              source: `youtube-captions-web-en-translate-${enCaptionResult.source}`,
+              originalSrt: enScopedSrt,
+            });
+            return;
+          } catch (geminiFallbackErr: any) {
+            stepLog(`English+Gemini fallback failed: ${geminiFallbackErr?.message || geminiFallbackErr}`);
           }
 
           return res.status(400).json({
@@ -9553,7 +10061,7 @@ let videoDownloaded = false;
 
       stepLog(`starting whisper + Gemini pipeline (lang=${targetLang})`);
       const srtPath = await generateSubtitle(videoPath, targetLang);
-      const srtText = fsMod.readFileSync(srtPath, 'utf-8');
+      const srtText = ensureSubtitleTrackMatchesLang(fsMod.readFileSync(srtPath, 'utf-8'), targetLang, 'whisper-gemini');
       stepLog(`generated ${srtText.length} chars in ${((Date.now() - started) / 1000).toFixed(1)}s`);
       res.json({ success: true, srt: srtText, lang: targetLang });
     } catch (err: any) {
@@ -9569,14 +10077,15 @@ let videoDownloaded = false;
   });
 
   app.post('/api/subtitle/translate', async (req, res) => {
-    const { srt, lang, sourceLang } = req.body || {};
+    const { srt, lang, sourceLang, geminiApiKey: userGeminiKey } = req.body || {};
     if (typeof srt !== 'string' || !srt.trim()) {
       return res.status(400).json({ error: 'Missing subtitle text' });
     }
-    const targetLang =
-      typeof lang === 'string' && /^[a-z]{2,3}$/i.test(lang) ? lang.toLowerCase() : 'ckb';
+    const targetLang = normalizeSubtitleLangCode(lang, 'ckb');
     const fromLang =
-      typeof sourceLang === 'string' && /^[a-z]{2,3}$/i.test(sourceLang) ? sourceLang.toLowerCase() : 'auto';
+      typeof sourceLang === 'string' && /^[a-z]{2,3}(?:-[a-z]{2,3})?$/i.test(sourceLang)
+        ? sourceLang.toLowerCase()
+        : 'auto';
 
     try {
       const normalized = normalizeSubtitleText(srt);
@@ -9584,10 +10093,17 @@ let videoDownloaded = false;
         return res.status(413).json({ error: 'Subtitle text is too large' });
       }
       const translatedSrt =
-        targetLang === fromLang ? normalized : await translateSubtitleWithFallback(normalized, targetLang, fromLang);
+        targetLang === 'original' || targetLang === fromLang
+          ? normalized
+          : await translateSubtitleWithFallback(normalized, targetLang, fromLang, userGeminiKey);
+      const responseSrt = ensureSubtitleTrackMatchesLang(
+        translatedSrt,
+        targetLang,
+        `subtitle-translate-${fromLang}-to-${targetLang}`,
+      );
       res.json({
         success: true,
-        srt: translatedSrt,
+        srt: responseSrt,
         lang: targetLang,
         source: `subtitle-translate-${fromLang}-to-${targetLang}`,
       });

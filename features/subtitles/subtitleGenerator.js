@@ -155,27 +155,145 @@ async function runWhisper(wavFilePath, outputDir) {
 // returns the file in the exact same format it was given.
 function subtitleTargetLanguageName(targetLang) {
   const code = String(targetLang || "").toLowerCase();
-  if (code === "ckb") return `Kurdish Sorani (Central Kurdish, Arabic script; language code "${targetLang}")`;
-  if (code === "ar") return `Arabic (language code "${targetLang}")`;
+  if (code === "ckb" || code === "ku" || code === "kur" || code === "sorani") {
+    return `Kurdish Sorani (Central Kurdish, Arabic script; language code "${targetLang}")`;
+  }
   if (code === "en") return `English (language code "${targetLang}")`;
   return `language code "${targetLang}"`;
 }
 
-async function translateSrtViaGemini(srtText, targetLang) {
-  const apiKey = process.env.GEMINI_API_KEY;
+const SUBTITLE_METADATA_LINE_PATTERNS = [
+  /\bkurd\s*[-_.]*\s*zhin\b/i,
+  /\bkurdzhin\b/i,
+  /کورد\s*ژین/i,
+  /\b(?:translated|subtitle(?:s)?|caption(?:s)?|sync(?:ed)?|provided|uploaded|encoded|edited)\s+(?:by|from)\b/i,
+  /\b(?:telegram|t\.me\/|instagram|facebook|youtube\s+channel|subscribe|follow\s+us)\b/i,
+  /^\s*(?:https?:\/\/|www\.)\S+\s*$/i,
+  /^\s*[@#][\w.-]{3,}\s*$/i,
+];
+
+const SUBTITLE_SYSTEM_INJECTION_PATTERNS = [
+  /^```[\w-]*$/i,
+  /^(?:here(?:'s| is)|below is|this is)\s+(?:the\s+)?(?:translated\s+)?(?:subtitle|srt|vtt|translation)/i,
+  /^(?:translated subtitle|translation|output subtitle|input subtitle file|raw subtitle file)\s*:?\s*$/i,
+  /^#+\s*(?:subtitle|translation|output)/i,
+];
+
+function subtitleMetadataProbe(rawLine) {
+  return String(rawLine || "")
+    .replace(/<\d{2}:\d{2}:\d{2}[\.,]\d{3}>/g, "")
+    .replace(/<\/?c[^>]*>/g, "")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .trim();
+}
+
+function isSubtitleStructureLine(line) {
+  const trimmed = String(line || "").trim();
+  return (
+    !trimmed ||
+    /^WEBVTT$/i.test(trimmed) ||
+    /^\d+$/.test(trimmed) ||
+    /\d{2}:\d{2}:\d{2}[\.,]\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}[\.,]\d{3}/.test(trimmed)
+  );
+}
+
+function isSubtitleMetadataLine(line) {
+  const clean = subtitleMetadataProbe(line);
+  if (!clean) return false;
+  if (/^(Kind|Language|X-TIMESTAMP-MAP):/i.test(clean)) return true;
+  if (/^(NOTE|STYLE|REGION)(?:\s|$)/i.test(clean)) return true;
+  return (
+    SUBTITLE_SYSTEM_INJECTION_PATTERNS.some((pattern) => pattern.test(clean)) ||
+    SUBTITLE_METADATA_LINE_PATTERNS.some((pattern) => pattern.test(clean))
+  );
+}
+
+function stripSubtitleMetadataFragments(line) {
+  if (isSubtitleStructureLine(line)) return line;
+  return String(line || "")
+    .replace(/\bkurd\s*[-_.]*\s*zhin\b/gi, "")
+    .replace(/\bkurdzhin\b/gi, "")
+    .replace(/کورد\s*ژین/g, "")
+    .replace(/\s*(?:[-–—|•]+)\s*(?:translated|subtitle(?:s)?|caption(?:s)?)\s+(?:by|from)\s+.*$/i, "")
+    .replace(/(?:https?:\/\/|www\.)\S+/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/^\s*[-–—|•:]+|[-–—|•:]+\s*$/g, "")
+    .trim();
+}
+
+function sanitizeSubtitleText(rawText) {
+  const normalized = String(rawText || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/^\uFEFF/, "");
+  const keepTrailingNewline = /\n\s*$/.test(normalized);
+  const output = [];
+  let skipBlock = false;
+
+  for (const line of normalized.split("\n")) {
+    const trimmed = line.trim();
+    if (/^(NOTE|STYLE|REGION)(?:\s|$)/i.test(trimmed)) {
+      skipBlock = true;
+      continue;
+    }
+    if (skipBlock) {
+      if (!trimmed) {
+        skipBlock = false;
+        output.push(line);
+      }
+      continue;
+    }
+    const stripped = stripSubtitleMetadataFragments(line);
+    if (!isSubtitleStructureLine(line) && isSubtitleMetadataLine(stripped)) continue;
+    if (stripped || isSubtitleStructureLine(line)) {
+      output.push(stripped);
+    }
+  }
+
+  const cleaned = output.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  return cleaned && keepTrailingNewline ? `${cleaned}\n` : cleaned;
+}
+
+function extractSubtitleTimingLines(text) {
+  return String(text || "").match(/\d{2}:\d{2}:\d{2}[,.]\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}[,.]\d{3}(?:[^\n]*)/g) || [];
+}
+
+function validateTranslatedSubtitleStructure(sourceText, translatedText) {
+  const sourceTimings = extractSubtitleTimingLines(sourceText);
+  if (!sourceTimings.length) return;
+  const translatedTimings = extractSubtitleTimingLines(translatedText);
+  if (translatedTimings.length !== sourceTimings.length) {
+    throw new Error(
+      `Gemini returned ${translatedTimings.length} subtitle timings; expected ${sourceTimings.length}`,
+    );
+  }
+  for (let i = 0; i < sourceTimings.length; i += 1) {
+    if (translatedTimings[i] !== sourceTimings[i]) {
+      throw new Error(`Gemini changed subtitle timing at cue ${i + 1}`);
+    }
+  }
+}
+
+async function translateSrtViaGemini(srtText, targetLang, userApiKey) {
+  const apiKey = userApiKey || process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY is not set; cannot translate subtitles");
+  const sanitizedSource = sanitizeSubtitleText(srtText);
+  if (!sanitizedSource) throw new Error("Subtitle file is empty after metadata cleanup");
 
   const translateChunk = async (subtitleChunk) => {
     const targetLanguageName = subtitleTargetLanguageName(targetLang);
     const prompt =
-      `You are a professional subtitle translator. Translate the subtitle file below into ${targetLanguageName}.\n\n` +
-      `STRICT RULES — follow exactly:\n` +
-      `1. Translate ONLY the dialogue/text content of each cue. Do NOT add any extra words, explanations, notes, speaker labels, or text that does not exist in the original.\n` +
-      `2. Preserve EVERY cue's number, timestamp line, and file structure exactly. Do NOT merge, split, reorder, or skip any cues.\n` +
-      `3. Return the COMPLETE file — every single cue must appear in your output. Never output a partial file or summary.\n` +
-      `4. Translate faithfully and naturally. If a phrase is idiomatic, translate its meaning — do not transliterate.\n` +
-      `5. Keep the original line breaks within each cue. If a cue has two lines, your translation should also have two lines.\n` +
-      `6. Do NOT wrap the output in markdown code fences or any other formatting. Return ONLY the raw subtitle file content.\n\n` +
+      `You are a strict subtitle translation engine. Translate the subtitle file below into ${targetLanguageName}.\n\n` +
+      `STRICT RULES - follow exactly:\n` +
+      `1. Translate ONLY the dialogue/text content of each cue. Never add words, explanations, notes, speaker labels, guesses, or new meaning.\n` +
+      `2. Preserve every cue number, timestamp line, identifier, blank line, and file structure exactly as provided.\n` +
+      `3. Keep a 1:1 mapping: each original cue must remain one translated cue in the same order. Do not merge, split, reorder, skip, or summarize cues.\n` +
+      `4. Keep the same number of subtitle text lines inside each cue whenever possible. If a cue has two text lines, return two translated text lines.\n` +
+      `5. Translate literally and conservatively according to the source text. Preserve names, brands, codes, and unclear words unchanged.\n` +
+      `6. Return the complete raw subtitle file only. Do not use markdown fences or commentary.\n\n` +
       `Input subtitle file:\n\n${subtitleChunk}`;
 
     const headers = { "Content-Type": "application/json" };
@@ -190,7 +308,7 @@ async function translateSrtViaGemini(srtText, targetLang) {
         {
           method: "POST",
           headers,
-          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.1 } }),
+          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0 } }),
           signal: controller.signal,
         },
       );
@@ -205,8 +323,9 @@ async function translateSrtViaGemini(srtText, targetLang) {
     if (!response.ok) throw new Error(`Gemini API error ${response.status}: ${await response.text()}`);
 
     const data = await response.json();
-    const translated = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("");
+    const translated = sanitizeSubtitleText(data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join(""));
     if (!translated || !translated.trim()) throw new Error("Gemini returned an empty translation");
+    validateTranslatedSubtitleStructure(subtitleChunk, translated);
     return translated;
   };
 
@@ -228,17 +347,17 @@ async function translateSrtViaGemini(srtText, targetLang) {
     return chunks;
   };
 
-  const chunks = splitIntoChunks(srtText);
+  const chunks = splitIntoChunks(sanitizedSource);
   if (chunks.length > 1) {
-    log(`step 3/3: translating ${srtText.trim().split("\n").length} lines in ${chunks.length} Gemini chunks to "${targetLang}" (${GEMINI_MODEL})`);
+    log(`step 3/3: translating ${sanitizedSource.trim().split("\n").length} lines in ${chunks.length} Gemini chunks to "${targetLang}" (${GEMINI_MODEL})`);
     chunks.forEach((c, i) => log(`  Gemini chunk ${i + 1}/${chunks.length} (${c.length} chars)`));
     const results = await Promise.all(chunks.map((chunk) => translateChunk(chunk)));
     const translatedChunks = results.map((r) => r.replace(/\n+$/g, ""));
-    const trailingNewline = /\n$/.test(srtText) ? "\n" : "";
+    const trailingNewline = /\n$/.test(sanitizedSource) ? "\n" : "";
     return `${translatedChunks.join("\n\n")}${trailingNewline}`;
   }
-  log(`step 3/3: translating ${srtText.trim().split("\n").length} lines to "${targetLang}" with Gemini (${GEMINI_MODEL})`);
-  return translateChunk(srtText);
+  log(`step 3/3: translating ${sanitizedSource.trim().split("\n").length} lines to "${targetLang}" with Gemini (${GEMINI_MODEL})`);
+  return translateChunk(sanitizedSource);
 }
 
 // Transcribe ONE video file and save the final .srt next to it.
@@ -258,9 +377,9 @@ async function generateSubtitle(videoFilePath, outputLang = "en") {
     const { srtText, detectedLanguage } = await runWhisper(wavPath, tempDir);
 
     // Step 3: translate only when the detected language differs from the target.
-    let finalSrt = srtText;
+    let finalSrt = sanitizeSubtitleText(srtText);
     if (outputLang && detectedLanguage !== outputLang) {
-      finalSrt = await translateSrtViaGemini(srtText, outputLang);
+      finalSrt = await translateSrtViaGemini(finalSrt, outputLang);
     } else {
       log("  no translation needed (languages match)");
     }
@@ -330,6 +449,7 @@ function __resetSubtitleTestHooks() {
 module.exports = {
   generateSubtitle,
   generateSubtitlesForFolder,
+  sanitizeSubtitleText,
   translateSrtViaGemini,
   __setSubtitleTestHooks,
   __resetSubtitleTestHooks,
@@ -341,5 +461,5 @@ module.exports = {
 // const { generateSubtitle, generateSubtitlesForFolder } = require("./subtitleGenerator");
 // // Single movie -> English subtitles:
 // // generateSubtitle("C:/Movies/Inception.mp4", "en").then((p) => console.log("Subtitle ready:", p)).catch((e) => console.error(e.message));
-// // Whole folder -> Arabic subtitles, one video at a time:
+// // Whole folder -> Kurdish Sorani subtitles, one video at a time:
 // // generateSubtitlesForFolder("C:/Movies", "ar").then((s) => console.log("Batch done:", s)).catch((e) => console.error(e.message));

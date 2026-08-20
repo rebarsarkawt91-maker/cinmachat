@@ -1,6 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { getYTId } from "../../utils/youtube";
 import { api } from "../../services/api";
+import VideoLoadOverlay from "./VideoLoadOverlay";
+import {
+  hasPlayableBuffer,
+  type NativeVideoLoadState,
+} from "../../utils/videoBuffering";
 
 /**
  * YouTubeResilientPlayer — plays posted YouTube movies without throwing the
@@ -68,6 +73,7 @@ export default function YouTubeResilientPlayer({
   const retryCountRef = useRef(0);
   // Pending reconnect timer so it can be cleared on unmount/url change.
   const retryTimerRef = useRef<number | null>(null);
+  const directVideoSlowTimerRef = useRef<number | null>(null);
 
   const videoId = getYTId(url);
 
@@ -75,6 +81,9 @@ export default function YouTubeResilientPlayer({
   const [reconnecting, setReconnecting] = useState(false);
   const [resolving, setResolving] = useState(false);
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
+  const [directVideoStatus, setDirectVideoStatus] =
+    useState<NativeVideoLoadState>("idle");
+  const [directVideoReloadKey, setDirectVideoReloadKey] = useState(0);
   // Bump to force a fresh iframe mount (auto-retry and Retry button).
   const [retryKey, setRetryKey] = useState(0);
 
@@ -112,8 +121,28 @@ export default function YouTubeResilientPlayer({
         window.clearTimeout(retryTimerRef.current);
         retryTimerRef.current = null;
       }
+      if (directVideoSlowTimerRef.current !== null) {
+        window.clearTimeout(directVideoSlowTimerRef.current);
+        directVideoSlowTimerRef.current = null;
+      }
     };
   }, []);
+
+  const clearDirectVideoSlowTimer = useCallback(() => {
+    if (directVideoSlowTimerRef.current !== null) {
+      window.clearTimeout(directVideoSlowTimerRef.current);
+      directVideoSlowTimerRef.current = null;
+    }
+  }, []);
+
+  const armDirectVideoSlowTimer = useCallback(() => {
+    clearDirectVideoSlowTimer();
+    directVideoSlowTimerRef.current = window.setTimeout(() => {
+      setDirectVideoStatus((status) =>
+        status === "ready" || status === "error" ? status : "buffering",
+      );
+    }, 12000);
+  }, [clearDirectVideoSlowTimer]);
 
   // Detect embed blocks via the YouTube widget postMessage protocol.
   useEffect(() => {
@@ -163,12 +192,13 @@ export default function YouTubeResilientPlayer({
 
   // Ask the server for a direct progressive-MP4 stream (cached) so we can play
   // in a native <video>, bypassing YouTube embedding restrictions.
-  const escalateToDirectStream = useCallback(async () => {
+  const escalateToDirectStream = useCallback(async (forceRefresh = false) => {
     if (!videoId) {
       setStreamUrl(null);
       return;
     }
     setResolving(true);
+    setDirectVideoStatus("loading");
     try {
       // Same server used for /api/movies, /api/config, ... — same-origin path
       // through Firebase 307 → Render, with cold-start retries handled here.
@@ -177,7 +207,7 @@ export default function YouTubeResilientPlayer({
         {
           method: "POST",
           headers: { "Content-Type": "text/plain" },
-          body: JSON.stringify({ url }),
+          body: JSON.stringify({ url, refresh: forceRefresh }),
         },
         2,
       );
@@ -188,12 +218,15 @@ export default function YouTubeResilientPlayer({
           : null;
       if (first?.url) {
         setStreamUrl(first.url);
+        setDirectVideoStatus("loading");
       } else {
         setStreamUrl(null);
+        setDirectVideoStatus("error");
       }
     } catch (err) {
       console.error("[YouTubeResilientPlayer] Direct stream resolve failed:", err);
       setStreamUrl(null);
+      setDirectVideoStatus("error");
     } finally {
       setResolving(false);
     }
@@ -239,8 +272,35 @@ export default function YouTubeResilientPlayer({
   }, [streamUrl, blocked, reconnecting, onModeChange]);
 
   // Native <video> failed to play the direct stream → show the error panel.
+  useEffect(() => {
+    if (!streamUrl) {
+      setDirectVideoStatus("idle");
+      clearDirectVideoSlowTimer();
+      return;
+    }
+    setDirectVideoStatus("loading");
+    armDirectVideoSlowTimer();
+    return clearDirectVideoSlowTimer;
+  }, [streamUrl, directVideoReloadKey, armDirectVideoSlowTimer, clearDirectVideoSlowTimer]);
+
   const handleVideoError = () => {
-    setStreamUrl(null);
+    clearDirectVideoSlowTimer();
+    setDirectVideoStatus("error");
+  };
+
+  const clearDirectVideoIfBuffered = (
+    event: React.SyntheticEvent<HTMLVideoElement>,
+  ) => {
+    if (hasPlayableBuffer(event.currentTarget)) {
+      clearDirectVideoSlowTimer();
+      setDirectVideoStatus("ready");
+    }
+  };
+
+  const retryDirectVideo = () => {
+    setDirectVideoStatus("loading");
+    setDirectVideoReloadKey((key) => key + 1);
+    void escalateToDirectStream(true);
   };
 
   // Manual "Retry" from the error panel: start over with a fresh retry budget.
@@ -278,7 +338,7 @@ export default function YouTubeResilientPlayer({
       ) : streamUrl ? (
         <div className="relative w-full h-full flex items-center justify-center bg-black">
           <video
-            key={streamUrl}
+            key={`${streamUrl}:${directVideoReloadKey}`}
             id="room-player-direct-video"
             src={streamUrl}
             poster={poster}
@@ -286,9 +346,41 @@ export default function YouTubeResilientPlayer({
             autoPlay
             muted
             playsInline
+            preload="auto"
             className="w-full h-full max-h-full"
+            onLoadStart={() => {
+              setDirectVideoStatus("loading");
+              armDirectVideoSlowTimer();
+            }}
+            onLoadedMetadata={() => setDirectVideoStatus("buffering")}
+            onLoadedData={clearDirectVideoIfBuffered}
+            onCanPlay={() => {
+              clearDirectVideoSlowTimer();
+              setDirectVideoStatus("ready");
+            }}
+            onPlaying={() => {
+              clearDirectVideoSlowTimer();
+              setDirectVideoStatus("ready");
+            }}
+            onWaiting={() => setDirectVideoStatus("buffering")}
+            onStalled={() => setDirectVideoStatus("buffering")}
+            onProgress={clearDirectVideoIfBuffered}
+            onTimeUpdate={clearDirectVideoIfBuffered}
             onError={handleVideoError}
           />
+          {directVideoStatus !== "ready" && directVideoStatus !== "idle" && (
+            <VideoLoadOverlay
+              status={directVideoStatus === "error" ? "error" : directVideoStatus === "buffering" ? "buffering" : "loading"}
+              message={
+                directVideoStatus === "error"
+                  ? "Unable to load this stream. Please try again."
+                  : directVideoStatus === "buffering"
+                    ? "Network is slow. Buffering video..."
+                    : "Preparing video..."
+              }
+              onRetry={directVideoStatus === "buffering" || directVideoStatus === "error" ? retryDirectVideo : undefined}
+            />
+          )}
         </div>
       ) : showError ? (
         <div className="relative w-full h-full flex items-center justify-center bg-black p-6 text-center">

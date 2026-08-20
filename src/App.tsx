@@ -333,6 +333,7 @@ async function fetchApi(
             json: async () => ({
               ads: {},
                 heroVideoUrl: getCachedHeroVideoUrl() || "",
+                heroPlaylist: getCachedHeroPlaylist(),
               socialLinks: { whatsapp: "", group: "", instagram: "", facebook: "" },
               youtubeChannelUrl: "https://www.youtube.com/",
               youtubeUrl: "https://www.youtube.com/",
@@ -763,18 +764,39 @@ const getViewerSessionId = (): string => {
 };
 
 const HERO_VIDEO_LOCAL_KEY = "cinemachat_hero_video_url";
+const HERO_PLAYLIST_LOCAL_KEY = "cinemachat_hero_playlist";
+
+const sanitizeHeroUrl = (url: string) =>
+  url.trim().replace(/&#x2F;/gi, '/').replace(/&amp;/g, '&');
 
 const getCachedHeroVideoUrl = () => {
   const cached = safeStorage.get(HERO_VIDEO_LOCAL_KEY);
   if (!cached) return "";
-  // Sanitize HTML entities that may have been stored
-  return cached.trim().replace(/&#x2F;/gi, '/').replace(/&amp;/g, '&');
+  return sanitizeHeroUrl(cached);
+};
+
+const getCachedHeroPlaylist = (): string[] => {
+  try {
+    const raw = safeStorage.get(HERO_PLAYLIST_LOCAL_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed.map(sanitizeHeroUrl).filter(Boolean);
+  } catch {}
+  return [];
 };
 
 const setCachedHeroVideoUrl = (url: string) => {
-  const clean = (url || "").trim().replace(/&#x2F;/gi, '/').replace(/&amp;/g, '&');
+  const clean = sanitizeHeroUrl(url);
   if (!clean) return;
   safeStorage.set(HERO_VIDEO_LOCAL_KEY, clean);
+};
+
+const setCachedHeroPlaylist = (urls: string[]) => {
+  const cleaned = urls.map(sanitizeHeroUrl).filter(Boolean);
+  if (cleaned.length === 0) return;
+  safeStorage.set(HERO_PLAYLIST_LOCAL_KEY, JSON.stringify(cleaned));
+  // Also keep first URL in single-key cache for backwards compatibility
+  safeStorage.set(HERO_VIDEO_LOCAL_KEY, cleaned[0]);
 };
 
 // Decode HTML-entity-encoded stored URLs (e.g. "https:&#x2F;&#x2F;…?a=1&amp;b=2")
@@ -2436,30 +2458,42 @@ const BroadcastModule = ({ onBroadcast }: any) => {
 
 const HeroModule = ({ onSync }: any) => {
   const [heroVideoUrl, setHeroVideoUrl] = useState("");
+  const [heroVideoUrl2, setHeroVideoUrl2] = useState("");
 
   useEffect(() => {
     fetchApi("/api/admin/hero")
       .then((res) => res.json())
       .then((data) => {
-        if (data && data.heroVideoUrl) {
+        if (data && Array.isArray(data.heroPlaylist) && data.heroPlaylist.length > 0) {
+          const clean1 = String(data.heroPlaylist[0] || "").trim();
+          const clean2 = String(data.heroPlaylist[1] || "").trim();
+          setHeroVideoUrl(clean1);
+          setHeroVideoUrl2(clean2);
+          setCachedHeroPlaylist(data.heroPlaylist.map((u: string) => String(u || "").trim()).filter(Boolean));
+        } else if (data && data.heroVideoUrl) {
           const clean = String(data.heroVideoUrl).trim();
           setHeroVideoUrl(clean);
-          setCachedHeroVideoUrl(clean);
-        } else if (
-          data &&
-          Array.isArray(data.heroPlaylist) &&
-          data.heroPlaylist[0]
-        ) {
-          const clean = String(data.heroPlaylist[0]).trim();
-          setHeroVideoUrl(clean);
-          setCachedHeroVideoUrl(clean);
+          if (clean) setCachedHeroVideoUrl(clean);
         } else {
-          setHeroVideoUrl(getCachedHeroVideoUrl());
+          // Fallback to local cache when server unreachable
+          const cachedPlaylist = getCachedHeroPlaylist();
+          if (cachedPlaylist.length > 0) {
+            setHeroVideoUrl(cachedPlaylist[0] || "");
+            setHeroVideoUrl2(cachedPlaylist[1] || "");
+          } else {
+            setHeroVideoUrl(getCachedHeroVideoUrl());
+          }
         }
       })
       .catch((err) => {
         console.error("Failed to load initial hero config:", err);
-        setHeroVideoUrl(getCachedHeroVideoUrl());
+        const cachedPlaylist = getCachedHeroPlaylist();
+        if (cachedPlaylist.length > 0) {
+          setHeroVideoUrl(cachedPlaylist[0] || "");
+          setHeroVideoUrl2(cachedPlaylist[1] || "");
+        } else {
+          setHeroVideoUrl(getCachedHeroVideoUrl());
+        }
       });
   }, []);
   return (
@@ -2483,7 +2517,7 @@ const HeroModule = ({ onSync }: any) => {
         </div>
         <div className="w-full max-w-md space-y-4 flex flex-col items-center">
           <label className="text-xs font-black text-gray-400 uppercase tracking-widest block kurdish-text text-center">
-            لینکى ڤیدیۆى سەرەکى (Hero Video)
+            لینکى ڤیدیۆی یەکەم (Hero Video 1)
           </label>
           <input
             type="text"
@@ -2492,8 +2526,18 @@ const HeroModule = ({ onSync }: any) => {
             onChange={(e) => setHeroVideoUrl(e.target.value)}
             className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-white text-center font-bold outline-none focus:border-red-600 tracking-widest text-sm"
           />
+          <label className="text-xs font-black text-gray-400 uppercase tracking-widest block kurdish-text text-center mt-2">
+            لینکى ڤیدیۆی دووەم (Hero Video 2 — اختیاری)
+          </label>
+          <input
+            type="text"
+            placeholder="بۆردی بەستەری یوتیوب (دواتر...)..."
+            value={heroVideoUrl2}
+            onChange={(e) => setHeroVideoUrl2(e.target.value)}
+            className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-white text-center font-bold outline-none focus:border-red-600 tracking-widest text-sm"
+          />
           <button
-            onClick={() => onSync(heroVideoUrl)}
+            onClick={() => onSync(heroVideoUrl, heroVideoUrl2)}
             className="w-full py-5 bg-white text-black rounded-2xl font-black kurdish-text text-lg hover:bg-white/80 transition-all active:scale-95 shadow-2xl mt-4"
           >
             جێگیرکردن وەکو فیلمی سەرەکی
@@ -2510,7 +2554,8 @@ const HeroModule = ({ onSync }: any) => {
             </h5>
             <p className="text-xs text-gray-500 kurdish-text leading-relaxed">
               ئەم ڤیدیۆیە بە شێوەیەکی ئۆتۆماتیکی و بە دەنگ بۆ بەکارهێنەران
-              لێدەدرێت لە باکگراونددا.
+              لێدەدرێت لە باکگراونددا. ئەگەر دوو لینک دابنێیت، یەکەم دەیلێت
+              و دووەمەکە دەتوانێت بە دوای کۆتایی یەکەمەکە بۆ دەچێت.
             </p>
           </div>
         </div>
@@ -5000,865 +5045,8 @@ const SettingsModule = ({
   );
 };
 
-const HeroSection: React.FC<{
-  activeFeaturedMovie: any;
-  countdown: number;
-  setCountdown: React.Dispatch<React.SetStateAction<number>>;
-  isHeroMuted: boolean;
-  setIsHeroMuted: React.Dispatch<React.SetStateAction<boolean>>;
-  hasInteracted: boolean;
-  heroVideoId: string;
-  config: any;
-  setShowVipModal: React.Dispatch<React.SetStateAction<boolean>>;
-  activeAudioSource?: "hero" | "room";
-  isMoviePlayerOpen?: boolean;
-}> = ({
-  activeFeaturedMovie,
-  countdown,
-  setCountdown,
-  isHeroMuted,
-  setIsHeroMuted,
-  hasInteracted,
-  heroVideoId,
-  config,
-  setShowVipModal,
-  activeAudioSource = "hero",
-  isMoviePlayerOpen = false,
-}) => {
-  const [isPlaying, setIsPlaying] = useState(true);
-  const isMuted = isHeroMuted;
-  const setIsMuted = setIsHeroMuted;
-  const videoId = activeFeaturedMovie?.videoId || heroVideoId;
-  const containerRef = useRef<HTMLDivElement>(null);
-  const playerRef = useRef<any>(null);
-  // Live mirror of isPlaying so onStateChange never fights intentional pauses
-  const isPlayingRef = useRef(true);
-  isPlayingRef.current = isPlaying;
-  // Synchronous intent flag for the Play/Pause toggle: set at the exact moment
-  // the user clicks, so the async onStateChange(PAUSED) event can NEVER re-arm
-  // the 50ms auto-resume against a deliberate pause (that race made the toggle
-  // appear "stuck" — the video kept resuming right after pausing).
-  const deliberatePauseRef = useRef(false);
-  // Live mirror of isMuted so the one-time document listener reads fresh state
-  const isMutedRef = useRef(isHeroMuted);
-  isMutedRef.current = isHeroMuted;
-  // Clears the lingering poster once real frames render (prevents old-frame artifacts)
-  const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
-  // English closed captions are forced on by default (ccEnabled = true)
-  const [ccEnabled, setCcEnabled] = useState(true);
-  // Strict 3s delayed mounting: zero iframe in the DOM until showPlayer=true
-  const [showPlayer, setShowPlayer] = useState(false);
-  // Live online-viewer counter: polls /api/stats every 10s with a stable
-  // per-tab session id. The server uses this as a presence heartbeat and
-  // returns the REAL count of concurrent viewers. Keeps the last known value if
-  // the server is down.
-  const [onlineViewers, setOnlineViewers] = useState(0);
-  // Stable per-tab session id (generated once) used as a presence heartbeat so
-  // the server can count real concurrent viewers.
-  const sessionIdRef = useRef<string>("");
-  if (sessionIdRef.current === "") {
-    sessionIdRef.current =
-      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-        ? crypto.randomUUID()
-        : `v-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  }
-
-  // 1) Strict 3-second black screen gate — mount the player after exactly 3s
-  useEffect(() => {
-    const timer = setTimeout(() => setShowPlayer(true), 3000);
-    return () => clearTimeout(timer);
-  }, []);
-
-  // Live viewer counter polling (hero badge)
-  useEffect(() => {
-    let cancelled = false;
-    const updateViewers = async () => {
-      try {
-        const data = await api.getStats(sessionIdRef.current);
-        if (!cancelled && data && typeof data.visitors === "number") {
-          setOnlineViewers(data.visitors);
-        }
-      } catch (_) {
-        // Keep the last known count — never block the hero on a failed poll.
-      }
-    };
-    updateViewers();
-    const interval = setInterval(updateViewers, 15000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, []);
-
-  // Detect mobile/touch devices: their autoplay policies block unmuted autoplay.
-  // Uses touch detection OR a small viewport (window.innerWidth < 768).
-  const isMobile = useMemo(() => {
-    if (typeof navigator === "undefined") return false;
-    return (
-      /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
-      "ontouchstart" in window ||
-      window.innerWidth < 768
-    );
-  }, []);
-
-  // Safe invocation of any YT.Player method: try/catch + rejected-promise swallow
-  const safePlayerCall = (player: any, method: string, ...args: any[]) => {
-    try {
-      const result = player?.[method]?.(...args);
-      if (result && typeof result.catch === "function") result.catch(() => {});
-      return result;
-    } catch (_) {
-      return undefined;
-    }
-  };
-
-  // True once the user manually controls hero audio (button / overlay / tap).
-  // The forceUnmuteAutoplay retry loop stops as soon as this is set so it can
-  // never fight the user's choice or re-show the overlay behind their back.
-  const userAudioControlRef = useRef(false);
-  // Handle to a pending forceUnmuteAutoplay retry so it can be cancelled
-  const unmuteRetryTimerRef = useRef<any>(null);
-
-  // User takes control of audio: cancel any pending autoplay retry loop.
-  const takeAudioControl = () => {
-    userAudioControlRef.current = true;
-    if (unmuteRetryTimerRef.current) {
-      clearTimeout(unmuteRetryTimerRef.current);
-      unmuteRetryTimerRef.current = null;
-    }
-  };
-
-  // Mute/unmute toggle: calls mute()/unMute() SYNCHRONOUSLY inside the click
-  // gesture. Calling unMute() from a useEffect runs OUTSIDE the gesture context,
-  // so strict autoplay policies silently swallow it, player.isMuted() stays
-  // true, and the reconciliation would lock the overlay on — audio could never
-  // be re-enabled from the button. unMute() here is a real gesture → reliable.
-  const toggleMute = () => {
-    const player = playerRef.current;
-    const next = !isMuted;
-    takeAudioControl();
-    if (player) {
-      if (next) {
-        safePlayerCall(player, "mute");
-      } else {
-        safePlayerCall(player, "unMute");
-        safePlayerCall(player, "setVolume", 100);
-      }
-    }
-    setIsMuted(next);
-  };
-
-  // Play-only re-assert (NEVER touches audio). Safe to call outside a gesture.
-  const forcePlay = (target: any, attempts = 6) => {
-    if (!target) return;
-    safePlayerCall(target, "playVideo");
-    const playerState = safePlayerCall(target, "getPlayerState");
-    const PLAYING = (window as any).YT?.PlayerState?.PLAYING ?? 1;
-    if (playerState !== PLAYING && attempts > 0) {
-      setTimeout(() => forcePlay(target, attempts - 1), 200);
-    }
-  };
-
-  // Unmute + full-volume playback. MUST only be invoked from a direct user
-  // gesture (click/tap): Edge & mobile autoplay policies silently block any
-  // programmatic unMute() call made outside a gesture.
-  const userUnmute = () => {
-    const player = playerRef.current;
-    if (!player) return;
-    takeAudioControl();
-    safePlayerCall(player, "unMute");
-    safePlayerCall(player, "setVolume", 100);
-    safePlayerCall(player, "playVideo");
-    setIsMuted(false);
-    forcePlay(player, 4);
-  };
-
-  // Forced unmuted autoplay: playVideo + unMute + setVolume(100) wrapped in a
-  // safe retry loop so the hero starts with SOUND right after the 3s black
-  // screen, no click needed. If the browser's autoplay policy still blocks
-  // audio, React state is reconciled to the real muted state so the pulsing
-  // "کاراکردنی دەنگ" overlay appears as a fallback.
-  const forceUnmuteAutoplay = (target: any, attempts = 20) => {
-    if (!target) return;
-    safePlayerCall(target, "playVideo");
-    safePlayerCall(target, "unMute");
-    safePlayerCall(target, "setVolume", 100);
-    const stillMuted = safePlayerCall(target, "isMuted") ?? false;
-    const playerState = safePlayerCall(target, "getPlayerState");
-    const PLAYING = (window as any).YT?.PlayerState?.PLAYING ?? 1;
-
-    if (!stillMuted && playerState === PLAYING) {
-      // Audio confirmed: video is playing with sound → reflect unmuted
-      setIsHeroMuted(false);
-      return;
-    }
-
-    if (attempts <= 0) {
-      // Retries exhausted: browser still blocks audio → keep truthful muted state
-      setIsHeroMuted(!!stillMuted);
-      return;
-    }
-
-    if (stillMuted && isMobile) {
-      // Mobile never allows unmute without a gesture → keep the unmute overlay
-      setIsHeroMuted(true);
-      return;
-    }
-
-    // Reflect a blocked / not-yet-playing state while we keep retrying. Each
-    // retry is cancellable via takeAudioControl() (user gesture) and stops
-    // immediately if the user has manually taken control of audio.
-    setIsHeroMuted(!!stillMuted);
-    unmuteRetryTimerRef.current = setTimeout(() => {
-      if (userAudioControlRef.current) return;
-      forceUnmuteAutoplay(target, attempts - 1);
-    }, 200);
-  };
-
-  // Enable English closed captions via the YT IFrame API captions module.
-  // NOTE: "captions reload" is intentionally NOT fired — reloading the CC track
-  // makes YouTube paint its native "Click ⚙ for settings" hint text over the
-  // video frame. loadModule + cc lang selection is enough to show captions.
-  const enableCaptions = (target: any) => {
-    if (!target) return;
-    safePlayerCall(target, "loadModule", "captions");
-    safePlayerCall(target, "setOption", "cc", "lang", "en");
-  };
-
-  const disableCaptions = (target: any) => {
-    if (!target) return;
-    safePlayerCall(target, "unloadModule", "captions");
-  };
-
-  // Tap anywhere on the hero → guaranteed user-gesture unmute + play
-  const handleHeroTap = () => {
-    userUnmute();
-  };
-
-  // CC toggle wired directly to the captions module
-  const toggleCaptions = () => {
-    const next = !ccEnabled;
-    setCcEnabled(next);
-    if (next) {
-      enableCaptions(playerRef.current);
-    } else {
-      disableCaptions(playerRef.current);
-    }
-  };
-
-  // Play/Pause toggle: called inside the click gesture so the player command is
-  // guaranteed to run. isPlayingRef mirrors isPlaying, which lets onStateChange
-  // know a pause was deliberate and skip its auto-resume.
-  const togglePlayPause = () => {
-    const player = playerRef.current;
-    const next = !isPlaying;
-    // Mark intent synchronously (before the iframe echoes the state change) so
-    // the async PAUSED event cannot trigger the auto-resume right after.
-    deliberatePauseRef.current = !next;
-    setIsPlaying(next);
-    if (player) {
-      if (next) {
-        safePlayerCall(player, "playVideo");
-      } else {
-        safePlayerCall(player, "pauseVideo");
-      }
-    }
-  };
-
-  // Load the YT IFrame API eagerly so it is ready at the 3s mark
-  const apiReady = useRef(loadYouTubeAPI());
-
-  // Cleanup: destroy the player only on component unmount (not on videoId change)
-  useEffect(() => {
-    return () => {
-      if (playerRef.current) {
-        try { playerRef.current.destroy(); } catch (_) {}
-        playerRef.current = null;
-      }
-    };
-  }, []);
-
-  // 2) Mount / hot-swap the player ONLY after the 3s gate (zero iframe before)
-  useEffect(() => {
-    const id = "hero-yt-player";
-    const container = document.getElementById(id);
-    if (!container || !videoId || !showPlayer) return;
-    let cancelled = false;
-    // New source: show the new video's poster until it truly starts playing
-    setHasStartedPlaying(false);
-
-    const initPlayer = () => {
-      if (cancelled) return;
-      if (!(window as any).YT?.Player) return;
-
-      // Reuse the existing player (hot-swap) — no destroy/recreate flash
-      if (playerRef.current) {
-        try {
-          safePlayerCall(playerRef.current, "loadVideoById", videoId);
-          if (isMobile) {
-            if (!userAudioControlRef.current) {
-              // Mobile: keep muted and re-assert autoplay in a retry loop — the
-              // only reliable way to auto-start a new video on Android/iOS
-              // (muted autoplay). Retrying playVideo() guards against the player
-              // reporting BUFFERING on the first call.
-              setIsHeroMuted(true);
-              forcePlay(playerRef.current, 20);
-            } else {
-              // User already took control of audio: keep their choice and just
-              // re-assert playback (works because of the prior real gesture)
-              forcePlay(playerRef.current, 4);
-            }
-          } else {
-            // Desktop: universal unmuted autoplay on every source change
-            forceUnmuteAutoplay(playerRef.current);
-          }
-          safePlayerCall(playerRef.current, "setPlaybackQuality", "hd1080");
-          enableCaptions(playerRef.current);
-          setIsPlaying(true);
-          return;
-        } catch (_) {
-          try { playerRef.current.destroy(); } catch (_) {}
-          playerRef.current = null;
-        }
-      }
-
-      playerRef.current = new (window as any).YT.Player(id, {
-        videoId: videoId,
-        height: "100%",
-        width: "100%",
-        playerVars: {
-          autoplay: 1,
-          // Mobile/Android: start MUTED (mute:1) — strict mobile policies only
-          // ever allow autoplay while muted, so this guarantees the video starts
-          // playing right after the 3s black screen with no manual tap on
-          // YouTube's red play button. The pulsing "کاراکردنی دەنگ" overlay then
-          // lets one tap enable sound. Desktop (Chrome/Edge/Safari): direct
-          // unmuted start (mute:0) via onReady forceUnmuteAutoplay.
-          mute: isMobile ? 1 : 0,
-          loop: 1,
-          playlist: videoId,
-          controls: 0,
-          showinfo: 0,
-          rel: 0,
-          modestbranding: 1,
-          iv_load_policy: 3,
-          fs: 0,
-          disablekb: 1,
-          playsinline: 1,
-          enablejsapi: 1,
-          origin: window.location.origin,
-          // NOTE: cc_load_policy/cc_lang_pref are intentionally NOT set here —
-          // forcing captions at embed time makes YouTube surface its native
-          // "Click ⚙ for settings" hint text over the video frame. Captions are
-          // still enabled by default via enableCaptions() in onReady/hot-swap.
-          hl: "en",
-        },
-        events: {
-          onReady: (event: any) => {
-            if (isMobile) {
-              // Mobile/Android: muted autoplay (mute:1) is already permitted —
-              // re-assert playVideo() in a retry loop right after the 3s black
-              // screen so the video ALWAYS rolls automatically. A single
-              // playVideo() can be dropped because many devices report BUFFERING
-              // (state 3) instead of PLAYING (state 1) on the first call, so we
-              // keep re-issuing playVideo() every 200ms (play-only, NEVER touches
-              // audio) until real playback begins. NO programmatic unMute()
-              // attempt — mobile browsers block it anyway. Sound is enabled via
-              // a real user gesture: tap the video or the mute button.
-              setIsHeroMuted(true);
-              forcePlay(event.target, 30);
-            } else {
-              // Desktop: universal unmuted autoplay — playVideo + unMute +
-              // setVolume(100) inside a safe retry loop. If the policy blocks
-              // it, state reconciles to muted so the overlay shows as a fallback.
-              forceUnmuteAutoplay(event.target);
-            }
-            safePlayerCall(event.target, "setPlaybackQuality", "hd1080");
-            enableCaptions(event.target);
-            setIsPlaying(true);
-          },
-          onStateChange: (event: any) => {
-            const ytState = (window as any).YT.PlayerState;
-            const playing = event.data === ytState.PLAYING;
-            setIsPlaying(playing);
-            if (playing) {
-              // Real frames are rendering: clear the poster/cache layer
-              deliberatePauseRef.current = false;
-              setHasStartedPlaying(true);
-            } else if (event.data === ytState.PAUSED && !deliberatePauseRef.current) {
-              // Keep playback seamless so the center play/pause overlay
-              // never lingers on the video surface (unless deliberately paused)
-              setTimeout(
-                () => safePlayerCall(playerRef.current, "playVideo"),
-                50,
-              );
-            }
-          },
-        },
-      });
-    };
-
-    apiReady.current.then(initPlayer);
-
-    return () => {
-      cancelled = true;
-    };
-  }, [videoId, showPlayer]);
-
-  // 3) Keep React mute state in sync with the player, reconciling against the
-  //    player's REAL muted state (browsers can silently block an unMute() call).
-  //    Reconcile ONLY while the autoplay phase is still running (user has not
-  //    manually controlled audio): a swallowed programmatic unMute reverts to
-  //    muted so the overlay shows. After the user takes control, their explicit
-  //    gesture choice is trusted — never reverting prevents the overlay from
-  //    locking back on and blocking audio.
-  useEffect(() => {
-    if (!playerRef.current) return;
-    if (isMuted) {
-      safePlayerCall(playerRef.current, "mute");
-      return;
-    }
-    safePlayerCall(playerRef.current, "unMute");
-    if (
-      !userAudioControlRef.current &&
-      safePlayerCall(playerRef.current, "isMuted") === true
-    ) {
-      setIsMuted(true);
-    }
-  }, [isMuted]);
-
-  // 6) One-time document interaction listener: the FIRST tap/click anywhere on
-  //    the page unmutes the hero video (browsers require a user gesture to start
-  //    audio). Fires only while still muted, then removes itself.
-  useEffect(() => {
-    const onFirstInteraction = () => {
-      const player = playerRef.current;
-      if (player && isMutedRef.current) {
-        takeAudioControl();
-        safePlayerCall(player, "unMute");
-        safePlayerCall(player, "setVolume", 100);
-        setIsMuted(false);
-      }
-      document.removeEventListener("pointerdown", onFirstInteraction);
-      document.removeEventListener("touchstart", onFirstInteraction);
-    };
-    document.addEventListener("pointerdown", onFirstInteraction);
-    document.addEventListener("touchstart", onFirstInteraction);
-    return () => {
-      document.removeEventListener("pointerdown", onFirstInteraction);
-      document.removeEventListener("touchstart", onFirstInteraction);
-    };
-  }, []);
-
-  // 4) Keep React play state in sync with the player
-  useEffect(() => {
-    if (playerRef.current) {
-      isPlaying
-        ? safePlayerCall(playerRef.current, "playVideo")
-        : safePlayerCall(playerRef.current, "pauseVideo");
-    }
-  }, [isPlaying]);
-
-  // Mute hero video if room audio is active
-  useEffect(() => {
-    if (activeAudioSource === "room") {
-      // Stop the autoplay retry loop so it never re-enables hero audio while
-      // the room stream is the active audio source
-      userAudioControlRef.current = true;
-      if (unmuteRetryTimerRef.current) {
-        clearTimeout(unmuteRetryTimerRef.current);
-        unmuteRetryTimerRef.current = null;
-      }
-      setIsMuted(true);
-      setIsHeroMuted(true);
-    }
-  }, [activeAudioSource, setIsHeroMuted]);
-
-  // Smart trailer audio control: when a lower movie/stream player opens above
-  // the hero, pause + mute the trailer so the two sources never fight. On
-  // close, restore exactly the prior play/mute state.
-  const trailerSuppressedRef = useRef(false);
-  const restoreTrailerRef = useRef({ play: false, unmute: false });
-  useEffect(() => {
-    if (isMoviePlayerOpen && !trailerSuppressedRef.current) {
-      trailerSuppressedRef.current = true;
-      restoreTrailerRef.current = {
-        play: isPlayingRef.current,
-        unmute: !isMutedRef.current,
-      };
-      deliberatePauseRef.current = true;
-      setIsPlaying(false);
-      safePlayerCall(playerRef.current, "pauseVideo");
-      setIsHeroMuted(true);
-    } else if (!isMoviePlayerOpen && trailerSuppressedRef.current) {
-      trailerSuppressedRef.current = false;
-      const restore = restoreTrailerRef.current;
-      deliberatePauseRef.current = !restore.play;
-      setIsPlaying(restore.play);
-      if (restore.play) safePlayerCall(playerRef.current, "playVideo");
-      setIsHeroMuted(!restore.unmute);
-    }
-  }, [isMoviePlayerOpen, setIsHeroMuted]);
-
-  return (
-    <section
-      className="relative w-full h-[60vh] md:h-[85vh] bg-black overflow-hidden select-none"
-      style={{ display: "block", opacity: 1 }}
-    >
-      {/* Video Container Wrapper (z-index: 0, position: absolute, inset: 0) */}
-      <div
-        className="w-full h-full overflow-hidden pointer-events-none"
-        style={{ position: "absolute", inset: 0, zIndex: 0 }}
-      >
-        {/* Player mounts only after the 3s delayed-mount gate (showPlayer) */}
-        {showPlayer && (
-          <div
-            className="w-full h-full scale-[1.35] bg-cover bg-center"
-            id="hero-player"
-            ref={containerRef}
-            style={!hasStartedPlaying && videoId ? { backgroundImage: `url(https://img.youtube.com/vi/${videoId}/maxresdefault.jpg)` } : undefined}
-          >
-            <div id="hero-yt-player" className="w-full h-full" />
-          </div>
-        )}
-        {/* The YouTube iframe will be injected here by the YouTube Iframe API */}
-        {/* <div className="w-full h-full scale-[1.35]" id="hero-player-iframe"></div> */}
-        {/* سێبەری خوارەوەی ڤیدیۆکە بۆ ئەوەی دیزاینەکەی سینەمایی بێت */}
-        <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent z-2 pointer-events-none" />
-        <div className="absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-black to-transparent z-2 pointer-events-none" />
-      </div>
-
-      {/* Protective Shield overlay for Youtube iframe clicks + tap-to-unmute trigger */}
-      <div 
-        className="absolute inset-0 bg-transparent pointer-events-auto" 
-        style={{ zIndex: 10 }}
-        onClick={handleHeroTap}
-      />
-
-      {/* UI Elements Container Wrapper (z-index: 100, position: relative) */}
-      <div 
-        className="relative w-full h-full flex flex-col justify-between p-4 md:p-8 pointer-events-none" 
-        style={{ position: "relative", zIndex: 100 }}
-      >
-        {/* 3-second Countdown Overlay */}
-        <AnimatePresence>
-          {countdown > 0 && (
-            <motion.div
-              key="countdown-overlay"
-              initial={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.5 }}
-              className="absolute inset-0 z-55 flex flex-col items-center justify-center bg-black/90 backdrop-blur-md cursor-pointer pointer-events-auto"
-              onClick={() => {
-                // Skip countdown: unmute inside this real gesture if the player
-                // is already mounted (strict policies never block an in-gesture
-                // unMute). If not mounted yet (before the 3s gate), state alone
-                // is set and onReady forceUnmuteAutoplay takes over.
-                setCountdown(0);
-                const player = playerRef.current;
-                if (player) {
-                  takeAudioControl();
-                  safePlayerCall(player, "unMute");
-                  safePlayerCall(player, "setVolume", 100);
-                }
-                setIsMuted(false);
-                setIsPlaying(true);
-              }}
-            >
-              <motion.div
-                key={countdown}
-                initial={{ scale: 0.3, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                exit={{ scale: 1.5, opacity: 0 }}
-                transition={{ duration: 0.8, ease: "easeOut" }}
-                className="text-center p-6 rounded-3xl bg-black/40 border border-white/10 backdrop-blur-lg flex flex-col items-center"
-              >
-                <p className="text-xs md:text-sm font-bold uppercase tracking-[0.2em] text-brand-primary mb-3 kurdish-text">
-                  دەستپێکردنی فیلمی سەرەکی لە
-                </p>
-                <span className="text-7xl md:text-9xl font-black text-white font-mono drop-shadow-[0_0_30px_rgba(239,68,68,0.6)] animate-pulse">
-                  {countdown}
-                </span>
-                <p className="text-[10px] md:text-xs text-gray-400 mt-4 kurdish-text opacity-70">
-                  بۆ بازدان لێرە کلیک بکە
-                </p>
-              </motion.div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* دگمە هاوبەشە شووشەییەکان لە گۆشەی سەرەوەی ڕاست (Glass Overlay Buttons in Top Right Corner) */}
-        <div className="absolute top-4 right-6 md:right-12 z-40 flex items-center gap-1.5 md:gap-3 pointer-events-none">
-          {/* Live Online Viewer Counter — real-time badge of how many people are
-              currently on the site. Styled to match the glass control buttons. */}
-          <div
-            className="pointer-events-none flex items-center gap-1.5 p-2 md:p-3 bg-black/50 border border-white/10 rounded-xl md:rounded-2xl backdrop-blur-md shadow-lg"
-            title="بینەری ئۆنلاین لە ماڵپەڕ"
-            id="hero-online-badge"
-          >
-            <span className="relative flex w-1.5 h-1.5 md:w-2 md:h-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
-              <span className="relative inline-flex rounded-full w-1.5 h-1.5 md:w-2 md:h-2 bg-green-400" />
-            </span>
-            <Users className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 text-green-400" />
-            <span className="text-[11px] md:text-xs font-black text-white font-mono tabular-nums leading-none">
-              {onlineViewers}
-            </span>
-          </div>
-
-          {/* Mute/Unmute Button — toggles the player inside the click gesture so
-              a strict autoplay policy never swallows the unMute() call. */}
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              toggleMute();
-            }}
-            className={`pointer-events-auto p-2 md:p-3 bg-black/50 border rounded-xl md:rounded-2xl backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/audio ${
-              !isMuted
-                ? "text-green-400 border-green-500/20 hover:border-green-500/35 hover:bg-green-500/15"
-                : "text-white border-white/10 hover:border-white/25 hover:bg-white/10"
-            }`}
-            title={!isMuted ? "بێدەنگکردن" : "کاراکردنی دەنگ"}
-            id="hero-mute-btn"
-          >
-            {!isMuted ? (
-              <Volume2 className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/audio:scale-110" />
-            ) : (
-              <VolumeX className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 opacity-80 transition-transform group-hover/audio:scale-110" />
-            )}
-          </button>
-
-          {/* Subtitle (CC) Toggle Button */}
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              toggleCaptions();
-            }}
-            className={`pointer-events-auto p-2 md:p-3 bg-black/50 border rounded-xl md:rounded-2xl backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/cc ${
-              ccEnabled
-                ? "text-brand-primary border-brand-primary/20 hover:border-brand-primary/35 hover:bg-brand-primary/15"
-                : "text-white border-white/10 hover:border-white/25 hover:bg-white/10"
-            }`}
-            title={ccEnabled ? "داخستنی ژێرنووس" : "کاراکردنی ژێرنووس"}
-            id="hero-cc-btn"
-          >
-            {ccEnabled ? (
-              <Captions className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/cc:scale-110" />
-            ) : (
-              <CaptionsOff className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 opacity-80 transition-transform group-hover/cc:scale-110" />
-            )}
-          </button>
-
-          {/* VIP Button */}
-          <button
-            onClick={() => setShowVipModal(true)}
-            className="pointer-events-auto p-2 md:p-3 bg-black/50 hover:bg-amber-500/20 border border-white/10 hover:border-amber-500/30 rounded-xl md:rounded-2xl text-white hover:text-amber-400 backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/vip"
-            title="هۆڵی VIP Room"
-            id="hero-vip-btn"
-          >
-            <Ticket className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/vip:rotate-12" />
-          </button>
-
-          {/* YouTube Button */}
-          <button
-            onClick={() =>
-              window.open(
-                config.youtubeChannelUrl ||
-                  config.youtubeUrl ||
-                  "https://www.youtube.com/@ChatCinama",
-                "_blank",
-              )
-            }
-            className="pointer-events-auto p-2 md:p-3 bg-black/50 hover:bg-red-500/20 border border-white/10 hover:border-red-500/30 rounded-xl md:rounded-2xl text-white hover:text-red-400 backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/yt"
-            title="کاناڵی یوتیوب"
-            id="hero-yt-btn"
-          >
-            <Youtube className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/yt:scale-110" />
-          </button>
-
-          {/* Facebook Button — live from Admin Panel channel settings (Module 9) */}
-          {typeof config.facebookUrl === "string" &&
-            config.facebookUrl !== "#" &&
-            config.facebookUrl.trim() !== "" && (
-              <a
-                href={config.facebookUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="pointer-events-auto p-2 md:p-3 bg-black/50 hover:bg-blue-500/20 border border-white/10 hover:border-blue-500/30 rounded-xl md:rounded-2xl text-white hover:text-blue-400 backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/fb"
-                title="فەیسبووک"
-                id="hero-fb-btn"
-              >
-                <Facebook className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/fb:scale-110" />
-              </a>
-            )}
-
-          {/* TikTok Button — live from Admin Panel channel settings (Module 9) */}
-          {typeof config.tiktokUrl === "string" &&
-            config.tiktokUrl !== "#" &&
-            config.tiktokUrl.trim() !== "" && (
-              <a
-                href={config.tiktokUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="pointer-events-auto p-2 md:p-3 bg-black/50 hover:bg-cyan-400/20 border border-white/10 hover:border-cyan-400/30 rounded-xl md:rounded-2xl text-white hover:text-cyan-400 backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/tk"
-                title="تیک تۆک"
-                id="hero-tiktok-btn"
-              >
-                <Video className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/tk:scale-110" />
-              </a>
-            )}
-
-          {/* Instagram Button — live from Admin Panel channel settings (Module 9) */}
-          {typeof config.instagramUrl === "string" &&
-            config.instagramUrl !== "#" &&
-            config.instagramUrl.trim() !== "" && (
-              <a
-                href={config.instagramUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="pointer-events-auto p-2 md:p-3 bg-black/50 hover:bg-pink-500/20 border border-white/10 hover:border-pink-500/30 rounded-xl md:rounded-2xl text-white hover:text-pink-400 backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/ig"
-                title="ئینستاگرام"
-                id="hero-ig-btn"
-              >
-                <Instagram className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/ig:scale-110" />
-              </a>
-            )}
-
-          {/* Share Button */}
-          <button
-            onClick={async () => {
-              if (navigator.share) {
-                try {
-                  await navigator.share({
-                    title: "CinemaChat - سینەما چات",
-                    text: "سەیری فیلم و دراماکان بکە لەگەڵ چاتی ڕاستەوخۆ لە سینەما چات!",
-                    url: window.location.href,
-                  });
-                } catch (err) {
-                  console.log("Share failed or canceled", err);
-                }
-              } else {
-                try {
-                  await navigator.clipboard.writeText(window.location.href);
-                  alert("✓ بەستەری ماڵپەڕ لەبەردەستتە (کۆپی کرا)!");
-                } catch (err) {
-                  console.log("Clipboard failed", err);
-                }
-              }
-            }}
-            className="pointer-events-auto p-2 md:p-3 bg-black/50 hover:bg-teal-500/20 border border-white/10 hover:border-teal-500/30 rounded-xl md:rounded-2xl text-white hover:text-teal-400 backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/share"
-            title="هاوبەشکردن"
-            id="hero-share-btn"
-          >
-            <Share2 className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/share:scale-110" />
-          </button>
-
-          {/* Play/Pause Toggle — lives in the top bar alongside the other hero
-              controls, matching their exact style, layout and dimensions. */}
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              togglePlayPause();
-            }}
-            className={`pointer-events-auto p-2 md:p-3 bg-black/50 border rounded-xl md:rounded-2xl backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/play ${
-              isPlaying
-                ? "text-white border-white/10 hover:border-white/25 hover:bg-white/10"
-                : "text-brand-primary border-brand-primary/20 hover:border-brand-primary/35 hover:bg-brand-primary/15"
-            }`}
-            title={isPlaying ? "وەستاندنی ڤیدیۆ (Pause)" : "لێدانی ڤیدیۆ (Play)"}
-            id="hero-play-btn"
-          >
-            {isPlaying ? (
-              <Pause className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 fill-current transition-transform group-hover/play:scale-110" />
-            ) : (
-              <Play className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 fill-current transition-transform group-hover/play:scale-110" />
-            )}
-          </button>
-        </div>
-
-        {/* Unmute overlay (DESKTOP only): shown while the video is muted. If a
-            strict autoplay policy blocks the unmuted start, this prominent
-            pulsing button lets a single click enable audio — it runs inside a
-            real gesture. On MOBILE/Android the video starts muted (mute:1) and
-            rolls automatically with NO overlay blocking it; sound is enabled by
-            tapping the video or the top-right mute button instead. */}
-        <AnimatePresence>
-          {isMuted && !isMobile && (
-            <motion.button
-              key="hero-unmute-overlay"
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.9 }}
-              transition={{ duration: 0.3 }}
-              onClick={(e) => {
-                e.stopPropagation();
-                userUnmute();
-              }}
-              type="button"
-              className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-5 pointer-events-auto cursor-pointer bg-black/30"
-              title="کاراکردنی دەنگ"
-            >
-              <motion.div
-                animate={{ scale: [1, 1.1, 1] }}
-                transition={{
-                  repeat: Infinity,
-                  duration: 1.5,
-                  ease: "easeInOut",
-                }}
-                className="w-24 h-24 md:w-28 md:h-28 rounded-full bg-white text-black flex items-center justify-center shadow-2xl shadow-black/50 active:scale-90 transition-transform duration-150"
-              >
-                <VolumeX className="w-12 h-12 md:w-14 md:h-14" />
-              </motion.div>
-              <span className="kurdish-text text-white text-lg md:text-xl font-bold drop-shadow-lg">
-                کاراکردنی دەنگ
-              </span>
-            </motion.button>
-          )}
-        </AnimatePresence>
-
-        {/* Text Details Area */}
-        <div className="absolute inset-x-0 bottom-0 h-48 flex flex-col justify-end pb-12 px-8 z-30">
-          <motion.div
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.8, ease: "easeOut" }}
-            className="flex flex-col items-start gap-1"
-          >
-            <div className="flex flex-col items-start bg-black/20 backdrop-blur-sm p-4 rounded-3xl border border-white/5">
-              <span className="text-xl md:text-2xl font-black text-white kurdish-text tracking-[0.1em] drop-shadow-2xl">
-                شۆی سینەما چات
-              </span> {/* This is the main title of the hero section */}
-              <span className="text-[10px] md:text-xs font-black text-brand-primary uppercase tracking-[0.6em] font-mono">
-                CINEMACHAT SHOW
-              </span>
-            </div>
-
-            <div className="w-12 h-1 bg-brand-primary mt-4 rounded-full shadow-[0_0_15px_rgba(239,68,68,0.5)]" />
-          </motion.div>
-        </div>
-      </div>
-
-      {/* Keep the delayed-mount buffer behind the hero UI. If YouTube or timers
-          lag in a browser, the first viewport still shows usable page chrome
-          instead of looking like a blank black screen. */}
-      <AnimatePresence>
-        {!showPlayer && (
-          <motion.div
-            key="hero-initial-buffer"
-            initial={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.4, ease: "easeOut" }}
-            className="absolute inset-0 bg-black flex items-center justify-center pointer-events-none"
-            style={{ zIndex: 1 }}
-          >
-            <div className="w-10 h-10 rounded-full border-2 border-t-brand-primary border-white/10 animate-spin" />
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </section>
-  );
-};
-
+// HeroSection — extracted to src/components/HeroVideoPlayer.tsx
+const HeroSection = React.lazy(() => import("./components/HeroVideoPlayer"));
 const RoomSection: React.FC<{
   activeFeaturedMovie: any;
   activeSyncGroup: any;
@@ -8439,6 +7627,7 @@ export default function App() {
   const plyrOptions = React.useMemo(
     () => ({
       autoplay: true,
+      loop: { active: true },
       muted: isRoomMuted,
       controls: [
         "play-large",
@@ -8478,8 +7667,17 @@ export default function App() {
     [isRoomMuted],
   );
 
+  // Stabilize the fallback featured movie: once set, don't let new posts in the
+  // catalog shift it. This prevents "Hero Video vs. Post Overlap" — the hero
+  // trailer stays pinned regardless of catalog mutations. Admin updates go
+  // through `featuredMovieFromDB` (Firestore) which bypasses this entirely.
+  const featuredMovieRef = useRef<any>(null);
   const featuredMovie = useMemo(() => {
-    return movies.find((m) => m.isYouTube) || movies[0];
+    const found = movies.find((m) => m.isYouTube) || movies[0];
+    if (!featuredMovieRef.current && found) {
+      featuredMovieRef.current = found;
+    }
+    return featuredMovieRef.current || found;
   }, [movies]);
 
   const getCleanYouTubeUrl = (url: string | null | undefined) => {
@@ -11640,7 +10838,10 @@ export default function App() {
           instagramUrl: data.instagramUrl || prev.instagramUrl,
           facebookUrl: data.facebookUrl || prev.facebookUrl,
         }));
-        if (data?.heroVideoUrl) {
+        // Cache hero playlist (full array) and single URL for offline fallback
+        if (Array.isArray(data.heroPlaylist) && data.heroPlaylist.length > 0) {
+          setCachedHeroPlaylist(data.heroPlaylist);
+        } else if (data?.heroVideoUrl) {
           setCachedHeroVideoUrl(String(data.heroVideoUrl));
         }
       } catch (e) {
@@ -12814,6 +12015,7 @@ export default function App() {
                             src={nativeRoomVideoUrl}
                             controls
                             autoPlay
+                            loop
                             preload="auto"
                             playsInline
                             className="absolute inset-0 w-full h-full bg-black"
@@ -13084,19 +12286,26 @@ export default function App() {
           <SafeRender fallbackName="Main Movies Feed">
             {/* ٢. پێکهاتەی سەرەکی ڤیدیۆی سەرەوە (Hero Video Component) */}
             {activeFeaturedMovie && !activeSyncGroup && (
-              <HeroSection
-                activeFeaturedMovie={activeFeaturedMovie}
-                countdown={countdown}
-                setCountdown={setCountdown}
-                isHeroMuted={isHeroMuted}
-                setIsHeroMuted={setIsHeroMuted}
-                hasInteracted={hasInteracted}
-                heroVideoId={heroVideoId}
-                config={config}
-                setShowVipModal={setShowVipModal}
-                activeAudioSource={activeAudioSource}
-                isMoviePlayerOpen={!!selectedMovie && showPlayer}
-              />
+              <React.Suspense fallback={
+                <div className="relative w-full h-[60vh] md:h-[85vh] bg-black flex items-center justify-center">
+                  <div className="w-10 h-10 rounded-full border-2 border-t-brand-primary border-white/10 animate-spin" />
+                </div>
+              }>
+                <HeroSection
+                  activeFeaturedMovie={activeFeaturedMovie}
+                  countdown={countdown}
+                  setCountdown={setCountdown}
+                  isHeroMuted={isHeroMuted}
+                  setIsHeroMuted={setIsHeroMuted}
+                  hasInteracted={hasInteracted}
+                  heroVideoId={heroVideoId}
+                  heroPlaylist={activeFeaturedMovie?.heroPlaylist}
+                  config={config}
+                  setShowVipModal={setShowVipModal}
+                  activeAudioSource={activeAudioSource}
+                  isMoviePlayerOpen={!!selectedMovie && showPlayer}
+                />
+              </React.Suspense>
             )}
 
 
@@ -15995,15 +15204,20 @@ const trailerId = movie.trailerUrl
 
                       {adminTab === "hero" && (
                         <HeroModule
-                          onSync={async (url: string) => {
-                            const cleanUrl = (url || "").trim();
-                            if (!cleanUrl) {
+                          onSync={async (url1: string, url2?: string) => {
+                            const cleanUrl1 = (url1 || "").trim();
+                            if (!cleanUrl1) {
                               alert("تکایە لینکی ڤیدیۆ بنووسە پێش جێگیرکردن.");
                               return;
                             }
 
-                            const applyHeroLocally = (finalUrl: string) => {
-                              const firstUrl = finalUrl;
+                            // Build the playlist from provided URLs
+                            const playlist: string[] = [cleanUrl1];
+                            const cleanUrl2 = (url2 || "").trim();
+                            if (cleanUrl2) playlist.push(cleanUrl2);
+
+                            const applyHeroLocally = (urls: string[]) => {
+                              const firstUrl = urls[0];
                               const isYoutube =
                                 firstUrl.includes("youtube.com") ||
                                 firstUrl.includes("youtu.be");
@@ -16014,7 +15228,7 @@ const trailerId = movie.trailerUrl
                                 ? `https://www.youtube.com/embed/${vidId}`
                                 : firstUrl;
                               
-                              setCachedHeroVideoUrl(firstUrl);
+                              setCachedHeroPlaylist(urls);
 
                               // Instant frontend update without refresh
                               setFeaturedMovieFromDB({
@@ -16026,8 +15240,8 @@ const trailerId = movie.trailerUrl
                                 image: "",
                                 tags: ["هەمووی"],
                                 quality: "4K",
-                                description: "نوێترین فیلمی سەرەکی", // Default description
-                                heroPlaylist: [firstUrl],
+                                description: "نوێترین فیلمی سەرەکی",
+                                heroPlaylist: urls,
                               } as any);
 
                               setConfig((prev) => ({
@@ -16037,40 +15251,59 @@ const trailerId = movie.trailerUrl
                               setCurrentVideoIndex(0);
                             };
 
-                            applyHeroLocally(cleanUrl); // Apply changes locally immediately
+                            applyHeroLocally(playlist);
+
+                            // Build Firestore playlist data: each entry gets its own embed URL + videoId
+                            const firestorePlaylist = playlist.map((u) => {
+                              const yt = u.includes("youtube.com") || u.includes("youtu.be");
+                              const id = yt ? extractYouTubeId(u) : null;
+                              return {
+                                url: u,
+                                embedUrl: yt && id ? `https://www.youtube.com/embed/${id}` : u,
+                                videoId: id || "",
+                                isYouTube: yt,
+                              };
+                            });
 
                             // Also write to Firestore so ALL visitors get the update in real-time via onSnapshot
                             try {
-                              const isYoutube = cleanUrl.includes("youtube.com") || cleanUrl.includes("youtu.be");
-                              const vidId = isYoutube ? extractYouTubeId(cleanUrl) : null;
+                              const isYoutube = cleanUrl1.includes("youtube.com") || cleanUrl1.includes("youtu.be");
+                              const vidId = isYoutube ? extractYouTubeId(cleanUrl1) : null;
                               await setDoc(doc(db, "config", "featured"), {
                                 id: "hero-promo",
                                 title: "فیلمی سەرەکی",
-                                embedUrl: isYoutube && vidId ? `https://www.youtube.com/embed/${vidId}` : cleanUrl,
-                                url: cleanUrl,
-                                videoUrl: cleanUrl,
+                                embedUrl: isYoutube && vidId ? `https://www.youtube.com/embed/${vidId}` : cleanUrl1,
+                                url: cleanUrl1,
+                                videoUrl: cleanUrl1,
                                 isYouTube: isYoutube,
                                 videoId: vidId || "",
                                 image: vidId ? `https://img.youtube.com/vi/${vidId}/maxresdefault.jpg` : "",
                                 tags: ["هەمووی"],
                                 quality: "4K",
                                 description: "نوێترین فیلمی سەرەکی",
-                                heroPlaylist: [cleanUrl],
+                                heroPlaylist: playlist,
+                                heroPlaylistData: firestorePlaylist,
                                 updatedAt: new Date().toISOString(),
                               }, { merge: true });
-                              console.log("[Hero] Updated Firestore config/featured with new hero URL:", cleanUrl);
-                            } catch (firestoreErr) {
-                              console.warn("[Hero] Failed to update Firestore config/featured:", firestoreErr);
+                              console.log("[Hero] Updated Firestore config/featured with hero playlist:", playlist);
+                            } catch (firestoreErr: any) {
+                              console.error("[Hero] Failed to update Firestore config/featured:", firestoreErr);
+                              // Server-side also writes to Firestore, so this is
+                              // non-fatal, but warn the admin so they know the
+                              // real-time sync to other visitors may be delayed
+                              // until the server write propagates.
+                              console.warn("[Hero] The server will still persist the change via its own Firestore write-through.");
                             }
 
                             const payload = {
-                              adminName: currentUser?.username || "Admin", // ناوی ئەدمین زیاد دەکرێت بۆ داتای نێردراو
-                              heroVideoUrl: cleanUrl,
-                              heroPlaylist: [cleanUrl],
+                              adminName: currentUser?.username || "Admin",
+                              heroVideoUrl: cleanUrl1,
+                              heroPlaylist: playlist,
+                              heroPlaylistData: firestorePlaylist,
                             };
 
                             try {
-                              const heroSaveAttempts = [ // Multiple attempts to save hero config
+                              const heroSaveAttempts = [
                                 {
                                   path: "/api/movies/hero",
                                   body: payload,
@@ -16080,10 +15313,11 @@ const trailerId = movie.trailerUrl
                                   body: payload,
                                 },
                                 {
-                                  path: "/api/admin/config", // ئەم ڕێگایە بۆ ڕێکخستنە گشتییەکانە، بەڵام داتای ڤیدیۆی سەرەکی دەنێرین بۆ دڵنیایی
+                                  path: "/api/admin/config",
                                   body: { 
                                     adminName: currentUser?.username || "Admin",
-                                    heroVideoUrl: cleanUrl 
+                                    heroVideoUrl: cleanUrl1,
+                                    heroPlaylist: playlist,
                                   },
                                 },
                               ];
@@ -16096,17 +15330,17 @@ const trailerId = movie.trailerUrl
                                     "Content-Type": "application/json",
                                   },
                                   body: JSON.stringify(attempt.body),
-                                }); // Send request
+                                });
                                 if (res.ok) {
                                   saved = true;
                                   break;
                                 }
-                                console.warn(`[HeroModule] Attempt to save hero video to ${attempt.path} failed with status ${res.status}: ${await res.text()}`); // بۆ تێستکردن، پەیامی هەڵە نیشان دەدەین
+                                console.warn(`[HeroModule] Attempt to save hero video to ${attempt.path} failed with status ${res.status}: ${await res.text()}`);
                               }
 
                               if (saved) {
                                 alert("فیلمی سەرەکی بە سەرکەوتوویی جێگیرکرا!");
-                              } else { // Fallback if no save attempt was successful
+                              } else {
                                 alert(
                                   "فیلمی سەرەکی جێگیرکرا، بەڵام پەیوەندی بە سێرڤەر نەکرا. تکایە دواتر دووبارە هەوڵ بدە.",
                                 );
@@ -16116,7 +15350,7 @@ const trailerId = movie.trailerUrl
                               alert(
                                 "فیلمی سەرەکی جێگیرکرا، بەڵام پەیوەندی بە سێرڤەر نەکرا. تکایە دواتر دووبارە هەوڵ بدە.",
                               );
-                            } // End try-catch
+                            }
                           }}
                         />
                       )}
