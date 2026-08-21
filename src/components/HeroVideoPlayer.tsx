@@ -346,13 +346,8 @@ const HeroVideoPlayer: React.FC<{
         width: "100%",
         playerVars: {
           autoplay: 1,
-          mute: isMobile ? 1 : 0,
-          // NOTE: loop/playlist are intentionally NOT set here.
-          // Sequential playback and looping are managed by advanceToNextVideo()
-          // via the ENDED event, so each video plays exactly once before the
-          // queue advances. This avoids the YT API's single-video loop which
-          // would prevent queue progression.
-          controls: 0,
+          mute: 0,
+          controls: 1,
           showinfo: 0,
           rel: 0,
           modestbranding: 1,
@@ -482,9 +477,20 @@ const HeroVideoPlayer: React.FC<{
     }
   }, [isMoviePlayerOpen, setIsHeroMuted]);
 
+  // ── WELCOME GATE ────────────────────────────────────────────────────
+  // The overlay fades only when BOTH conditions are true:
+  //   1. The 3-second timer has completed (welcomeComplete)
+  //   2. The YouTube player has fired PLAYING state (hasStartedPlaying)
+  //      OR no video is configured (so there's nothing to wait for).
+  // This guarantees zero black frames — the user never sees a non-playing
+  // screen behind the overlay.
+  const overlayDismissed = welcomeComplete && (
+    hasStartedPlaying || !videoId || !isYTVideoId(videoId)
+  );
+
   // ── Whether to show the YouTube player layer ──────────────────────────
   // Always show when a valid ID exists — the welcome overlay (z-[200])
-  // covers it until the 3s timer completes.
+  // covers it until the video is actively playing.
   const showPlayerLayer = !!videoId && isYTVideoId(videoId);
 
   return (
@@ -501,7 +507,7 @@ const HeroVideoPlayer: React.FC<{
             className="w-full h-full scale-[1.35] bg-cover bg-center"
             id="hero-player"
             ref={containerRef}
-            style={!hasStartedPlaying && videoId ? { backgroundImage: `url(https://img.youtube.com/vi/${videoId}/maxresdefault.jpg)` } : undefined}
+            style={videoId ? { backgroundImage: `url(https://img.youtube.com/vi/${videoId}/maxresdefault.jpg)` } : undefined}
           >
             <div id="hero-yt-player" className="w-full h-full" />
           </div>
@@ -792,13 +798,12 @@ const HeroVideoPlayer: React.FC<{
         </div>
       </div>
 
-      {/* ── WELCOME LOADING OVERLAY ──────────────────────────────────────── */}
-      {/* Displayed for exactly 3 seconds on every page load/refresh.  The       */}
-      {/* YouTube iframe is already loaded and buffering BEHIND this overlay.    */}
-      {/* When the timer completes the overlay fades out and video plays         */}
-      {/* instantly — zero perceived loading time.                               */}
+      {/* ── WELCOME OVERLAY ────────────────────────────────────────────── */}
+      {/* Displayed until the 3s timer completes AND the YouTube player     */}
+      {/* has fired PLAYING state.  The iframe is fully rendered and         */}
+      {/* decoding behind this overlay — when it fades, video is instant.    */}
       <AnimatePresence>
-        {!welcomeComplete && (
+        {!overlayDismissed && (
           <motion.div
             key="welcome-overlay"
             initial={{ opacity: 1 }}
