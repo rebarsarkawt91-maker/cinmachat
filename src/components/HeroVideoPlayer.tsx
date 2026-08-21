@@ -26,6 +26,11 @@ import { loadYouTubeAPI, getYTId, isYTVideoId } from "../utils/youtube";
  * provided via `heroPlaylist`, videos play in order and loop back to the
  * first when the last finishes. The hero videos remain strictly independent
  * from catalog/room videos.
+ *
+ * WELCOME SEQUENCE: On mount the component displays a branded loading overlay
+ * for exactly 3 seconds.  During this window NO YouTube iframe is created and
+ * no video ID is passed to the player API — this prevents browser auto-play
+ * blocks and guarantees the admin-saved playlist is the only source of truth.
  */
 const HeroVideoPlayer: React.FC<{
   activeFeaturedMovie: any;
@@ -58,28 +63,40 @@ const HeroVideoPlayer: React.FC<{
   const isMuted = isHeroMuted;
   const setIsMuted = setIsHeroMuted;
 
+  // ─── WELCOME SEQUENCE ────────────────────────────────────────────────
+  // Blocks ALL player activity for 3 seconds.  During this time the
+  // branded welcome overlay is shown.  No YT iframe is created, no
+  // video ID is resolved — the component is in a pure loading state.
+  const [welcomeComplete, setWelcomeComplete] = useState(false);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setWelcomeComplete(true), 3000);
+    return () => clearTimeout(timer);
+  }, []);
+
   // ─── PLAYLIST QUEUE ────────────────────────────────────────────────────
   // Resolve the playlist of YouTube video IDs from the URLs array.
   // Only valid 11-character IDs are kept; raw URLs or unparseable entries
   // are dropped so the YT Player API never receives a full URL string.
   // Falls back to the single heroVideoId when no playlist is provided.
   const playlistIds = useMemo(() => {
+    // During the welcome sequence, return empty so no video is resolved.
+    if (!welcomeComplete) return [];
+
     const urls = heroPlaylist?.filter((u) => u && u.trim() !== "") || [];
     if (urls.length === 0) {
       const single = activeFeaturedMovie?.videoId || heroVideoId;
-      return single && isYTVideoId(single) ? [single] : single ? [single] : [];
+      return single && isYTVideoId(single) ? [single] : [];
     }
     const extracted = urls
       .map((u) => getYTId(u) || (isYTVideoId(u) ? u : null))
       .filter((id): id is string => id !== null && id.trim() !== "");
-    // If extraction produced nothing but the caller supplied a heroVideoId,
-    // use that as a single-item fallback.
     if (extracted.length === 0) {
       const fallback = activeFeaturedMovie?.videoId || heroVideoId;
-      return fallback && isYTVideoId(fallback) ? [fallback] : fallback ? [fallback] : [];
+      return fallback && isYTVideoId(fallback) ? [fallback] : [];
     }
     return extracted;
-  }, [heroPlaylist, activeFeaturedMovie?.videoId, heroVideoId]);
+  }, [welcomeComplete, heroPlaylist, activeFeaturedMovie?.videoId, heroVideoId]);
 
   const playlistIndexRef = useRef(0);
   // Reset index when the playlist changes (admin saved a new config)
@@ -101,7 +118,6 @@ const HeroVideoPlayer: React.FC<{
   isMutedRef.current = isHeroMuted;
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
   const [ccEnabled, setCcEnabled] = useState(true);
-  const [showPlayer, setShowPlayer] = useState(false);
   const [onlineViewers, setOnlineViewers] = useState(0);
   const sessionIdRef = useRef<string>("");
   if (sessionIdRef.current === "") {
@@ -110,11 +126,6 @@ const HeroVideoPlayer: React.FC<{
         ? crypto.randomUUID()
         : `v-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
-
-  useEffect(() => {
-    const timer = setTimeout(() => setShowPlayer(true), 3000);
-    return () => clearTimeout(timer);
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -300,11 +311,15 @@ const HeroVideoPlayer: React.FC<{
     };
   }, []);
 
-  // Mount / hot-swap the player after the 3s gate
+  // Mount / hot-swap the player — ONLY after the 3s welcome sequence
+  // AND only when a valid video ID is available from the admin-saved playlist.
   useEffect(() => {
+    // EXPLICIT GUARD: No player activity until the welcome sequence completes.
+    if (!welcomeComplete) return;
+
     const id = "hero-yt-player";
     const container = document.getElementById(id);
-    if (!container || !videoId || !isYTVideoId(videoId) || !showPlayer) return;
+    if (!container || !videoId || !isYTVideoId(videoId)) return;
     let cancelled = false;
     setHasStartedPlaying(false);
 
@@ -397,7 +412,7 @@ const HeroVideoPlayer: React.FC<{
     return () => {
       cancelled = true;
     };
-  }, [videoId, showPlayer]);
+  }, [videoId, welcomeComplete]);
 
   useEffect(() => {
     if (!playerRef.current) return;
@@ -477,6 +492,9 @@ const HeroVideoPlayer: React.FC<{
     }
   }, [isMoviePlayerOpen, setIsHeroMuted]);
 
+  // ── Whether to show the YouTube player layer ──────────────────────────
+  const showPlayerLayer = welcomeComplete && !!videoId && isYTVideoId(videoId);
+
   return (
     <section
       className="relative w-full h-[60vh] md:h-[85vh] bg-black overflow-hidden select-none"
@@ -486,7 +504,7 @@ const HeroVideoPlayer: React.FC<{
         className="w-full h-full overflow-hidden pointer-events-none"
         style={{ position: "absolute", inset: 0, zIndex: 0 }}
       >
-        {showPlayer && (
+        {showPlayerLayer && (
           <div
             className="w-full h-full scale-[1.35] bg-cover bg-center"
             id="hero-player"
@@ -782,17 +800,71 @@ const HeroVideoPlayer: React.FC<{
         </div>
       </div>
 
+      {/* ── WELCOME LOADING OVERLAY ──────────────────────────────────────── */}
+      {/* Displayed for exactly 3 seconds on every page load/refresh.  No       */}
+      {/* YouTube iframe exists behind this overlay — the player has not been    */}
+      {/* created yet.  This prevents browser auto-play blocks and creates a    */}
+      {/* professional branded entry experience.                                 */}
       <AnimatePresence>
-        {!showPlayer && (
+        {!welcomeComplete && (
           <motion.div
-            key="hero-initial-buffer"
+            key="welcome-overlay"
             initial={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.4, ease: "easeOut" }}
-            className="absolute inset-0 bg-black flex items-center justify-center pointer-events-none"
-            style={{ zIndex: 1 }}
+            transition={{ duration: 0.5, ease: "easeOut" }}
+            className="absolute inset-0 z-[200] flex flex-col items-center justify-center bg-black"
           >
-            <div className="w-10 h-10 rounded-full border-2 border-t-brand-primary border-white/10 animate-spin" />
+            {/* Animated logo pulse */}
+            <motion.div
+              initial={{ scale: 0.8, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ duration: 0.6, ease: "easeOut" }}
+              className="flex flex-col items-center gap-6"
+            >
+              {/* Cinema reel icon */}
+              <div className="relative">
+                <motion.div
+                  animate={{ rotate: 360 }}
+                  transition={{ repeat: Infinity, duration: 4, ease: "linear" }}
+                  className="w-20 h-20 md:w-24 md:h-24 rounded-full border-4 border-brand-primary/30 border-t-brand-primary"
+                />
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="w-8 h-8 md:w-10 md:h-10 bg-brand-primary rounded-full flex items-center justify-center">
+                    <Play className="w-4 h-4 md:w-5 md:h-5 text-white fill-white ml-0.5" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Welcome text */}
+              <div className="text-center space-y-2">
+                <motion.h1
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.3, duration: 0.5 }}
+                  className="text-2xl md:text-4xl font-black text-white tracking-tight"
+                >
+                  Welcome to CinemaChat
+                </motion.h1>
+                <motion.p
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.5, duration: 0.5 }}
+                  className="text-lg md:text-2xl font-bold text-brand-primary kurdish-text"
+                >
+                  بەخێربێن بۆ سینەما چات
+                </motion.p>
+              </div>
+
+              {/* Loading bar */}
+              <div className="w-48 h-1 bg-white/10 rounded-full overflow-hidden mt-2">
+                <motion.div
+                  initial={{ width: "0%" }}
+                  animate={{ width: "100%" }}
+                  transition={{ duration: 3, ease: "easeInOut" }}
+                  className="h-full bg-brand-primary rounded-full"
+                />
+              </div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>

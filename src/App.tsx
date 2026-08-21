@@ -7711,10 +7711,11 @@ export default function App() {
       videoUrl,
       isYouTube,
       videoId,
+      // No hardcoded fallback — empty array forces the hero player to stay
+      // in its welcome/loading state until the admin saves a real playlist.
       heroPlaylist: (base as any).video_trailers ||
-        (base as any).heroPlaylist || [
-          embedUrl || videoUrl || "https://www.youtube.com/watch?v=YPY7J-flzE8",
-        ],
+        (base as any).heroPlaylist ||
+        [],
     };
   }, [featuredMovieFromDB, featuredMovie, globalStreamURL]);
 
