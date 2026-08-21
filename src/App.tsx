@@ -10746,16 +10746,18 @@ export default function App() {
     facebookUrl: "https://www.facebook.com/",
   });
 
-  // Global Floating WhatsApp URL — resolved once so the button is always present
-  // and correct on every screen: env group link > env number (wa.me) > admin
-  // config socialLinks > hardcoded default (never empty, never missing).
-  const floatingWhatsAppUrl =
+  // Global Floating WhatsApp URLs — resolved separately so the floating button
+  // can present both options (group link + direct number) to the user.
+  const whatsappGroupLink =
     import.meta.env.VITE_WHATSAPP_GROUP_LINK ||
-    (import.meta.env.VITE_WHATSAPP_NUMBER
+    config.socialLinks.group ||
+    config.socialLinks.whatsapp ||
+    "https://chat.whatsapp.com/DIwWkE5ZGuTYJrmODE0mI0";
+
+  const whatsappDirectUrl =
+    import.meta.env.VITE_WHATSAPP_NUMBER
       ? `https://wa.me/${String(import.meta.env.VITE_WHATSAPP_NUMBER).replace(/[^0-9]/g, "")}`
-      : config.socialLinks.group ||
-        config.socialLinks.whatsapp ||
-        "https://wa.me/9647701966649");
+      : "https://wa.me/9647701966649";
 
   // Silent Access Control / Route Guard for Module 17 and Staff permissions
   useEffect(() => {
@@ -11722,7 +11724,7 @@ export default function App() {
             کەمێکی تر سەردان بکەنەوە.
           </p>
         </motion.div>
-        <WhatsAppFloatButton href={floatingWhatsAppUrl} />
+        <WhatsAppFloatButton groupLink={whatsappGroupLink} directNumberUrl={whatsappDirectUrl} />
       </div>
     );
   }
@@ -11735,7 +11737,7 @@ export default function App() {
           transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
           className="w-12 h-12 border-4 border-brand-primary border-t-transparent rounded-full"
         />
-        <WhatsAppFloatButton href={floatingWhatsAppUrl} />
+        <WhatsAppFloatButton groupLink={whatsappGroupLink} directNumberUrl={whatsappDirectUrl} />
       </div>
     );
   }
@@ -15519,7 +15521,7 @@ const trailerId = movie.trailerUrl
 
       {/* Point 15/20: Global Floating WhatsApp Button — rendered on every view,
           never gated behind build-time env vars. */}
-      <WhatsAppFloatButton href={floatingWhatsAppUrl} />
+      <WhatsAppFloatButton groupLink={whatsappGroupLink} directNumberUrl={whatsappDirectUrl} />
 
       <footer className="official-footer"> {/* Main Footer */}
         <div className="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-20 relative z-10">
