@@ -62,9 +62,9 @@ const HeroVideoPlayer: React.FC<{
   const setIsMuted = setIsHeroMuted;
 
   // ─── WELCOME SEQUENCE ────────────────────────────────────────────────
-  // Blocks ALL player activity for 3 seconds.  During this time the
-  // branded welcome overlay is shown.  No YT iframe is created, no
-  // video ID is resolved — the component is in a pure loading state.
+  // The welcome overlay displays for 3 seconds on top of the player.
+  // The YouTube iframe loads and buffers BEHIND the overlay so video
+  // plays instantly when the overlay fades — zero perceived loading.
   const [welcomeComplete, setWelcomeComplete] = useState(false);
 
   useEffect(() => {
@@ -77,10 +77,9 @@ const HeroVideoPlayer: React.FC<{
   // Only valid 11-character IDs are kept; raw URLs or unparseable entries
   // are dropped so the YT Player API never receives a full URL string.
   // Returns [] when no valid data exists — never falls back to a hardcoded URL.
+  // NOTE: IDs resolve IMMEDIATELY (no welcomeComplete gate) so the YT
+  // iframe can preload behind the welcome overlay.
   const playlistIds = useMemo(() => {
-    // BLOCK ALL VIDEO RESOLUTION during the welcome sequence.
-    if (!welcomeComplete) return [];
-
     const urls = heroPlaylist?.filter((u) => u && u.trim() !== "") || [];
     if (urls.length === 0) return [];
 
@@ -89,7 +88,7 @@ const HeroVideoPlayer: React.FC<{
       .filter((id): id is string => id !== null && id.trim() !== "");
 
     return extracted;
-  }, [welcomeComplete, heroPlaylist]);
+  }, [heroPlaylist]);
 
   const playlistIndexRef = useRef(0);
   // Reset index when the playlist changes (admin saved a new config)
@@ -304,12 +303,10 @@ const HeroVideoPlayer: React.FC<{
     };
   }, []);
 
-  // Mount / hot-swap the player — ONLY after the 3s welcome sequence
-  // AND only when a valid video ID is available from the admin-saved playlist.
+  // Mount / hot-swap the player — starts immediately when a valid video ID
+  // is available.  The welcome overlay sits on top (z-[200]) so the user
+  // sees the branded screen while the iframe preloads and buffers.
   useEffect(() => {
-    // EXPLICIT GUARD: No player activity until the welcome sequence completes.
-    if (!welcomeComplete) return;
-
     const id = "hero-yt-player";
     const container = document.getElementById(id);
     if (!container || !videoId || !isYTVideoId(videoId)) return;
@@ -405,7 +402,7 @@ const HeroVideoPlayer: React.FC<{
     return () => {
       cancelled = true;
     };
-  }, [videoId, welcomeComplete]);
+  }, [videoId]);
 
   useEffect(() => {
     if (!playerRef.current) return;
@@ -486,7 +483,9 @@ const HeroVideoPlayer: React.FC<{
   }, [isMoviePlayerOpen, setIsHeroMuted]);
 
   // ── Whether to show the YouTube player layer ──────────────────────────
-  const showPlayerLayer = welcomeComplete && !!videoId && isYTVideoId(videoId);
+  // Always show when a valid ID exists — the welcome overlay (z-[200])
+  // covers it until the 3s timer completes.
+  const showPlayerLayer = !!videoId && isYTVideoId(videoId);
 
   return (
     <section
@@ -794,10 +793,10 @@ const HeroVideoPlayer: React.FC<{
       </div>
 
       {/* ── WELCOME LOADING OVERLAY ──────────────────────────────────────── */}
-      {/* Displayed for exactly 3 seconds on every page load/refresh.  No       */}
-      {/* YouTube iframe exists behind this overlay — the player has not been    */}
-      {/* created yet.  This prevents browser auto-play blocks and creates a    */}
-      {/* professional branded entry experience.                                 */}
+      {/* Displayed for exactly 3 seconds on every page load/refresh.  The       */}
+      {/* YouTube iframe is already loaded and buffering BEHIND this overlay.    */}
+      {/* When the timer completes the overlay fades out and video plays         */}
+      {/* instantly — zero perceived loading time.                               */}
       <AnimatePresence>
         {!welcomeComplete && (
           <motion.div
