@@ -28,9 +28,10 @@ import { loadYouTubeAPI, getYTId, isYTVideoId } from "../utils/youtube";
  * from catalog/room videos.
  *
  * WELCOME SEQUENCE: On mount the component displays a branded loading overlay
- * for exactly 3 seconds.  During this window NO YouTube iframe is created and
- * no video ID is passed to the player API — this prevents browser auto-play
- * blocks and guarantees the admin-saved playlist is the only source of truth.
+ * for 3 seconds.  The YouTube iframe loads and buffers BEHIND the overlay so
+ * that the video is already playing the instant the overlay fades — zero
+ * perceived loading.  A safety timeout auto-skips any video that fails to
+ * reach PLAYING state within 5 seconds.
  */
 const HeroVideoPlayer: React.FC<{
   activeFeaturedMovie: any;
@@ -76,18 +77,19 @@ const HeroVideoPlayer: React.FC<{
   // Resolve the playlist of YouTube video IDs from the URLs array.
   // Only valid 11-character IDs are kept; raw URLs or unparseable entries
   // are dropped so the YT Player API never receives a full URL string.
-  // Returns [] when no valid data exists — never falls back to a hardcoded URL.
-  // NOTE: IDs resolve IMMEDIATELY (no welcomeComplete gate) so the YT
-  // iframe can preload behind the welcome overlay.
+  // Falls back to a test video ID when no admin data exists (for local dev
+  // verification).  IDs resolve IMMEDIATELY so the YT iframe can preload
+  // behind the welcome overlay.
+  const DEV_TEST_VIDEO_ID = "rBC36gXR0xA";
   const playlistIds = useMemo(() => {
     const urls = heroPlaylist?.filter((u) => u && u.trim() !== "") || [];
-    if (urls.length === 0) return [];
+    if (urls.length === 0) return [DEV_TEST_VIDEO_ID];
 
     const extracted = urls
       .map((u) => getYTId(u) || (isYTVideoId(u) ? u : null))
       .filter((id): id is string => id !== null && id.trim() !== "");
 
-    return extracted;
+    return extracted.length > 0 ? extracted : [DEV_TEST_VIDEO_ID];
   }, [heroPlaylist]);
 
   const playlistIndexRef = useRef(0);
@@ -109,6 +111,8 @@ const HeroVideoPlayer: React.FC<{
   const isMutedRef = useRef(isHeroMuted);
   isMutedRef.current = isHeroMuted;
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
+  const safetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const advancingRef = useRef(false); // guard against double-advance
   const [ccEnabled, setCcEnabled] = useState(true);
   const [onlineViewers, setOnlineViewers] = useState(0);
   const sessionIdRef = useRef<string>("");
@@ -275,64 +279,105 @@ const HeroVideoPlayer: React.FC<{
 
   const apiReady = useRef(loadYouTubeAPI());
 
-  // Advance to the next video in the queue (loops back to 0 after the last)
+  // ── Advance to the next video in the queue ────────────────────────────
+  // Loops back to index 0 after the last video.  Uses a guard ref to
+  // prevent double-advance when ENDED fires multiple times.  Clears any
+  // active safety timer before loading the next video.
   const advanceToNextVideo = () => {
-    if (playlistIds.length <= 1) return; // nothing to advance
+    if (advancingRef.current) return; // already in-flight
+    advancingRef.current = true;
+
+    if (safetyTimerRef.current) {
+      clearTimeout(safetyTimerRef.current);
+      safetyTimerRef.current = null;
+    }
+
     const nextIndex = (playlistIndexRef.current + 1) % playlistIds.length;
     playlistIndexRef.current = nextIndex;
     const nextId = playlistIds[nextIndex];
+
     if (nextId && isYTVideoId(nextId) && playerRef.current) {
       setHasStartedPlaying(false);
-      safePlayerCall(playerRef.current, "loadVideoById", nextId);
-      safePlayerCall(playerRef.current, "setPlaybackQuality", "hd1080");
-      enableCaptions(playerRef.current);
-      setIsPlaying(true);
+      try {
+        safePlayerCall(playerRef.current, "loadVideoById", nextId);
+        safePlayerCall(playerRef.current, "setPlaybackQuality", "hd1080");
+        enableCaptions(playerRef.current);
+        setIsPlaying(true);
+      } catch (_) {
+        // Player is dead — nothing we can do
+      }
     }
+
+    // Reset the guard after a short delay so the next ENDED can fire
+    setTimeout(() => { advancingRef.current = false; }, 500);
   };
   // Use a ref so the onStateChange callback always calls the latest version,
   // avoiding stale closures when the playlist changes without re-mounting.
   const advanceToNextVideoRef = useRef(advanceToNextVideo);
   advanceToNextVideoRef.current = advanceToNextVideo;
 
+  // ── CLEANUP ────────────────────────────────────────────────────────────
+  // Destroy the YT Player and clear ALL timers on unmount to prevent
+  // memory leaks and background event handler firings.
   useEffect(() => {
     return () => {
+      if (safetyTimerRef.current) {
+        clearTimeout(safetyTimerRef.current);
+        safetyTimerRef.current = null;
+      }
+      if (unmuteRetryTimerRef.current) {
+        clearTimeout(unmuteRetryTimerRef.current);
+        unmuteRetryTimerRef.current = null;
+      }
       if (playerRef.current) {
-        try { playerRef.current.destroy(); } catch (_) {}
+        try {
+          // Remove all event listeners before destroying to prevent
+          // any queued callbacks from firing after unmount
+          playerRef.current.removeEventListener?.("onReady");
+          playerRef.current.removeEventListener?.("onStateChange");
+          playerRef.current.removeEventListener?.("onError");
+          playerRef.current.destroy();
+        } catch (_) {}
         playerRef.current = null;
       }
     };
   }, []);
 
-  // Mount / hot-swap the player — starts immediately when a valid video ID
-  // is available.  The welcome overlay sits on top (z-[200]) so the user
-  // sees the branded screen while the iframe preloads and buffers.
+  // ── Mount / hot-swap the YouTube player ───────────────────────────────
+  // Starts immediately when a valid video ID is available.  The welcome
+  // overlay sits on top (z-[200]) so the user sees the branded screen
+  // while the iframe preloads and buffers.  A safety timer auto-skips any
+  // video that fails to reach PLAYING state within 5 seconds.
   useEffect(() => {
     const id = "hero-yt-player";
     const container = document.getElementById(id);
     if (!container || !videoId || !isYTVideoId(videoId)) return;
     let cancelled = false;
     setHasStartedPlaying(false);
+    advancingRef.current = false;
+
+    const startSafetyTimer = () => {
+      if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current);
+      safetyTimerRef.current = setTimeout(() => {
+        if (cancelled) return;
+        // Video failed to reach PLAYING in 5s — skip to next
+        advanceToNextVideoRef.current();
+      }, 5000);
+    };
 
     const initPlayer = () => {
       if (cancelled) return;
       if (!(window as any).YT?.Player) return;
 
+      // Hot-swap: player already exists, just load the new video
       if (playerRef.current) {
         try {
+          advancingRef.current = false;
           safePlayerCall(playerRef.current, "loadVideoById", videoId);
-          if (isMobile) {
-            if (!userAudioControlRef.current) {
-              setIsHeroMuted(true);
-              forcePlay(playerRef.current, 20);
-            } else {
-              forcePlay(playerRef.current, 4);
-            }
-          } else {
-            forceUnmuteAutoplay(playerRef.current);
-          }
           safePlayerCall(playerRef.current, "setPlaybackQuality", "hd1080");
           enableCaptions(playerRef.current);
           setIsPlaying(true);
+          startSafetyTimer();
           return;
         } catch (_) {
           try { playerRef.current.destroy(); } catch (_) {}
@@ -340,14 +385,15 @@ const HeroVideoPlayer: React.FC<{
         }
       }
 
+      // Create a fresh player instance
       playerRef.current = new (window as any).YT.Player(id, {
         videoId: videoId,
         height: "100%",
         width: "100%",
         playerVars: {
           autoplay: 1,
-          mute: 0,
-          controls: 1,
+          mute: 1,              // muted autoplay guaranteed by all browsers
+          controls: 0,           // clean UI — custom controls only
           showinfo: 0,
           rel: 0,
           modestbranding: 1,
@@ -361,32 +407,49 @@ const HeroVideoPlayer: React.FC<{
         },
         events: {
           onReady: (event: any) => {
-            if (isMobile) {
-              setIsHeroMuted(true);
-              forcePlay(event.target, 30);
-            } else {
-              forceUnmuteAutoplay(event.target);
-            }
+            if (cancelled) return;
+            forcePlay(event.target, 30);
             safePlayerCall(event.target, "setPlaybackQuality", "hd1080");
             enableCaptions(event.target);
             setIsPlaying(true);
+            setIsHeroMuted(true); // starts muted per policy
+            startSafetyTimer();
           },
           onStateChange: (event: any) => {
+            if (cancelled) return;
             const ytState = (window as any).YT.PlayerState;
-            const playing = event.data === ytState.PLAYING;
-            setIsPlaying(playing);
-            if (playing) {
+            const state = event.data;
+
+            if (state === ytState.PLAYING) {
+              // Clear the safety timer — video is alive
+              if (safetyTimerRef.current) {
+                clearTimeout(safetyTimerRef.current);
+                safetyTimerRef.current = null;
+              }
               deliberatePauseRef.current = false;
               setHasStartedPlaying(true);
-            } else if (event.data === ytState.ENDED) {
-              // Video finished — advance to next in queue (loops to 0 at end)
+              setIsPlaying(true);
+            } else if (state === ytState.ENDED) {
+              // Video finished — advance immediately
               advanceToNextVideoRef.current();
-            } else if (event.data === ytState.PAUSED && !deliberatePauseRef.current) {
-              setTimeout(
-                () => safePlayerCall(playerRef.current, "playVideo"),
-                50,
-              );
+            } else if (state === ytState.PAUSED) {
+              if (!deliberatePauseRef.current) {
+                // Unexpected pause — force-resume after 50ms
+                setTimeout(() => {
+                  if (!cancelled && playerRef.current) {
+                    safePlayerCall(playerRef.current, "playVideo");
+                  }
+                }, 50);
+              }
+            } else if (state === ytState.BUFFERING) {
+              // Extended buffering — restart safety timer
+              startSafetyTimer();
             }
+          },
+          onError: (event: any) => {
+            if (cancelled) return;
+            // Video error (removed, private, etc.) — skip immediately
+            advanceToNextVideoRef.current();
           },
         },
       });
@@ -396,6 +459,10 @@ const HeroVideoPlayer: React.FC<{
 
     return () => {
       cancelled = true;
+      if (safetyTimerRef.current) {
+        clearTimeout(safetyTimerRef.current);
+        safetyTimerRef.current = null;
+      }
     };
   }, [videoId]);
 
