@@ -291,9 +291,10 @@ const HeroVideoPlayer: React.FC<{
   const apiReady = useRef(loadYouTubeAPI());
 
   // ── Advance to the next video in the queue ────────────────────────────
-  // Loops back to index 0 after the last video.  Uses a guard ref to
-  // prevent double-advance when ENDED fires multiple times.  Clears any
-  // active safety timer before loading the next video.
+  // Full iframe remount strategy: destroy the current player, increment
+  // the playlist index, and reset ALL playback state.  The main player
+  // useEffect detects the videoId change and creates a completely fresh
+  // YT.Player instance — no loadVideoById hot-swap that causes freezes.
   const advanceToNextVideo = () => {
     if (advancingRef.current) return; // already in-flight
     advancingRef.current = true;
@@ -303,24 +304,27 @@ const HeroVideoPlayer: React.FC<{
       safetyTimerRef.current = null;
     }
 
-    const nextIndex = (playlistIndexRef.current + 1) % playlistIds.length;
-    playlistIndexRef.current = nextIndex;
-    const nextId = playlistIds[nextIndex];
+    // ── Full state reset ──────────────────────────────────────────────
+    setHasStartedPlaying(false);
+    setIsPlaying(false);
+    deliberatePauseRef.current = false;
 
-    if (nextId && isYTVideoId(nextId) && playerRef.current) {
-      setHasStartedPlaying(false);
-      try {
-        safePlayerCall(playerRef.current, "loadVideoById", nextId);
-        safePlayerCall(playerRef.current, "setPlaybackQuality", "hd1080");
-        enableCaptions(playerRef.current);
-        setIsPlaying(true);
-      } catch (_) {
-        // Player is dead — nothing we can do
-      }
+    // ── Destroy the current player instance ───────────────────────────
+    // This tears down the iframe completely so the next useEffect cycle
+    // creates a clean new one with zero stale state.
+    if (playerRef.current) {
+      try { playerRef.current.destroy(); } catch (_) {}
+      playerRef.current = null;
     }
 
-    // Reset the guard after a short delay so the next ENDED can fire
-    setTimeout(() => { advancingRef.current = false; }, 500);
+    // ── Advance the index ─────────────────────────────────────────────
+    const nextIndex = (playlistIndexRef.current + 1) % playlistIds.length;
+    playlistIndexRef.current = nextIndex;
+    // videoId is derived from playlistIndexRef — React will re-render
+    // and the player useEffect will fire with the new video ID.
+
+    // Reset the guard after a delay so the next ENDED can fire
+    setTimeout(() => { advancingRef.current = false; }, 800);
   };
   // Use a ref so the onStateChange callback always calls the latest version,
   // avoiding stale closures when the playlist changes without re-mounting.
@@ -354,18 +358,18 @@ const HeroVideoPlayer: React.FC<{
     };
   }, []);
 
-  // ── Mount / hot-swap the YouTube player ───────────────────────────────
-  // Starts immediately when a valid video ID is available.  The welcome
-  // overlay sits on top (z-[200]) so the user sees the branded screen
-  // while the iframe preloads and buffers.  A safety timer auto-skips any
-  // video that fails to reach PLAYING state within 5 seconds.
+  // ── Mount / remount the YouTube player ──────────────────────────────
+  // Full remount strategy: every time videoId changes (playlist advance),
+  // the old player is destroyed and a completely fresh YT.Player is
+  // created.  This avoids the audio-only freeze that loadVideoById
+  // hot-swaps cause.  The welcome overlay covers the iframe during load.
   useEffect(() => {
     const id = "hero-yt-player";
     const container = document.getElementById(id);
     if (!container || !videoId || !isYTVideoId(videoId)) return;
     let cancelled = false;
     setHasStartedPlaying(false);
-    advancingRef.current = false;
+    setIsPlaying(false);
 
     const startSafetyTimer = () => {
       if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current);
@@ -380,23 +384,13 @@ const HeroVideoPlayer: React.FC<{
       if (cancelled) return;
       if (!(window as any).YT?.Player) return;
 
-      // Hot-swap: player already exists, just load the new video
+      // Always destroy existing player for a clean remount
       if (playerRef.current) {
-        try {
-          advancingRef.current = false;
-          safePlayerCall(playerRef.current, "loadVideoById", videoId);
-          safePlayerCall(playerRef.current, "setPlaybackQuality", "hd1080");
-          enableCaptions(playerRef.current);
-          setIsPlaying(true);
-          startSafetyTimer();
-          return;
-        } catch (_) {
-          try { playerRef.current.destroy(); } catch (_) {}
-          playerRef.current = null;
-        }
+        try { playerRef.current.destroy(); } catch (_) {}
+        playerRef.current = null;
       }
 
-      // Create a fresh player instance
+      // Create a completely fresh player instance
       playerRef.current = new (window as any).YT.Player(id, {
         videoId: videoId,
         height: "100%",
@@ -473,6 +467,11 @@ const HeroVideoPlayer: React.FC<{
       if (safetyTimerRef.current) {
         clearTimeout(safetyTimerRef.current);
         safetyTimerRef.current = null;
+      }
+      // Destroy player on cleanup (videoId changed or unmount)
+      if (playerRef.current) {
+        try { playerRef.current.destroy(); } catch (_) {}
+        playerRef.current = null;
       }
     };
   }, [videoId]);
