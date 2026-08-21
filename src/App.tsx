@@ -11710,12 +11710,25 @@ export default function App() {
 
   if (isLoading && movies.length === 0) {
     return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
-        <motion.div // Loading spinner for initial movie load
-          animate={{ rotate: 360 }}
-          transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
-          className="w-12 h-12 border-4 border-brand-primary border-t-transparent rounded-full"
-        />
+      <div className="min-h-screen bg-black flex flex-col items-center justify-center">
+        {/* Welcome screen shown while initial data loads silently */}
+        <div className="relative">
+          <div className="w-20 h-20 md:w-24 md:h-24 rounded-full border-4 border-brand-primary/30 border-t-brand-primary animate-spin" />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-8 h-8 md:w-10 md:h-10 bg-brand-primary rounded-full flex items-center justify-center">
+              <svg className="w-4 h-4 md:w-5 md:h-5 text-white fill-white ml-0.5" viewBox="0 0 24 24"><polygon points="5,3 19,12 5,21" /></svg>
+            </div>
+          </div>
+        </div>
+        <h1 className="text-2xl md:text-4xl font-black text-white tracking-tight mt-8">
+          Welcome to CinemaChat
+        </h1>
+        <p className="text-lg md:text-2xl font-bold text-brand-primary kurdish-text mt-2">
+          بەخێربێن بۆ سینەما چات
+        </p>
+        <div className="w-48 h-1 bg-white/10 rounded-full overflow-hidden mt-6">
+          <div className="h-full bg-brand-primary rounded-full animate-[pulse_1.5s_ease-in-out_infinite]" style={{ width: "60%" }} />
+        </div>
         <WhatsAppFloatButton groupLink={whatsappGroupLink} directNumberUrl={whatsappDirectUrl} />
       </div>
     );
@@ -12268,8 +12281,27 @@ export default function App() {
             {/* ٢. پێکهاتەی سەرەکی ڤیدیۆی سەرەوە (Hero Video Component) */}
             {activeFeaturedMovie && !activeSyncGroup && (
               <React.Suspense fallback={
-                <div className="relative w-full h-[60vh] md:h-[85vh] bg-black flex items-center justify-center">
-                  <div className="w-10 h-10 rounded-full border-2 border-t-brand-primary border-white/10 animate-spin" />
+                <div className="relative w-full h-[60vh] md:h-[85vh] bg-black flex flex-col items-center justify-center overflow-hidden">
+                  {/* Spinning reel */}
+                  <div className="relative">
+                    <div className="w-20 h-20 md:w-24 md:h-24 rounded-full border-4 border-brand-primary/30 border-t-brand-primary animate-spin" />
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <div className="w-8 h-8 md:w-10 md:h-10 bg-brand-primary rounded-full flex items-center justify-center">
+                        <svg className="w-4 h-4 md:w-5 md:h-5 text-white fill-white ml-0.5" viewBox="0 0 24 24"><polygon points="5,3 19,12 5,21" /></svg>
+                      </div>
+                    </div>
+                  </div>
+                  {/* Welcome text */}
+                  <h1 className="text-2xl md:text-4xl font-black text-white tracking-tight mt-8">
+                    Welcome to CinemaChat
+                  </h1>
+                  <p className="text-lg md:text-2xl font-bold text-brand-primary kurdish-text mt-2">
+                    بەخێربێن بۆ سینەما چات
+                  </p>
+                  {/* Loading bar */}
+                  <div className="w-48 h-1 bg-white/10 rounded-full overflow-hidden mt-6">
+                    <div className="h-full bg-brand-primary rounded-full animate-[pulse_1.5s_ease-in-out_infinite]" style={{ width: "60%" }} />
+                  </div>
                 </div>
               }>
                 <HeroSection
