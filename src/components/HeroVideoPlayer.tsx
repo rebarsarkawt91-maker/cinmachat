@@ -509,15 +509,47 @@ const HeroVideoPlayer: React.FC<{
     }
   }, [isPlaying]);
 
+  // ── GLOBAL AUDIO INTERLOCK ──────────────────────────────────────────
+  // When another audio source claims priority (drama room), immediately
+  // pause + mute the hero to enforce single-source audio.  Saves the
+  // previous play/mute state so it can be accurately restored when the
+  // room releases audio.
+  const roomSuppressedRef = useRef(false);
+  const restoreRoomRef = useRef({ play: false, unmute: false });
   useEffect(() => {
-    if (activeAudioSource === "room") {
+    if (activeAudioSource === "room" && !roomSuppressedRef.current) {
+      roomSuppressedRef.current = true;
+      restoreRoomRef.current = {
+        play: isPlayingRef.current,
+        unmute: !isMutedRef.current,
+      };
       userAudioControlRef.current = true;
       if (unmuteRetryTimerRef.current) {
         clearTimeout(unmuteRetryTimerRef.current);
         unmuteRetryTimerRef.current = null;
       }
+      deliberatePauseRef.current = true;
+      setIsPlaying(false);
+      safePlayerCall(playerRef.current, "pauseVideo");
       setIsMuted(true);
       setIsHeroMuted(true);
+    } else if (
+      activeAudioSource === "hero" &&
+      roomSuppressedRef.current &&
+      !trailerSuppressedRef.current
+    ) {
+      roomSuppressedRef.current = false;
+      const restore = restoreRoomRef.current;
+      deliberatePauseRef.current = !restore.play;
+      setIsPlaying(restore.play);
+      if (restore.play) safePlayerCall(playerRef.current, "playVideo");
+      const shouldUnmute = restore.unmute;
+      setIsHeroMuted(!shouldUnmute);
+      if (shouldUnmute) {
+        safePlayerCall(playerRef.current, "unMute");
+        safePlayerCall(playerRef.current, "setVolume", 100);
+        setIsMuted(false);
+      }
     }
   }, [activeAudioSource, setIsHeroMuted]);
 
@@ -540,9 +572,16 @@ const HeroVideoPlayer: React.FC<{
       deliberatePauseRef.current = !restore.play;
       setIsPlaying(restore.play);
       if (restore.play) safePlayerCall(playerRef.current, "playVideo");
-      setIsHeroMuted(!restore.unmute);
+      // Only restore unmute if no other audio source took priority
+      const shouldUnmute = restore.unmute && activeAudioSource !== "room";
+      setIsHeroMuted(!shouldUnmute);
+      if (shouldUnmute) {
+        safePlayerCall(playerRef.current, "unMute");
+        safePlayerCall(playerRef.current, "setVolume", 100);
+        setIsMuted(false);
+      }
     }
-  }, [isMoviePlayerOpen, setIsHeroMuted]);
+  }, [isMoviePlayerOpen, activeAudioSource, setIsHeroMuted]);
 
   // ── WELCOME GATE ────────────────────────────────────────────────────
   // The overlay fades only when BOTH conditions are true:
@@ -554,6 +593,27 @@ const HeroVideoPlayer: React.FC<{
   const overlayDismissed = welcomeComplete && (
     hasStartedPlaying || !videoId || !isYTVideoId(videoId)
   );
+
+  // ── AUTO-UNMUTE AFTER WELCOME ────────────────────────────────────────
+  // Once the welcome overlay is dismissed and the video is playing,
+  // automatically unmute and set volume to 100 so audio starts immediately.
+  // Skips if the user already took manual audio control or if another
+  // audio source (drama room) is active.
+  useEffect(() => {
+    if (!overlayDismissed || !playerRef.current) return;
+    const timer = setTimeout(() => {
+      if (
+        playerRef.current &&
+        !userAudioControlRef.current &&
+        activeAudioSource !== "room"
+      ) {
+        safePlayerCall(playerRef.current, "unMute");
+        safePlayerCall(playerRef.current, "setVolume", 100);
+        setIsHeroMuted(false);
+      }
+    }, 600); // 600ms = overlay fade (500ms) + small buffer
+    return () => clearTimeout(timer);
+  }, [overlayDismissed, activeAudioSource]);
 
   // ── Whether to show the YouTube player layer ──────────────────────────
   // Always show when a valid ID exists — the welcome overlay (z-[200])
