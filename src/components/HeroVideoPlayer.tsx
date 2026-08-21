@@ -113,6 +113,17 @@ const HeroVideoPlayer: React.FC<{
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
   const safetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const advancingRef = useRef(false); // guard against double-advance
+
+  // ── WELCOME GATE ────────────────────────────────────────────────────
+  // The overlay fades only when BOTH conditions are true:
+  //   1. The 3-second timer has completed (welcomeComplete)
+  //   2. The YouTube player has fired PLAYING state (hasStartedPlaying)
+  //      OR no video is configured (so there's nothing to wait for).
+  // This guarantees zero black frames — the user never sees a non-playing
+  // screen behind the overlay.
+  const overlayDismissed = welcomeComplete && (
+    hasStartedPlaying || !videoId || !isYTVideoId(videoId)
+  );
   const [ccEnabled, setCcEnabled] = useState(true);
   const [onlineViewers, setOnlineViewers] = useState(0);
   const sessionIdRef = useRef<string>("");
@@ -516,6 +527,8 @@ const HeroVideoPlayer: React.FC<{
   // room releases audio.
   const roomSuppressedRef = useRef(false);
   const restoreRoomRef = useRef({ play: false, unmute: false });
+  const trailerSuppressedRef = useRef(false);
+  const restoreTrailerRef = useRef({ play: false, unmute: false });
   useEffect(() => {
     if (activeAudioSource === "room" && !roomSuppressedRef.current) {
       roomSuppressedRef.current = true;
@@ -553,8 +566,6 @@ const HeroVideoPlayer: React.FC<{
     }
   }, [activeAudioSource, setIsHeroMuted]);
 
-  const trailerSuppressedRef = useRef(false);
-  const restoreTrailerRef = useRef({ play: false, unmute: false });
   useEffect(() => {
     if (isMoviePlayerOpen && !trailerSuppressedRef.current) {
       trailerSuppressedRef.current = true;
@@ -582,18 +593,6 @@ const HeroVideoPlayer: React.FC<{
       }
     }
   }, [isMoviePlayerOpen, activeAudioSource, setIsHeroMuted]);
-
-  // ── WELCOME GATE ────────────────────────────────────────────────────
-  // The overlay fades only when BOTH conditions are true:
-  //   1. The 3-second timer has completed (welcomeComplete)
-  //   2. The YouTube player has fired PLAYING state (hasStartedPlaying)
-  //      OR no video is configured (so there's nothing to wait for).
-  // This guarantees zero black frames — the user never sees a non-playing
-  // screen behind the overlay.
-  const overlayDismissed = welcomeComplete && (
-    hasStartedPlaying || !videoId || !isYTVideoId(videoId)
-  );
-
   // ── AUTO-UNMUTE AFTER WELCOME ────────────────────────────────────────
   // Once the welcome overlay is dismissed and the video is playing,
   // automatically unmute and set volume to 100 so audio starts immediately.
