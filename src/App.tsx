@@ -431,12 +431,8 @@ async function fetchApi(
           path.includes("/api/movies/hero")
         ) {
           return {
-            heroVideoUrl: "https://www.youtube.com/watch?v=YPY7J-flzE8",
-            heroPlaylist: [
-              "https://www.youtube.com/watch?v=YPY7J-flzE8",
-              "https://www.youtube.com/watch?v=YPY7J-flzE8",
-              "https://www.youtube.com/watch?v=YPY7J-flzE8",
-            ],
+            heroVideoUrl: "",
+            heroPlaylist: [],
           };
         }
         if (path.includes("/api/admin/users")) {
@@ -518,12 +514,8 @@ async function fetchApi(
           path.includes("/api/movies/hero")
         ) {
           return {
-            heroVideoUrl: "https://www.youtube.com/watch?v=YPY7J-flzE8",
-            heroPlaylist: [
-              "https://www.youtube.com/watch?v=YPY7J-flzE8",
-              "https://www.youtube.com/watch?v=YPY7J-flzE8",
-              "https://www.youtube.com/watch?v=YPY7J-flzE8",
-            ],
+            heroVideoUrl: "",
+            heroPlaylist: [],
           };
         }
         if (path.includes("/api/admin/users")) {
@@ -7737,20 +7729,6 @@ export default function App() {
     setHeroTrailerPlaylist([]);
   }, [activeFeaturedMovie]);
 
-  const currentHeroVideoUrl = useMemo(() => {
-    if (!activeFeaturedMovie) return "";
-    const rawUrl = activeFeaturedMovie.embedUrl || activeFeaturedMovie.videoUrl || "";
-    if (!rawUrl || rawUrl.trim() === "") return "";
-    const vidId = extractYouTubeId(rawUrl);
-    if (vidId) return `https://www.youtube.com/watch?v=${vidId}`;
-    return rawUrl;
-  }, [activeFeaturedMovie]);
-
-  const heroVideoId = useMemo(() => {
-    const videoId = extractYouTubeId(currentHeroVideoUrl);
-    return videoId || "";
-  }, [currentHeroVideoUrl]);
-
   // Add an event listener to the whole document to detect the first click for click-to-initiate autoplay
   // This listener is kept as it's used for initial mute state logic. No changes needed here.
 
@@ -12301,7 +12279,6 @@ export default function App() {
                   isHeroMuted={isHeroMuted}
                   setIsHeroMuted={setIsHeroMuted}
                   hasInteracted={hasInteracted}
-                  heroVideoId={heroVideoId}
                   heroPlaylist={activeFeaturedMovie?.heroPlaylist}
                   config={config}
                   setShowVipModal={setShowVipModal}

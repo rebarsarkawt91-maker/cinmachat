@@ -39,7 +39,6 @@ const HeroVideoPlayer: React.FC<{
   isHeroMuted: boolean;
   setIsHeroMuted: React.Dispatch<React.SetStateAction<boolean>>;
   hasInteracted: boolean;
-  heroVideoId: string;
   heroPlaylist?: string[];
   config: any;
   setShowVipModal: React.Dispatch<React.SetStateAction<boolean>>;
@@ -52,7 +51,6 @@ const HeroVideoPlayer: React.FC<{
   isHeroMuted,
   setIsHeroMuted,
   hasInteracted,
-  heroVideoId,
   heroPlaylist,
   config,
   setShowVipModal,
@@ -78,25 +76,20 @@ const HeroVideoPlayer: React.FC<{
   // Resolve the playlist of YouTube video IDs from the URLs array.
   // Only valid 11-character IDs are kept; raw URLs or unparseable entries
   // are dropped so the YT Player API never receives a full URL string.
-  // Falls back to the single heroVideoId when no playlist is provided.
+  // Returns [] when no valid data exists — never falls back to a hardcoded URL.
   const playlistIds = useMemo(() => {
-    // During the welcome sequence, return empty so no video is resolved.
+    // BLOCK ALL VIDEO RESOLUTION during the welcome sequence.
     if (!welcomeComplete) return [];
 
     const urls = heroPlaylist?.filter((u) => u && u.trim() !== "") || [];
-    if (urls.length === 0) {
-      const single = activeFeaturedMovie?.videoId || heroVideoId;
-      return single && isYTVideoId(single) ? [single] : [];
-    }
+    if (urls.length === 0) return [];
+
     const extracted = urls
       .map((u) => getYTId(u) || (isYTVideoId(u) ? u : null))
       .filter((id): id is string => id !== null && id.trim() !== "");
-    if (extracted.length === 0) {
-      const fallback = activeFeaturedMovie?.videoId || heroVideoId;
-      return fallback && isYTVideoId(fallback) ? [fallback] : [];
-    }
+
     return extracted;
-  }, [welcomeComplete, heroPlaylist, activeFeaturedMovie?.videoId, heroVideoId]);
+  }, [welcomeComplete, heroPlaylist]);
 
   const playlistIndexRef = useRef(0);
   // Reset index when the playlist changes (admin saved a new config)
