@@ -173,6 +173,12 @@ const HeroVideoPlayer: React.FC<{
 
   const userAudioControlRef = useRef(false);
   const unmuteRetryTimerRef = useRef<any>(null);
+  // Live mirrors of the audio-interlock props so the [videoId] effect
+  // (which only depends on videoId) never reads stale values.
+  const activeAudioSourceRef = useRef(activeAudioSource);
+  activeAudioSourceRef.current = activeAudioSource;
+  const isMoviePlayerOpenRef = useRef(isMoviePlayerOpen);
+  isMoviePlayerOpenRef.current = isMoviePlayerOpen;
 
   const takeAudioControl = () => {
     userAudioControlRef.current = true;
@@ -218,35 +224,66 @@ const HeroVideoPlayer: React.FC<{
     forcePlay(player, 4);
   };
 
-  const forceUnmuteAutoplay = (target: any, attempts = 20) => {
-    if (!target) return;
-    safePlayerCall(target, "playVideo");
-    safePlayerCall(target, "unMute");
-    safePlayerCall(target, "setVolume", 100);
-    const stillMuted = safePlayerCall(target, "isMuted") ?? false;
-    const playerState = safePlayerCall(target, "getPlayerState");
-    const PLAYING = (window as any).YT?.PlayerState?.PLAYING ?? 1;
-
-    if (!stillMuted && playerState === PLAYING) {
-      setIsHeroMuted(false);
-      return;
+  // ── AGGRESSIVE UNMUTE RETRY ──────────────────────────────────────────
+  // Browsers block programmatic unMute() on fresh page loads without a
+  // trusted user gesture.  This handler hammers the YT API with
+  // unMute() + setVolume(100) + playVideo() every 100ms for up to one
+  // second (10 attempts), stopping the instant the browser accepts the
+  // audio stream (isMuted() === false).
+  const aggressiveUnmute = (attempts = 10) => {
+    if (unmuteRetryTimerRef.current) {
+      clearTimeout(unmuteRetryTimerRef.current);
+      unmuteRetryTimerRef.current = null;
     }
+    const tick = (remaining: number) => {
+      const player = playerRef.current;
+      // Abort: no player, user took manual audio control mid-retry, or
+      // another audio source (drama room / movie trailer) owns the bus.
+      if (
+        !player ||
+        userAudioControlRef.current ||
+        activeAudioSourceRef.current === "room" ||
+        isMoviePlayerOpenRef.current
+      ) {
+        return;
+      }
 
-    if (attempts <= 0) {
-      setIsHeroMuted(!!stillMuted);
-      return;
-    }
+      safePlayerCall(player, "unMute");
+      safePlayerCall(player, "setVolume", 100);
+      safePlayerCall(player, "playVideo");
 
-    if (stillMuted && isMobile) {
-      setIsHeroMuted(true);
-      return;
-    }
+      const stillMuted = safePlayerCall(player, "isMuted") === true;
+      setIsHeroMuted(stillMuted);
 
-    setIsHeroMuted(!!stillMuted);
-    unmuteRetryTimerRef.current = setTimeout(() => {
-      if (userAudioControlRef.current) return;
-      forceUnmuteAutoplay(target, attempts - 1);
-    }, 200);
+      if (!stillMuted || remaining <= 0) return;
+      // Mobile browsers never accept programmatic unmute without a real
+      // touch — bail out honestly instead of burning the retry budget.
+      if (isMobile) return;
+
+      unmuteRetryTimerRef.current = setTimeout(
+        () => tick(remaining - 1),
+        100,
+      );
+    };
+    tick(attempts);
+  };
+
+  // ── PSEUDO-INTERACTION HANDLER ───────────────────────────────────────
+  // Simulated user interaction: dispatches a synthetic click on the
+  // player surface (harmless where the browser discards untrusted
+  // events) and immediately chains the aggressive unmute retry.
+  // NOTE: the z-10 tap overlay that owns handleHeroTap/userUnmute is a
+  // DOM *sibling* of #hero-yt-player, so this synthetic click cannot
+  // accidentally register as manual audio control.
+  const pseudoInteractionUnmute = () => {
+    try {
+      document
+        .getElementById("hero-yt-player")
+        ?.dispatchEvent(
+          new MouseEvent("click", { bubbles: true, cancelable: true }),
+        );
+    } catch (_) {}
+    aggressiveUnmute();
   };
 
   const enableCaptions = (target: any) => {
@@ -390,6 +427,25 @@ const HeroVideoPlayer: React.FC<{
         playerRef.current = null;
       }
 
+      // ── GLOBAL MUTE-RESET ON INDEX CHANGE ────────────────────────────
+      // Every time a new video ID is loaded, ALL mute state is forcibly
+      // cleared BEFORE playback starts: manual mute flags, pending
+      // unmute retries and the React muted state.  The fresh player
+      // therefore always starts unmuted at full volume (re-enforced in
+      // onReady and on every PLAYING event).  Skipped only while another
+      // audio source (drama room / movie trailer) owns the audio bus.
+      if (
+        activeAudioSourceRef.current !== "room" &&
+        !isMoviePlayerOpenRef.current
+      ) {
+        userAudioControlRef.current = false;
+        if (unmuteRetryTimerRef.current) {
+          clearTimeout(unmuteRetryTimerRef.current);
+          unmuteRetryTimerRef.current = null;
+        }
+        setIsHeroMuted(false);
+      }
+
       // Create a completely fresh player instance
       playerRef.current = new (window as any).YT.Player(id, {
         videoId: videoId,
@@ -413,11 +469,21 @@ const HeroVideoPlayer: React.FC<{
         events: {
           onReady: (event: any) => {
             if (cancelled) return;
+            // ── FORCED UNMUTE (unconditional) ─────────────────────────
+            // Executed immediately on every ready event regardless of
+            // any previous mute state.  mute:1 in playerVars only
+            // satisfies browser autoplay policy; we revoke it the
+            // instant the player is ready so audio always plays.
+            safePlayerCall(event.target, "unMute");
+            safePlayerCall(event.target, "setVolume", 100);
             forcePlay(event.target, 30);
+            // Micro-retry loop: keep forcing audio every 100ms for 1s in
+            // case the browser accepted playVideo but deferred the unmute.
+            aggressiveUnmute();
             safePlayerCall(event.target, "setPlaybackQuality", "hd1080");
             enableCaptions(event.target);
             setIsPlaying(true);
-            setIsHeroMuted(true); // starts muted per policy
+            setIsHeroMuted(false);
             startSafetyTimer();
           },
           onStateChange: (event: any) => {
@@ -431,9 +497,14 @@ const HeroVideoPlayer: React.FC<{
                 clearTimeout(safetyTimerRef.current);
                 safetyTimerRef.current = null;
               }
+              // Belt-and-suspenders: force unmute on every PLAYING event
+              // in case onReady unmute was blocked by browser policy
+              safePlayerCall(event.target, "unMute");
+              safePlayerCall(event.target, "setVolume", 100);
               deliberatePauseRef.current = false;
               setHasStartedPlaying(true);
               setIsPlaying(true);
+              setIsHeroMuted(false);
             } else if (state === ytState.ENDED) {
               // Video finished — advance immediately
               advanceToNextVideoRef.current();
@@ -458,6 +529,12 @@ const HeroVideoPlayer: React.FC<{
           },
         },
       });
+
+      // Belt-and-suspenders: explicitly tell the fresh player to start
+      // unmuted at full volume BEFORE playback begins (re-enforced in
+      // onReady the moment the API reports the player ready).
+      safePlayerCall(playerRef.current, "unMute");
+      safePlayerCall(playerRef.current, "setVolume", 100);
     };
 
     apiReady.current.then(initPlayer);
@@ -492,7 +569,10 @@ const HeroVideoPlayer: React.FC<{
   }, [isMuted]);
 
   useEffect(() => {
-    const onFirstInteraction = () => {
+    const onFirstInteraction = (e: Event) => {
+      // Only TRUSTED gestures count.  Our own synthetic pseudo-interaction
+      // clicks must not consume this listener or flag manual audio control.
+      if (!e.isTrusted) return;
       const player = playerRef.current;
       if (player && isMutedRef.current) {
         takeAudioControl();
@@ -592,26 +672,17 @@ const HeroVideoPlayer: React.FC<{
       }
     }
   }, [isMoviePlayerOpen, activeAudioSource, setIsHeroMuted]);
-  // ── AUTO-UNMUTE AFTER WELCOME ────────────────────────────────────────
-  // Once the welcome overlay is dismissed and the video is playing,
-  // automatically unmute and set volume to 100 so audio starts immediately.
-  // Skips if the user already took manual audio control or if another
-  // audio source (drama room) is active.
+  // ── PSEUDO-INTERACTION AT WELCOME FADE ────────────────────────────────
+  // Fired the exact millisecond the welcome overlay begins fading out.
+  // Simulates a user interaction and chains the aggressive 100ms retry
+  // loop so audio is forced on immediately — no silence gap after the
+  // overlay.  The dismissal gate resets for every playlist video, so
+  // this also re-fires on each Video 2+ transition.
   useEffect(() => {
     if (!overlayDismissed || !playerRef.current) return;
-    const timer = setTimeout(() => {
-      if (
-        playerRef.current &&
-        !userAudioControlRef.current &&
-        activeAudioSource !== "room"
-      ) {
-        safePlayerCall(playerRef.current, "unMute");
-        safePlayerCall(playerRef.current, "setVolume", 100);
-        setIsHeroMuted(false);
-      }
-    }, 600); // 600ms = overlay fade (500ms) + small buffer
-    return () => clearTimeout(timer);
-  }, [overlayDismissed, activeAudioSource]);
+    pseudoInteractionUnmute();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overlayDismissed]);
 
   // ── Whether to show the YouTube player layer ──────────────────────────
   // Always show when a valid ID exists — the welcome overlay (z-[200])
@@ -868,8 +939,12 @@ const HeroVideoPlayer: React.FC<{
           </button>
         </div>
 
+        {/* ── MANDATORY INTERACTION LAYER ──────────────────────────── */}
+        {/* Shown whenever audio isn't flowing (all devices incl. mobile).*/}
+        {/* One trusted click unlocks sound for the whole session — every */}
+        {/* subsequent playlist video force-unmutes automatically.        */}
         <AnimatePresence>
-          {isMuted && !isMobile && (
+          {isMuted && (
             <motion.button
               key="hero-unmute-overlay"
               initial={{ opacity: 0, scale: 0.9 }}
@@ -882,7 +957,7 @@ const HeroVideoPlayer: React.FC<{
               }}
               type="button"
               className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-5 pointer-events-auto cursor-pointer bg-black/30"
-              title="کاراکردنی دەنگ"
+              title="کلیک بکە بۆ دەنگ"
             >
               <motion.div
                 animate={{ scale: [1, 1.1, 1] }}
@@ -893,10 +968,10 @@ const HeroVideoPlayer: React.FC<{
                 }}
                 className="w-24 h-24 md:w-28 md:h-28 rounded-full bg-white text-black flex items-center justify-center shadow-2xl shadow-black/50 active:scale-90 transition-transform duration-150"
               >
-                <VolumeX className="w-12 h-12 md:w-14 md:h-14" />
+                <Volume2 className="w-12 h-12 md:w-14 md:h-14" />
               </motion.div>
               <span className="kurdish-text text-white text-lg md:text-xl font-bold drop-shadow-lg">
-                کاراکردنی دەنگ
+                کلیک بکە بۆ دەنگ
               </span>
             </motion.button>
           )}
