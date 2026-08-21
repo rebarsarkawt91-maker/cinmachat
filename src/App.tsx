@@ -355,8 +355,8 @@ async function fetchApi(
             status: 200,
             statusText: "OK",
             json: async () => ({
-              heroVideoUrl: "",
-              heroPlaylist: [],
+              heroVideoUrl: getCachedHeroVideoUrl() || "",
+              heroPlaylist: getCachedHeroPlaylist(),
             }),
             text: async () => "{}",
             clone: () => res,
@@ -15216,105 +15216,22 @@ const trailerId = movie.trailerUrl
                             const cleanUrl2 = (url2 || "").trim();
                             if (cleanUrl2) playlist.push(cleanUrl2);
 
-                            const applyHeroLocally = (urls: string[]) => {
-                              const firstUrl = urls[0];
-                              const isYoutube =
-                                firstUrl.includes("youtube.com") ||
-                                firstUrl.includes("youtu.be");
-                              const vidId = isYoutube
-                                ? extractYouTubeId(firstUrl) || firstUrl
-                                : firstUrl;
-                              const heroVideoEmbedUrl = isYoutube
-                                ? `https://www.youtube.com/embed/${vidId}`
-                                : firstUrl;
-                              
-                              setCachedHeroPlaylist(urls);
-
-                              // Instant frontend update without refresh
-                              setFeaturedMovieFromDB({
-                                id: "hero-promo",
-                                title: "فیلمی سەرەکی",
-                                embedUrl: heroVideoEmbedUrl,
-                                isYouTube: isYoutube,
-                                videoId: vidId,
-                                image: "",
-                                tags: ["هەمووی"],
-                                quality: "4K",
-                                description: "نوێترین فیلمی سەرەکی",
-                                heroPlaylist: urls,
-                              } as any);
-
-                              setConfig((prev) => ({
-                                ...prev,
-                                heroVideoUrl: firstUrl,
-                              }));
-                              setCurrentVideoIndex(0);
-                            };
-
-                            applyHeroLocally(playlist);
-
-                            // Build Firestore playlist data: each entry gets its own embed URL + videoId
-                            const firestorePlaylist = playlist.map((u) => {
-                              const yt = u.includes("youtube.com") || u.includes("youtu.be");
-                              const id = yt ? extractYouTubeId(u) : null;
-                              return {
-                                url: u,
-                                embedUrl: yt && id ? `https://www.youtube.com/embed/${id}` : u,
-                                videoId: id || "",
-                                isYouTube: yt,
-                              };
-                            });
-
-                            // Also write to Firestore so ALL visitors get the update in real-time via onSnapshot
-                            try {
-                              const isYoutube = cleanUrl1.includes("youtube.com") || cleanUrl1.includes("youtu.be");
-                              const vidId = isYoutube ? extractYouTubeId(cleanUrl1) : null;
-                              await setDoc(doc(db, "config", "featured"), {
-                                id: "hero-promo",
-                                title: "فیلمی سەرەکی",
-                                embedUrl: isYoutube && vidId ? `https://www.youtube.com/embed/${vidId}` : cleanUrl1,
-                                url: cleanUrl1,
-                                videoUrl: cleanUrl1,
-                                isYouTube: isYoutube,
-                                videoId: vidId || "",
-                                image: vidId ? `https://img.youtube.com/vi/${vidId}/maxresdefault.jpg` : "",
-                                tags: ["هەمووی"],
-                                quality: "4K",
-                                description: "نوێترین فیلمی سەرەکی",
-                                heroPlaylist: playlist,
-                                heroPlaylistData: firestorePlaylist,
-                                updatedAt: new Date().toISOString(),
-                              }, { merge: true });
-                              console.log("[Hero] Updated Firestore config/featured with hero playlist:", playlist);
-                            } catch (firestoreErr: any) {
-                              console.error("[Hero] Failed to update Firestore config/featured:", firestoreErr);
-                              // Server-side also writes to Firestore, so this is
-                              // non-fatal, but warn the admin so they know the
-                              // real-time sync to other visitors may be delayed
-                              // until the server write propagates.
-                              console.warn("[Hero] The server will still persist the change via its own Firestore write-through.");
-                            }
-
+                            // ── Step 1: Save to server FIRST (authoritative) ──────
                             const payload = {
                               adminName: currentUser?.username || "Admin",
                               heroVideoUrl: cleanUrl1,
                               heroPlaylist: playlist,
-                              heroPlaylistData: firestorePlaylist,
                             };
 
+                            let saved = false;
+                            let serverConfig: any = null;
                             try {
                               const heroSaveAttempts = [
-                                {
-                                  path: "/api/movies/hero",
-                                  body: payload,
-                                },
-                                {
-                                  path: "/api/admin/hero",
-                                  body: payload,
-                                },
+                                { path: "/api/movies/hero", body: payload },
+                                { path: "/api/admin/hero", body: payload },
                                 {
                                   path: "/api/admin/config",
-                                  body: { 
+                                  body: {
                                     adminName: currentUser?.username || "Admin",
                                     heroVideoUrl: cleanUrl1,
                                     heroPlaylist: playlist,
@@ -15322,34 +15239,110 @@ const trailerId = movie.trailerUrl
                                 },
                               ];
 
-                              let saved = false;
                               for (const attempt of heroSaveAttempts) {
                                 const res = await fetchApi(attempt.path, {
                                   method: "POST",
-                                  headers: {
-                                    "Content-Type": "application/json",
-                                  },
+                                  headers: { "Content-Type": "application/json" },
                                   body: JSON.stringify(attempt.body),
                                 });
                                 if (res.ok) {
                                   saved = true;
+                                  try { serverConfig = await res.json(); } catch {}
                                   break;
                                 }
-                                console.warn(`[HeroModule] Attempt to save hero video to ${attempt.path} failed with status ${res.status}: ${await res.text()}`);
-                              }
-
-                              if (saved) {
-                                alert("فیلمی سەرەکی بە سەرکەوتوویی جێگیرکرا!");
-                              } else {
-                                alert(
-                                  "فیلمی سەرەکی جێگیرکرا، بەڵام پەیوەندی بە سێرڤەر نەکرا. تکایە دواتر دووبارە هەوڵ بدە.",
-                                );
+                                console.warn(`[HeroModule] ${attempt.path} failed (${res.status}): ${await res.text()}`);
                               }
                             } catch (err) {
                               console.error("Hero sync error:", err);
-                              alert(
-                                "فیلمی سەرەکی جێگیرکرا، بەڵام پەیوەندی بە سێرڤەر نەکرا. تکایە دواتر دووبارە هەوڵ بدە.",
-                              );
+                            }
+
+                            // ── Step 2: Extract server-confirmed playlist ──────────
+                            // The server overwrites db.heroConfig and returns the
+                            // actual saved state.  Use it so the client never holds
+                            // data that differs from the database.
+                            const confirmedPlaylist: string[] =
+                              serverConfig?.config?.heroPlaylist ||
+                              serverConfig?.heroPlaylist ||
+                              playlist; // fallback to sent data if server didn't echo back
+
+                            // ── Step 3: PURGE old cache, re-populate with confirmed data ──
+                            setCachedHeroPlaylist(confirmedPlaylist);
+
+                            // ── Step 4: Apply confirmed data to React state ────────
+                            const firstUrl = confirmedPlaylist[0] || cleanUrl1;
+                            const isYoutube =
+                              firstUrl.includes("youtube.com") ||
+                              firstUrl.includes("youtu.be");
+                            const vidId = isYoutube
+                              ? extractYouTubeId(firstUrl) || firstUrl
+                              : firstUrl;
+                            const heroVideoEmbedUrl = isYoutube
+                              ? `https://www.youtube.com/embed/${vidId}`
+                              : firstUrl;
+
+                            setFeaturedMovieFromDB({
+                              id: "hero-promo",
+                              title: "فیلمی سەرەکی",
+                              embedUrl: heroVideoEmbedUrl,
+                              isYouTube: isYoutube,
+                              videoId: vidId,
+                              image: "",
+                              tags: ["هەمووی"],
+                              quality: "4K",
+                              description: "نوێترین فیلمی سەرەکی",
+                              heroPlaylist: confirmedPlaylist,
+                            } as any);
+
+                            setConfig((prev) => ({
+                              ...prev,
+                              heroVideoUrl: firstUrl,
+                            }));
+                            setCurrentVideoIndex(0);
+
+                            // ── Step 5: Firestore full-replace (clears stale fields) ──
+                            // Uses setDoc WITHOUT merge:true so old fields like
+                            // heroPlaylistData and video_trails are deleted.
+                            try {
+                              const yt1 = cleanUrl1.includes("youtube.com") || cleanUrl1.includes("youtu.be");
+                              const id1 = yt1 ? extractYouTubeId(cleanUrl1) : null;
+                              const firestorePlaylist = confirmedPlaylist.map((u: string) => {
+                                const yt = u.includes("youtube.com") || u.includes("youtu.be");
+                                const id = yt ? extractYouTubeId(u) : null;
+                                return {
+                                  url: u,
+                                  embedUrl: yt && id ? `https://www.youtube.com/embed/${id}` : u,
+                                  videoId: id || "",
+                                  isYouTube: yt,
+                                };
+                              });
+
+                              await setDoc(doc(db, "config", "featured"), {
+                                id: "hero-promo",
+                                title: "فیلمی سەرەکی",
+                                embedUrl: yt1 && id1 ? `https://www.youtube.com/embed/${id1}` : cleanUrl1,
+                                url: cleanUrl1,
+                                videoUrl: cleanUrl1,
+                                isYouTube: yt1,
+                                videoId: id1 || "",
+                                image: id1 ? `https://img.youtube.com/vi/${id1}/maxresdefault.jpg` : "",
+                                tags: ["هەمووی"],
+                                quality: "4K",
+                                description: "نوێترین فیلمی سەرەکی",
+                                heroPlaylist: confirmedPlaylist,
+                                heroPlaylistData: firestorePlaylist,
+                                updatedAt: new Date().toISOString(),
+                              });
+                              console.log("[Hero] Firestore full-replace with hero playlist:", confirmedPlaylist);
+                            } catch (firestoreErr: any) {
+                              console.warn("[Hero] Firestore write failed (server write-through will cover):", firestoreErr?.message || firestoreErr);
+                            }
+
+                            // ── Step 6: Result ─────────────────────────────────────
+                            if (saved) {
+                              alert("فیلمی سەرەکی بە سەرکەوتوویی جێگیرکرا!");
+                            } else {
+                              // Offline-first: local state + cache are already set
+                              alert("فیلمی سەرەکی جێگیرکرا بەڵام سێرڤەر نەدۆزرایەوە. کاتێک ئینتەرنەت بگەڕێتەوە خۆکارانە جێگیر دەبێت.");
                             }
                           }}
                         />

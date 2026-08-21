@@ -16,7 +16,7 @@ import {
   Pause,
 } from "lucide-react";
 import { api } from "../services/api";
-import { loadYouTubeAPI, getYTId } from "../utils/youtube";
+import { loadYouTubeAPI, getYTId, isYTVideoId } from "../utils/youtube";
 
 /**
  * HeroVideoPlayer — self-contained hero/trailer player with playlist support.
@@ -60,17 +60,25 @@ const HeroVideoPlayer: React.FC<{
 
   // ─── PLAYLIST QUEUE ────────────────────────────────────────────────────
   // Resolve the playlist of YouTube video IDs from the URLs array.
+  // Only valid 11-character IDs are kept; raw URLs or unparseable entries
+  // are dropped so the YT Player API never receives a full URL string.
   // Falls back to the single heroVideoId when no playlist is provided.
   const playlistIds = useMemo(() => {
     const urls = heroPlaylist?.filter((u) => u && u.trim() !== "") || [];
     if (urls.length === 0) {
       const single = activeFeaturedMovie?.videoId || heroVideoId;
-      return single ? [single] : [];
+      return single && isYTVideoId(single) ? [single] : single ? [single] : [];
     }
-    return urls.map((u) => {
-      const id = getYTId(u);
-      return id || u; // non-YouTube URLs pass through as-is
-    });
+    const extracted = urls
+      .map((u) => getYTId(u) || (isYTVideoId(u) ? u : null))
+      .filter((id): id is string => id !== null && id.trim() !== "");
+    // If extraction produced nothing but the caller supplied a heroVideoId,
+    // use that as a single-item fallback.
+    if (extracted.length === 0) {
+      const fallback = activeFeaturedMovie?.videoId || heroVideoId;
+      return fallback && isYTVideoId(fallback) ? [fallback] : fallback ? [fallback] : [];
+    }
+    return extracted;
   }, [heroPlaylist, activeFeaturedMovie?.videoId, heroVideoId]);
 
   const playlistIndexRef = useRef(0);
@@ -270,7 +278,7 @@ const HeroVideoPlayer: React.FC<{
     const nextIndex = (playlistIndexRef.current + 1) % playlistIds.length;
     playlistIndexRef.current = nextIndex;
     const nextId = playlistIds[nextIndex];
-    if (nextId && playerRef.current) {
+    if (nextId && isYTVideoId(nextId) && playerRef.current) {
       setHasStartedPlaying(false);
       safePlayerCall(playerRef.current, "loadVideoById", nextId);
       safePlayerCall(playerRef.current, "setPlaybackQuality", "hd1080");
@@ -296,7 +304,7 @@ const HeroVideoPlayer: React.FC<{
   useEffect(() => {
     const id = "hero-yt-player";
     const container = document.getElementById(id);
-    if (!container || !videoId || !showPlayer) return;
+    if (!container || !videoId || !isYTVideoId(videoId) || !showPlayer) return;
     let cancelled = false;
     setHasStartedPlaying(false);
 

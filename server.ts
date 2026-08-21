@@ -2063,11 +2063,16 @@ const saveHeroConfigToFirestore = (heroConfig: Record<string, any>): void => {
     };
   }
   if (Object.keys(fields).length === 0) return;
+  // Clear stale fields left by previous client-side writes so they never
+  // override the current playlist.  Using nullValue + updateMask deletes
+  // the field from the Firestore document.
+  fields.heroPlaylistData = { nullValue: null };
+  fields.video_trailers = { nullValue: null };
   fields.updatedAt = { stringValue: new Date().toISOString() };
 
   const url = firestoreDocUrl(
     HERO_CONFIG_DOC,
-    '&updateMask.fieldPaths=heroVideoUrl&updateMask.fieldPaths=heroPlaylist&updateMask.fieldPaths=updatedAt'
+    '&updateMask.fieldPaths=heroVideoUrl&updateMask.fieldPaths=heroPlaylist&updateMask.fieldPaths=heroPlaylistData&updateMask.fieldPaths=video_trailers&updateMask.fieldPaths=updatedAt'
   );
   fetchWithTimeout(
     url,
@@ -8727,8 +8732,12 @@ async function startServer() {
     if (!req.body) return res.status(400).json({ success: false, error: "Body is empty" });
     const playlist = req.body.heroPlaylist;
     if (playlist && Array.isArray(playlist)) {
-      db.heroConfig.heroPlaylist = playlist.filter(Boolean);
-      db.heroConfig.heroVideoUrl = playlist[0] || '';
+      const filtered = playlist.filter(Boolean);
+      if (filtered.length === 0) {
+        return res.status(400).json({ success: false, error: "heroPlaylist is empty after filtering" });
+      }
+      db.heroConfig.heroPlaylist = filtered;
+      db.heroConfig.heroVideoUrl = filtered[0] || '';
       await saveDB(db);
       saveHeroConfigToFirestore(db.heroConfig);
       return res.json({ success: true, config: db.heroConfig });
@@ -8944,10 +8953,13 @@ async function startServer() {
     if (newAds) ads = newAds;
     if (newSocialLinks) socialLinks = newSocialLinks;
     if (heroPlaylist && Array.isArray(heroPlaylist) && heroPlaylist.length > 0) {
-      if (!db.heroConfig) db.heroConfig = {};
-      db.heroConfig.heroPlaylist = heroPlaylist.filter(Boolean);
-      db.heroConfig.heroVideoUrl = heroPlaylist[0] || '';
-      saveHeroConfigToFirestore(db.heroConfig);
+      const filtered = heroPlaylist.filter(Boolean);
+      if (filtered.length > 0) {
+        if (!db.heroConfig) db.heroConfig = {};
+        db.heroConfig.heroPlaylist = filtered;
+        db.heroConfig.heroVideoUrl = filtered[0] || '';
+        saveHeroConfigToFirestore(db.heroConfig);
+      }
     } else if (heroVideoUrl !== undefined) {
       if (!db.heroConfig) db.heroConfig = {};
       db.heroConfig.heroVideoUrl = heroVideoUrl;
@@ -9008,10 +9020,13 @@ async function startServer() {
       db.facebookUrl = facebookUrl || 'https://www.facebook.com/';
     }
     if (heroPlaylist && Array.isArray(heroPlaylist) && heroPlaylist.length > 0) {
-      if (!db.heroConfig) db.heroConfig = {};
-      db.heroConfig.heroPlaylist = heroPlaylist.filter(Boolean);
-      db.heroConfig.heroVideoUrl = heroPlaylist[0] || '';
-      saveHeroConfigToFirestore(db.heroConfig);
+      const filtered = heroPlaylist.filter(Boolean);
+      if (filtered.length > 0) {
+        if (!db.heroConfig) db.heroConfig = {};
+        db.heroConfig.heroPlaylist = filtered;
+        db.heroConfig.heroVideoUrl = filtered[0] || '';
+        saveHeroConfigToFirestore(db.heroConfig);
+      }
     } else if (heroVideoUrl !== undefined) {
       if (!db.heroConfig) db.heroConfig = {};
       db.heroConfig.heroVideoUrl = heroVideoUrl;

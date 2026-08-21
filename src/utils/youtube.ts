@@ -70,6 +70,18 @@ export function getYTId(url: string): string | null {
   const watch = trimmed.match(/[?&]v=([^#&?\s]{11})/i);
   if (watch?.[1]) return watch[1];
 
+  // Bare 11-character video ID (e.g. pasted directly from YouTube)
+  if (isYTVideoId(trimmed)) return trimmed;
+
   return null;
+}
+
+/**
+ * Validate whether a string is a plausible YouTube video ID.
+ * YouTube IDs are exactly 11 characters: [a-zA-Z0-9_-].
+ */
+export function isYTVideoId(id: string): boolean {
+  if (!id || typeof id !== 'string') return false;
+  return /^[a-zA-Z0-9_-]{11}$/.test(id);
 }
 
