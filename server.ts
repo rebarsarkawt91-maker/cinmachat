@@ -343,6 +343,11 @@ function decodeSubtitleEntities(rawText: string): string {
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>')
       .replace(/&quot;/g, '"')
+      // The global request-sanitization middleware HTML-escapes short string
+      // payloads (e.g. an inline vttText body), turning "-->" into "-&gt;"
+      // and "/" into "&#x2F;". Decode those here so timing arrows survive.
+      .replace(/&#x27;/gi, "'")
+      .replace(/&#x2F;/gi, '/')
       .replace(/&#39;/g, "'");
   }
   return text;
@@ -738,96 +743,43 @@ function ensureSubtitleTrackMatchesLang(subtitleText: string, lang: string, sour
   return clean;
 }
 
-type SubtitleLangCode = 'original' | 'ckb';
+type SubtitleLangCode = 'original' | 'ckb' | 'ar' | 'tr';
 
-const SUPPORTED_SUBTITLE_LANGS = new Set<SubtitleLangCode>(['original', 'ckb']);
+const SUPPORTED_SUBTITLE_LANGS = new Set<SubtitleLangCode>(['original', 'ckb', 'ar', 'tr']);
 
 function normalizeSubtitleLangCode(value: unknown, fallback: SubtitleLangCode = 'ckb'): SubtitleLangCode {
   const raw = String(value || '').trim().toLowerCase();
   const normalized =
     raw === 'ku' || raw === 'kur' || raw === 'sorani' || raw === 'kurdish'
       ? 'ckb'
-      : raw === 'orig' || raw === 'source' || raw === 'en'
-          ? 'original'
-          : raw;
+      : raw === 'ar' || raw === 'ara' || raw === 'arabic'
+        ? 'ar'
+        : raw === 'tr' || raw === 'tur' || raw === 'turkish'
+          ? 'tr'
+          : raw === 'orig' || raw === 'source' || raw === 'en'
+              ? 'original'
+              : raw;
   return SUPPORTED_SUBTITLE_LANGS.has(normalized as SubtitleLangCode)
     ? (normalized as SubtitleLangCode)
     : fallback;
 }
 
-async function translateTextViaMyMemory(text: string, targetLang: string, sourceLang = 'auto'): Promise<string> {
-  const source = sourceLang && sourceLang !== 'auto' ? sourceLang : 'en';
-  const memoryUrl =
-    `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}` +
-    `&langpair=${encodeURIComponent(`${source}|${targetLang}`)}`;
-  let memoryData: any = null;
-  let lastError: any = null;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      memoryData = await fetchJsonWithTimeout<any>(memoryUrl, 30000, {
-        headers: { 'Accept-Language': 'en-US,en;q=0.9' },
-      });
-      lastError = null;
-      break;
-    } catch (err: any) {
-      lastError = err;
-      const message = err?.message || String(err);
-      if (!/HTTP (429|500|502|503|504)/.test(message) || attempt === 1) break;
-      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
-    }
-  }
-  if (lastError) throw lastError;
-  const memoryTranslated = memoryData?.responseData?.translatedText;
-  if (!memoryTranslated || memoryData?.responseStatus >= 400 || isBadSubtitleTranslation(memoryTranslated, targetLang)) {
-    throw new Error('Public subtitle translation fallback returned an empty result');
-  }
-  const cleaned = stripSubtitleMetadataFragments(String(memoryTranslated));
-  if (isBadSubtitleTranslation(cleaned, targetLang)) {
-    throw new Error('Public subtitle translation fallback returned invalid text');
-  }
-  return cleaned;
-}
+// Timeout for one request against Google Translate's free web endpoint. Kept
+// deliberately short so a hanging or rate-limited request can never stall
+// subtitle processing (overridable via GOOGLE_TRANSLATE_TIMEOUT_MS).
+const GOOGLE_TRANSLATE_TIMEOUT_MS = Number(process.env.GOOGLE_TRANSLATE_TIMEOUT_MS) || 5000;
+// Sentinel that keeps batched dialogue lines apart across translation.
+const GOOGLE_TRANSLATE_MARKER = 'CINEMACHATCUEBREAK123';
 
-async function translateTextViaGoogleCloud(text: string, targetLang: string, sourceLang = 'auto'): Promise<string> {
-  const apiKey = process.env.GOOGLE_TRANSLATE_API_KEY || process.env.GOOGLE_CLOUD_TRANSLATE_API_KEY;
-  if (!apiKey) throw new Error('Google Cloud Translate API key is not configured');
-
-  const body: Record<string, any> = {
-    q: text,
-    target: targetLang,
-    format: 'text',
-  };
-  if (sourceLang && sourceLang !== 'auto') body.source = sourceLang;
-
-  const response = await fetchJsonWithTimeout<any>(
-    `https://translation.googleapis.com/language/translate/v2?key=${encodeURIComponent(apiKey)}`,
-    20000,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    },
-  );
-  const translated = response?.data?.translations?.[0]?.translatedText;
-  if (!translated || !String(translated).trim()) {
-    throw new Error('Google Cloud Translate returned an empty result');
-  }
-  const cleaned = stripSubtitleMetadataFragments(decodeSubtitleEntities(String(translated)));
-  if (isBadSubtitleTranslation(cleaned, targetLang)) {
-    throw new Error('Google Cloud Translate returned invalid subtitle text');
-  }
-  return cleaned;
-}
-
-async function translateTextViaGoogle(text: string, targetLang: string, sourceLang = 'auto'): Promise<string> {
-  if (targetLang !== 'ckb') {
-    throw new Error('Only Kurdish Sorani subtitle translation is supported');
-  }
-
-  if (process.env.GOOGLE_TRANSLATE_API_KEY || process.env.GOOGLE_CLOUD_TRANSLATE_API_KEY) {
-    return await translateTextViaGoogleCloud(text, targetLang, sourceLang);
-  }
-
+// Single robust request to Google Translate's free web endpoint. Resolves to
+// the translated string, or NULL on ANY failure (timeout, HTTP 429/5xx, empty
+// payload, malformed JSON) — it NEVER throws, so callers can fall back to the
+// original text per line/batch instead of crashing the request.
+async function googleTranslateFreeText(
+  text: string,
+  targetLang: string,
+  sourceLang = 'auto',
+): Promise<string | null> {
   const body = new URLSearchParams({
     client: 'gtx',
     sl: sourceLang || 'auto',
@@ -835,226 +787,116 @@ async function translateTextViaGoogle(text: string, targetLang: string, sourceLa
     dt: 't',
     q: text,
   });
-  let data: any = null;
-  let lastError: any = null;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      data = await fetchJsonWithTimeout<any>(
-        'https://translate.googleapis.com/translate_a/single',
-        20000,
-        {
-          method: 'POST',
-          headers: {
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-          },
-          body,
-        },
-      );
-      lastError = null;
-      break;
-    } catch (err: any) {
-      lastError = err;
-      const message = err?.message || String(err);
-      if (/HTTP 429/.test(message) || !/HTTP (500|502|503|504)/.test(message) || attempt === 2) break;
-      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
-    }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GOOGLE_TRANSLATE_TIMEOUT_MS);
+  try {
+    const resp = await fetch('https://translate.googleapis.com/translate_a/single', {
+      method: 'POST',
+      headers: {
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+      },
+      body,
+      signal: controller.signal,
+    });
+    if (!resp.ok) return null;
+    const data: any = await resp.json().catch(() => null);
+    const translated = Array.isArray(data?.[0])
+      ? data[0].map((part: any[]) => part?.[0] || '').join('')
+      : '';
+    if (!translated || !String(translated).trim()) return null;
+    const cleaned = stripSubtitleMetadataFragments(decodeSubtitleEntities(String(translated)));
+    return isBadSubtitleTranslation(cleaned, targetLang) ? null : cleaned;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
   }
-  if (lastError) {
-    try {
-      return await translateTextViaMyMemory(text, targetLang, sourceLang);
-    } catch {
-      throw lastError;
-    }
-  }
-  const translated = data?.[0]?.map((part: any[]) => part?.[0] || '').join('');
-  if (!translated || !translated.trim()) throw new Error('Public subtitle translation returned an empty result');
-  const cleaned = stripSubtitleMetadataFragments(decodeSubtitleEntities(String(translated)));
-  if (isBadSubtitleTranslation(cleaned, targetLang)) {
-    throw new Error('Public subtitle translation returned invalid text');
-  }
-  return cleaned;
 }
 
+
+
+
+// Translates every dialogue line of a VTT/SRT document to the target language
+// using simple batched requests against the free Google Translate endpoint.
+//
+// Robustness contract (best-effort, never throws for valid input):
+//   • Dialogue lines are deduplicated, packed into char-budgeted batches joined
+//     with a sentinel marker, and each batch is ONE request (5s timeout).
+//   • If a batch fails, hits a rate limit, or the reply loses the sentinel
+//     boundaries, those lines SILENTLY KEEP THEIR ORIGINAL TEXT — no retry
+//     storms, no crashes, no 500 responses.
+//   • Timing/structure lines are never sent for translation, so cue timings
+//     survive unchanged by construction.
 async function translateSubtitleViaGoogle(
   subtitleText: string,
   targetLang: string,
   sourceLang = 'auto',
 ): Promise<string> {
-  if (targetLang !== 'ckb') {
-    throw new Error('Only Kurdish Sorani subtitle translation is supported');
+  if (!SUPPORTED_SUBTITLE_LANGS.has(targetLang as SubtitleLangCode) || targetLang === 'original') {
+    throw new Error('Unsupported subtitle target language');
   }
 
   const normalizedText = sanitizeSubtitleText(subtitleText).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  const cueBlocks = normalizedText.split(/\n{2,}/);
-  if (cueBlocks.some((block) => /-->/.test(block))) {
-    const preparedBlocks = cueBlocks.map((block) => ({ lines: block.split('\n') }));
-    const lineJobs: Array<{ blockIndex: number; lineIndex: number; text: string }> = [];
+  if (!normalizedText) return normalizedText;
 
-    preparedBlocks.forEach((prepared, blockIndex) => {
-      const { lines } = prepared;
-      const timingIndex = lines.findIndex((line) => /-->/.test(line));
-      if (timingIndex < 0) return;
-      const body = lines.slice(timingIndex + 1);
-      body
-        .map((line, index) => ({ line, index }))
-        .filter(({ line }) => shouldTranslateSubtitleLine(line))
-        .forEach(({ line, index }) => {
-          const text = cleanSubtitleDialogueForTranslation(line);
-          if (text) lineJobs.push({ blockIndex, lineIndex: timingIndex + 1 + index, text });
-        });
+  // Collect translatable dialogue lines (deduplicated) while remembering where
+  // each occurrence lives so translations can be written back in place.
+  type LineJob = { blockIndex: number; lineIndex: number; text: string };
+  const blocks = normalizedText.split(/\n{2,}/).map((block) => ({ lines: block.split('\n') }));
+  const jobs: LineJob[] = [];
+  blocks.forEach((block, blockIndex) => {
+    const timingIndex = block.lines.findIndex((line) => /-->/.test(line));
+    const bodyStart = timingIndex >= 0 ? timingIndex + 1 : 0;
+    block.lines.slice(bodyStart).forEach((line, offset) => {
+      if (!shouldTranslateSubtitleLine(line)) return;
+      const text = cleanSubtitleDialogueForTranslation(line);
+      if (text) jobs.push({ blockIndex, lineIndex: bodyStart + offset, text });
     });
-
-    const applyLineTranslation = (job: (typeof lineJobs)[number], translatedText: string) => {
-      const lines = preparedBlocks[job.blockIndex].lines;
-      const clean = sanitizeSubtitleText(decodeSubtitleEntities(String(translatedText || ''))).trim();
-      if (clean && isBadSubtitleTranslation(clean, targetLang)) {
-        throw new Error('Subtitle line translation returned invalid text');
-      }
-      lines[job.lineIndex] = clean || lines[job.lineIndex];
-    };
-
-    if (targetLang === 'ckb') {
-      const translationCache = new Map<string, string>();
-      const uniqueJobs = lineJobs.filter((job) => {
-        const key = job.text.trim();
-        if (translationCache.has(key)) return false;
-        translationCache.set(key, '');
-        return true;
-      });
-
-      const translateOne = async (text: string) => {
-        if (text.length <= 450) {
-          return decodeSubtitleEntities(await translateTextViaGoogle(text, targetLang, sourceLang));
-        }
-        const parts = text.match(/.{1,420}(?:\s|$)/gs)?.map((part) => part.trim()).filter(Boolean) || [text];
-        const translatedParts: string[] = [];
-        for (const part of parts) {
-          translatedParts.push(decodeSubtitleEntities(await translateTextViaGoogle(part, targetLang, sourceLang)));
-        }
-        const translatedLongText = sanitizeSubtitleText(translatedParts.join(' ')).trim();
-        if (isBadSubtitleTranslation(translatedLongText, targetLang)) {
-          throw new Error('Public Sorani line translation returned invalid text');
-        }
-        return translatedLongText;
-      };
-
-      const marker = 'CINEMACHATCUEBREAK123';
-      const maxBatchChars = 2500;
-      for (let start = 0; start < uniqueJobs.length;) {
-        const batch: typeof uniqueJobs = [];
-        let chars = 0;
-        while (start < uniqueJobs.length) {
-          const next = uniqueJobs[start];
-          const nextChars = next.text.length + marker.length + 4;
-          if (batch.length && chars + nextChars > maxBatchChars) break;
-          batch.push(next);
-          chars += nextChars;
-          start += 1;
-        }
-
-        try {
-          const joined = batch.map((job) => job.text.trim()).join(`\n${marker}\n`);
-          const translated = await translateTextViaGoogle(joined, targetLang, sourceLang);
-          const translatedLines = translated.split(new RegExp(`\\s*${marker}\\s*`));
-          if (translatedLines.length !== batch.length) {
-            throw new Error('Public Sorani batch translation did not preserve cue boundaries');
-          }
-          batch.forEach((job, index) => {
-            const translatedLine = decodeSubtitleEntities(translatedLines[index]).trim();
-            if (isBadSubtitleTranslation(translatedLine, targetLang)) {
-              throw new Error('Public Sorani batch translation returned invalid text');
-            }
-            translationCache.set(job.text.trim(), translatedLine);
-          });
-        } catch {
-          for (const job of batch) {
-            translationCache.set(job.text.trim(), await translateOne(job.text.trim()));
-          }
-        }
-      }
-
-      lineJobs.forEach((job) => {
-        applyLineTranslation(job, translationCache.get(job.text.trim()) || job.text);
-      });
-
-      const translatedText = sanitizeSubtitleText(preparedBlocks.map(({ lines }) => lines.join('\n')).join('\n\n'));
-      assertSubtitleTimingsUnchanged(normalizedText, translatedText, 'Public Sorani translation');
-      return translatedText;
-    }
-
-    const marker = 'CINEMACHATCUEBREAK123';
-    const maxBatchChars = 4500;
-    for (let start = 0; start < lineJobs.length;) {
-      const batch: typeof lineJobs = [];
-      let chars = 0;
-      while (start < lineJobs.length) {
-        const next = lineJobs[start];
-        const nextChars = next.text.length + marker.length + 4;
-        if (batch.length && chars + nextChars > maxBatchChars) break;
-        batch.push(next);
-        chars += nextChars;
-        start += 1;
-      }
-
-      const joined = batch.map((job) => job.text).join(`\n${marker}\n`);
-      const translated = await translateTextViaGoogle(joined, targetLang, sourceLang);
-      const translatedCues = translated.split(new RegExp(`\\s*${marker}\\s*`));
-
-      if (translatedCues.length === batch.length) {
-        batch.forEach((job, offset) => applyLineTranslation(job, translatedCues[offset]));
-      } else {
-        for (const job of batch) {
-          applyLineTranslation(job, await translateTextViaGoogle(job.text, targetLang, sourceLang));
-        }
-      }
-    }
-
-    const translatedText = sanitizeSubtitleText(preparedBlocks.map(({ lines }) => lines.join('\n')).join('\n\n'));
-    assertSubtitleTimingsUnchanged(normalizedText, translatedText, 'Public subtitle translation');
-    return translatedText;
-  }
-
-  const lines = normalizedText.split(/\n/);
-  const marker = 'CINEMACHATCUEBREAK123';
-  const jobs: Array<{ index: number; text: string }> = [];
-
-  lines.forEach((line, index) => {
-    if (shouldTranslateSubtitleLine(line)) jobs.push({ index, text: line });
   });
-
   if (!jobs.length) return normalizedText;
 
-  const maxBatchChars = targetLang === 'ckb' ? 2500 : 4500;
-  for (let start = 0; start < jobs.length;) {
-    const batch: typeof jobs = [];
+  // Every unique source text starts mapped to ITSELF (the English fallback),
+  // so any line the translator cannot handle simply keeps its original text.
+  const uniqueTexts = Array.from(new Set(jobs.map((job) => job.text.trim())));
+  const results = new Map<string, string>(uniqueTexts.map((text) => [text, text]));
+
+  const maxBatchChars = 1800;
+  for (let start = 0; start < uniqueTexts.length;) {
+    const batch: string[] = [];
     let chars = 0;
-    while (start < jobs.length) {
-      const next = jobs[start];
-      const nextChars = next.text.length + marker.length + 4;
+    while (start < uniqueTexts.length) {
+      const nextChars = uniqueTexts[start].length + GOOGLE_TRANSLATE_MARKER.length + 4;
+      // A lone oversized line still gets its own (singleton) batch, so the
+      // loop can never stall on text longer than the budget.
       if (batch.length && chars + nextChars > maxBatchChars) break;
-      batch.push(next);
+      batch.push(uniqueTexts[start]);
       chars += nextChars;
       start += 1;
     }
 
-    const joined = batch.map((job) => job.text).join(`\n${marker}\n`);
-    const translated = await translateTextViaGoogle(joined, targetLang, sourceLang);
-    const translatedLines = translated.split(new RegExp(`\\s*${marker}\\s*`));
-
-    if (translatedLines.length === batch.length) {
-      batch.forEach((job, offset) => {
-        lines[job.index] = translatedLines[offset].trim() || job.text;
-      });
-    } else {
-      for (const job of batch) {
-        lines[job.index] = (await translateTextViaGoogle(job.text, targetLang, sourceLang)).trim() || job.text;
-      }
-    }
+    const translated = await googleTranslateFreeText(
+      batch.join(`\n${GOOGLE_TRANSLATE_MARKER}\n`),
+      targetLang,
+      sourceLang,
+    );
+    if (!translated) continue; // batch failed (timeout/429/etc.) → keep originals
+    const parts = translated.split(new RegExp(`\\s*${GOOGLE_TRANSLATE_MARKER}\\s*`));
+    if (parts.length !== batch.length) continue; // boundaries lost → keep originals
+    batch.forEach((sourceText, index) => {
+      const line = parts[index].trim();
+      if (line && !isBadSubtitleTranslation(line, targetLang)) results.set(sourceText, line);
+    });
   }
 
-  return sanitizeSubtitleText(lines.join('\n'));
+  for (const job of jobs) {
+    blocks[job.blockIndex].lines[job.lineIndex] = results.get(job.text.trim()) || job.text;
+  }
+  return sanitizeSubtitleText(blocks.map(({ lines }) => lines.join('\n')).join('\n\n'));
 }
+
+
+
 
 let geminiSubtitleQuotaBlockedUntil = 0;
 
@@ -1072,40 +914,72 @@ async function translateSubtitleWithFallback(
   if (targetLang === 'original') {
     return sanitizeSubtitleText(subtitleText);
   }
-  if (targetLang !== 'ckb') {
-    throw new Error('Only Kurdish Sorani subtitle translation is supported');
+  if (!SUPPORTED_SUBTITLE_LANGS.has(targetLang as SubtitleLangCode)) {
+    throw new Error('Unsupported subtitle target language');
   }
+  const langLabel = targetLang === 'ckb' ? 'Sorani' : targetLang === 'ar' ? 'Arabic' : 'Turkish';
   const sanitizedSource = sanitizeSubtitleText(subtitleText);
   if (!sanitizedSource) {
     throw new Error('Subtitle file is empty after metadata cleanup');
   }
 
-  let geminiErr: any = null;
-  const shouldTryGemini = Date.now() >= geminiSubtitleQuotaBlockedUntil;
-  if (shouldTryGemini) {
+  // Gemini produces the highest-quality Sorani output but does not support
+  // ar/tr — those go straight to the batched free Google endpoint.
+  let primaryErr: any = null;
+  if (targetLang === 'ckb' && Date.now() >= geminiSubtitleQuotaBlockedUntil) {
     try {
       const translated = sanitizeSubtitleText(await translateSrtViaGemini(sanitizedSource, 'ckb', userGeminiApiKey));
-      assertSubtitleTimingsUnchanged(sanitizedSource, translated, 'Gemini Sorani translation');
-      return ensureSubtitleTrackMatchesLang(translated, 'ckb', 'Gemini Sorani translation');
+      assertSubtitleTimingsUnchanged(sanitizedSource, translated, `Gemini ${langLabel} translation`);
+      return ensureSubtitleTrackMatchesLang(translated, 'ckb', `Gemini ${langLabel} translation`);
     } catch (err: any) {
-      geminiErr = err;
+      primaryErr = err;
       if (isGeminiQuotaError(err)) {
         geminiSubtitleQuotaBlockedUntil = Date.now() + 60_000;
       }
     }
+  } else if (targetLang === 'ckb') {
+    primaryErr = new Error('Gemini Sorani translation temporarily skipped after quota/rate-limit response');
   } else {
-    geminiErr = new Error('Gemini Sorani translation temporarily skipped after quota/rate-limit response');
+    primaryErr = new Error(`No AI translator configured for ${langLabel} — using the public endpoint`);
   }
 
   try {
-    const translated = sanitizeSubtitleText(await translateSubtitleViaGoogle(sanitizedSource, 'ckb', sourceLang));
-    assertSubtitleTimingsUnchanged(sanitizedSource, translated, 'Google/secondary Sorani translation');
-    return ensureSubtitleTrackMatchesLang(translated, 'ckb', 'Google/secondary Sorani translation');
+    const translated = sanitizeSubtitleText(await translateSubtitleViaGoogle(sanitizedSource, targetLang, sourceLang));
+    assertSubtitleTimingsUnchanged(sanitizedSource, translated, `Google ${langLabel} translation`);
+    return ensureSubtitleTrackMatchesLang(translated, targetLang, `Google ${langLabel} translation`);
   } catch (publicErr: any) {
-    throw new Error(
-      `Gemini Sorani translation failed: ${geminiErr?.message || geminiErr}; ` +
-        `Google/secondary Sorani fallback failed: ${publicErr?.message || publicErr}`,
+    // Graceful degradation: every translator failed (e.g. Gemini quota exhausted
+    // AND the free endpoint rate-limited/unreachable). Serving the original
+    // track beats crashing the request — callers get valid subtitles either way.
+    console.warn(
+      `[subtitle-translate] All translators failed — serving original track. ` +
+        `Primary: ${primaryErr?.message || primaryErr}; Google fallback: ${publicErr?.message || publicErr}`,
     );
+    return sanitizedSource;
+  }
+}
+
+// Translates a full VTT/SRT subtitle document to a target language while
+// preserving every timing line. Never lets a translator failure escape: when
+// all engines fail the ORIGINAL (normalized) track is returned instead.
+async function translateVTT(
+  vttText: string,
+  targetLang: SubtitleLangCode,
+  sourceLang = 'auto',
+  userGeminiApiKey?: string,
+): Promise<string> {
+  if (targetLang === 'original') return normalizeSubtitleText(vttText) || sanitizeSubtitleText(vttText);
+  const normalized = normalizeSubtitleText(vttText);
+  if (!normalized) {
+    throw new Error('Subtitle content is empty after normalization');
+  }
+  try {
+    return await translateSubtitleWithFallback(normalized, targetLang, sourceLang, userGeminiApiKey);
+  } catch (err: any) {
+    console.warn(
+      `[auto-subtitle] Translation unavailable (${err?.message || err}) — serving the original track.`,
+    );
+    return normalized;
   }
 }
 
@@ -4662,7 +4536,9 @@ async function startServer() {
         qrCodeUrl: room.paymentSettings?.qrCodeUrl || "",
         paymentLogoUrl: room.paymentSettings?.paymentLogoUrl || "",
         paymentDetails: room.paymentSettings?.paymentDetails || "",
-        instructions: room.paymentSettings?.instructions || ""
+        instructions: room.paymentSettings?.instructions || "",
+        whatsappNumber: room.paymentSettings?.whatsappNumber || "",
+        supportPhone: room.paymentSettings?.supportPhone || ""
       }
     };
   };
@@ -4696,7 +4572,10 @@ async function startServer() {
         qrCodeUrl: pickString("qrCodeUrl", existing.paymentSettings?.qrCodeUrl || ""),
         paymentLogoUrl: pickString("paymentLogoUrl", existing.paymentSettings?.paymentLogoUrl || ""),
         paymentDetails: pickString("paymentDetails", existing.paymentSettings?.paymentDetails || ""),
-        instructions: pickString("instructions", existing.paymentSettings?.instructions || "")
+        instructions: pickString("instructions", existing.paymentSettings?.instructions || ""),
+        // Shared contact channels (unified Payment & Contact panel, Module 15)
+        whatsappNumber: pickString("whatsappNumber", existing.paymentSettings?.whatsappNumber || ""),
+        supportPhone: pickString("supportPhone", existing.paymentSettings?.supportPhone || "")
       },
       updatedAt: new Date().toISOString()
     };
@@ -4728,6 +4607,65 @@ async function startServer() {
     await saveDB(db);
 
     res.json({ success: true, room: db.cinemaWindows.cinema_1 });
+  });
+
+  // --- Admin: list Cinema Window access codes (both payment-minted and
+  // admin-generated ones share this ledger; hashes never leave the server) ---
+  app.get('/api/admin/cinema-window/access-codes', (req, res) => {
+    const codes = (db.accessCodes || [])
+      .filter((c: any) => c.roomId === 'cinema_1')
+      .map((c: any) => ({
+        id: c.id,
+        status: c.status,
+        expiresAt: c.expiresAt,
+        createdAt: c.createdAt,
+        usedAt: c.usedAt || null,
+        createdBy: c.createdBy || 'payment',
+        durationHours: c.durationHours || null,
+        source: c.paymentId === 'admin-generated' ? 'admin' : 'payment'
+      }))
+      .sort((a: any, b: any) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    res.json({ success: true, codes });
+  });
+
+  // --- Admin: mint a Cinema Window access code with an explicit duration
+  // (daily 24h / monthly 30d / annual 365d presets come from the dashboard).
+  // Codes land in db.accessCodes so the public verify endpoint redeems them
+  // through the exact same SHA-256 hash lookup as paid codes. ---
+  app.post('/api/admin/cinema-window/access-codes', async (req, res) => {
+    const adminName = String(req.query.adminName || req.headers['x-admin-username'] || req.body?.adminName || 'Admin');
+    const hours = Math.floor(Number(req.body?.durationHours));
+
+    if (!Number.isFinite(hours) || hours < 1 || hours > 366 * 24) {
+      return res.status(400).json({ success: false, error: 'durationHours must be between 1 and 8784.' });
+    }
+
+    getCurrentCinemaWindowRoom();
+    if (!db.accessCodes) db.accessCodes = [];
+
+    const accessCode = generateAccessCode();
+    const expiresAt = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+
+    db.accessCodes.push({
+      id: accessCode,
+      codeHash: crypto.createHash('sha256').update(accessCode).digest('hex'),
+      roomId: 'cinema_1',
+      userId: 'admin',
+      paymentId: 'admin-generated',
+      paymentMethod: 'admin',
+      amount: 0,
+      status: 'ACTIVE',
+      expiresAt,
+      createdAt: new Date().toISOString(),
+      usedAt: null,
+      createdBy: adminName,
+      durationHours: hours
+    });
+
+    await addAuditLog(db, adminName, "Generate Cinema Window Access Code", `A ${hours}-hour Cinema Window access code was generated from the admin dashboard.`);
+    await saveDB(db);
+
+    res.json({ success: true, accessCode, roomId: 'cinema_1', durationHours: hours, expiresAt });
   });
 
   // --- Endpoint: List Cinema Window rooms ---
@@ -9581,6 +9519,246 @@ async function startServer() {
     const cleanOriginalSrt = originalSrt ? sanitizeSubtitleText(originalSrt) : undefined;
     subtitleCache.set(key, { srt: cleanSrt, lang, source, originalSrt: cleanOriginalSrt, ts: Date.now() });
   }
+
+  // -------------------------------------------------------------------------
+  // Auto-translate subtitle store — persisted .vtt files + cache + public API.
+  //
+  // Translated subtitles are written to uploads/subtitles/ (also reachable via
+  // the static /uploads mount) and exposed through dedicated list/file
+  // endpoints below. Lookups go through getCachedSubtitle(): memory LRU first,
+  // then disk; disk hits are re-hydrated into memory so a repeat request never
+  // pays for a second translation round-trip (Gemini/Google fallback chain).
+  // File names are strictly validated ([A-Za-z0-9._-], .vtt/.srt only) so no
+  // path traversal can ever escape the subtitles directory.
+  // -------------------------------------------------------------------------
+  const SUBTITLES_DIR = path.join(process.cwd(), 'uploads', 'subtitles');
+  const SUBTITLE_DOWNLOAD_MAX_BYTES = 10 * 1024 * 1024; // matches /api/subtitle/generate
+
+  const SUBTITLE_FILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,180}\.(vtt|srt)$/i;
+
+  function safeSubtitleFileName(name: unknown): string | null {
+    const clean = String(name || '').trim().replace(/^\/+/, '');
+    return SUBTITLE_FILE_NAME_PATTERN.test(clean) ? clean : null;
+  }
+
+  // Reduces any movie id / URL to a filesystem-safe slug used as the saved
+  // file's base name. Falls back to a random hex suffix when nothing usable
+  // remains so every translation still gets a stable, unique file name.
+  function subtitleKeySlug(raw: string): string {
+    const slug = String(raw || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 80);
+    return slug || `sub-${crypto.randomBytes(6).toString('hex')}`;
+  }
+
+  async function ensureSubtitlesDir(): Promise<void> {
+    await fs.mkdir(SUBTITLES_DIR, { recursive: true });
+  }
+
+  const subtitleFileUrl = (fileName: string) => `/api/subtitles/file/${encodeURIComponent(fileName)}`;
+
+  // Persists a translated subtitle document to disk and returns its public URL.
+  async function saveSubtitle(
+    slug: string,
+    lang: string,
+    vttText: string,
+  ): Promise<{ fileName: string; url: string }> {
+    await ensureSubtitlesDir();
+    const fileName = `${slug}.${lang}.vtt`;
+    await fs.writeFile(path.join(SUBTITLES_DIR, fileName), vttText, 'utf-8');
+    return { fileName, url: subtitleFileUrl(fileName) };
+  }
+
+  // Two-tier cache lookup for a previously auto-translated subtitle:
+  // 1. in-memory LRU (fast path, survives only until TTL/process restart)
+  // 2. persisted .vtt on disk (survives restarts; re-hydrates the memory tier)
+  // Returns null when neither tier has a copy for this slug+language.
+  async function getCachedSubtitle(
+    slug: string,
+    lang: string,
+  ): Promise<{ srt: string; lang: string; source: string; fileName: string; url: string } | null> {
+    if (lang === 'original') return null;
+    const fileName = `${slug}.${lang}.vtt`;
+    const memKey = subtitleCacheKey(`saved:${slug}`, lang, null, null);
+    const memHit = getSubtitleCache(memKey);
+    if (memHit?.srt) {
+      return { srt: memHit.srt, lang, source: 'auto-translate-cache', fileName, url: subtitleFileUrl(fileName) };
+    }
+    try {
+      const raw = await fs.readFile(path.join(SUBTITLES_DIR, fileName), 'utf-8');
+      if (!raw.trim()) return null;
+      setSubtitleCache(memKey, raw, lang, 'auto-translate-disk');
+      return { srt: raw, lang, source: 'auto-translate-disk', fileName, url: subtitleFileUrl(fileName) };
+    } catch {
+      return null;
+    }
+  }
+
+  // POST /api/subtitles/auto-translate — translates a VTT/SRT subtitle track to
+  // Kurdish Sorani (or returns the original untouched), persists the result and
+  // serves it from the two-tier cache on subsequent calls.
+  // Body: { vttText? , subtitleUrl?, movieId?, targetLang?, sourceLang?,
+  //         geminiApiKey?, force? } — vttText OR subtitleUrl is required.
+  app.post('/api/subtitles/auto-translate', async (req, res) => {
+    try {
+      const { vttText, subtitleUrl, movieId, targetLang, sourceLang, geminiApiKey, force } = req.body || {};
+      const lang = normalizeSubtitleLangCode(targetLang, 'ckb');
+      const hasInlineText = typeof vttText === 'string' && vttText.trim().length > 0;
+      const cleanSubtitleUrl =
+        typeof subtitleUrl === 'string' && /^https?:\/\//i.test(subtitleUrl.trim())
+          ? sanitizeUrl(subtitleUrl.trim())
+          : null;
+      if (!hasInlineText && !cleanSubtitleUrl) {
+        return res.status(400).json({
+          error: 'Provide vttText (inline subtitle content) or subtitleUrl (http[s] URL)',
+        });
+      }
+
+      // Cache key: explicit movieId when given, otherwise derived deterministically
+      // from the source URL or a hash of the inline text.
+      let slugSource = typeof movieId === 'string' && movieId.trim() ? movieId.trim() : '';
+      if (!slugSource && cleanSubtitleUrl) slugSource = cleanSubtitleUrl;
+      if (!slugSource && hasInlineText) {
+        slugSource = crypto.createHash('sha256').update(vttText.slice(0, 64 * 1024)).digest('hex');
+      }
+      const slug = subtitleKeySlug(slugSource);
+
+      if (!force) {
+        const cached = await getCachedSubtitle(slug, lang);
+        if (cached) {
+          return res.json({ success: true, cached: true, key: slug, ...cached });
+        }
+      }
+
+      let sourceVtt = hasInlineText ? String(vttText) : '';
+      if (!sourceVtt && cleanSubtitleUrl) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 60000);
+        try {
+          const resp = await fetch(cleanSubtitleUrl, { signal: controller.signal });
+          if (!resp.ok) throw new Error(`Subtitle download failed: HTTP ${resp.status}`);
+          const rawText = await resp.text();
+          if (rawText.length > SUBTITLE_DOWNLOAD_MAX_BYTES) {
+            throw new Error('Subtitle file is too large (> 10 MB)');
+          }
+          sourceVtt = rawText;
+        } catch (e: any) {
+          throw new Error(
+            `Subtitle download failed: ${e?.name === 'AbortError' ? 'timed out after 60s' : e?.message}`,
+          );
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+
+      // Translate with graceful degradation: translateVTT already falls back
+      // to the original track internally, so a rate-limited/unreachable
+      // translation service can never crash this endpoint — the client always
+      // receives a valid JSON subtitle payload (with `warning` when degraded).
+      const normalizedSource = normalizeSubtitleText(sourceVtt);
+      let translated = normalizedSource;
+      let warning: string | undefined;
+      try {
+        translated = await translateVTT(sourceVtt, lang, sourceLang, geminiApiKey);
+        if (lang !== 'original' && translated.trim() === normalizedSource.trim()) {
+          warning = 'Translation service unavailable or rate-limited — serving the original track';
+        }
+      } catch (translateErr: any) {
+        console.warn(
+          `[${new Date().toISOString()}] [auto-subtitle] ${slug} translation failed, serving original: ${translateErr?.message || translateErr}`,
+        );
+        warning = `Translation failed (${translateErr?.message || 'unknown error'}) — serving the original track`;
+        translated = sanitizeSubtitleText(sourceVtt);
+      }
+
+      // Persist ONLY clean results: caching a degraded (untranslated) track
+      // would poison the slug+lang key and every later retry would keep
+      // serving the original text until a forced refresh.
+      const degraded = !!warning;
+      let saved: { fileName: string; url: string };
+      if (degraded) {
+        // Synthesize the response shape without touching disk/memory cache.
+        const fileName = `${slug}.${lang}.vtt`;
+        saved = { fileName, url: subtitleFileUrl(fileName) };
+        console.warn(
+          `[${new Date().toISOString()}] [auto-subtitle] ${slug} → ${lang} NOT cached (degraded result)`,
+        );
+      } else {
+        saved = await saveSubtitle(slug, lang, translated);
+        try {
+          setSubtitleCache(subtitleCacheKey(`saved:${slug}`, lang, null, null), translated, lang, 'auto-translate');
+        } catch (cacheErr: any) {
+          console.warn(`[${new Date().toISOString()}] [auto-subtitle] cache write skipped: ${cacheErr?.message || cacheErr}`);
+        }
+        console.log(
+          `[${new Date().toISOString()}] [auto-subtitle] ${slug} → ${lang} (${translated.length} chars) saved ${saved.fileName}`,
+        );
+      }
+      res.json({
+        success: true,
+        cached: false,
+        key: slug,
+        srt: translated,
+        lang,
+        ...(warning ? { warning } : {}),
+        fileName: saved.fileName,
+        url: saved.url,
+      });
+    } catch (err: any) {
+      console.error(`[${new Date().toISOString()}] [auto-subtitle] ERROR:`, err?.message || err);
+      // Always answer with valid JSON, even for unexpected failures.
+      if (!res.headersSent) {
+        res.status(500).json({ error: err?.message || 'Auto-translate subtitle failed' });
+      }
+    }
+  });
+
+  // GET /api/subtitles — lists every persisted subtitle file (newest first).
+  app.get('/api/subtitles', async (req, res) => {
+    try {
+      await ensureSubtitlesDir();
+      const entries = await fs.readdir(SUBTITLES_DIR);
+      const subtitles: any[] = [];
+      for (const name of entries) {
+        if (!safeSubtitleFileName(name)) continue;
+        const stat = await fs.stat(path.join(SUBTITLES_DIR, name)).catch(() => null);
+        if (!stat?.isFile()) continue;
+        const parsed = name.match(/^(.+)\.([a-z]{2,3})\.vtt$/i);
+        subtitles.push({
+          fileName: name,
+          url: subtitleFileUrl(name),
+          key: parsed?.[1] || null,
+          lang: parsed?.[2]?.toLowerCase() || null,
+          sizeBytes: stat.size,
+          updatedAtMs: Math.round(stat.mtimeMs),
+        });
+      }
+      subtitles.sort((a, b) => b.updatedAtMs - a.updatedAtMs);
+      res.json({ status: 'ok', count: subtitles.length, subtitles });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', error: err?.message || 'Failed to list subtitles' });
+    }
+  });
+
+  // GET /api/subtitles/file/:name — serves one persisted subtitle file with the
+  // correct VTT content type. Name is validated before it ever touches the
+  // filesystem, blocking ../ traversal attempts.
+  app.get('/api/subtitles/file/:name', async (req, res) => {
+    const fileName = safeSubtitleFileName(req.params.name);
+    if (!fileName) {
+      return res.status(400).json({ error: 'Invalid subtitle file name' });
+    }
+    try {
+      const content = await fs.readFile(path.join(SUBTITLES_DIR, fileName), 'utf-8');
+      res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      res.send(content);
+    } catch {
+      res.status(404).json({ error: 'Subtitle file not found' });
+    }
+  });
 
 
   // Generates SRT subtitles for a movie source on the server (ffmpeg + Whisper +

@@ -1,0 +1,441 @@
+/* ===========================================================================
+   UniversalSubtitleSelector — modern dark glass UI with the CinemaChat red
+   gradient accent, RTL support and mobile responsiveness.
+
+   Class prefix: .uss-  (Universal Subtitle Selector)
+   Consumed by:  src/components/UniversalSubtitleSelector.tsx
+   =========================================================================== */
+
+.uss-root {
+  position: relative;
+  display: inline-flex;
+  font-family: Inter, "Space Grotesk", system-ui, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ------------------------------------------------------------------ */
+/* Trigger button                                                      */
+/* ------------------------------------------------------------------ */
+.uss-trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 36px;
+  height: 36px;
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  cursor: pointer;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  transition: background 0.18s ease, transform 0.12s ease, box-shadow 0.25s ease,
+    border-color 0.18s ease;
+}
+.uss-trigger:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+.uss-trigger:active {
+  transform: scale(0.94);
+}
+
+/* Ready — active red gradient */
+.uss-trigger--ready {
+  background: linear-gradient(135deg, #e50914 0%, #ff3d3d 100%);
+  border-color: rgba(255, 90, 90, 0.55);
+  box-shadow: 0 0 0 1px rgba(229, 9, 20, 0.25), 0 6px 22px rgba(229, 9, 20, 0.45);
+}
+.uss-trigger--ready:hover {
+  background: linear-gradient(135deg, #ff1420 0%, #ff5a5a 100%);
+}
+
+/* Loading — pulsing red ring */
+.uss-trigger--loading {
+  background: linear-gradient(135deg, #7f1d1d 0%, #b91c1c 100%);
+  border-color: rgba(248, 113, 113, 0.5);
+  animation: uss-pulse 1.15s ease-in-out infinite;
+}
+@keyframes uss-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55); }
+  50%      { box-shadow: 0 0 0 7px rgba(239, 68, 68, 0); }
+}
+
+/* Error */
+.uss-trigger--error {
+  background: rgba(120, 53, 15, 0.85);
+  border-color: rgba(251, 191, 36, 0.5);
+}
+
+/* Language badge on the trigger (e.g. "KU") */
+.uss-badge {
+  position: absolute;
+  top: -5px;
+  inset-inline-end: -5px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 9999px;
+  background: linear-gradient(135deg, #e50914, #ff5a5a);
+  border: 1px solid rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+
+/* Spinner shown inside the trigger while loading */
+.uss-spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 9999px;
+  border: 2px solid rgba(255, 255, 255, 0.28);
+  border-top-color: #fff;
+  animation: uss-spin 0.75s linear infinite;
+}
+@keyframes uss-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ------------------------------------------------------------------ */
+/* Dropdown panel                                                      */
+/* ------------------------------------------------------------------ */
+.uss-panel {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  inset-inline-end: 0;
+  z-index: 90;
+  width: 200px;
+  max-height: min(60vh, 340px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(10, 10, 12, 0.96);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.65);
+  animation: uss-rise 0.16s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+@keyframes uss-rise {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.uss-heading {
+  padding: 2px 6px 6px;
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #a1a1aa;
+}
+
+.uss-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 11px;
+  margin-bottom: 4px;
+  border-radius: 11px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.05);
+  color: #d4d4d8;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: start;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.12s ease, border-color 0.15s ease;
+}
+.uss-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+  transform: translateX(1px);
+}
+[dir="rtl"] .uss-item:hover,
+.uss-root--rtl .uss-item:hover {
+  transform: translateX(-1px);
+}
+
+/* Selected language — active red gradient row */
+.uss-item--active {
+  background: linear-gradient(135deg, #e50914 0%, #ff3d3d 100%);
+  border-color: rgba(255, 120, 120, 0.5);
+  color: #fff;
+  box-shadow: 0 4px 18px rgba(229, 9, 20, 0.4);
+}
+.uss-item--active:hover {
+  background: linear-gradient(135deg, #ff1420 0%, #ff5a5a 100%);
+  transform: none;
+}
+
+.uss-item-check {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+}
+
+.uss-divider {
+  height: 1px;
+  margin: 6px 2px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* Footer row inside the panel (retry / settings slots) */
+.uss-panel-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding-top: 6px;
+  margin-top: 2px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.uss-foot-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  border-radius: 9px;
+  border: none;
+  background: rgba(255, 255, 255, 0.05);
+  color: #d4d4d8;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.uss-foot-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+.uss-foot-btn--retry {
+  background: rgba(229, 9, 20, 0.16);
+  color: #fca5a5;
+}
+.uss-foot-btn--retry:hover {
+  background: rgba(229, 9, 20, 0.32);
+}
+
+/* ------------------------------------------------------------------ */
+/* Toast notifications                                                 */
+/* ------------------------------------------------------------------ */
+.uss-toasts {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  inset-inline-start: 50%;
+  transform: translateX(-50%);
+  z-index: 95;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+[dir="rtl"] .uss-toasts,
+.uss-root--rtl .uss-toasts {
+  transform: translateX(50%);
+}
+
+.uss-toast {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 78vw;
+  padding: 7px 13px;
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(12, 12, 14, 0.94);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: #e4e4e7;
+  font-size: 11px;
+  font-weight: 700;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55);
+  animation: uss-toast-in 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.15);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@keyframes uss-toast-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.95); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.uss-toast::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  flex-shrink: 0;
+  background: linear-gradient(135deg, #e50914, #ff5a5a);
+  box-shadow: 0 0 8px rgba(229, 9, 20, 0.8);
+}
+.uss-toast--success::before { background: #22c55e; box-shadow: 0 0 8px rgba(34, 197, 94, 0.8); }
+.uss-toast--error::before   { background: #f59e0b; box-shadow: 0 0 8px rgba(245, 158, 11, 0.85); }
+.uss-toast--loading::before { animation: uss-pulse 1.1s ease-in-out infinite; }
+
+.uss-toast-retry {
+  pointer-events: auto;
+  border: none;
+  border-radius: 9999px;
+  padding: 3px 10px;
+  background: linear-gradient(135deg, #e50914, #ff3d3d);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
+.uss-toast-retry:hover { filter: brightness(1.15); }
+
+/* ------------------------------------------------------------------ */
+/* Inline (panel/sidebar) variant                                      */
+/* ------------------------------------------------------------------ */
+.uss-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.uss-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 12px;
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: #d4d4d8;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.uss-chip:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.uss-chip--active {
+  background: linear-gradient(135deg, #e50914 0%, #ff3d3d 100%);
+  border-color: rgba(255, 120, 120, 0.55);
+  color: #fff;
+  box-shadow: 0 4px 16px rgba(229, 9, 20, 0.38);
+}
+.uss-chip--active:hover {
+  background: linear-gradient(135deg, #ff1420 0%, #ff5a5a 100%);
+}
+.uss-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: currentColor;
+  opacity: 0.55;
+}
+.uss-chip--active .uss-chip-dot {
+  opacity: 1;
+  background: #fff;
+}
+
+/* Inline status line under the chips */
+.uss-inline-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 2px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #a1a1aa;
+}
+.uss-inline-status--error { color: #fca5a5; }
+.uss-inline-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: #52525b;
+  flex-shrink: 0;
+}
+.uss-inline-status--loading .uss-inline-status-dot { background: #ef4444; animation: uss-pulse 1.1s ease-in-out infinite; }
+.uss-inline-status--ready .uss-inline-status-dot   { background: #22c55e; }
+.uss-inline-status--error .uss-inline-status-dot   { background: #f59e0b; }
+
+/* ------------------------------------------------------------------ */
+/* RTL support                                                         */
+/* ------------------------------------------------------------------ */
+[dir="rtl"] .uss-panel,
+.uss-root--rtl .uss-panel {
+  inset-inline-end: 0;
+}
+.uss-kurdish,
+[dir="rtl"] .uss-item,
+[dir="rtl"] .uss-heading,
+[dir="rtl"] .uss-toast {
+  direction: rtl;
+  unicode-bidi: plaintext;
+}
+
+/* ------------------------------------------------------------------ */
+/* Mobile responsiveness                                               */
+/* ------------------------------------------------------------------ */
+@media (max-width: 640px) {
+  .uss-trigger {
+    width: 40px;
+    height: 40px;
+  }
+  .uss-panel {
+    /* Anchor as a comfortable bottom sheet above player controls */
+    position: fixed;
+    bottom: 84px;
+    inset-inline: 12px;
+    width: auto;
+    max-height: 46vh;
+    z-index: 120;
+    padding: 10px;
+    border-radius: 18px;
+  }
+  .uss-item {
+    padding: 12px 14px;
+    font-size: 13px;
+    border-radius: 13px;
+  }
+  .uss-toast {
+    font-size: 12px;
+    max-width: 88vw;
+  }
+  .uss-toasts {
+    bottom: calc(100% + 14px);
+  }
+  .uss-chip {
+    padding: 9px 14px;
+    font-size: 12px;
+  }
+}
+
+/* Short-viewports (landscape phones): tighter sheet */
+@media (max-height: 480px) and (max-width: 640px) {
+  .uss-panel {
+    bottom: 64px;
+    max-height: 56vh;
+  }
+}
+
+/* Respect reduced-motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  .uss-panel,
+  .uss-toast {
+    animation: none;
+  }
+  .uss-trigger--loading,
+  .uss-toast--loading::before,
+  .uss-inline-status--loading .uss-inline-status-dot {
+    animation: none;
+  }
+  .uss-spinner {
+    animation-duration: 1.6s;
+  }
+}

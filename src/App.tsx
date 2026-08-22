@@ -200,6 +200,9 @@ import {
 import type { SemanticSignals } from "./utils/search";
 import UserActivityMonitor from "./components/Admin/UserActivityMonitor";
 import FriendPresenceNotification from "./components/Social/FriendPresenceNotification";
+import UniversalSubtitleSelector, {
+  type UniversalSubtitleLang,
+} from "./components/UniversalSubtitleSelector";
 
 import { 
   db, 
@@ -730,6 +733,51 @@ const getDeviceId = (): string => {
     safeStorage.set(DEVICE_ID_LOCAL_KEY, id);
   }
   return id;
+};
+
+// ---------------------------------------------------------------------------
+// Unblock-request metadata helpers (block screen → Firestore unblockRequests).
+// The blocked client writes its request document directly to Firestore, so the
+// enrichment below is collected client-side: public IP + geo label (single
+// best-effort call), raw device User-Agent and a parsed friendly browser name.
+// ---------------------------------------------------------------------------
+
+const detectBrowser = (): string => {
+  if (typeof navigator === "undefined") return "Unknown";
+  const ua = navigator.userAgent;
+  if (/Edg\//.test(ua)) return "Microsoft Edge";
+  if (/OPR\/|Opera/.test(ua)) return "Opera";
+  if (/Firefox\//.test(ua)) return "Mozilla Firefox";
+  if (/Chrome\//.test(ua)) return "Google Chrome";
+  if (/Safari\//.test(ua)) return "Safari";
+  return "Unknown";
+};
+
+// Best-effort public IP + "City, Country" label. ipwho.is needs no API key and
+// answers with CORS enabled; any failure degrades silently (empty strings) so
+// the unblock request itself is never blocked by metadata collection.
+const collectRequestMeta = async (): Promise<{ ip: string; location: string }> => {
+  try {
+    const res = await fetch("https://ipwho.is/", { signal: AbortSignal.timeout?.(5000) });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.ip) {
+        const parts = [data.city, data.country].filter(Boolean);
+        return {
+          ip: String(data.ip).substring(0, 64),
+          location: parts.join(", ").substring(0, 200),
+        };
+      }
+    }
+  } catch {
+    // Fall through to the cached ipify lookup used elsewhere in the app.
+  }
+  try {
+    const ip = await getClientIp();
+    return { ip, location: "" };
+  } catch {
+    return { ip: "", location: "" };
+  }
 };
 
 // Per-tab viewer session id (sessionStorage = unique per browser tab, survives
@@ -5874,14 +5922,42 @@ const subtitleTextToVtt = (subtitleText: string) => {
 };
 
 const CINEMA_WINDOW_SUBTITLE_LANGUAGES = [
+  { code: "off", label: "داخستن", shortLabel: "داخستن CC" },
   { code: "ckb", label: "کوردی", shortLabel: "کوردی CC" },
   { code: "ar", label: "عەرەبی", shortLabel: "عەرەبی CC" },
   { code: "en", label: "ئینگلیزی", shortLabel: "ئینگلیزی CC" },
+  { code: "tr", label: "تورکی", shortLabel: "تورکی CC" },
 ];
 
 const getCinemaWindowSubtitleLanguage = (code: string) =>
   CINEMA_WINDOW_SUBTITLE_LANGUAGES.find((language) => language.code === code) ||
-  CINEMA_WINDOW_SUBTITLE_LANGUAGES[0];
+  CINEMA_WINDOW_SUBTITLE_LANGUAGES.find((language) => language.code === "ckb")!;
+
+// ---------------------------------------------------------------------------
+// Mapping between the app pipeline's subtitle lang codes (ckb / en / ...) and
+// the UniversalSubtitleSelector codes (ku / original / ...).
+// ---------------------------------------------------------------------------
+const APP_LANG_TO_SELECTOR_LANG: Record<string, UniversalSubtitleLang> = {
+  ckb: "ku",
+  en: "original",
+  ar: "ar",
+  tr: "tr",
+  off: "off",
+};
+
+const SELECTOR_LANG_TO_APP_LANG: Record<UniversalSubtitleLang, string> = {
+  ku: "ckb",
+  original: "en",
+  ar: "ar",
+  tr: "tr",
+  off: "off",
+};
+
+const toSelectorSubtitleLang = (code: string): UniversalSubtitleLang =>
+  APP_LANG_TO_SELECTOR_LANG[code] || "ku";
+
+const toAppSubtitleLang = (lang: UniversalSubtitleLang): string =>
+  SELECTOR_LANG_TO_APP_LANG[lang];
 
 type CinemaWindowSubtitleCue = {
   start: number;
@@ -6039,8 +6115,7 @@ const translateCinemaWindowSubtitle = async (
   };
 };
 
-const CinemaWindowCard = ({ onOpen, room }: any) => {
-  const cardPreviewSourceUrl =
+const CinemaWindowCard = ({ onOpen, room }: any) => {  const cardPreviewSourceUrl =
     room?.previewUrl ||
     room?.fullVideoReference ||
     room?.streamingUrl ||
@@ -6152,6 +6227,47 @@ const CinemaWindowCard = ({ onOpen, room }: any) => {
   </div>
   );
 };
+
+// Designated VIP Room entry card (DramaRoomsHub row) — the golden-ticket VIP
+// modal opens from here instead of the old top-bar hero button.
+const VipGoldenLoungeCard = ({ onOpen }: any) => (
+  <div className="group relative flex-shrink-0 w-[220px] md:w-[280px] bg-gradient-to-br from-zinc-950 via-amber-950/30 to-zinc-950 border border-amber-500/40 rounded-3xl overflow-hidden transition-all hover:border-amber-400/70 hover:shadow-2xl hover:shadow-amber-500/10 hover:scale-[1.02]">
+    <button type="button" onClick={onOpen} className="block w-full text-right focus:outline-none">
+      <div className="aspect-video w-full bg-gradient-to-br from-black via-zinc-950 to-amber-950/40 overflow-hidden relative">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(245,158,11,0.25),transparent_60%)]" />
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="w-16 h-16 rounded-3xl bg-amber-500/15 border border-amber-500/40 flex items-center justify-center shadow-2xl shadow-amber-500/15 group-hover:scale-110 transition-transform duration-300">
+            <Ticket className="w-8 h-8 text-amber-400" />
+          </div>
+        </div>
+        <span className="absolute top-3 right-3 px-2 py-0.5 bg-amber-400 text-black text-[8px] font-black rounded-full uppercase tracking-widest">
+          VIP
+        </span>
+        <span className="absolute bottom-3 right-3 px-2.5 py-1 bg-black/70 border border-white/10 text-white text-[10px] font-black rounded-full flex items-center gap-1 kurdish-text">
+          بلیتی شاهانە
+        </span>
+      </div>
+      <div className="p-4">
+        <h3 className="text-base font-black text-white kurdish-text leading-snug flex items-center gap-2">
+          <Ticket className="w-3.5 h-3.5 text-amber-400" />
+          هۆڵی شاهانەی VIP
+        </h3>
+        <p className="mt-1.5 text-[11px] text-gray-400 kurdish-text leading-relaxed line-clamp-2">
+          چوونەژوورەوە بە کۆدی بلیت — فیلم و درامای تایبەت بە خاوەنی بلیتی شاهانە.
+        </p>
+        <div className="mt-3 flex items-center justify-between">
+          <span className="text-[10px] font-black text-emerald-400 flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+            ACTIVE
+          </span>
+          <span className="text-[10px] font-black text-amber-400 uppercase tracking-widest kurdish-text">
+            چوونەژوورەوە
+          </span>
+        </div>
+      </div>
+    </button>
+  </div>
+);
 
 const DramaRoomDetailModal = ({ room, resolvedMovies, openMovie, onClose, rating, ratingCount, userRating, onRate }: any) => {
   // Resolve each stored drama id to its movie, keeping the room's stored order
@@ -6527,6 +6643,7 @@ const DramaRoomsHub = ({
   onOpenCinemaChat,
   onOpenDramaHub,
   onOpenCinemaWindow,
+  onOpenVip,
   cinemaWindowRoom,
 }: any) => {
   const canManage = systemVerified && !!currentUser;
@@ -6583,6 +6700,7 @@ const DramaRoomsHub = ({
             onOpen={onOpenDramaHub}
           />
           <CinemaWindowCard onOpen={onOpenCinemaWindow} room={cinemaWindowRoom} />
+          <VipGoldenLoungeCard onOpen={onOpenVip} />
         </div>
       </div>
     </section>
@@ -9579,7 +9697,7 @@ export default function App() {
     let cancelled = false;
     let objectUrl = "";
 
-    if (!isInMainWatchRoom || !subtitleSourceUrl) {
+    if (!isInMainWatchRoom || !subtitleSourceUrl || cinemaWindowSubtitleLang === "off") {
       setCinemaWindowSubtitleUrl("");
       setCinemaWindowSubtitleCues([]);
       setCinemaWindowSubtitleStatus("idle");
@@ -10612,7 +10730,13 @@ export default function App() {
     return () => clearInterval(banInterval);
   }, [checkBanStatus]);
 
-  // Submit an unblock request from the block screen (name + mobile)
+  // Submit an unblock request from the block screen (name + mobile).
+  // PRIMARY path: a direct Firestore write to `unblockRequests` — blocked
+  // clients can always reach Firestore even when the app server refuses their
+  // IP/device, so the admin queue (Security Shield Section 11) is guaranteed to
+  // receive the request in real time via onSnapshot. The legacy REST endpoint is
+  // still called best-effort afterwards purely for the server-side audit trail.
+  const UNBLOCK_COOLDOWN_KEY = "cinemachat_unblock_cooldown";
   const submitUnblockRequest = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!unblockName.trim()) {
@@ -10623,38 +10747,81 @@ export default function App() {
       setUnblockFeedback({ ok: false, msg: "تکایە ژمارەی مۆبایلی دروست بنووسە (لەگەڵ کۆدی وڵات)." });
       return;
     }
+    // Light client-side flood guard (the server's per-IP limiter does not cover
+    // direct Firestore writes): one submission per device per 60 seconds.
+    try {
+      const lastAt = Number(safeStorage.get(UNBLOCK_COOLDOWN_KEY) || 0);
+      if (lastAt && Date.now() - lastAt < 60_000) {
+        setUnblockFeedback({ ok: false, msg: "داواکارییەک پێشتر نێردراوە. تکایە چەکی بکەرەوە یان دواتر هەوڵبدەوە." });
+        return;
+      }
+    } catch {
+      // Storage unavailable — never block the request because of this.
+    }
+
+    const cleanName = unblockName.trim().slice(0, 60);
+    const cleanPhone = unblockPhone.trim().replace(/\s+/g, "");
     setUnblockSending(true);
     setUnblockFeedback(null);
+
+    // Collect ip / device / browser / location metadata (best-effort only).
+    const [{ ip, location }, browser] = await Promise.all([
+      collectRequestMeta(),
+      Promise.resolve(detectBrowser()),
+    ]);
+    const device = (typeof navigator !== "undefined" ? navigator.userAgent || "" : "").slice(0, 150);
+    const deviceId = getDeviceId();
+
+    let delivered = false;
     try {
-      const res = await fetch("/api/unblock-request", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Device-Id": getDeviceId(),
-        },
-        body: JSON.stringify({
-          name: unblockName.trim(),
-          phone: unblockPhone.trim(),
-          deviceId: getDeviceId(),
-        }),
+      await addDoc(collection(db, "unblockRequests"), {
+        name: cleanName,
+        phone: cleanPhone,
+        deviceId,
+        ip,
+        device,
+        browser,
+        location,
+        status: "pending",
+        blockedAt: blockedAt ? blockedAt.toISOString() : "",
+        requestedAt: new Date().toISOString(),
+        timestamp: serverTimestamp(),
       });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        setUnblockFeedback({
-          ok: true,
-          msg: "داواکارییەکەت نێردرا! بەڕێوەبەرایەتی پێداچوونەوەی تێدا دەکات و پەیوەندیت پێوە دەکات."
-        });
-        setUnblockName("");
-        setUnblockPhone("");
-      } else {
-        setUnblockFeedback({ ok: false, msg: data?.error || "ناردنی داواکاری سەرکەوتوو نەبوو. تکایە دووبارە هەوڵبدەوە." });
+      delivered = true;
+      try {
+        safeStorage.set(UNBLOCK_COOLDOWN_KEY, String(Date.now()));
+      } catch {
+        // Ignore storage failures.
       }
     } catch (err) {
-      console.warn("Unable to submit unblock request:", err);
-      setUnblockFeedback({ ok: false, msg: "کێشەی پەیوەندی ڕوویدا. تکایە دووبارە هەوڵبدەوە." });
-    } finally {
-      setUnblockSending(false);
+      console.warn("Firestore unblock-request write failed:", err);
     }
+
+    // Secondary best-effort sync so the server audit log keeps its record.
+    if (!delivered) {
+      try {
+        const res = await fetch("/api/unblock-request", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Device-Id": deviceId },
+          body: JSON.stringify({ name: cleanName, phone: cleanPhone, deviceId }),
+        });
+        delivered = res.ok;
+      } catch (err) {
+        console.warn("Unable to submit unblock request:", err);
+      }
+    }
+
+    if (delivered) {
+      setUnblockFeedback({
+        ok: true,
+        msg: "داواکارییەکەت نێردرا! بەڕێوەبەرایەتی پێداچوونەوەی تێدا دەکات و پەیوەندیت پێوە دەکات."
+      });
+      setUnblockName("");
+      setUnblockPhone("");
+    } else {
+      setUnblockFeedback({ ok: false, msg: "ناردنی داواکاری سەرکەوتوو نەبوو. تکایە دووبارە هەوڵبدەوە." });
+    }
+    setUnblockSending(false);
   };
 
   // Live countdown for the Owner's temporary 1-minute exemption. When the
@@ -11762,6 +11929,7 @@ export default function App() {
       onOpenCinemaChat={() => setShowFriendConnect(true)}
       onOpenDramaHub={() => setShowDramaHubModal(true)}
       onOpenCinemaWindow={() => setShowCinemaWindowModal(true)}
+      onOpenVip={() => setShowVipModal(true)}
       cinemaWindowRoom={cinemaWindowPublicRoom}
     />
   );
@@ -12138,26 +12306,23 @@ export default function App() {
                         {activeCinemaWindowRoom.price ?? 0} {activeCinemaWindowRoom.currency || "USD"}
                       </span>
                     </div>
-                    <label className="block border-t border-white/10 pt-3">
+                    <div className="border-t border-white/10 pt-3">
                       <span className="mb-2 flex items-center gap-1.5 text-zinc-500">
                         <Globe className="w-4 h-4" />
                         زمانی ژێرنوس
                       </span>
-                       <select
-                        value={cinemaWindowSubtitleLang}
-                        onChange={(event) => {
-                          setCinemaWindowSubtitleLang(event.target.value);
+                      <UniversalSubtitleSelector
+                        variant="inline"
+                        value={toSelectorSubtitleLang(cinemaWindowSubtitleLang)}
+                        onChange={(lang) => {
+                          setCinemaWindowSubtitleLang(toAppSubtitleLang(lang));
                           setCinemaWindowSubtitleRetryKey((k) => k + 1);
                         }}
-                        className="w-full rounded-xl border border-white/10 bg-black/50 px-3 py-2 text-sm font-bold text-white outline-none focus:border-amber-400"
-                      >
-                        {CINEMA_WINDOW_SUBTITLE_LANGUAGES.map((language) => (
-                          <option key={language.code} value={language.code}>
-                            {language.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                        status={cinemaWindowSubtitleStatus}
+                        message={cinemaWindowSubtitleMessage}
+                        onRetry={() => setCinemaWindowSubtitleRetryKey((k) => k + 1)}
+                      />
+                    </div>
                     <div className="flex items-start justify-between gap-3 border-t border-white/10 pt-3">
                       <span className="text-zinc-500 inline-flex items-center gap-1.5">
                         <Captions className="w-4 h-4" />
@@ -12318,7 +12483,6 @@ export default function App() {
                   hasInteracted={hasInteracted}
                   heroPlaylist={activeFeaturedMovie?.heroPlaylist}
                   config={config}
-                  setShowVipModal={setShowVipModal}
                   activeAudioSource={activeAudioSource}
                   isMoviePlayerOpen={!!selectedMovie && showPlayer}
                 />
@@ -13504,86 +13668,18 @@ export default function App() {
                             player without needing the Cinema Window sidebar. */}
                         {isDramaRoomActive && (
                           <div className="relative">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setPlayerMenu(
-                                  playerMenu === "subtitle" ? null : "subtitle",
-                                )
-                              }
-                              className={`w-8 h-8 md:w-9 md:h-9 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border border-white/10 ${
-                                cinemaWindowSubtitleStatus === "ready"
-                                  ? "bg-brand-primary text-white"
-                                  : cinemaWindowSubtitleStatus === "loading"
-                                    ? "bg-red-600 text-white animate-pulse"
-                                    : "bg-black/60 hover:bg-white/10 text-white"
-                              }`}
-                              title="زمانی ژێرنوس (Subtitles)"
-                            >
-                              <Captions className="w-3.5 h-3.5 md:w-4 md:h-4" />
-                            </button>
-
-                            {playerMenu === "subtitle" && (
-                              <>
-                                <div
-                                  className="fixed inset-0 z-[55]"
-                                  onClick={() => setPlayerMenu(null)}
-                                />
-                                <div className="absolute bottom-full right-0 mb-2 z-[60] w-44 max-h-[60vh] overflow-y-auto rounded-xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-2 shadow-2xl space-y-1.5 overscroll-contain">
-                                  <div className="px-1 pb-1 text-[8px] font-black text-zinc-400 uppercase tracking-widest kurdish-text">
-                                    زمانی ژێرنوس
-                                  </div>
-                                  {CINEMA_WINDOW_SUBTITLE_LANGUAGES.map((lang) => (
-                                    <button
-                                      key={lang.code}
-                                      type="button"
-                                      onClick={() => {
-                                        setCinemaWindowSubtitleLang(lang.code);
-                                        setCinemaWindowSubtitleRetryKey((k) => k + 1);
-                                      }}
-                                      className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[11px] font-black transition-all cursor-pointer ${
-                                        cinemaWindowSubtitleLang === lang.code
-                                          ? "bg-brand-primary text-white"
-                                          : "bg-white/5 hover:bg-white/10 text-zinc-300"
-                                      }`}
-                                    >
-                                      <span>{lang.label}</span>
-                                      {cinemaWindowSubtitleLang === lang.code && (
-                                        <CheckCircle2 className="w-3.5 h-3.5" />
-                                      )}
-                                    </button>
-                                  ))}
-                                  <div className="border-t border-white/10 pt-1.5 space-y-1">
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setCcSettings((s) => ({ ...s, showOriginal: !s.showOriginal }));
-                                      }}
-                                      className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
-                                        ccSettings.showOriginal
-                                          ? "bg-emerald-600/80 text-white"
-                                          : "bg-white/5 hover:bg-white/10 text-zinc-300"
-                                      }`}
-                                    >
-                                      <span>ژێرنووسی ڕەسەن</span>
-                                      <span className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${ccSettings.showOriginal ? 'border-emerald-400 bg-emerald-500' : 'border-zinc-500'}`}>
-                                        {ccSettings.showOriginal && <span className="text-white text-[7px]">✓</span>}
-                                      </span>
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setPlayerMenu(null);
-                                        setShowCcPanel(true);
-                                      }}
-                                      className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[10px] font-bold bg-white/5 hover:bg-white/10 text-zinc-300 cursor-pointer transition-all"
-                                    >
-                                      <span>⚙️ ڕێکخستن</span>
-                                    </button>
-                                  </div>
-                                </div>
-                              </>
-                            )}
+                            <UniversalSubtitleSelector
+                              value={toSelectorSubtitleLang(cinemaWindowSubtitleLang)}
+                              onChange={(lang) => {
+                                setCinemaWindowSubtitleLang(toAppSubtitleLang(lang));
+                                setCinemaWindowSubtitleRetryKey((k) => k + 1);
+                              }}
+                              status={cinemaWindowSubtitleStatus}
+                              message={cinemaWindowSubtitleMessage}
+                              onRetry={() => setCinemaWindowSubtitleRetryKey((k) => k + 1)}
+                              onSettingsClick={() => setShowCcPanel(true)}
+                              settingsActive={showCcPanel}
+                            />
 
                             {/* CC Settings Panel — floating popup inside the relative
                                 container so it positions above the control bar. */}

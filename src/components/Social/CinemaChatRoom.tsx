@@ -38,7 +38,6 @@ import {
   ImageUp,
   ScanLine,
   BadgeCheck,
-  Captions,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import jsQR from "jsqr";
@@ -46,6 +45,9 @@ import { Movie, SocialUser } from "../../types";
 import YouTubeResilientPlayer from "../Player/YouTubeResilientPlayer";
 import ImmersiveShieldedPlayer from "../Player/ImmersiveShieldedPlayer";
 import VideoLoadOverlay from "../Player/VideoLoadOverlay";
+import UniversalSubtitleSelector, {
+  type UniversalSubtitleLang,
+} from "../UniversalSubtitleSelector";
 import {
   hasPlayableBuffer,
   type NativeVideoLoadState,
@@ -110,6 +112,36 @@ import {
 // stay aligned without a write loop (writes never happen in response to
 // snapshots).
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Subtitle lang mapping: the room pipeline uses app codes (ckb/en), while
+// UniversalSubtitleSelector uses display codes (ku/original).
+// ─────────────────────────────────────────────────────────────────────────────
+const ROOM_LANG_TO_SELECTOR: Record<string, UniversalSubtitleLang> = {
+  ckb: "ku",
+  ku: "ku",
+  en: "original",
+  original: "original",
+  ar: "ar",
+  tr: "tr",
+  off: "off",
+};
+
+const roomToSelectorLang = (code: string): UniversalSubtitleLang =>
+  ROOM_LANG_TO_SELECTOR[code] || "ku";
+
+const selectorToRoomLang = (lang: UniversalSubtitleLang): string =>
+  lang === "ku" ? "ckb" : lang === "original" ? "en" : lang;
+
+const ROOM_LANG_SHORT: Record<string, string> = {
+  ckb: "KU",
+  ku: "KU",
+  en: "EN",
+  original: "EN",
+  ar: "AR",
+  tr: "TR",
+  off: "OFF",
+};
 
 interface CinemaChatRoomProps {
   open: boolean;
@@ -317,7 +349,6 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
   const [joinError, setJoinError] = useState<string | null>(null);
   const [joinBusy, setJoinBusy] = useState(false);
   const [showMoviePicker, setShowMoviePicker] = useState(false);
-  const [showCcMenu, setShowCcMenu] = useState(false);
   const [movieSearch, setMovieSearch] = useState("");
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -1508,60 +1539,22 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                           {/* CC language toggle for CinemaChat */}
                           {subtitleLanguages && subtitleLanguages.length > 0 && (
                             <div className="absolute bottom-[74px] right-4 z-[80] overflow-visible">
-                              <div className="relative overflow-visible">
-                                <button
-                                  type="button"
-                                  onClick={() => setShowCcMenu((v) => !v)}
-                                  className={`w-7 h-7 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border border-white/10 ${
-                                    subtitleStatus === "ready"
-                                      ? "bg-brand-primary text-white"
-                                      : subtitleStatus === "loading"
-                                        ? "bg-red-600 text-white animate-pulse"
-                                        : "bg-black/60 hover:bg-white/10 text-white"
-                                  }`}
-                                  title="زمانی ژێرنوس (Subtitles)"
-                                >
-                                  <Captions className="w-3 h-3" />
-                                </button>
-                                {showCcMenu && (
-                                  <>
-                                    <div
-                                      className="fixed inset-0 z-[55]"
-                                      onClick={() => setShowCcMenu(false)}
-                                    />
-                                    <div className="absolute bottom-[44px] right-0 z-[90] w-44 max-h-[60vh] overflow-y-auto rounded-xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-2 shadow-2xl space-y-1.5 overscroll-contain">
-                                      <div className="text-[8px] font-black text-zinc-400 uppercase tracking-widest px-1 kurdish-text">زمانی ژێرنوس</div>
-                                      {subtitleLanguages.map((lang) => (
-                                        <button
-                                          key={lang.code}
-                                          type="button"
-                                          onClick={() => {
-                                            onSubtitleLangChange?.(lang.code);
-                                          }}
-                                          className={`w-full flex items-center justify-between px-2 py-1 rounded-lg text-[10px] font-black transition-all cursor-pointer ${
-                                            subtitleLang === lang.code
-                                              ? "bg-brand-primary text-white"
-                                              : "bg-white/5 hover:bg-white/10 text-zinc-300"
-                                          }`}
-                                        >
-                                          <span>{lang.label}</span>
-                                          {subtitleLang === lang.code && <span className="text-[8px] opacity-70">✓</span>}
-                                        </button>
-                                      ))}
-                                      <div className="border-t border-white/10 pt-1.5 space-y-1">
-                                        <button
-                                          type="button"
-                                          onClick={() => onToggleCcPanel?.()}
-                                          className="w-full flex items-center gap-2 px-2 py-1 rounded-lg text-[10px] font-bold bg-white/5 hover:bg-white/10 text-zinc-300 cursor-pointer transition-all"
-                                        >
-                                          <span>⚙️ ڕێکخستن</span>
-                                          {showCcPanel && <span className="ml-auto text-[8px] text-brand-primary">●</span>}
-                                        </button>
-                                      </div>
-                                    </div>
-                                  </>
-                                )}
-                              </div>
+                              <UniversalSubtitleSelector
+                                value={roomToSelectorLang(subtitleLang || "ckb")}
+                                onChange={(lang) => onSubtitleLangChange?.(selectorToRoomLang(lang))}
+                                status={subtitleStatus}
+                                message={subtitleMessage}
+                                onRetry={onSubtitleRetry}
+                                languages={subtitleLanguages
+                                  .filter((lang) => lang.code !== "off")
+                                  .map((lang) => ({
+                                    code: roomToSelectorLang(lang.code),
+                                    label: lang.label,
+                                    shortLabel: ROOM_LANG_SHORT[lang.code] || lang.shortLabel,
+                                  }))}
+                                onSettingsClick={() => onToggleCcPanel?.()}
+                                settingsActive={!!showCcPanel}
+                              />
                             </div>
                           )}
 
