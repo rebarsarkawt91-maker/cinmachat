@@ -786,6 +786,11 @@ const setCachedHeroVideoUrl = (url: string) => {
 const setCachedHeroPlaylist = (urls: string[]) => {
   const cleaned = urls.map(sanitizeHeroUrl).filter(Boolean);
   if (cleaned.length === 0) return;
+  // Purge-then-write: removing BOTH keys before writing guarantees no
+  // stale URL survives a new upload (e.g., when the new playlist is
+  // shorter than the old one, leftover tail entries would linger).
+  safeStorage.remove(HERO_PLAYLIST_LOCAL_KEY);
+  safeStorage.remove(HERO_VIDEO_LOCAL_KEY);
   safeStorage.set(HERO_PLAYLIST_LOCAL_KEY, JSON.stringify(cleaned));
   // Also keep first URL in single-key cache for backwards compatibility
   safeStorage.set(HERO_VIDEO_LOCAL_KEY, cleaned[0]);
@@ -15311,22 +15316,14 @@ const trailerId = movie.trailerUrl
                             }));
                             setCurrentVideoIndex(0);
 
-                            // ── Step 5: Firestore full-replace (clears stale fields) ──
-                            // Uses setDoc WITHOUT merge:true so old fields like
-                            // heroPlaylistData and video_trails are deleted.
+                            // ── Step 5: Firestore full-replace (DELETES stale fields) ──
+                            // setDoc WITHOUT merge:true replaces the ENTIRE document,
+                            // so legacy fields from older writes (heroPlaylistData,
+                            // video_trailers, old embedUrl/url variants) are deleted
+                            // outright — no previous link survives a new insertion.
                             try {
                               const yt1 = cleanUrl1.includes("youtube.com") || cleanUrl1.includes("youtu.be");
                               const id1 = yt1 ? extractYouTubeId(cleanUrl1) : null;
-                              const firestorePlaylist = confirmedPlaylist.map((u: string) => {
-                                const yt = u.includes("youtube.com") || u.includes("youtu.be");
-                                const id = yt ? extractYouTubeId(u) : null;
-                                return {
-                                  url: u,
-                                  embedUrl: yt && id ? `https://www.youtube.com/embed/${id}` : u,
-                                  videoId: id || "",
-                                  isYouTube: yt,
-                                };
-                              });
 
                               await setDoc(doc(db, "config", "featured"), {
                                 id: "hero-promo",
@@ -15341,7 +15338,6 @@ const trailerId = movie.trailerUrl
                                 quality: "4K",
                                 description: "نوێترین فیلمی سەرەکی",
                                 heroPlaylist: confirmedPlaylist,
-                                heroPlaylistData: firestorePlaylist,
                                 updatedAt: new Date().toISOString(),
                               });
                               console.log("[Hero] Firestore full-replace with hero playlist:", confirmedPlaylist);

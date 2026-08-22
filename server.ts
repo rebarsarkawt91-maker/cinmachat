@@ -8696,6 +8696,11 @@ async function startServer() {
   });
 
   app.get('/api/admin/hero', (req, res) => {
+    // Never cache hero links — an admin upload must be visible to every
+    // client/proxy immediately, with zero stale references lingering.
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     res.json(db.heroConfig);
   });
 
@@ -8934,6 +8939,11 @@ async function startServer() {
 
 
   app.get('/api/config', (req, res) => {
+    // Never cache — heroPlaylist/heroVideoUrl change on admin upload and
+    // stale CDN/browser copies would keep playing the previous video.
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     res.json({
       ads,
       trackerText, // Expose tracker text
