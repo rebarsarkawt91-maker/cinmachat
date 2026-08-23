@@ -711,10 +711,29 @@ function isBadSubtitleTranslation(text: string, targetLang: string): boolean {
   const clean = decodeSubtitleEntities(String(text || '')).trim();
   if (!clean) return true;
   if (/\?{4,}/.test(clean)) return true;
-  if (targetLang === 'ckb' && !/[\u0600-\u06FF]/.test(clean)) {
-    const latinTokens = clean.match(/[A-Za-z][A-Za-z0-9.'-]*/g) || [];
-    const mostlyNameOrMarker = latinTokens.length <= 2 && clean.length <= 40;
-    if (!mostlyNameOrMarker) return true;
+  const arabicChars = (clean.match(/[\u0600-\u06FF]/g) || []).length;
+  if (targetLang === 'ckb') {
+    // Sorani must contain Arabic-script text; short Latin remnants are allowed
+    // only when they look like proper names or markers.
+    if (!arabicChars) {
+      const latinTokens = clean.match(/[A-Za-z][A-Za-z0-9.'-]*/g) || [];
+      const mostlyNameOrMarker = latinTokens.length <= 2 && clean.length <= 40;
+      if (!mostlyNameOrMarker) return true;
+    }
+    return false;
+  }
+  if (targetLang === 'ar') {
+    // Arabic output MUST contain Arabic script — a Latin/Korean/CJK echo means
+    // the engine failed (rate-limit passthrough, unsupported pair, etc.).
+    return arabicChars === 0;
+  }
+  if (targetLang === 'tr') {
+    // Turkish is Latin-script: reject outputs dominated by non-Latin letters
+    // (catches untranslated Korean/Han/Cyrillic source leaking through).
+    const letters = clean.match(/\p{L}/gu) || [];
+    if (letters.length < 4) return false; // too short to judge (names, "OK")
+    const latinChars = letters.filter((ch) => /\p{Script=Latin}/u.test(ch)).length;
+    return latinChars / letters.length < 0.5;
   }
   return false;
 }
@@ -735,10 +754,34 @@ function isLikelyNonKurdishSubtitleTrack(subtitleText: string): boolean {
   return arabicScriptChars === 0 && latinChars >= 20;
 }
 
+// Whole-track script sanity for a requested target language. Mirrors
+// isBadSubtitleTranslation() thresholds but applied to the dialogue as a whole,
+// so a mislabeled/untranslated track can never be served or cached.
+function isLikelyWrongScriptForLangTrack(subtitleText: string, lang: string): boolean {
+  if (lang === 'ckb') return isLikelyNonKurdishSubtitleTrack(subtitleText);
+  const dialogueText = getSubtitleDialogueText(subtitleText);
+  if (!dialogueText) return false;
+  const letters = dialogueText.match(/\p{L}/gu) || [];
+  if (letters.length < 20) return false; // not enough text to judge reliably
+  if (lang === 'ar') {
+    const arabicChars = (dialogueText.match(/[\u0600-\u06FF]/g) || []).length;
+    return arabicChars / letters.length < 0.5;
+  }
+  if (lang === 'tr') {
+    const latinChars = letters.filter((ch) => /\p{Script=Latin}/u.test(ch)).length;
+    return latinChars / letters.length < 0.5;
+  }
+  return false;
+}
+
 function ensureSubtitleTrackMatchesLang(subtitleText: string, lang: string, source: string): string {
   const clean = sanitizeSubtitleText(subtitleText);
-  if (lang === 'ckb' && isLikelyNonKurdishSubtitleTrack(clean)) {
-    throw new Error(`Kurdish Sorani subtitles were requested, but ${source} returned a non-Kurdish/source caption track`);
+  if (isLikelyWrongScriptForLangTrack(clean, lang)) {
+    const detail =
+      lang === 'ckb'
+        ? `Kurdish Sorani subtitles were requested, but ${source} returned a non-Kurdish/source caption track`
+        : `${lang} subtitles were requested, but ${source} returned a non-${lang} caption track`;
+    throw new Error(detail);
   }
   return clean;
 }
@@ -772,14 +815,24 @@ const GOOGLE_TRANSLATE_TIMEOUT_MS = Number(process.env.GOOGLE_TRANSLATE_TIMEOUT_
 const GOOGLE_TRANSLATE_MARKER = 'CINEMACHATCUEBREAK123';
 
 // Single robust request to Google Translate's free web endpoint. Resolves to
-// the translated string, or NULL on ANY failure (timeout, HTTP 429/5xx, empty
-// payload, malformed JSON) — it NEVER throws, so callers can fall back to the
-// original text per line/batch instead of crashing the request.
+// the translated string PLUS Google's segment stream, or NULL on ANY failure
+// (timeout, HTTP 429/5xx, empty payload, malformed JSON) — it NEVER throws, so
+// callers can fall back to the original text per line/batch instead of
+// crashing the request.
+//
+// Each segment is { out, src }: `out` is a translated sentence chunk and `src`
+// is the ORIGINAL source slice it corresponds to. The echo in `src` survives
+// translation untouched even when the model rewrites sentinel markers (the
+// Arabic/Turkish engines transliterate CINEMACHATCUEBREAK123), which powers
+// reliable per-line realignment in alignBatchTranslation().
+type GoogleTranslateSegment = { out: string; src: string };
+type GoogleTranslateResult = { text: string; segments: GoogleTranslateSegment[] } | null;
+
 async function googleTranslateFreeText(
   text: string,
   targetLang: string,
   sourceLang = 'auto',
-): Promise<string | null> {
+): Promise<GoogleTranslateResult> {
   const body = new URLSearchParams({
     client: 'gtx',
     sl: sourceLang || 'auto',
@@ -801,12 +854,16 @@ async function googleTranslateFreeText(
     });
     if (!resp.ok) return null;
     const data: any = await resp.json().catch(() => null);
-    const translated = Array.isArray(data?.[0])
-      ? data[0].map((part: any[]) => part?.[0] || '').join('')
-      : '';
+    const rawSegments: any[] = Array.isArray(data?.[0]) ? data[0] : [];
+    const translated = rawSegments.map((part: any[]) => part?.[0] || '').join('');
     if (!translated || !String(translated).trim()) return null;
     const cleaned = stripSubtitleMetadataFragments(decodeSubtitleEntities(String(translated)));
-    return isBadSubtitleTranslation(cleaned, targetLang) ? null : cleaned;
+    if (isBadSubtitleTranslation(cleaned, targetLang)) return null;
+    const segments: GoogleTranslateSegment[] = rawSegments.map((part: any[]) => ({
+      out: String(part?.[0] ?? ''),
+      src: String(part?.[1] ?? ''),
+    }));
+    return { text: cleaned, segments };
   } catch {
     return null;
   } finally {
@@ -817,15 +874,66 @@ async function googleTranslateFreeText(
 
 
 
+// Reconstructs per-line translations from Google's segment stream. Every
+// segment echoes its ORIGINAL source slice in `src`, which survives even when
+// the engine translates/transliterates the sentinel marker itself (the Arabic
+// model renders CINEMACHATCUEBREAK123 as Arabic script; the Turkish one mangles
+// its casing) — so alignment keys off the echo, never off the translation.
+// Content segments accumulate until the normalized echo equals the expected
+// batch line; sentinel echoes between lines are skipped. Returns NULL when the
+// echo stream diverges (caller keeps the whole batch's original text).
+function alignBatchTranslation(
+  segments: GoogleTranslateSegment[],
+  batchLines: string[],
+): string[] | null {
+  const norm = (value: unknown): string =>
+    String(value ?? '').replace(/\s+/g, ' ').trim();
+  const aligned: string[] = [];
+  let cursor = 0;
+  for (let i = 0; i < batchLines.length; i += 1) {
+    if (i > 0) {
+      // Skip the sentinel echo between two content lines. The marker is a
+      // standalone token, so its echo must appear before the next line does.
+      let markerEcho = '';
+      while (cursor < segments.length) {
+        markerEcho += `${segments[cursor].src} `;
+        cursor += 1;
+        if (markerEcho.includes(GOOGLE_TRANSLATE_MARKER)) break;
+        // A content line starting before any marker echo means boundaries
+        // were lost — bail out rather than mis-aligning translations.
+        if (norm(markerEcho).length > GOOGLE_TRANSLATE_MARKER.length + 16) return null;
+      }
+      if (!markerEcho.includes(GOOGLE_TRANSLATE_MARKER)) return null;
+    }
+    const expected = norm(batchLines[i]);
+    let accSrc = '';
+    let accOut = '';
+    while (cursor < segments.length) {
+      accSrc += `${segments[cursor].src} `;
+      accOut += `${segments[cursor].out} `;
+      cursor += 1;
+      if (norm(accSrc) === expected) break;
+      // Overshot the line boundary without matching → desynced stream.
+      if (norm(accSrc).length > expected.length) return null;
+    }
+    if (norm(accSrc) !== expected) return null;
+    aligned.push(accOut.trim());
+  }
+  return aligned;
+}
+
+
 // Translates every dialogue line of a VTT/SRT document to the target language
 // using simple batched requests against the free Google Translate endpoint.
 //
 // Robustness contract (best-effort, never throws for valid input):
 //   • Dialogue lines are deduplicated, packed into char-budgeted batches joined
 //     with a sentinel marker, and each batch is ONE request (5s timeout).
-//   • If a batch fails, hits a rate limit, or the reply loses the sentinel
-//     boundaries, those lines SILENTLY KEEP THEIR ORIGINAL TEXT — no retry
-//     storms, no crashes, no 500 responses.
+//   • Per-line results are recovered via sentinel split when the engine
+//     preserves the marker, else via alignBatchTranslation() on Google's
+//     source-echo segments. If both fail, or a batch hits a rate limit, those
+//     lines SILENTLY KEEP THEIR ORIGINAL TEXT — no retry storms, no crashes,
+//     no 500 responses.
 //   • Timing/structure lines are never sent for translation, so cue timings
 //     survive unchanged by construction.
 async function translateSubtitleViaGoogle(
@@ -881,10 +989,50 @@ async function translateSubtitleViaGoogle(
       sourceLang,
     );
     if (!translated) continue; // batch failed (timeout/429/etc.) → keep originals
-    const parts = translated.split(new RegExp(`\\s*${GOOGLE_TRANSLATE_MARKER}\\s*`));
-    if (parts.length !== batch.length) continue; // boundaries lost → keep originals
+
+    // Per-line recovery tiers — first match wins; if all fail the whole batch
+    // keeps its originals (never corrupts timings, never throws):
+    //  1. exact sentinel split        (Sorani engine preserves the marker)
+    //  2. case-insensitive sentinel   (Turkish engine re-cases it)
+    //  3. source-echo realignment     (Arabic engine transliterates it, but
+    //                                  echoes pristine sources per segment)
+    //  4. layout-preserving newline   (some engines, e.g. Korean sources,
+    //                                  collapse everything into one segment
+    //                                  yet keep the request's line structure)
+    let aligned: string[] | null = null;
+    const partsExact = translated.text.split(
+      new RegExp(`\\s*${GOOGLE_TRANSLATE_MARKER}\\s*`),
+    );
+    if (partsExact.length === batch.length) {
+      aligned = partsExact;
+    }
+    if (!aligned) {
+      const partsLoose = translated.text.split(
+        new RegExp(`\\s*${GOOGLE_TRANSLATE_MARKER}\\s*`, 'i'),
+      );
+      if (partsLoose.length === batch.length) aligned = partsLoose;
+    }
+    if (!aligned && translated.segments.length) {
+      aligned = alignBatchTranslation(translated.segments, batch);
+    }
+    if (!aligned && translated.segments.length <= 1) {
+      const requestLines = batch.join(`\n${GOOGLE_TRANSLATE_MARKER}\n`).split('\n');
+      const replyLines = translated.text.split('\n');
+      while (replyLines.length && !replyLines[replyLines.length - 1].trim()) replyLines.pop();
+      if (replyLines.length === requestLines.length) {
+        const recovered: string[] = [];
+        for (let idx = 0; idx < requestLines.length; idx += 1) {
+          if (idx % 2 === 0) recovered.push(replyLines[idx]); // content positions
+        }
+        aligned = recovered;
+      }
+    }
+    if (!aligned) continue; // unrecoverable boundaries → keep originals
+
     batch.forEach((sourceText, index) => {
-      const line = parts[index].trim();
+      const line = stripSubtitleMetadataFragments(
+        decodeSubtitleEntities(aligned![index] || ''),
+      ).trim();
       if (line && !isBadSubtitleTranslation(line, targetLang)) results.set(sourceText, line);
     });
   }
@@ -893,6 +1041,40 @@ async function translateSubtitleViaGoogle(
     blocks[job.blockIndex].lines[job.lineIndex] = results.get(job.text.trim()) || job.text;
   }
   return sanitizeSubtitleText(blocks.map(({ lines }) => lines.join('\n')).join('\n\n'));
+}
+
+// The set of unique translatable dialogue lines in a subtitle document — the
+// same extraction the batch translator uses, so coverage comparisons line up.
+function uniqueTranslatableLines(subtitleText: string): Set<string> {
+  const out = new Set<string>();
+  const normalized = sanitizeSubtitleText(subtitleText).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  normalized.split(/\n{2,}/).forEach((block) => {
+    const lines = block.split('\n');
+    const timingIndex = lines.findIndex((line) => /-->/.test(line));
+    const bodyStart = timingIndex >= 0 ? timingIndex + 1 : 0;
+    lines.slice(bodyStart).forEach((line) => {
+      if (!shouldTranslateSubtitleLine(line)) return;
+      const text = cleanSubtitleDialogueForTranslation(line);
+      if (text) out.add(text);
+    });
+  });
+  return out;
+}
+
+// True when a translation round-trip produced output in which EVERY unique
+// translatable source line survived unchanged — i.e. the engine effectively
+// did nothing (rate-limited, unsupported pair, all batches dropped). Routes
+// use this to flag degraded responses and keep poisoned results out of the
+// caches. Partial failures (some lines translated) are NOT degraded.
+function isUntranslatedSubtitleResult(sourceText: string, resultText: string): boolean {
+  const sourceLines = uniqueTranslatableLines(sourceText);
+  if (!sourceLines.size) return false;
+  const resultLines = uniqueTranslatableLines(resultText);
+  let unchanged = 0;
+  sourceLines.forEach((line) => {
+    if (resultLines.has(line)) unchanged += 1;
+  });
+  return unchanged === sourceLines.size;
 }
 
 
@@ -9662,7 +9844,7 @@ async function startServer() {
       let warning: string | undefined;
       try {
         translated = await translateVTT(sourceVtt, lang, sourceLang, geminiApiKey);
-        if (lang !== 'original' && translated.trim() === normalizedSource.trim()) {
+        if (lang !== 'original' && isUntranslatedSubtitleResult(normalizedSource, translated)) {
           warning = 'Translation service unavailable or rate-limited — serving the original track';
         }
       } catch (translateErr: any) {
@@ -9817,14 +9999,32 @@ async function startServer() {
         stepLogSub(
           `${targetLangSub === 'original' ? 'returned original' : 'translated'} ${responseSrt.length} chars in ${((Date.now() - startedSub) / 1000).toFixed(1)}s`,
         );
-        const subCacheKey = subtitleCacheKey(subtitleSource, targetLangSub, null, null);
-        setSubtitleCache(subCacheKey, responseSrt, targetLangSub, targetLangSub === 'original' ? 'subtitle-file-original' : 'subtitle-file', targetLangSub === 'original' ? undefined : normalized);
+        // Never cache a degraded (fully untranslated) track — it would poison
+        // this cache key until TTL and every retry would keep serving the
+        // original text. The client still receives the best available result.
+        const degradedFastPath =
+          targetLangSub !== 'original' && isUntranslatedSubtitleResult(normalized, responseSrt);
+        if (degradedFastPath) {
+          console.warn(
+            `[${new Date().toISOString()}] [subtitle-api] subtitle-file ${targetLangSub} NOT cached (degraded/untranslated result)`,
+          );
+        } else {
+          const subCacheKey = subtitleCacheKey(subtitleSource, targetLangSub, null, null);
+          try {
+            setSubtitleCache(subCacheKey, responseSrt, targetLangSub, targetLangSub === 'original' ? 'subtitle-file-original' : 'subtitle-file', targetLangSub === 'original' ? undefined : normalized);
+          } catch (cacheErr: any) {
+            console.warn(`[${new Date().toISOString()}] [subtitle-api] cache write skipped: ${cacheErr?.message || cacheErr}`);
+          }
+        }
         res.json({
           success: true,
           srt: responseSrt,
           lang: targetLangSub,
           source: targetLangSub === 'original' ? 'subtitle-file-original' : 'subtitle-file',
           ...(targetLangSub === 'original' ? {} : { originalSrt: normalized }),
+          ...(degradedFastPath
+            ? { warning: 'Translation service unavailable or rate-limited — serving the original track' }
+            : {}),
         });
       } catch (err: any) {
         console.error(`[${new Date().toISOString()}] [subtitle-api] subtitle-file ERROR:`, err?.message || err);
@@ -9923,6 +10123,29 @@ let videoDownloaded = false;
               )
             : srtText;
 
+        // Persists a translation to the in-memory cache unless it came back
+        // fully untranslated (engine rate-limited/failed and the fallback
+        // chain served the original track) — caching that would poison this
+        // key until TTL. Returns true when the result was degraded.
+        const cacheTranslationOrFlagDegraded = (
+          sourceSrt: string,
+          translatedSrt: string,
+          sourceLabel: string,
+        ): boolean => {
+          const degraded = isUntranslatedSubtitleResult(sourceSrt, translatedSrt);
+          if (degraded) {
+            stepLog(`${sourceLabel} NOT cached (degraded/untranslated result)`);
+            return true;
+          }
+          try {
+            setSubtitleCache(cacheKey, translatedSrt, targetLang, sourceLabel, sourceSrt);
+          } catch (cacheErr: any) {
+            stepLog(`cache write skipped: ${cacheErr?.message || cacheErr}`);
+          }
+          return false;
+        };
+        const degradedWarning = 'Translation service unavailable or rate-limited — serving the original track';
+
         if (targetLang === 'original') {
           try {
             const originalCaptionResult = await fetchYoutubeOriginalCaptions(
@@ -9989,16 +10212,21 @@ let videoDownloaded = false;
                 sourceCaptionResult.lang || soraniSourceLang,
                 userGeminiKey,
               );
+              const degradedSorani = cacheTranslationOrFlagDegraded(
+                sourceSrtForSorani || sourceCaptionResult.srt,
+                translatedSrt,
+                `youtube-captions-${sourceCaptionResult.mode}-sorani-translate`,
+              );
               stepLog(
                 `translated ${sourceCaptionResult.lang} captions to Sorani (${translatedSrt.length} chars, source=${sourceCaptionResult.mode})`,
               );
-              setSubtitleCache(cacheKey, translatedSrt, targetLang, `youtube-captions-${sourceCaptionResult.mode}-sorani-translate`, sourceSrtForSorani || sourceCaptionResult.srt);
               res.json({
                 success: true,
                 srt: translatedSrt,
                 lang: targetLang,
                 source: `youtube-captions-${sourceCaptionResult.mode}-sorani-translate`,
                 originalSrt: sourceSrtForSorani || sourceCaptionResult.srt,
+                ...(degradedSorani ? { warning: degradedWarning } : {}),
               });
               return;
             } catch (soraniErr: any) {
@@ -10079,13 +10307,18 @@ let videoDownloaded = false;
               webTranslatedResult.lang || 'auto',
               userGeminiKey,
             );
-            setSubtitleCache(cacheKey, webTranslatedSrt, targetLang, `youtube-captions-web-${webTranslatedResult.source}-translate`, webSourceSrt);
+            const degradedWeb = cacheTranslationOrFlagDegraded(
+              webSourceSrt,
+              webTranslatedSrt,
+              `youtube-captions-web-${webTranslatedResult.source}-translate`,
+            );
             res.json({
               success: true,
               srt: webTranslatedSrt,
               lang: targetLang,
               source: `youtube-captions-web-${webTranslatedResult.source}-translate`,
               originalSrt: webSourceSrt,
+              ...(degradedWeb ? { warning: degradedWarning } : {}),
             });
             return;
           } catch (webTranslateErr: any) {
@@ -10101,13 +10334,18 @@ let videoDownloaded = false;
               userGeminiKey,
             );
             stepLog(`translated yt-dlp captions via public fallback (${translatedSrt.length} chars, mode=${ytDlpResult.mode})`);
-            setSubtitleCache(cacheKey, translatedSrt, targetLang, `youtube-captions-${ytDlpResult.mode}-translate`, ytDlpScopedSrt);
+            const degradedYtDlp = cacheTranslationOrFlagDegraded(
+              ytDlpScopedSrt,
+              translatedSrt,
+              `youtube-captions-${ytDlpResult.mode}-translate`,
+            );
             res.json({
               success: true,
               srt: translatedSrt,
               lang: targetLang,
               source: `youtube-captions-${ytDlpResult.mode}-translate`,
               originalSrt: ytDlpScopedSrt,
+              ...(degradedYtDlp ? { warning: degradedWarning } : {}),
             });
           } catch (translateErr: any) {
             const message = translateErr?.message || 'Subtitle translation failed';
@@ -10137,13 +10375,18 @@ let videoDownloaded = false;
               stepLog(
                 `translated web captions ${webCaptionResult.lang} to ${targetLang} via public fallback (${translatedSrt.length} chars, source=${webCaptionResult.source})`,
               );
-              setSubtitleCache(cacheKey, translatedSrt, targetLang, `youtube-captions-web-${webCaptionResult.source}-translate`, webCaptionScopedSrt);
+              const degradedWebExtractor = cacheTranslationOrFlagDegraded(
+                webCaptionScopedSrt,
+                translatedSrt,
+                `youtube-captions-web-${webCaptionResult.source}-translate`,
+              );
               res.json({
                 success: true,
                 srt: translatedSrt,
                 lang: targetLang,
                 source: `youtube-captions-web-${webCaptionResult.source}-translate`,
                 originalSrt: webCaptionScopedSrt,
+                ...(degradedWebExtractor ? { warning: degradedWarning } : {}),
               });
             } catch (translateErr: any) {
               const message = translateErr?.message || 'Subtitle translation failed';
@@ -10204,13 +10447,18 @@ let videoDownloaded = false;
               stepLog(
                 `translated bridge captions (${bridgeResult.lang}/${bridgeResult.mode}) to ${targetLang} (${translatedSrt.length} chars)`,
               );
-              setSubtitleCache(cacheKey, translatedSrt, targetLang, `youtube-captions-bridge-${bridgeResult.mode}-translate`, bridgeScopedSrt);
+              const degradedBridge = cacheTranslationOrFlagDegraded(
+                bridgeScopedSrt,
+                translatedSrt,
+                `youtube-captions-bridge-${bridgeResult.mode}-translate`,
+              );
               res.json({
                 success: true,
                 srt: translatedSrt,
                 lang: targetLang,
                 source: `youtube-captions-bridge-${bridgeResult.mode}-translate`,
                 originalSrt: bridgeScopedSrt,
+                ...(degradedBridge ? { warning: degradedWarning } : {}),
               });
               return;
             } catch (bridgeErr: any) {
@@ -10239,13 +10487,18 @@ let videoDownloaded = false;
             stepLog(
               `translated fallback English captions via public fallback (${translatedSrt.length} chars, source=${enCaptionResult.source})`,
             );
-            setSubtitleCache(cacheKey, translatedSrt, targetLang, `youtube-captions-web-en-translate-${enCaptionResult.source}`, enScopedSrt);
+            const degradedEn = cacheTranslationOrFlagDegraded(
+              enScopedSrt,
+              translatedSrt,
+              `youtube-captions-web-en-translate-${enCaptionResult.source}`,
+            );
             res.json({
               success: true,
               srt: translatedSrt,
               lang: targetLang,
               source: `youtube-captions-web-en-translate-${enCaptionResult.source}`,
               originalSrt: enScopedSrt,
+              ...(degradedEn ? { warning: degradedWarning } : {}),
             });
             return;
           } catch (geminiFallbackErr: any) {
@@ -10304,11 +10557,21 @@ let videoDownloaded = false;
         targetLang,
         `subtitle-translate-${fromLang}-to-${targetLang}`,
       );
+      // Surface (don't hide) a fully untranslated result — e.g. when every
+      // translator was rate-limited and the graceful-degradation path served
+      // the original track.
+      const degradedResponse =
+        targetLang !== 'original' &&
+        targetLang !== fromLang &&
+        isUntranslatedSubtitleResult(normalized, responseSrt);
       res.json({
         success: true,
         srt: responseSrt,
         lang: targetLang,
         source: `subtitle-translate-${fromLang}-to-${targetLang}`,
+        ...(degradedResponse
+          ? { warning: 'Translation service unavailable or rate-limited — serving the original track' }
+          : {}),
       });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || 'Subtitle translation failed' });
