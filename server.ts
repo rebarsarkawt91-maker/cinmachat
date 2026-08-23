@@ -400,17 +400,39 @@ function isSubtitleMetadataLine(line: string): boolean {
   );
 }
 
-function stripSubtitleMetadataFragments(line: string): string {
+// ---------------------------------------------------------------------------
+// Non-speech "noise" tags — [Music], [ هەناسەدان ], [ پێکەنین ], [ مۆسیقا ],
+// [cry], [Applause] ... — are stripped from dialogue lines so they never reach
+// viewers, never waste Google-batch characters, and never get translated into
+// odd text. Mirrors the client-side stripper in useSubtitleManager.ts.
+// ---------------------------------------------------------------------------
+const SOUND_TAG_CONTENT_RE =
+  /(هەناسەدان|پێکەنین|مۆسیقا|گریان|ژاڕ|قیژا|چیرپ|چەپڵە|دەنگ|ئاواز|گۆرانی|شینکردن|\b(?:music|instrumental|theme song|applause|applauding|laughter|laughing|laughs?|sighs?|sighing|breaths?|breathing|breathes?|exhales?|inhales?|pants?|panting|crys?|crying|cries|sobbing|sobs?|whimpers?|screams?|screaming|shrieks?|shouts?|shouting|yells?|yelling|whispers?|whispering|gasps?|gasping|groans?|groaning|moans?|chuckles?|chuckling|giggles?|giggling|sniffles?|sniffs?|coughs?|coughing|sneezes?|sneezing|clears? throat|throat clearing|silence|silent|pause|pauses|speaks?|speaking|singing|sings?|sung|humming|hums?|cheering|cheers?|clapping|claps?|gunshots?|gunfire|explosions?|blasts?|footsteps?|door slams?|doorbell|knocking|knocks?|thunder|rumbles?|phone rings?|ringtone|heartbeat|narrator|voice[- ]?over|no dialogue|inaudible|mumbles?|mumbling|muttering|mutters?|stammers?|stammering|stutters?|stuttering)\b)/i;
+
+const BRACKET_TAG_RE = /[[【〔]\s*([^[】〕]{1,64}?)\s*[\]】〕]/g;
+
+function stripSoundTagsFromSubtitleLine(line: string): string {
   if (isSubtitleStructureLine(line)) return line;
   return String(line || '')
+    .replace(BRACKET_TAG_RE, (match: string, inner: string) =>
+      SOUND_TAG_CONTENT_RE.test(inner) ? ' ' : match,
+    )
+    .replace(/\s{2,}/g, ' ');
+}
+
+function stripSubtitleMetadataFragments(line: string): string {
+  if (isSubtitleStructureLine(line)) return line;
+  const stripped = String(line || '')
     .replace(/\bkurd\s*[-_.]*\s*zhin\b/gi, '')
     .replace(/\bkurdzhin\b/gi, '')
     .replace(/کورد\s*ژین/g, '')
     .replace(/\s*(?:[-–—|•]+)\s*(?:translated|subtitle(?:s)?|caption(?:s)?)\s+(?:by|from)\s+.*$/i, '')
     .replace(/(?:https?:\/\/|www\.)\S+/gi, '')
     .replace(/\s{2,}/g, ' ')
-    .replace(/^\s*[-–—|•:]+|[-–—|•:]+\s*$/g, '')
-    .trim();
+    .replace(/^\s*[-–—|•:]+|[-–—|•:]+\s*$/g, '');
+  // Remove [sound] noise tags last so whole-line tags collapse to "" and get
+  // dropped by the sanitize loop.
+  return stripSoundTagsFromSubtitleLine(stripped).trim();
 }
 
 function sanitizeSubtitleText(rawText: string): string {
@@ -699,12 +721,13 @@ function shouldTranslateSubtitleLine(line: string): boolean {
 }
 
 function cleanSubtitleDialogueForTranslation(line: string): string {
-  return decodeSubtitleEntities(line)
+  const cleaned = decodeSubtitleEntities(line)
     .replace(/<\d{2}:\d{2}:\d{2}[\.,]\d{3}>/g, '')
     .replace(/<\/?c[^>]*>/g, '')
-    .replace(/<[^>]+>/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+    .replace(/<[^>]+>/g, '');
+  // Strip [sound] noise tags BEFORE batching so they never consume Google
+  // translation quota or confuse the batch-alignment sentinel logic.
+  return stripSoundTagsFromSubtitleLine(cleaned).trim();
 }
 
 function isBadSubtitleTranslation(text: string, targetLang: string): boolean {
@@ -8874,7 +8897,15 @@ async function startServer() {
     if (!req.body) {
       return res.status(400).json({ success: false, error: "Body is empty — check Content-Type header (use application/json or text/plain)" });
     }
-    const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, mainTrailerUrl, streamingSourceUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, quality, tags, category, rating, year, type, duration, postType, subtitleText } = req.body;
+    const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, mainTrailerUrl, streamingSourceUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, hdtodayUrl, vidsrcUrl, otherVideoUrl, youtubeMovieUrl, subtitleUrl, quality, tags, category, rating, year, type, duration, postType, subtitleText } = req.body;
+
+    // Keeps only well-formed http(s) links (or an empty string) so malformed
+    // admin input can never poison the movie record or the subtitle pipeline.
+    const safeHttpUrl = (value: unknown): string => {
+      if (typeof value !== 'string') return '';
+      const trimmed = value.trim();
+      return /^https?:\/\/\S+$/i.test(trimmed) ? trimmed : '';
+    };
 
     // VALIDATION: Detailed error reporting as requested
     if (!title) return res.status(400).json({ success: false, error: "ناونیشان پێویستە (Title is required)" });
@@ -8910,9 +8941,16 @@ async function startServer() {
       mainTrailerUrl: mainTrailerUrl || "",
       streamingSourceUrl: streamingSourceUrl || "",
       streamingUrl: activeVideoSource,
-      vidmolyUrl: vidmolyUrl || "",
-      streamwishUrl: streamwishUrl || "",
-      fileLrunUrl: fileLrunUrl || "",
+      vidmolyUrl: safeHttpUrl(vidmolyUrl),
+      streamwishUrl: safeHttpUrl(streamwishUrl),
+      fileLrunUrl: safeHttpUrl(fileLrunUrl),
+      hdtodayUrl: safeHttpUrl(hdtodayUrl),
+      vidsrcUrl: safeHttpUrl(vidsrcUrl),
+      otherVideoUrl: safeHttpUrl(otherVideoUrl),
+      youtubeMovieUrl: safeHttpUrl(youtubeMovieUrl),
+      // Existing subtitle file (.srt/.vtt URL) — priority #1 source for the
+      // automatic Kurdish subtitle pipeline.
+      subtitleUrl: safeHttpUrl(subtitleUrl),
       external_link: activeVideoSource,
       isYouTube: !!ytEmbedUrl,
       quality: quality || 'HD',
@@ -8947,6 +8985,16 @@ async function startServer() {
     await saveDB(db);
     // Add to cache while preventing duplicates
     setMoviesCache(prev => [newMovie, ...prev.filter(m => m.id !== newMovie.id)]);
+
+    // Fire-and-forget: kick off the background Kurdish subtitle pipeline.
+    // Never blocks or fails the publish response — all errors are handled
+    // inside the job runner (retries + status persisted on the movie record).
+    try {
+      dispatchKurdishSubtitleJob(newMovie);
+    } catch (subJobErr: any) {
+      console.warn(`[subtitle-job] dispatch failed for ${newMovie.id}: ${subJobErr?.message || subJobErr}`);
+    }
+
     res.json({ success: true, movie: newMovie });
   });
 
@@ -9047,6 +9095,14 @@ async function startServer() {
       db.manualMovies.push(newMovie);
       await saveDB(db);
       setMoviesCache(prev => [newMovie, ...prev.filter(m => m.id !== newMovie.id)]);
+
+      // Background Kurdish subtitle pipeline (same fire-and-forget contract as
+      // the admin publish endpoint).
+      try {
+        dispatchKurdishSubtitleJob(newMovie);
+      } catch (subJobErr: any) {
+        console.warn(`[subtitle-job] dispatch failed for ${newMovie.id}: ${subJobErr?.message || subJobErr}`);
+      }
 
       console.log(`[WhatsApp Automation] Successfully posted: ${title}`);
       res.json({ success: true, movie: newMovie });
@@ -9778,6 +9834,474 @@ async function startServer() {
     }
   }
 
+  // ===========================================================================
+  // BACKGROUND KURDISH SUBTITLE PIPELINE
+  // ---------------------------------------------------------------------------
+  // Runs automatically (fire-and-forget) whenever a movie is published. It
+  // resolves the best available subtitle source, translates it to Kurdish
+  // Sorani (ckb) while preserving every timestamp, sanitizes bracketed noise
+  // tags and stores the result as:
+  //     uploads/subtitles/{movie_id}/kurdish-{source_hash}.vtt
+  //
+  // Source priority chain:
+  //   1. movie.subtitleUrl          — an existing .srt/.vtt file URL
+  //   2. embedded/caption track     — YouTube timedtext / yt-dlp bridge for any
+  //                                   supported source URL
+  //   3. movie.subtitleText         — raw pasted SRT/VTT from the admin form
+  //   4. speech-to-text fallback    — ffmpeg+Whisper (opt-in via env flag; a
+  //                                   full CPU transcription can take hours)
+  //
+  // Dedup: results are keyed by movie id + language + sha256(source content),
+  // so re-publishing the same movie (or restarting the server) never repeats
+  // the translation work — the existing .vtt is reused as-is.
+  //
+  // Reliability: transient failures (network, HTTP 5xx/429, translator quota)
+  // retry with exponential backoff (5s → 30s → 120s). Permanent failures are
+  // recorded on the movie record so admins can see why no track was produced.
+  //
+  // The job NEVER blocks publishing: dispatch returns immediately and all work
+  // happens on a serial in-process queue (one movie at a time to protect
+  // CPU/network on small instances).
+  // ===========================================================================
+
+  if (!db.subtitleJobs) db.subtitleJobs = {};
+
+  const KURDISH_JOB_LANG = 'ckb';
+  const KURDISH_JOB_MAX_ATTEMPTS = 4;
+  const KURDISH_JOB_BACKOFF_MS = [5_000, 30_000, 120_000];
+  const MOVIE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
+  // Opt-in heavy STT fallback (downloads + transcribes the video itself).
+  const ENABLE_BG_WHISPER_FALLBACK = process.env.ENABLE_BG_WHISPER_FALLBACK === '1';
+
+  const kurdishJobLog = (movieId: string, msg: string) =>
+    console.log(`[${new Date().toISOString()}] [subtitle-job:${movieId}] ${msg}`);
+
+  // Stable identity of a subtitle document: hash the NORMALIZED text so files
+  // that only differ by CRLF/BOM/noise-tag formatting share one cached result.
+  function computeSubtitleSourceHash(subtitleText: string): string {
+    return crypto
+      .createHash('sha256')
+      .update(normalizeSubtitleText(subtitleText).replace(/\r\n/g, '\n').trim())
+      .digest('hex')
+      .slice(0, 16);
+  }
+
+  const kurdishSubtitleDirFor = (movieId: string) => path.join(SUBTITLES_DIR, movieId);
+
+  const kurdishSubtitleFileNameFor = (hash: string) => `kurdish-${hash}.vtt`;
+
+  const kurdishSubtitleUrlFor = (movieId: string, fileName: string) =>
+    `/api/subtitles/movie/${encodeURIComponent(movieId)}/${encodeURIComponent(fileName)}`;
+
+  class TransientSubtitleError extends Error {}
+  const isTransientSubtitleError = (err: any): boolean => {
+    if (err instanceof TransientSubtitleError) return true;
+    const message = String(err?.message || err || '');
+    return /timed out|timeout|abort|econn|enotfound|etimedout|eai_again|socket|http 5\d\d|http 429|rate.?limit|quota|resource_exhausted/i.test(
+      message,
+    );
+  };
+
+  // Downloads a remote .srt/.vtt file with the same size/time limits used by
+  // the interactive endpoints.
+  async function downloadRemoteSubtitleText(subtitleUrl: string): Promise<string> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20_000);
+    try {
+      let resp;
+      try {
+        resp = await fetch(subtitleUrl, { signal: controller.signal, redirect: 'follow' });
+      } catch (e: any) {
+        throw new TransientSubtitleError(
+          `Subtitle download failed: ${e?.name === 'AbortError' ? 'timed out after 20s' : e?.message}`,
+        );
+      }
+      if (!resp.ok) {
+        const err: any = new Error(`Subtitle download failed: HTTP ${resp.status}`);
+        if (resp.status >= 500 || resp.status === 429) Object.setPrototypeOf(err, TransientSubtitleError.prototype);
+        throw err;
+      }
+      const rawText = await resp.text();
+      if (rawText.length > SUBTITLE_DOWNLOAD_MAX_BYTES) throw new Error('Subtitle file is too large (> 10 MB)');
+      const cleanText = rawText.replace(/^\uFEFF/, '').trim();
+      if (!cleanText) throw new Error('Subtitle file is empty');
+      return normalizeSubtitleText(cleanText);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function extractYouTubeVideoIdLoose(url: string): string {
+    const match = String(url || '').match(
+      /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i,
+    );
+    return match ? match[1] : '';
+  }
+
+  interface ResolvedKurdishSource {
+    text: string;
+    sourceTag: string;
+    sourceLang: string;
+  }
+
+  // Walks the priority chain until a usable subtitle document is found.
+  async function resolveKurdishSource(movie: any): Promise<ResolvedKurdishSource> {
+    // --- Priority 1: admin-supplied subtitle file URL -------------------------
+    if (typeof movie.subtitleUrl === 'string' && /^https?:\/\//i.test(movie.subtitleUrl.trim())) {
+      const url = sanitizeUrl(movie.subtitleUrl.trim());
+      try {
+        const text = await downloadRemoteSubtitleText(url);
+        kurdishJobLog(movie.id, `priority 1 hit: subtitleUrl (${url.slice(0, 80)})`);
+        return { text, sourceTag: 'movie-subtitle-url', sourceLang: 'auto' };
+      } catch (err: any) {
+        // A dead link should not stop the chain — fall through to P2/P3.
+        kurdishJobLog(movie.id, `priority 1 failed: ${err?.message || err}`);
+      }
+    }
+
+    // --- Priority 2: caption/embedded track on the video source ---------------
+    const candidateUrls = [
+      movie.videoUrl,
+      movie.streamingUrl,
+      movie.embedUrl,
+      movie.youtubeMovieUrl,
+      movie.external_link,
+    ].filter((u: unknown) => typeof u === 'string' && /^https?:\/\//i.test(u as string));
+    const youtubeId = extractYouTubeVideoIdLoose(candidateUrls[0] || '');
+    if (youtubeId) {
+      const watchUrl = `https://www.youtube.com/watch?v=${youtubeId}`;
+      for (const lang of ['en', 'ar', 'ku']) {
+        try {
+          const result = await fetchYouTubeCaptionsFromWeb(youtubeId, lang);
+          const scoped = normalizeSubtitleText(result.srt);
+          if (scoped.trim()) {
+            kurdishJobLog(movie.id, `priority 2 hit: youtube web captions (${lang}/${result.source})`);
+            return { text: scoped, sourceTag: `youtube-track-${result.source}`, sourceLang: result.lang || lang };
+          }
+        } catch (err: any) {
+          kurdishJobLog(movie.id, `youtube web captions (${lang}) failed: ${err?.message || err}`);
+        }
+      }
+      // yt-dlp bridge covers more videos than the plain web extractors.
+      const osMod = await import('os');
+      const fsMod = await import('fs');
+      const workDir = fsMod.mkdtempSync(path.join(osMod.tmpdir(), 'cinemachat-ccbg-'));
+      try {
+        for (const lang of ['en', 'ar', 'ku']) {
+          try {
+            const bridge = await fetchYoutubeCaptionsViaYtDlp(watchUrl, workDir, lang);
+            const scoped = normalizeSubtitleText(bridge.srt);
+            if (scoped.trim()) {
+              kurdishJobLog(movie.id, `priority 2 hit: yt-dlp captions (${bridge.lang}/${bridge.mode})`);
+              return { text: scoped, sourceTag: `youtube-track-ytdlp-${bridge.mode}`, sourceLang: bridge.lang || lang };
+            }
+          } catch (err: any) {
+            if ((err as any)?.code === 'YTDLP_MISSING') break;
+            kurdishJobLog(movie.id, `yt-dlp captions (${lang}) failed: ${err?.message || err}`);
+          }
+        }
+      } finally {
+        try {
+          fsMod.rmSync(workDir, { recursive: true, force: true });
+        } catch {
+          /* ignore */
+        }
+      }
+    } else if (candidateUrls.length) {
+      // Non-YouTube embeds sometimes expose a real caption track that yt-dlp
+      // understands — worth one bounded attempt before giving up.
+      const osMod = await import('os');
+      const fsMod = await import('fs');
+      const workDir = fsMod.mkdtempSync(path.join(osMod.tmpdir(), 'cinemachat-ccbg-'));
+      try {
+        const bridge = await fetchYoutubeCaptionsViaYtDlp(candidateUrls[0], workDir, 'en');
+        const scoped = normalizeSubtitleText(bridge.srt);
+        if (scoped.trim()) {
+          kurdishJobLog(movie.id, `priority 2 hit: yt-dlp captions for provider URL (${bridge.mode})`);
+          return { text: scoped, sourceTag: `provider-track-ytdlp-${bridge.mode}`, sourceLang: bridge.lang || 'en' };
+        }
+      } catch (err: any) {
+        if ((err as any)?.code !== 'YTDLP_MISSING') {
+          kurdishJobLog(movie.id, `provider yt-dlp attempt failed: ${err?.message || err}`);
+        }
+      } finally {
+        try {
+          fsMod.rmSync(workDir, { recursive: true, force: true });
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
+    // --- Priority 3: pasted subtitle content from the publish form ------------
+    if (typeof movie.subtitleText === 'string' && movie.subtitleText.trim()) {
+      const text = normalizeSubtitleText(movie.subtitleText.replace(/^\uFEFF/, '').trim());
+      if (text.trim()) {
+        kurdishJobLog(movie.id, 'priority 3 hit: pasted subtitleText');
+        return { text, sourceTag: 'embedded-subtitle-text', sourceLang: 'auto' };
+      }
+    }
+
+    // --- Priority 4: speech-to-text fallback (opt-in) -------------------------
+    const directVideoUrl = candidateUrls.find((u: string) => /\.(mp4|m4v|webm|ogv)(\?|#|$)/i.test(u));
+    if (directVideoUrl && ENABLE_BG_WHISPER_FALLBACK) {
+      const osMod = await import('os');
+      const fsMod = await import('fs');
+      const workDir = fsMod.mkdtempSync(path.join(osMod.tmpdir(), 'cinemachat-ccbg-'));
+      const videoPath = path.join(workDir, 'source.mp4');
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), Number(process.env.SUBTITLE_DOWNLOAD_TIMEOUT) || 900_000);
+        let resp;
+        try {
+          resp = await fetch(directVideoUrl, { signal: controller.signal });
+        } finally {
+          clearTimeout(timer);
+        }
+        if (!resp.ok) throw new Error(`Video download failed: HTTP ${resp.status}`);
+        const buffer = Buffer.from(await resp.arrayBuffer());
+        if (buffer.length < 1024) throw new Error('Downloaded video is empty');
+        fsMod.writeFileSync(videoPath, buffer);
+        kurdishJobLog(movie.id, `priority 4: starting whisper STT (${Math.round(buffer.length / 1024)} KB)`);
+        const srtPath = await generateSubtitle(videoPath, KURDISH_JOB_LANG);
+        const text = normalizeSubtitleText(fsMod.readFileSync(srtPath, 'utf-8'));
+        if (!text.trim()) throw new Error('Whisper produced an empty track');
+        return { text, sourceTag: 'speech-to-text', sourceLang: 'auto' };
+      } finally {
+        try {
+          fsMod.rmSync(workDir, { recursive: true, force: true });
+        } catch {
+          /* ignore */
+        }
+      }
+    } else if (directVideoUrl) {
+      kurdishJobLog(
+        movie.id,
+        'no subtitle source found; whisper fallback disabled (set ENABLE_BG_WHISPER_FALLBACK=1 to opt in)',
+      );
+    }
+
+    throw new Error('NO_SUBTITLE_SOURCE');
+  }
+
+  // Persists job status onto both the db record and the movie documents so the
+  // client can pick the pre-generated track straight away.
+  async function persistKurdishJobState(movieId: string, fields: Record<string, any>) {
+    const key = `${movieId}:${KURDISH_JOB_LANG}`;
+    const updatedAt = new Date().toISOString();
+    db.subtitleJobs[key] = {
+      ...(db.subtitleJobs[key] || {}),
+      movieId,
+      lang: KURDISH_JOB_LANG,
+      updatedAt,
+      ...fields,
+    };
+
+    // Movie-facing projection of the job fields (client contract).
+    const moviePatch: Record<string, any> = {
+      kurdishSubtitleStatus: fields.status || 'processing',
+      kurdishSubtitleUpdatedAt: updatedAt,
+    };
+    if (fields.url !== undefined) moviePatch.kurdishSubtitleUrl = fields.url;
+    if (fields.source !== undefined) moviePatch.kurdishSubtitleSource = fields.source;
+
+    const applyTo = (movie: any) => {
+      if (movie?.id !== movieId) return movie;
+      return { ...movie, ...moviePatch };
+    };
+    db.manualMovies = db.manualMovies.map(applyTo);
+    setMoviesCache((prev: any[]) => prev.map(applyTo));
+
+    try {
+      await saveDB(db);
+    } catch (err: any) {
+      kurdishJobLog(movieId, `saveDB failed: ${err?.message || err}`);
+    }
+
+    // Best-effort mirror into Firestore so clients that read the catalog from
+    // there see the generated track too. Never fatal.
+    try {
+      const adminApp = initializeFirebaseAdmin();
+      if (adminApp) {
+        await admin.firestore(adminApp).collection('movies').doc(movieId).set(moviePatch, { merge: true });
+      }
+    } catch (err: any) {
+      kurdishJobLog(movieId, `firestore sync skipped: ${err?.message || err}`);
+    }
+  }
+
+  // Serial queue: movies are processed strictly one at a time.
+  let kurdishQueueTail: Promise<void> = Promise.resolve();
+
+  async function processKurdishSubtitleJob(movieId: string, attempt: number): Promise<void> {
+    const key = `${movieId}:${KURDISH_JOB_LANG}`;
+    const movie =
+      moviesCache.find((m: any) => m.id === movieId) ||
+      db.manualMovies.find((m: any) => m.id === movieId);
+    if (!movie) {
+      kurdishJobLog(movieId, 'movie record vanished — aborting job');
+      return;
+    }
+
+    try {
+      await persistKurdishJobState(movieId, { status: 'processing', attempts: attempt });
+
+      const source = await resolveKurdishSource(movie);
+      const sourceHash = computeSubtitleSourceHash(source.text);
+      const fileName = kurdishSubtitleFileNameFor(sourceHash);
+      const outputDir = kurdishSubtitleDirFor(movieId);
+      const outputPath = path.join(outputDir, fileName);
+      const publicUrl = kurdishSubtitleUrlFor(movieId, fileName);
+
+      // --- Dedup -------------------------------------------------------------
+      // 1. Same movie already translated from identical source content.
+      const prevRecord = db.subtitleJobs[key];
+      if (
+        prevRecord?.status === 'ready' &&
+        prevRecord?.sourceHash === sourceHash &&
+        prevRecord?.fileName === fileName
+      ) {
+        await persistKurdishJobState(movieId, {
+          status: 'ready',
+          sourceHash,
+          fileName,
+          url: publicUrl,
+          source: prevRecord.source || source.sourceTag,
+          attempts: attempt,
+          lastError: null,
+        });
+        kurdishJobLog(movieId, `dedup: unchanged source (${sourceHash}) — reusing ${fileName}`);
+        return;
+      }
+      // 2. The output file already exists on disk (restart / cross-run dedup).
+      await ensureSubtitlesDir();
+      await fs.mkdir(outputDir, { recursive: true });
+      let vttText = '';
+      let fileExists = false;
+      try {
+        vttText = await fs.readFile(outputPath, 'utf-8');
+        fileExists = !!vttText.trim();
+      } catch {
+        fileExists = false;
+      }
+
+      if (!fileExists) {
+        kurdishJobLog(
+          movieId,
+          `translating ${source.text.length} chars (${source.sourceTag}, attempt ${attempt}) → ckb`,
+        );
+        const translated = await translateSubtitleWithFallback(
+          source.text,
+          KURDISH_JOB_LANG,
+          source.sourceLang || 'auto',
+        );
+        // A fully-untranslated result means the translators were rate-limited —
+        // treat it as transient so the backoff loop retries later instead of
+        // caching an original-language track under the kurdish name.
+        if (isUntranslatedSubtitleResult(source.text, translated)) {
+          throw new TransientSubtitleError(
+            'Translation degraded (all engines rate-limited) — will retry',
+          );
+        }
+        vttText = ensureSubtitleTrackMatchesLang(translated, KURDISH_JOB_LANG, `bg-${source.sourceTag}`);
+        // Guarantee a valid WebVTT document: the translator pipeline may emit
+        // headerless VTT/SRT-style output which strict <track> consumers
+        // reject.
+        if (!/^WEBVTT/i.test(vttText.trim())) {
+          vttText = `WEBVTT\n\n${vttText.replace(/^\uFEFF/, '').trim()}\n`;
+        }
+        await fs.writeFile(outputPath, vttText, 'utf-8');
+        // Warm the shared two-tier cache so /api/subtitles/auto-translate also
+        // serves this result instantly for the same slug.
+        try {
+          setSubtitleCache(
+            subtitleCacheKey(`saved:${subtitleKeySlug(movieId)}`, KURDISH_JOB_LANG, null, null),
+            vttText,
+            KURDISH_JOB_LANG,
+            `kurdish-bg-${source.sourceTag}`,
+          );
+        } catch {
+          /* cache write is best-effort */
+        }
+      } else {
+        kurdishJobLog(movieId, `disk dedup hit: ${fileName} already exists — skipping translation`);
+      }
+
+      await persistKurdishJobState(movieId, {
+        status: 'ready',
+        sourceHash,
+        fileName,
+        url: publicUrl,
+        source: source.sourceTag,
+        attempts: attempt,
+        lastError: null,
+      });
+      kurdishJobLog(movieId, `ready: ${publicUrl}`);
+    } catch (err: any) {
+      const message = err?.message || String(err);
+      const transient = isTransientSubtitleError(err) && attempt < KURDISH_JOB_MAX_ATTEMPTS;
+
+      if (message === 'NO_SUBTITLE_SOURCE') {
+        await persistKurdishJobState(movieId, {
+          status: 'skipped',
+          lastError: 'No subtitle source found for this movie',
+          attempts: attempt,
+        });
+        kurdishJobLog(movieId, 'skipped: no subtitle source available');
+        return;
+      }
+
+      if (transient) {
+        const delay = KURDISH_JOB_BACKOFF_MS[Math.min(attempt - 1, KURDISH_JOB_BACKOFF_MS.length - 1)];
+        await persistKurdishJobState(movieId, {
+          status: 'processing',
+          lastError: message,
+          attempts: attempt,
+        });
+        kurdishJobLog(movieId, `transient failure (attempt ${attempt}): ${message} — retrying in ${delay / 1000}s`);
+        setTimeout(() => {
+          kurdishQueueTail = kurdishQueueTail.then(() => processKurdishSubtitleJob(movieId, attempt + 1));
+        }, delay);
+        return;
+      }
+
+      await persistKurdishJobState(movieId, {
+        status: 'failed',
+        lastError: message,
+        attempts: attempt,
+      });
+      kurdishJobLog(movieId, `failed permanently: ${message}`);
+    }
+  }
+
+  // Public entry point — safe to call from any request handler, never throws,
+  // never queues the same movie twice.
+  function dispatchKurdishSubtitleJob(movie: any) {
+    const movieId = String(movie?.id || '');
+    if (!MOVIE_ID_PATTERN.test(movieId)) return;
+    const key = `${movieId}:${KURDISH_JOB_LANG}`;
+    const existing = db.subtitleJobs[key];
+    // Re-dispatch guard: never double-queue an active job. A 'processing' or
+    // 'queued' record older than 15 minutes is considered orphaned (e.g. a
+    // restart mid-job) and is allowed through again.
+    const STALE_JOB_MS = 15 * 60_000;
+    const isActiveJob =
+      (existing?.status === 'processing' || existing?.status === 'queued') &&
+      Date.now() - Date.parse(existing?.updatedAt || existing?.queuedAt || '') < STALE_JOB_MS;
+    if (isActiveJob) return;
+
+    db.subtitleJobs[key] = {
+      ...(existing || {}),
+      movieId,
+      lang: KURDISH_JOB_LANG,
+      status: 'queued',
+      queuedAt: new Date().toISOString(),
+    };
+
+    kurdishQueueTail = kurdishQueueTail.then(() => processKurdishSubtitleJob(movieId, 1));
+    kurdishJobLog(movieId, 'job queued (background kurdish subtitles)');
+  }
+
   // POST /api/subtitles/auto-translate — translates a VTT/SRT subtitle track to
   // Kurdish Sorani (or returns the original untouched), persists the result and
   // serves it from the two-tier cache on subsequent calls.
@@ -9940,6 +10464,47 @@ async function startServer() {
     } catch {
       res.status(404).json({ error: 'Subtitle file not found' });
     }
+  });
+
+  // Serves the background pipeline's per-movie Kurdish subtitle files:
+  //   /api/subtitles/movie/:movieId/kurdish-{hash}.vtt
+  // Both path segments are strictly validated so no traversal can escape the
+  // subtitles directory, and only `kurdish-*.vtt` names produced by the job
+  // runner are ever served.
+  app.get('/api/subtitles/movie/:movieId/:name', async (req, res) => {
+    const movieId = String(req.params.movieId || '');
+    const fileName = safeSubtitleFileName(req.params.name);
+    if (!MOVIE_ID_PATTERN.test(movieId) || !fileName || !/^kurdish-[a-f0-9]{16}\.vtt$/i.test(fileName)) {
+      return res.status(400).json({ error: 'Invalid subtitle path' });
+    }
+    try {
+      const content = await fs.readFile(path.join(kurdishSubtitleDirFor(movieId), fileName), 'utf-8');
+      res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.send(content);
+    } catch {
+      res.status(404).json({ error: 'Subtitle file not found' });
+    }
+  });
+
+  // Job status inspector for admins/debugging (no UI attached — read-only).
+  app.get('/api/subtitles/job/:movieId', async (req, res) => {
+    const movieId = String(req.params.movieId || '');
+    if (!MOVIE_ID_PATTERN.test(movieId)) {
+      return res.status(400).json({ error: 'Invalid movie id' });
+    }
+    const job = db.subtitleJobs?.[`${movieId}:${KURDISH_JOB_LANG}`] || null;
+    const movie =
+      moviesCache.find((m: any) => m.id === movieId) ||
+      db.manualMovies.find((m: any) => m.id === movieId) ||
+      null;
+    res.json({
+      job,
+      kurdishSubtitleUrl: movie?.kurdishSubtitleUrl || '',
+      kurdishSubtitleStatus: movie?.kurdishSubtitleStatus || '',
+      kurdishSubtitleSource: movie?.kurdishSubtitleSource || '',
+      kurdishSubtitleUpdatedAt: movie?.kurdishSubtitleUpdatedAt || '',
+    });
   });
 
 

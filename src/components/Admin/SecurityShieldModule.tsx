@@ -17,6 +17,17 @@ import {
   Download
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import * as XLSX from "xlsx";
+import {
+  db,
+  collection,
+  query,
+  orderBy,
+  limit,
+  onSnapshot,
+  doc,
+  deleteDoc,
+} from "../../lib/firebase";
 
 interface FailedLogin {
   ip: string;
@@ -37,16 +48,24 @@ interface AuditLog {
   timestamp: string;
 }
 
+// Unblock requests are written by blocked clients DIRECTLY to the Firestore
+// `unblockRequests` collection (they cannot rely on reaching the app server),
+// so this interface mirrors that document shape. Timestamps arrive as Firestore
+// Timestamp objects and are normalized to ISO strings when mapping snapshots.
 interface UnblockRequest {
   id: string;
   name: string;
   phone: string;
-  ip: string;
+  ip?: string;
+  deviceId?: string;
   device?: string;
+  browser?: string;
+  location?: string;
   blockedAt?: string;
-  status?: string;
-  resolvedBy?: string;
-  resolvedAt?: string;
+  status?: string; // 'pending' | 'resolved' | 'deleted' | 'archived'
+  resolvedBy?: string; // archive entries only (server-side history)
+  resolvedAt?: string; // archive entries only
+  requestedAt?: string;
   timestamp: string;
 }
 
@@ -102,11 +121,6 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
       const auditData = await auditRes.json();
       if (Array.isArray(auditData)) setAuditLogs(auditData);
 
-      // Load unblock requests
-      const ubqRes = await fetch("/api/admin/unblock-requests", { headers: adminHeaders });
-      const ubqData = await ubqRes.json();
-      if (Array.isArray(ubqData)) setUnblockRequests(ubqData);
-
       // Load unblock request archive history (resolved/deleted/cleared)
       const ubqArchRes = await fetch("/api/admin/unblock-requests/archive", { headers: adminHeaders });
       const ubqArchData = await ubqArchRes.json();
@@ -118,6 +132,61 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
       setIsLoading(false);
     }
   };
+
+  // Real-time Firestore listener for the unblock-request queue. Requests are
+  // written by blocked clients straight into `unblockRequests`, so onSnapshot
+  // is the only reliable source — it updates instantly and keeps the tab
+  // badge count accurate without waiting for the REST poll.
+  useEffect(() => {
+    const q = query(
+      collection(db, "unblockRequests"),
+      orderBy("timestamp", "desc"),
+      limit(200),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        setUnblockRequests(
+          snap.docs.map((d) => {
+            const data = d.data() as Record<string, any>;
+            // Normalize Firestore Timestamps to ISO strings so every render
+            // path (formatDate, Excel export labels) receives plain strings.
+            const toIso = (v: any): string | undefined => {
+              if (!v) return undefined;
+              if (typeof v === "string") return v;
+              if (typeof v.toDate === "function") {
+                try {
+                  return v.toDate().toISOString();
+                } catch {
+                  return undefined;
+                }
+              }
+              if (typeof v.seconds === "number") {
+                return new Date(v.seconds * 1000).toISOString();
+              }
+              return String(v);
+            };
+            return {
+              id: d.id,
+              name: data.name ?? "",
+              phone: data.phone ?? "",
+              ip: data.ip || "",
+              deviceId: data.deviceId || "",
+              device: data.device || "",
+              browser: data.browser || "",
+              location: data.location || "",
+              blockedAt: toIso(data.blockedAt),
+              requestedAt: toIso(data.requestedAt),
+              status: data.status || "pending",
+              timestamp: toIso(data.timestamp) || toIso(data.requestedAt) || new Date().toISOString(),
+            } as UnblockRequest;
+          }),
+        );
+      },
+      (err) => console.warn("unblockRequests listener:", err),
+    );
+    return () => unsub();
+  }, []);
 
   useEffect(() => {
     loadData();
@@ -216,16 +285,12 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
     }
   };
 
+  // Remove a request document from the Firestore queue (reviewed & dismissed
+  // without unblocking anyone).
   const handleDeleteUnblockRequest = async (id: string) => {
     try {
-      const res = await fetch(`/api/admin/unblock-request/${id}`, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ adminName }),
-      });
-      if (res.ok) {
-        loadData();
-      }
+      await deleteDoc(doc(db, "unblockRequests", id));
+      loadData(); // refresh archive/history panels
     } catch (err) {
       console.error("Failed to delete unblock request:", err);
     }
@@ -234,32 +299,40 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
   const handleClearUnblockRequests = async () => {
     if (!confirm("ئایا دڵنیایت لە سڕینەوەی هەموو داواکارییەکانی لابردنی بلۆک؟")) return;
     try {
-      const res = await fetch("/api/admin/clear-unblock-requests", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...adminHeaders },
-        body: JSON.stringify({ adminName }),
-      });
-      if (res.ok) {
-        loadData();
-      }
+      // writeBatch isn't part of the shared firebase lib export, and queues are
+      // capped at 200 — sequential deletes are simple, safe and fast enough.
+      await Promise.all(
+        unblockRequests.map((r) => deleteDoc(doc(db, "unblockRequests", r.id))),
+      );
+      loadData();
     } catch (err) {
       console.error("Failed to clear unblock requests:", err);
     }
   };
 
-  // Unblock & remove: instantly unbans the requester's IP/device and clears the
-  // request from the queue in one action.
-  const handleResolveUnblockRequest = async (id: string) => {
+  // Unblock & remove: instantly unbans the requester's device fingerprint and
+  // IP via the existing server endpoints, then clears the Firestore request
+  // document in one admin action.
+  const handleResolveUnblockRequest = async (req: UnblockRequest) => {
     if (!confirm("ئایا دڵنیایت لە کردنەوەی بلۆکی ئەم بەکارهێنەرە و سڕینەوەی داواکارییەکەی؟")) return;
     try {
-      const res = await fetch("/api/admin/resolve-unblock-request", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...adminHeaders },
-        body: JSON.stringify({ id, adminName }),
-      });
-      if (res.ok) {
-        loadData();
+      const body = { "Content-Type": "application/json" };
+      if (req.deviceId) {
+        await fetch("/api/admin/unban-device", {
+          method: "POST",
+          headers: { ...body, ...adminHeaders },
+          body: JSON.stringify({ deviceId: req.deviceId, adminName }),
+        });
       }
+      if (req.ip) {
+        await fetch("/api/admin/unban-ip", {
+          method: "POST",
+          headers: { ...body, ...adminHeaders },
+          body: JSON.stringify({ ip: req.ip, adminName }),
+        });
+      }
+      await deleteDoc(doc(db, "unblockRequests", req.id));
+      loadData();
     } catch (err) {
       console.error("Failed to resolve unblock request:", err);
     }
@@ -268,6 +341,36 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
   // Download helper for Excel reports (server returns the .xlsx file)
   const downloadExport = (path: string) => {
     window.open(`/api/admin/export/${path}?adminName=${encodeURIComponent(adminName)}`, "_blank");
+  };
+
+  // Export the LIVE Firestore-backed unblock-request queue (same source the
+  // onSnapshot listener renders), so the spreadsheet always matches the list
+  // and count shown in this tab.
+  const exportUnblockRequests = () => {
+    const rows = unblockRequests.map((r, idx) => ({
+      "#": idx + 1,
+      "ناو (Name)": r.name || "",
+      "ژمارەی مۆبایل (Phone)": r.phone || "",
+      "IP ئایپی": r.ip || "",
+      "وێبگەڕ (Browser)": r.browser || "",
+      "ناونیشان (Location)": r.location || "",
+      "کاتی بلۆک (Blocked At)": r.blockedAt ? new Date(r.blockedAt).toLocaleString("ku-IQ") : "نەزانراو",
+      "کاتی داواکاری (Requested At)": r.timestamp ? new Date(r.timestamp).toLocaleString("ku-IQ") : "نەزانراو",
+      "ئامێر/بەشێوە (Device)": r.device || "",
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws["!cols"] = [6, 18, 18, 18, 18, 22, 28, 28, 45].map((wch) => ({ wch }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Unblock Requests");
+    const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
+    const url = URL.createObjectURL(
+      new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+    );
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "unblock-requests.xlsx";
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const formatDate = (dateStr: string) => {
@@ -724,7 +827,7 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
                 </div>
                 <div className="flex items-center gap-2 flex-wrap shrink-0">
                   <button
-                    onClick={() => downloadExport("unblock-requests/xlsx")}
+                    onClick={exportUnblockRequests}
                     disabled={unblockRequests.length === 0}
                     className="px-3 py-2 bg-green-500/10 hover:bg-green-600 text-green-500 hover:text-white rounded-xl text-[11px] font-bold kurdish-text flex items-center gap-2 transition duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
                   >
@@ -765,8 +868,19 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
                         </p>
                         <p className="text-[11px] text-gray-400 flex items-center gap-1.5">
                           <span className="text-[10px] text-gray-500 kurdish-text">ئایپی بلۆککراو:</span>
-                          <span className="font-mono" dir="ltr">{reqItem.ip}</span>
+                          <span className="font-mono" dir="ltr">{reqItem.ip || "نەزانراو"}</span>
                         </p>
+                        {(reqItem.browser || reqItem.location) && (
+                          <p className="text-[11px] text-gray-400 flex items-center gap-1.5 flex-wrap">
+                            {reqItem.browser && (
+                              <span className="font-mono" dir="ltr">{reqItem.browser}</span>
+                            )}
+                            {reqItem.browser && reqItem.location && <span className="text-gray-600">•</span>}
+                            {reqItem.location && (
+                              <span dir="ltr">{reqItem.location}</span>
+                            )}
+                          </p>
+                        )}
                         {reqItem.device && (
                           <p className="text-[11px] text-gray-400 flex items-start gap-1.5">
                             <span className="text-[10px] text-gray-500 kurdish-text mt-0.5">ئامێر/دەزیڵ:</span>
@@ -784,7 +898,7 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
                       </div>
                       <div className="text-left shrink-0 self-end sm:self-center flex sm:flex-col gap-2">
                         <button
-                          onClick={() => handleResolveUnblockRequest(reqItem.id)}
+                          onClick={() => handleResolveUnblockRequest(reqItem)}
                           className="px-3 py-1.5 bg-green-500/10 hover:bg-green-600 text-green-500 hover:text-white rounded-lg text-[10px] font-bold kurdish-text flex items-center gap-1.5 transition duration-200"
                         >
                           <Unlock className="w-3 h-3" />

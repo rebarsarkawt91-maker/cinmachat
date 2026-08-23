@@ -21,7 +21,12 @@ import {
   Sparkles,
   Upload,
   Link,
-  Image as ImageIcon
+  Image as ImageIcon,
+  Clock as ClockIcon,
+  Crown,
+  History,
+  Film,
+  Phone
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -42,6 +47,13 @@ interface VIPSetting {
   paymentDetails: string;
   instructions: string;
   paymentLogoUrl?: string;
+  // Shared contact channels (unified Payment & Contact panel) — mirrored to
+  // both the VIP Lounge and the Cinema Window room.
+  whatsappNumber?: string;
+  supportPhone?: string;
+  // Silent "behind-the-glass" trailer shown to users outside the VIP room.
+  glassPreviewUrl?: string;
+  glassPreviewEnabled?: boolean;
 }
 
 interface CinemaWindowAdminRoom {
@@ -275,14 +287,71 @@ interface VIPOrder {
   lastDevice: string;
   status: string;
   createdAt: string;
+  // Section 15 generator validity fields
+  expiresAt?: string; // computed ISO deadline (absent = open-ended)
+  validDays?: number;
+  validHours?: number;
+  createdBy?: string;
+  // Live-session tracking stamped by the VIP modal when a holder starts viewing
+  lastActiveAt?: string;
+  activeDevice?: string;
+  isLive?: boolean;
 }
+
+// Human-friendly device label from a raw User-Agent string ("Chrome • Android").
+const describeDevice = (ua?: string): string => {
+  if (!ua) return "نەزانراو";
+  const browser = /Edg\//.test(ua) ? "Edge"
+    : /OPR\/|Opera/.test(ua) ? "Opera"
+    : /Firefox\//.test(ua) ? "Firefox"
+    : /Chrome\//.test(ua) ? "Chrome"
+    : /Safari\//.test(ua) ? "Safari"
+    : "Browser";
+  const os = /Android/i.test(ua) ? "Android"
+    : /iPhone|iPad|iPod/i.test(ua) ? "iOS"
+    : /Windows/i.test(ua) ? "Windows"
+    : /Mac OS X/i.test(ua) ? "macOS"
+    : /Linux/i.test(ua) ? "Linux"
+    : "";
+  return os ? `${browser} • ${os}` : browser;
+};
+
+// Hours remaining until an expiry ISO timestamp (null when open-ended/invalid).
+const hoursLeftOn = (expiresAt?: string): number | null => {
+  if (!expiresAt) return null;
+  const t = new Date(expiresAt).getTime();
+  if (Number.isNaN(t)) return null;
+  return Math.max(0, (t - Date.now()) / 3600000);
+};
+
+// LIVE heuristic: the VIP modal stamps isLive + lastActiveAt whenever a ticket
+// holder starts viewing; a stamp younger than this window shows as a live
+// session in the usage archive.
+const LIVE_SESSION_WINDOW_MS = 15 * 60 * 1000;
+const isSessionLive = (t: { isLive?: boolean; lastActiveAt?: string }): boolean => {
+  if (!t.isLive || !t.lastActiveAt) return false;
+  const at = new Date(t.lastActiveAt).getTime();
+  return !Number.isNaN(at) && Date.now() - at < LIVE_SESSION_WINDOW_MS;
+};
+
+// Default validity applied when approving a payment request with one click.
+const APPROVE_DEFAULT_VALIDITY_DAYS = 30;
+
+// Cinema Window duration presets for the dedicated code generator (Tab 2).
+const CINEMA_DURATION_PRESETS = [
+  { key: "daily", labelKu: "ڕۆژانە", labelEn: "Daily", hours: 24 },
+  { key: "monthly", labelKu: "مانگانە", labelEn: "Monthly", hours: 720 },
+  { key: "annual", labelKu: "ساڵانە", labelEn: "Annual", hours: 8760 },
+] as const;
 
 interface TicketVIPModuleProps {
   currentUser: any;
 }
 
 export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser }) => {
-  const [activeSubTab, setActiveSubTab] = useState<"tickets" | "requests" | "cinema" | "settings" | "video">("tickets");
+  // Module 15 is organised into four clean sections:
+  // payment (shared) → cinema → vip lounge → archive.
+  const [activeSubTab, setActiveSubTab] = useState<"payment" | "cinema" | "vip" | "archive">("payment");
   
   // States
   const [tickets, setTickets] = useState<VIPOrder[]>([]);
@@ -301,12 +370,36 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
   const [selectedVipVideoId, setSelectedVipVideoId] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
-  
+
+  // Section 15 generator validity inputs: expiration days AND/OR a specific
+  // date AND/OR hours of validity. The earliest provided deadline wins;
+  // "noExpiry" mints an open-ended ticket.
+  const [validityDays, setValidityDays] = useState("30");
+  const [validityDate, setValidityDate] = useState("");
+  const [validityHours, setValidityHours] = useState("");
+  const [noExpiry, setNoExpiry] = useState(false);
+
+  // 30s ticker so the usage-archive countdown chips stay fresh while open.
+  const [nowTick, setNowTick] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNowTick(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, []);
+
   // Settings form states
   const [formQr, setFormQr] = useState("");
   const [formDetails, setFormDetails] = useState("");
   const [formInst, setFormInst] = useState("");
   const [formLogo, setFormLogo] = useState("");
+  const [formGlassUrl, setFormGlassUrl] = useState("");
+  const [formGlassEnabled, setFormGlassEnabled] = useState(false);
+  // Shared contact channels (Tab 1) — stored on vip_settings and mirrored to
+  // the Cinema Window room's paymentSettings.
+  const [formWhatsapp, setFormWhatsapp] = useState("");
+  const [formSupportPhone, setFormSupportPhone] = useState("");
+  // Admin-generated Cinema Window access codes (Tab 2 + archive).
+  const [cinemaCodes, setCinemaCodes] = useState<any[]>([]);
+  const [lastCinemaCode, setLastCinemaCode] = useState<{ code: string; expiresAt: string; hours: number } | null>(null);
   const [cinemaRoom, setCinemaRoom] = useState<CinemaWindowAdminRoom | null>(null);
   const [cinemaName, setCinemaName] = useState("");
   const [cinemaDescription, setCinemaDescription] = useState("");
@@ -340,6 +433,28 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
     return `VIP-${rand.toUpperCase()}`;
   };
 
+  // Combine the three validity inputs (days / specific date / hours) into a
+  // single ISO deadline. The EARLIEST provided candidate wins so conflicting
+  // inputs always resolve to the strictest expiry; returns null when the admin
+  // chose an open-ended ticket or provided nothing.
+  const computeExpiresAt = (): string | null => {
+    if (noExpiry) return null;
+    const candidates: number[] = [];
+    const days = parseInt(validityDays, 10);
+    if (!Number.isNaN(days) && days > 0) candidates.push(Date.now() + days * 86400000);
+    if (validityDate) {
+      const dt = new Date(`${validityDate}T23:59:59`);
+      if (!Number.isNaN(dt.getTime())) candidates.push(dt.getTime());
+    }
+    const hours = parseInt(validityHours, 10);
+    if (!Number.isNaN(hours) && hours > 0) candidates.push(Date.now() + hours * 3600000);
+    if (candidates.length === 0) return null;
+    return new Date(Math.min(...candidates)).toISOString();
+  };
+
+  // Live preview of the deadline the generator will stamp on the next ticket.
+  const previewExpiresAt = computeExpiresAt();
+
   const syncCinemaForm = (room: CinemaWindowAdminRoom) => {
     setCinemaRoom(room);
     setCinemaName(room.name || "");
@@ -358,6 +473,8 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
       setFormLogo(room.paymentSettings.paymentLogoUrl || "");
       setFormDetails(room.paymentSettings.paymentDetails || "");
       setFormInst(room.paymentSettings.instructions || "");
+      setFormWhatsapp((room.paymentSettings as any).whatsappNumber || "");
+      setFormSupportPhone((room.paymentSettings as any).supportPhone || "");
     }
   };
 
@@ -370,6 +487,48 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
     }
 
     syncCinemaForm(data.room as CinemaWindowAdminRoom);
+  };
+
+  // Admin-minted + payment-minted Cinema Window codes (Tab 2 preview list and
+  // the combined usage archive).
+  const loadCinemaCodes = async () => {
+    try {
+      const response = await fetch("/api/admin/cinema-window/access-codes");
+      const data = await response.json();
+      if (response.ok && data.success) {
+        setCinemaCodes(Array.isArray(data.codes) ? data.codes : []);
+      }
+    } catch (err) {
+      console.warn("cinema access-codes:", err);
+    }
+  };
+
+  // Mint a Cinema Window code with a fixed duration (daily/monthly/annual).
+  const handleGenerateCinemaCode = async (hours: number, labelKu: string) => {
+    setErrorText("");
+    setSuccessText("");
+    try {
+      setIsLoading(true);
+      const response = await fetch(
+        `/api/admin/cinema-window/access-codes?adminName=${encodeURIComponent(adminName)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ durationHours: hours }),
+        },
+      );
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || "کۆد دروست نەبوو.");
+      }
+      setLastCinemaCode({ code: data.accessCode, expiresAt: data.expiresAt, hours });
+      setSuccessText(`✓ کۆدی ${labelKu}ی Cinema Window دروستکرا!`);
+      await loadCinemaCodes();
+    } catch (err) {
+      setErrorText(err instanceof Error ? err.message : "دروستکردنی کۆدی Cinema Window شکستی هێنا.");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const loadVIPData = async () => {
@@ -390,6 +549,10 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
         setFormDetails(sData.paymentDetails || "");
         setFormInst(sData.instructions || "");
         setFormLogo(sData.paymentLogoUrl || "");
+        setFormWhatsapp((sData as any).whatsappNumber || "");
+        setFormSupportPhone((sData as any).supportPhone || "");
+        setFormGlassUrl(sData.glassPreviewUrl || "");
+        setFormGlassEnabled(!!sData.glassPreviewEnabled);
       }
 
       // 3. Videos
@@ -405,6 +568,7 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
       setVipRequests(rList);
 
       await loadCinemaWindowRoom();
+      await loadCinemaCodes();
     } catch (err) {
       console.error("Error loading VIP module:", err);
       setErrorText("کێشە لە بارکردنی داتاکانی VIP (Firestore).");
@@ -449,6 +613,10 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
         setFormDetails(sData.paymentDetails || "");
         setFormInst(sData.instructions || "");
         setFormLogo(sData.paymentLogoUrl || "");
+        setFormWhatsapp((sData as any).whatsappNumber || "");
+        setFormSupportPhone((sData as any).supportPhone || "");
+        setFormGlassUrl(sData.glassPreviewUrl || "");
+        setFormGlassEnabled(!!sData.glassPreviewEnabled);
       },
       (err) => console.warn("vip_settings listener:", err)
     );
@@ -489,6 +657,12 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
       return;
     }
 
+    const expiresAt = computeExpiresAt();
+    if (!expiresAt && !noExpiry) {
+      setErrorText("⚠️ تکایە ماوەی دروستی دیاری بکە (ڕۆژ / بەروار / کاتژمێر) یان 'بێ کۆتایی' چالاک بکە!");
+      return;
+    }
+
     try {
       setIsLoading(true);
       const code = generateTicketCode();
@@ -508,9 +682,18 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
         lastDevice: "",
         status: "active",
         createdAt: new Date().toISOString(),
+        // Generator validity metadata (validated in firestore.rules)
+        expiresAt: expiresAt || "",
+        validDays: noExpiry ? 0 : Math.max(0, parseInt(validityDays, 10) || 0),
+        validHours: noExpiry ? 0 : Math.max(0, parseInt(validityHours, 10) || 0),
+        createdBy: adminName,
+        isLive: false,
       });
 
-      setSuccessText(`✓ تیکێت بە سەرکەوتوویی دروستکرا! کۆد: ${code}`);
+      setSuccessText(
+        `✓ تیکێت بە سەرکەوتوویی دروستکرا! کۆد: ${code}` +
+          (expiresAt ? ` — کۆتایی مۆڵەت: ${new Date(expiresAt).toLocaleString("en-GB")}` : " — بێ کۆتایی"),
+      );
       setCustomerName("");
       setCustomerPhone("");
       setVideoUrl("");
@@ -526,7 +709,9 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
     }
   };
 
-  // Save Settings
+  // Save Settings — ONE unified panel for BOTH rooms. Writes vip_settings
+  // (read live by the VIP Lounge modal) and mirrors the same values onto the
+  // Cinema Window room's paymentSettings (read by CinemaWindowModal).
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorText("");
@@ -541,13 +726,67 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
           paymentDetails: formDetails,
           instructions: formInst,
           paymentLogoUrl: formLogo,
+          whatsappNumber: formWhatsapp.trim(),
+          supportPhone: formSupportPhone.trim(),
           updatedAt: new Date().toISOString(),
         },
         { merge: true },
       );
 
-      setSuccessText("✓ ڕێکخستنەکانی کڕینی VIP بە سەرکەوتوویی پاشەکەوت کران.");
+      // Mirror onto the Cinema Window room without touching its movie fields.
+      try {
+        const base = cinemaRoom || ({} as any);
+        await fetch(`/api/admin/cinema-window/current?adminName=${encodeURIComponent(adminName)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: base.name || "Cinema Window",
+            description: base.description || "",
+            movieId: base.movieId || "movie_1",
+            previewUrl: base.previewUrl || "",
+            posterUrl: base.posterUrl || "",
+            fullVideoReference: base.fullVideoReference || "",
+            price: base.price ?? 1.99,
+            currency: base.currency || "USD",
+            accessDurationHours: base.accessDurationHours || 24,
+            status: base.status || "ACTIVE",
+            qrCodeUrl: formQr,
+            paymentLogoUrl: formLogo,
+            paymentDetails: formDetails,
+            instructions: formInst,
+            whatsappNumber: formWhatsapp.trim(),
+            supportPhone: formSupportPhone.trim(),
+          }),
+        });
+      } catch (mirrorErr) {
+        console.warn("Payment mirror to Cinema Window failed:", mirrorErr);
+      }
+
+      setSuccessText("✓ ڕێکخستنەکانی پارەدان و پەیوەندی بۆ هەردوو ژوور بە سەرکەوتوویی پاشەکەوت کران.");
       loadVIPData();
+    } catch (err) {
+      setErrorText("کێشەی نوێکردنەوە لە Firestore.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Save the silent glass-preview trailer (VIP Lounge presentation only).
+  const handleSaveGlass = async () => {
+    setErrorText("");
+    setSuccessText("");
+    try {
+      setIsLoading(true);
+      await setDoc(
+        doc(db, "vip_settings", "default"),
+        {
+          glassPreviewUrl: formGlassUrl.trim(),
+          glassPreviewEnabled: formGlassEnabled,
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true },
+      );
+      setSuccessText("✓ پێشبینینی شوشەی هۆڵی VIP پاشەکەوت کرا.");
     } catch (err) {
       setErrorText("کێشەی نوێکردنەوە لە Firestore.");
     } finally {
@@ -638,6 +877,9 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
         req.videoUrl ||
         (vipVideos.length > 0 ? vipVideos[vipVideos.length - 1]?.videoUrl || "" : "");
 
+      // Approved requests get the module default validity (30 days).
+      const expiresAt = new Date(Date.now() + APPROVE_DEFAULT_VALIDITY_DAYS * 86400000).toISOString();
+
       await setDoc(doc(db, "vip_tickets", code), {
         code,
         customerName: req.customerName,
@@ -649,6 +891,11 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
         lastDevice: "",
         status: "active",
         createdAt: new Date().toISOString(),
+        expiresAt,
+        validDays: APPROVE_DEFAULT_VALIDITY_DAYS,
+        validHours: 0,
+        createdBy: adminName,
+        isLive: false,
       });
 
       await updateDoc(doc(db, "vip_requests", requestId), {
@@ -657,7 +904,7 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
         videoUrl: finalUrl,
       });
 
-      setSuccessText(`✓ داواکاری بە سەرکەوتوویی قبوڵکرا! کۆدی VIP دروستبوو: ${code}`);
+      setSuccessText(`✓ داواکاری قبوڵکرا! کۆدی VIP: ${code} — مۆڵەت: ${APPROVE_DEFAULT_VALIDITY_DAYS} ڕۆژ`);
       // Clear temp binding URL
       const updatedBinds = { ...requestVideoUrls };
       delete updatedBinds[requestId];
@@ -694,6 +941,17 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
     t.status.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  // Combined archive rows (Tab 4): VIP Lounge tickets live in Firestore while
+  // Cinema Window codes live in the server access-code ledger — both are shown
+  // here with a room badge so nothing needs a second screen.
+  const pendingRequestsCount = vipRequests.filter(r => r.status === "Pending").length;
+  const liveTicketCount = tickets.filter(isSessionLive).length;
+  const expiredTicketCount = tickets.filter(t => {
+    const left = hoursLeftOn(t.expiresAt);
+    return (left !== null && left <= 0) || t.status === "Expired";
+  }).length + cinemaCodes.filter(c => c.status === "EXPIRED").length;
+  const activeCinemaCount = cinemaCodes.filter(c => c.status === "ACTIVE").length;
+
   return (
     <div className="space-y-6" dir="rtl">
       {/* Page header */}
@@ -704,8 +962,8 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
             <Ticket className="w-7 h-7" />
           </div>
           <div>
-            <h2 className="text-xl lg:text-2xl font-black text-white kurdish-text">مۆدیۆڵ ١٤: سیستەمی بلیت و بڵاوکردنەوەی VIP سەرچاوە فەرمییەکان</h2>
-            <p className="text-xs text-gray-400 kurdish-text mt-1">ئۆتۆماتیزەکردنی داواکارییە گەیشتووەکان لە بەکارهێنەران، لێکدانەوەی بەڵگەی وێنەی پسوڵە، دروستکردنی کۆد، و بڵاوکردنەوەی فیلمەکان.</p>
+            <h2 className="text-xl lg:text-2xl font-black text-white kurdish-text">مۆدیۆڵ ١٥: سیستەمی بلیت و بڵاوکردنەوەی VIP سەرچاوە فەرمییەکان</h2>
+            <p className="text-xs text-gray-400 kurdish-text mt-1">چوار بەشی جیاواز: پارەدان و پەیوەندی هاوبەش، بەڕێوبەرایەتی Cinema Window، بەڕێوبەرایەتی هۆڵی شاهانەی VIP، و ئەرشیفی بەکارهێنان.</p>
           </div>
         </div>
 
@@ -719,69 +977,60 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
         </button>
       </div>
 
-      {/* Navigation Sub-Tabs */}
+      {/* Navigation Sub-Tabs — four clean sections */}
       <div className="flex flex-wrap gap-2 p-1 bg-[#12141a]/60 border border-white/5 rounded-2xl">
         <button
-          onClick={() => { setActiveSubTab("tickets"); setErrorText(""); setSuccessText(""); }}
-          className={`px-4 py-2 text-xs font-black rounded-xl kurdish-text flex items-center gap-2 transition duration-200 ${
-            activeSubTab === "tickets" 
-              ? "bg-purple-600 text-white shadow-lg" 
-              : "text-gray-400 hover:text-white hover:bg-white/5"
-          }`}
-        >
-          <Ticket className="w-3.5 h-3.5" />
-          کۆپۆن و مەنەفێستەکان ({tickets.length})
-        </button>
-
-        <button
-          onClick={() => { setActiveSubTab("requests"); setErrorText(""); setSuccessText(""); }}
+          onClick={() => { setActiveSubTab("payment"); setErrorText(""); setSuccessText(""); }}
           className={`px-4 py-2 text-xs font-black rounded-xl kurdish-text flex items-center gap-2 transition duration-200 relative ${
-            activeSubTab === "requests" 
-              ? "bg-purple-600 text-white shadow-lg" 
+            activeSubTab === "payment"
+              ? "bg-purple-600 text-white shadow-lg"
               : "text-gray-400 hover:text-white hover:bg-white/5"
           }`}
         >
-          <FileText className="w-3.5 h-3.5" />
-          داواکاری پسوڵەکان ({vipRequests.filter(r => r.status === "Pending").length})
-          {vipRequests.filter(r => r.status === "Pending").length > 0 && (
-            <span className="absolute -top-1 -left-1 w-2 h-2 bg-red-500 rounded-full animate-ping" />
+          <CreditCard className="w-3.5 h-3.5" />
+          پارەدان و پەیوەندی (هەردوو ژوور)
+          {pendingRequestsCount > 0 && (
+            <>
+              <span className="px-1.5 min-w-[18px] text-center bg-red-500 text-white text-[9px] font-black rounded-full">{pendingRequestsCount}</span>
+              <span className="absolute -top-1 -left-1 w-2 h-2 bg-red-500 rounded-full animate-ping" />
+            </>
           )}
         </button>
 
         <button
-          onClick={() => { setActiveSubTab("cinema"); setErrorText(""); setSuccessText(""); loadCinemaWindowRoom().catch((err) => setErrorText(err.message)); }}
+          onClick={() => { setActiveSubTab("cinema"); setErrorText(""); setSuccessText(""); loadCinemaWindowRoom().catch((err) => setErrorText(err.message)); loadCinemaCodes(); }}
           className={`px-4 py-2 text-xs font-black rounded-xl kurdish-text flex items-center gap-2 transition duration-200 ${
             activeSubTab === "cinema"
               ? "bg-amber-500 text-black shadow-lg"
               : "text-gray-400 hover:text-white hover:bg-white/5"
           }`}
         >
-          <Ticket className="w-3.5 h-3.5" />
-          Cinema Window
+          <Film className="w-3.5 h-3.5" />
+          بەڕێوبەرایەتی Cinema Window
         </button>
 
         <button
-          onClick={() => { setActiveSubTab("settings"); setErrorText(""); setSuccessText(""); }}
+          onClick={() => { setActiveSubTab("vip"); setErrorText(""); setSuccessText(""); }}
           className={`px-4 py-2 text-xs font-black rounded-xl kurdish-text flex items-center gap-2 transition duration-200 ${
-            activeSubTab === "settings" 
-              ? "bg-purple-600 text-white shadow-lg" 
+            activeSubTab === "vip"
+              ? "bg-purple-600 text-white shadow-lg"
               : "text-gray-400 hover:text-white hover:bg-white/5"
           }`}
         >
-          <Settings className="w-3.5 h-3.5" />
-          ڕێکخستنەکانی پارەدان و لۆگۆ
+          <Crown className="w-3.5 h-3.5" />
+          هۆڵی شاهانەی VIP
         </button>
 
         <button
-          onClick={() => { setActiveSubTab("video"); setErrorText(""); setSuccessText(""); }}
+          onClick={() => { setActiveSubTab("archive"); setErrorText(""); setSuccessText(""); }}
           className={`px-4 py-2 text-xs font-black rounded-xl kurdish-text flex items-center gap-2 transition duration-200 ${
-            activeSubTab === "video" 
-              ? "bg-purple-600 text-white shadow-lg" 
+            activeSubTab === "archive"
+              ? "bg-cyan-600 text-white shadow-lg"
               : "text-gray-400 hover:text-white hover:bg-white/5"
           }`}
         >
-          <Smartphone className="w-3.5 h-3.5" />
-          پۆستکردنی ڤیدیۆی VIP
+          <History className="w-3.5 h-3.5" />
+          ئەرشیفی بەکارهێنان ({tickets.length + cinemaCodes.length})
         </button>
       </div>
 
@@ -802,12 +1051,512 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
       </AnimatePresence>
 
       <AnimatePresence mode="wait">
-        
-        {/* TAB 1: TICKETS LIST AND GENERATION */}
-        {activeSubTab === "tickets" && (
-          <motion.div key="tickets" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            
-            {/* Generation Form Sidebar */}
+
+        {/* ============================================================= */}
+        {/* TAB 1 — SHARED PAYMENT & CONTACT SETTINGS (both rooms)         */}
+        {/* ============================================================= */}
+        {activeSubTab === "payment" && (
+          <motion.div key="payment" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
+
+            {/* Unified payment & contact form */}
+            <div className="max-w-3xl bg-[#0f1013] border border-white/5 rounded-3xl p-6 space-y-5">
+              <div className="space-y-1">
+                <h3 className="text-sm font-black text-white kurdish-text flex items-center gap-2">
+                  <QrCode className="w-5 h-5 text-purple-400" />
+                  ڕێکخستنی پارەدان و زانیاری پەیوەندی (هاوبەش بۆ هەردوو ژوور)
+                </h3>
+                <p className="text-xs text-gray-400 kurdish-text">
+                  ئەم پانێلە هاوبەشە بۆ هەردوو ژووری VIP (هۆڵی شاهانە + Cinema Window). هەموو گۆڕانکارییەک خۆکارانە بۆ هەردووکیان دەنێردرێت.
+                </p>
+              </div>
+
+              <form onSubmit={handleSaveSettings} className="space-y-5">
+                <FileUploaderInput
+                  label="کۆدی QR بۆ پارەدان (Bank QR Code)"
+                  value={formQr}
+                  onChange={setFormQr}
+                  description="کۆدی QR فاستپەی یان ڕەسمی ژمارەکەت لێرە باربکە یان بنووسە."
+                  placeholder="https://i.ibb.co/3kWy3m9/fastpay-qr-mock.png"
+                  adminName={adminName}
+                  onError={(err) => setErrorText(err)}
+                />
+
+                <FileUploaderInput
+                  label="لۆگۆی بانک یان ئایکۆنی ڕێگای پارەدان (Bank / Payment Logo)"
+                  value={formLogo}
+                  onChange={setFormLogo}
+                  description="ئایکۆنی یان لۆگۆی تایبەت بە جۆری بانکەکە یان فاستپەی باربکە بۆ پیشاندان لە دەستپێکی پەڕەی کڕیاردا."
+                  placeholder="https://i.ibb.co/..."
+                  adminName={adminName}
+                  onError={(err) => setErrorText(err)}
+                />
+
+                <div className="space-y-1.5">
+                  <label className="text-xs text-gray-300 kurdish-text font-bold">زانیاری حسابەکان و سپاردە (Deposit info / Bank accounts)</label>
+                  <textarea
+                    value={formDetails}
+                    rows={3}
+                    onChange={(e) => setFormDetails(e.target.value)}
+                    placeholder="فاستپەی: 07501234567&#10;فایبەر کورتکراو: FIB-000302&#10;حسابی بانکی: ..."
+                    className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-purple-500/30 rounded-xl text-xs text-white kurdish-text outline-none resize-none"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs text-gray-300 kurdish-text font-bold">سەرپەرشتیار و ڕێنمایی نووسراو (Custom Client Instructions)</label>
+                  <textarea
+                    value={formInst}
+                    rows={4}
+                    onChange={(e) => setFormInst(e.target.value)}
+                    placeholder="ڕێنمایی بۆ کڕیار لێرە پۆست بکە..."
+                    className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-purple-500/30 rounded-xl text-xs text-white kurdish-text outline-none resize-none"
+                  />
+                </div>
+
+                {/* Shared contact channels */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4 rounded-2xl bg-black/30 border border-white/5">
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-gray-300 kurdish-text font-bold flex items-center gap-1.5">
+                      <Phone className="w-3.5 h-3.5 text-emerald-400" />
+                      ژمارەی مۆبایلی پشتگیریکردن (Support Mobile)
+                    </label>
+                    <input
+                      type="tel"
+                      value={formSupportPhone}
+                      onChange={(e) => setFormSupportPhone(e.target.value)}
+                      placeholder="0750XXXXXXX"
+                      className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-emerald-500/40 rounded-xl text-xs text-white font-mono outline-none text-left"
+                      dir="ltr"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-gray-300 kurdish-text font-bold flex items-center gap-1.5">
+                      <Phone className="w-3.5 h-3.5 text-green-400" />
+                      ژمارەی واتسئاپ (WhatsApp Contact)
+                    </label>
+                    <input
+                      type="tel"
+                      value={formWhatsapp}
+                      onChange={(e) => setFormWhatsapp(e.target.value)}
+                      placeholder="964750XXXXXXX"
+                      className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-green-500/40 rounded-xl text-xs text-white font-mono outline-none text-left"
+                      dir="ltr"
+                    />
+                    <p className="text-[10px] text-gray-500 kurdish-text">بە کۆدی وڵات بنووسرێت بۆ بەستەری ڕاستەوخۆی wa.me</p>
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="py-3 px-6 bg-purple-600 hover:bg-purple-700 text-white font-black text-xs rounded-xl transition duration-150 flex items-center justify-center gap-2 shadow-lg shadow-purple-600/15"
+                >
+                  <Check className="w-4 h-4" />
+                  پاشەکەوتکردن بۆ هەردوو ژوور
+                </button>
+              </form>
+            </div>
+
+            {/* Pending receipt requests queue */}
+            <div className="bg-[#0f1013] border border-white/5 rounded-3xl p-6 space-y-4">
+              <div className="space-y-1">
+                <h3 className="text-sm font-black text-white kurdish-text flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-amber-500 animate-pulse" />
+                  داواکارییە چاوەڕوانکراکانی پسوڵە (Pending Receipt Queue)
+                </h3>
+                <p className="text-xs text-gray-400 kurdish-text">پێداچوونەوە بکە بە ناردراوەکان، تەماشای پسوڵەی گواستنەوەی فاستپەی/زین کاش بکە، و بە کلیلێک کۆدی VIP بێ هاوتا ساز بکە.</p>
+              </div>
+
+              {pendingRequestsCount === 0 ? (
+                <div className="p-16 text-center border border-white/5 bg-white/5 rounded-2xl text-xs text-gray-400 kurdish-text">
+                  ✓ هیج داواکارییەکی پسوڵە پێشکەش نەکراوە یان سەرجەمیان پێداچوونەوەیان بۆ کراوە.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
+                  {vipRequests.filter(r => r.status === "Pending").map((req) => (
+                    <div key={req.id} className="p-5 rounded-2xl bg-black/40 border border-amber-500/10 hover:border-amber-500/20 transition-all flex flex-col justify-between gap-4">
+                      
+                      {/* User and timestamp details */}
+                      <div className="space-y-3">
+                        <div className="flex justify-between items-start gap-2">
+                          <div>
+                            <span className="text-[10px] bg-amber-500/15 text-amber-400 font-extrabold px-2 py-0.5 rounded-lg mb-1.5 inline-block">داواکاری نوێ</span>
+                            <h4 className="text-sm font-black text-white kurdish-text">{req.customerName}</h4>
+                            <span className="text-xs font-mono text-zinc-300 block" dir="ltr">📞 {req.customerPhone}</span>
+                          </div>
+                          <span className="text-[9px] text-zinc-500 font-medium">
+                            {new Date(req.createdAt).toLocaleString("en-US", { hour12: true })}
+                          </span>
+                        </div>
+
+                        {/* Expandable Image container to review receipt screenshot */}
+                        {req.bankScreenshot && (
+                          !(req.bankScreenshot.startsWith("data:") || req.bankScreenshot.startsWith("http")) ? (
+                            <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl text-right">
+                              <span className="text-[10px] font-bold kurdish-text block text-emerald-500">جۆری تەسدیقکردن:</span>
+                              <span className="text-[11px] font-medium font-sans">{req.bankScreenshot}</span>
+                            </div>
+                          ) : (
+                            <div className="space-y-1">
+                              <span className="text-[10px] text-gray-400 kurdish-text block font-bold">پسوڵەی سپێردراو (Click to expand):</span>
+                              <div 
+                                onClick={() => setActiveScreenshot(req.bankScreenshot)}
+                                className="h-32 w-full bg-zinc-950 rounded-xl overflow-hidden relative cursor-zoom-in border border-white/5 hover:border-amber-500/30 group transition"
+                              >
+                                <img 
+                                  src={req.bankScreenshot} 
+                                  alt="Receipt Screenshot" 
+                                  className="w-full h-full object-cover group-hover:scale-105 transition duration-200"
+                                  referrerPolicy="no-referrer"
+                                />
+                                <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-1.5 text-xs text-white">
+                                  <Eye className="w-4 h-4 text-amber-500" />
+                                  گه ورەکردنی پسوڵە
+                                </div>
+                              </div>
+                            </div>
+                          )
+                        )}
+
+                        {/* Admin movie binding select/input option */}
+                        <div className="space-y-1.5 text-right bg-white/[0.02] p-3 rounded-xl border border-white/5">
+                          <label className="text-[10px] text-gray-300 font-black kurdish-text block">بەستنەوە بە ڤیدیۆ/فیلمی تایبەت (ئارەزوومەند):</label>
+                          <select
+                            value={requestVideoUrls[req.id] || ""}
+                            onChange={(e) => setRequestVideoUrls({ ...requestVideoUrls, [req.id]: e.target.value })}
+                            className="w-full px-3 py-1.5 bg-zinc-900 border border-white/10 rounded-lg text-xs text-white outline-none focus:border-purple-500/40"
+                          >
+                            <option value="">هەموو فیلمەکان (سەرانسەری گشتی)</option>
+                            {vipVideos.map(v => (
+                              <option key={v.id} value={v.videoUrl}>{v.title}</option>
+                            ))}
+                          </select>
+                          <input 
+                            type="text"
+                            placeholder="یان لێرە ڕاستەوخۆ بەستەر بنووسە..."
+                            value={requestVideoUrls[req.id] || ""}
+                            onChange={(e) => setRequestVideoUrls({ ...requestVideoUrls, [req.id]: e.target.value })}
+                            className="w-full px-3 py-1.5 bg-zinc-900 border border-white/10 rounded-lg text-xs placeholder:text-gray-600 outline-none focus:border-purple-500/40 font-mono"
+                            dir="ltr"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Action button triggers */}
+                      <div className="grid grid-cols-2 gap-3 pt-2 border-t border-white/5">
+                        <button
+                          onClick={() => handleDeleteRequest(req.id)}
+                          className="py-2.5 bg-red-500/10 hover:bg-red-500/20 text-red-500 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer"
+                        >
+                          ڕەتکردنەوە (Decline)
+                        </button>
+
+                        <button
+                          onClick={() => handleApproveRequest(req.id)}
+                          className="py-2.5 bg-amber-500 hover:bg-amber-600 text-black rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <Sparkles className="w-3.5 h-3.5" />
+                          پەسەندکردن و کۆد
+                        </button>
+                      </div>
+
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+
+        {/* ============================================================= */}
+        {/* TAB 2 — CINEMA WINDOW MANAGEMENT                               */}
+        {/* ============================================================= */}
+        {activeSubTab === "cinema" && (
+          <motion.div key="cinema" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
+            <div className="bg-[#0f1013] border border-white/5 rounded-3xl p-6 space-y-6">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-sm font-black text-white kurdish-text flex items-center gap-2">
+                    <Film className="w-5 h-5 text-amber-400" />
+                    Cinema Window — بەڕێوبەرایەتی ژوور و لینکی فیلم
+                  </h3>
+                  <p className="mt-1 text-xs text-gray-400 kurdish-text">
+                    Manage the exact Cinema Window room shown in the highlighted yellow slot. This updates only cinema_1.
+                  </p>
+                </div>
+                <div className="px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[10px] font-black">
+                  Room ID: {cinemaRoom?.id || "cinema_1"}
+                </div>
+              </div>
+
+              <form onSubmit={handleSaveCinemaWindow} className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] gap-6">
+                <div className="space-y-5">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-gray-300 kurdish-text font-bold">Room title</label>
+                      <input
+                        type="text"
+                        value={cinemaName}
+                        onChange={(e) => setCinemaName(e.target.value)}
+                        className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white kurdish-text outline-none"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-gray-300 kurdish-text font-bold">Movie ID / admin reference</label>
+                      <input
+                        type="text"
+                        value={cinemaMovieId}
+                        onChange={(e) => setCinemaMovieId(e.target.value)}
+                        className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white font-mono outline-none"
+                        dir="ltr"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-gray-300 kurdish-text font-bold">Description</label>
+                    <textarea
+                      value={cinemaDescription}
+                      rows={3}
+                      onChange={(e) => setCinemaDescription(e.target.value)}
+                      className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white kurdish-text outline-none resize-none"
+                    />
+                  </div>
+
+                  <FileUploaderInput
+                    label="Poster / cover image for this Cinema Window"
+                    value={cinemaPosterUrl}
+                    onChange={setCinemaPosterUrl}
+                    description="This poster appears on the public Cinema Window card and payment modal."
+                    placeholder="https://domain.com/poster.jpg"
+                    adminName={adminName}
+                    onError={(err) => setErrorText(err)}
+                  />
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-gray-300 kurdish-text font-bold">Preview / trailer URL</label>
+                      <input
+                        type="text"
+                        value={cinemaPreviewUrl}
+                        onChange={(e) => setCinemaPreviewUrl(e.target.value)}
+                        placeholder="https://youtube.com/embed/..."
+                        className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white font-mono outline-none"
+                        dir="ltr"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-gray-300 kurdish-text font-bold">Private full movie link</label>
+                      <input
+                        type="text"
+                        value={cinemaFullVideoReference}
+                        onChange={(e) => setCinemaFullVideoReference(e.target.value)}
+                        placeholder="https://domain.com/full-movie.mp4"
+                        className="w-full px-4 py-2.5 bg-black/40 border border-amber-500/20 focus:border-amber-500/60 rounded-xl text-xs text-white font-mono outline-none"
+                        dir="ltr"
+                      />
+                      <p className="text-[10px] text-amber-300/80 kurdish-text">
+                        This link is returned only after a valid Cinema Window access code is verified.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-gray-300 kurdish-text font-bold">Price</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={cinemaPrice}
+                        onChange={(e) => setCinemaPrice(e.target.value)}
+                        className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white font-mono outline-none"
+                        dir="ltr"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-gray-300 kurdish-text font-bold">Currency</label>
+                      <input
+                        type="text"
+                        value={cinemaCurrency}
+                        onChange={(e) => setCinemaCurrency(e.target.value)}
+                        className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white font-mono outline-none"
+                        dir="ltr"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-gray-300 kurdish-text font-bold">Access hours</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={cinemaAccessHours}
+                        onChange={(e) => setCinemaAccessHours(e.target.value)}
+                        className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white font-mono outline-none"
+                        dir="ltr"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-gray-300 kurdish-text font-bold">Status</label>
+                      <select
+                        value={cinemaStatus}
+                        onChange={(e) => setCinemaStatus(e.target.value as CinemaWindowAdminRoom["status"])}
+                        className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white outline-none"
+                      >
+                        <option value="ACTIVE">ACTIVE</option>
+                        <option value="DRAFT">DRAFT</option>
+                        <option value="DISABLED">DISABLED</option>
+                        <option value="EXPIRED">EXPIRED</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-5">
+                  <div className="p-4 rounded-2xl bg-amber-500/5 border border-amber-500/15">
+                    <h4 className="text-xs font-black text-amber-300 kurdish-text mb-2">
+                      Payment & contact note
+                    </h4>
+                    <p className="text-[10px] text-zinc-400 kurdish-text leading-relaxed">
+                      QR، حسابەکان و ژمارەی پەیوەندی لە تابی «پارەدان و پەیوەندی» بە شێوەی هاوبەش بۆ هەردوو ژوور بەڕێوە دەبرێن.
+                    </p>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isLoading}
+                    className="w-full py-3 bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-black font-black text-xs rounded-xl transition duration-150 flex items-center justify-center gap-2 shadow-lg shadow-amber-500/15"
+                  >
+                    <Check className="w-4 h-4" />
+                    Save current Cinema Window room
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            {/* Duration access-code generator (daily / monthly / annual) */}
+            <div className="bg-[#0f1013] border border-white/5 rounded-3xl p-6 space-y-5">
+              <div className="space-y-1">
+                <h3 className="text-sm font-black text-white kurdish-text flex items-center gap-2">
+                  <ClockIcon className="w-5 h-5 text-amber-400" />
+                  دروستکردنی کۆدی گەیشتنی Cinema Window (ڕۆژانە / مانگانە / ساڵانە)
+                </h3>
+                <p className="text-xs text-gray-400 kurdish-text">
+                  کۆدێکی تاک-بەکارهێنان دروست دەکات کە تەنها بۆ ژووری Cinema Window کارا دەبێت و لە ڕێگەی هەمان سیستەمی تەسدیقی پارەدراوەکان پشتڕاست دەکرێتەوە.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                {CINEMA_DURATION_PRESETS.map((preset) => (
+                  <button
+                    key={preset.key}
+                    type="button"
+                    disabled={isLoading}
+                    onClick={() => handleGenerateCinemaCode(preset.hours, preset.labelKu)}
+                    className="group p-5 rounded-2xl bg-gradient-to-br from-amber-500/10 via-black/40 to-black/40 border border-amber-500/25 hover:border-amber-400/60 hover:shadow-xl hover:shadow-amber-500/10 transition-all text-right disabled:opacity-50"
+                  >
+                    <div className="w-10 h-10 mb-3 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center group-hover:scale-110 transition-transform">
+                      <Ticket className="w-5 h-5 text-amber-400" />
+                    </div>
+                    <span className="block text-sm font-black text-white kurdish-text">کۆدی {preset.labelKu}</span>
+                    <span className="block text-[10px] text-amber-300/80 font-bold mt-0.5" dir="ltr">{preset.labelEn} • {preset.hours >= 24 ? `${Math.round(preset.hours / 24)} days` : `${preset.hours}h`}</span>
+                  </button>
+                ))}
+              </div>
+
+              {lastCinemaCode && (
+                <div className="p-4 rounded-2xl bg-emerald-500/5 border border-emerald-500/25 space-y-2">
+                  <span className="text-[10px] font-black text-emerald-400 kurdish-text block">دوا کۆدی دروستکراو:</span>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <code className="font-mono text-sm text-emerald-300 bg-black/50 border border-emerald-500/25 px-2 py-1 rounded select-all" dir="ltr">{lastCinemaCode.code}</code>
+                    <button
+                      onClick={() => handleCopy(lastCinemaCode.code)}
+                      className="p-1.5 hover:bg-white/10 text-gray-300 hover:text-white rounded-md transition"
+                      title="Copy"
+                    >
+                      {copiedCode === lastCinemaCode.code ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    </button>
+                    <span className="text-[10px] text-gray-400 kurdish-text">
+                      کۆتایی مۆڵەت: {new Date(lastCinemaCode.expiresAt).toLocaleString("en-GB")} ({Math.round(lastCinemaCode.hours / 24)} ڕۆژ)
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {cinemaCodes.length > 0 && (
+                <div className="overflow-x-auto rounded-xl border border-white/5" data-tick={nowTick}>
+                  <table className="w-full text-right text-xs min-w-[560px]">
+                    <thead>
+                      <tr className="bg-white/5 text-gray-400 text-[10px] border-b border-white/5">
+                        <th className="p-3 kurdish-text">کۆد</th>
+                        <th className="p-3 kurdish-text">ماوە</th>
+                        <th className="p-3 kurdish-text">دروستکراوە</th>
+                        <th className="p-3 kurdish-text">کۆتایی مۆڵەت</th>
+                        <th className="p-3 kurdish-text">دۆخ</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5">
+                      {cinemaCodes.slice(0, 8).map((c) => {
+                        const left = hoursLeftOn(c.expiresAt);
+                        const expired = c.status === "EXPIRED" || (left !== null && left <= 0);
+                        return (
+                          <tr key={c.id} className="hover:bg-white/5 transition duration-150">
+                            <td className="p-3">
+                              <div className="flex items-center gap-2">
+                                <span className={`font-mono px-1.5 py-1 rounded text-[11px] select-all border ${
+                                  expired ? "bg-red-500/5 border-red-500/20 text-red-400 line-through" : "bg-amber-500/10 border-amber-500/20 text-amber-300"
+                                }`} dir="ltr">{c.id}</span>
+                                <button
+                                  onClick={() => handleCopy(c.id)}
+                                  className="p-1 hover:bg-white/10 text-gray-400 hover:text-white rounded-md transition"
+                                >
+                                  {copiedCode === c.id ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+                                </button>
+                              </div>
+                            </td>
+                            <td className="p-3 text-gray-300 font-mono" dir="ltr">
+                              {c.durationHours ? `${Math.round(c.durationHours / 24)}d` : "—"}
+                              <span className="text-[9px] text-gray-500 kurdish-text mr-1">{c.source === "admin" ? "(ئیداری)" : "(پارەدراو)"}</span>
+                            </td>
+                            <td className="p-3 text-gray-400 text-[10px]" title={c.createdAt}>
+                              {c.createdAt ? new Date(c.createdAt).toLocaleString("en-GB", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—"}
+                            </td>
+                            <td className="p-3 text-gray-400 text-[10px]" title={c.expiresAt}>
+                              {c.expiresAt ? new Date(c.expiresAt).toLocaleString("en-GB", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—"}
+                            </td>
+                            <td className="p-3">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold kurdish-text ${
+                                c.status === "USED"
+                                  ? "bg-zinc-500/10 text-zinc-400 border border-zinc-500/25"
+                                  : expired
+                                    ? "bg-red-500/10 text-red-500 border border-red-500/25"
+                                    : "bg-emerald-500/10 text-emerald-400 border border-emerald-500/25"
+                              }`}>
+                                {c.status === "USED" ? "بەکارهێنراو" : expired ? "بەسەرچووە" : "چالاک"}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  {cinemaCodes.length > 8 && (
+                    <p className="p-2 text-[10px] text-gray-500 kurdish-text text-center">
+                      ٨ کۆدی دواتر پیشان دراون — کۆی گشتی: {cinemaCodes.length} (هەموو وردەکاری لە تابی ئەرشیف)
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+
+        {/* ============================================================= */}
+        {/* TAB 3 — VIP LOUNGE MANAGEMENT                                  */}
+        {/* ============================================================= */}
+        {activeSubTab === "vip" && (
+          <motion.div key="vip" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+
+            {/* Manual golden-ticket generator */}
             <div className="bg-[#0f1013] border border-white/5 rounded-3xl p-6 space-y-4 self-start">
               <h3 className="text-sm font-black text-white kurdish-text flex items-center gap-2">
                 <Plus className="w-4 h-4 text-purple-400" />
@@ -866,6 +1615,73 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
                   />
                 </div>
 
+                {/* Validity / expiration controls */}
+                <div className="space-y-2.5 p-3.5 rounded-2xl bg-black/30 border border-white/5">
+                  <label className="text-[10px] text-gray-200 kurdish-text font-black flex items-center gap-1.5">
+                    <ClockIcon className="w-3.5 h-3.5 text-purple-400" />
+                    ماوەی دروستی کۆد (Validity & Expiration)
+                  </label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[9px] text-gray-500 kurdish-text">ڕۆژی دروستی (Days)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        disabled={noExpiry}
+                        value={validityDays}
+                        onChange={(e) => setValidityDays(e.target.value)}
+                        placeholder="نموونە: 30"
+                        className="w-full px-3 py-1.5 bg-black/40 border border-white/5 focus:border-purple-500/30 disabled:opacity-40 rounded-lg text-xs text-white font-mono outline-none text-left"
+                        dir="ltr"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[9px] text-gray-500 kurdish-text">کاتژمێری دروستی (Hours)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        disabled={noExpiry}
+                        value={validityHours}
+                        onChange={(e) => setValidityHours(e.target.value)}
+                        placeholder="نموونە: 72"
+                        className="w-full px-3 py-1.5 bg-black/40 border border-white/5 focus:border-purple-500/30 disabled:opacity-40 rounded-lg text-xs text-white font-mono outline-none text-left"
+                        dir="ltr"
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] text-gray-500 kurdish-text">بەرواری کۆتایی دیاریکراو (Exact expiry date)</label>
+                    <input
+                      type="date"
+                      disabled={noExpiry}
+                      value={validityDate}
+                      onChange={(e) => setValidityDate(e.target.value)}
+                      className="w-full px-3 py-1.5 bg-black/40 border border-white/5 focus:border-purple-500/30 disabled:opacity-40 rounded-lg text-xs text-white outline-none text-left [color-scheme:dark]"
+                      dir="ltr"
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 cursor-pointer select-none pt-0.5">
+                    <input
+                      type="checkbox"
+                      checked={noExpiry}
+                      onChange={(e) => setNoExpiry(e.target.checked)}
+                      className="w-3.5 h-3.5 accent-purple-600"
+                    />
+                    <span className="text-[10px] text-gray-400 kurdish-text font-bold">کۆدی بێ کۆتایی (No expiration)</span>
+                  </label>
+                  {previewExpiresAt ? (
+                    <p className="text-[10px] text-emerald-400 kurdish-text font-bold flex items-center gap-1.5" title={previewExpiresAt}>
+                      <Check className="w-3 h-3 shrink-0" />
+                      کۆتایی مۆڵەت: {new Date(previewExpiresAt).toLocaleString("en-GB")}
+                      <span className="text-gray-500">(نزیکترین)</span>
+                    </p>
+                  ) : (
+                    <p className="text-[10px] text-amber-400 kurdish-text font-bold">
+                      ئاگاداری: ئەم کۆدە بێ کۆتایی دەبێت.
+                    </p>
+                  )}
+                </div>
+
                 <div className="p-3 bg-purple-500/5 rounded-2xl border border-purple-500/10 text-[10px] text-purple-400 kurdish-text leading-relaxed">
                   سیستەمی بەرهەمهێنان خۆکارانە کۆدێکی یونیک و درێژ بە نهێنی دادەمەزرێنێت و ڕێگەی دەدات تەنها ٢ ئامێر یان IP بەکاریبهێنن پاشان خۆی قوفڵ سەرانسەری دەبێت.
                 </div>
@@ -881,53 +1697,245 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
               </form>
             </div>
 
-            {/* Managed Tickets List Area */}
-            <div className="lg:col-span-2 bg-[#0f1013] border border-white/5 rounded-3xl p-6 space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div className="space-y-1">
-                  <h3 className="text-sm font-black text-white kurdish-text">تۆماری گشتی بلیتی بەشداربووان</h3>
-                  <p className="text-xs text-gray-400 kurdish-text">جێگیری ڕێژەی بەکارهێنان و ناوی کڕیارەکان.</p>
+            {/* Video library + glass preview settings */}
+            <div className="space-y-6">
+              <div className="max-w-3xl bg-[#0f1013] border border-white/5 rounded-3xl p-6 space-y-6">
+                <h3 className="text-sm font-black text-white kurdish-text flex items-center gap-2">
+                  <Smartphone className="w-5 h-5 text-purple-400" />
+                  بەڕێوبەرایەتی ڤیدیۆکانی هۆڵی شاهانە
+                </h3>
+                
+                <div className="bg-black/40 border border-white/5 rounded-xl p-4">
+                  <div className="space-y-4">
+                    <input 
+                      type="text" 
+                      placeholder="ناوی ڤیدیۆ" 
+                      className="w-full px-4 py-2 bg-zinc-900 border border-white/5 rounded-xl text-xs text-white"
+                      value={customerName /* reusing temp state for simplicity */}
+                      onChange={(e) => setCustomerName(e.target.value)}
+                    />
+                    <input 
+                      type="text" 
+                      placeholder="بەستەری ڤیدیۆ (URL)" 
+                      className="w-full px-4 py-2 bg-zinc-900 border border-white/5 rounded-xl text-xs text-white"
+                      value={videoUrl}
+                      onChange={(e) => setVideoUrl(e.target.value)}
+                    />
+                    <input 
+                      type="text" 
+                      placeholder="بەستەری ترەیلەر (Trailer URL - ئارەزوومەند)" 
+                      className="w-full px-4 py-2 bg-zinc-900 border border-white/5 rounded-xl text-xs text-white"
+                      value={trailerUrl}
+                      onChange={(e) => setTrailerUrl(e.target.value)}
+                    />
+                    <button 
+                      onClick={async () => {
+                         if (!customerName.trim() || !videoUrl.trim()) {
+                           setErrorText("⚠️ ناو و بەستەری ڤیدیۆکە پێویستن!");
+                           return;
+                         }
+                         await addDoc(collection(db, "vip_videos"), {
+                           title: customerName.trim(),
+                           videoUrl: videoUrl.trim(),
+                           trailerUrl: trailerUrl.trim(),
+                           sortOrder: vipVideos.length,
+                           createdAt: new Date().toISOString()
+                         });
+                         setCustomerName(""); setVideoUrl(""); setTrailerUrl("");
+                         setSuccessText("✓ ڤیدیۆی VIP بە سەرکەوتوویی زیادکرا.");
+                      }}
+                      className="px-4 py-2 bg-purple-600 text-white rounded-lg text-xs font-black"
+                    >
+                      زیادکردنی ڤیدیۆ
+                    </button>
+                  </div>
                 </div>
 
-                <div className="relative w-full sm:w-56 col">
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">
-                    <Search className="w-3.5 h-3.5" />
-                  </span>
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="بگەڕێ لە نێوان کۆدەکان یان ناوەکان..."
-                    className="w-full pr-9 pl-3 py-1.5 bg-black/45 border border-white/5  focus:border-purple-500/40 rounded-xl text-xs text-white kurdish-text outline-none"
-                  />
+                <div className="space-y-2">
+                  {vipVideos.map(v => (
+                    <div key={v.id} className="flex justify-between items-center gap-3 p-3 bg-white/5 rounded-xl border border-white/10">
+                      <div className="min-w-0">
+                        <span className="text-xs text-white block truncate">{v.title}</span>
+                        {v.trailerUrl && (
+                          <span className="text-[9px] text-amber-400 font-black block mt-0.5">🎬 ترەیلەر دیاریکراوە</span>
+                        )}
+                      </div>
+                      <button 
+                      onClick={async () => {
+                         await deleteDoc(doc(db, "vip_videos", v.id));
+                         setSuccessText("✓ ڤیدیۆی VIP سڕایەوە.");
+                      }}
+                      className="p-2 bg-red-500/10 text-red-500 rounded-lg text-xs"
+                      ><Trash2 className="w-3 h-3" /></button>
+                    </div>
+                  ))}
                 </div>
               </div>
 
-              {filteredTickets.length === 0 ? (
-                <div className="p-12 text-center border border-white/5 bg-white/5 rounded-2xl text-xs text-gray-400 kurdish-text">
-                  هیچ بلیتێک سازنەکراوە لەم بەشەدا بۆ ئەم تەوەری خەسڵەتە.
+              {/* Silent glass preview trailer (shown outside the VIP room) */}
+              <div className="max-w-3xl bg-[#0f1013] border border-white/5 rounded-3xl p-6 space-y-4">
+                <label className="text-xs text-gray-300 kurdish-text font-bold flex items-center gap-1.5">
+                  <Eye className="w-4 h-4 text-cyan-400" />
+                  پێشبینینی شوشە — تریلەری بێدەنگ (Glass Preview Trailer)
+                </label>
+                <p className="text-[10px] text-gray-500 kurdish-text leading-relaxed">
+                  ئەم ڤیدیۆیە بێدەنگ لە پشتەوەی دەرگای VIP بۆ سەردانیکەران پیشان دەدرا وەک نیشاندانی جوانی ژوورەکە. بەستەری یوتیوب یان ڤیدیۆی .mp4 دابنێ.
+                </p>
+                <input
+                  type="text"
+                  value={formGlassUrl}
+                  onChange={(e) => setFormGlassUrl(e.target.value)}
+                  placeholder="https://www.youtube.com/watch?v=... یان https://domain/trailer.mp4"
+                  className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-cyan-500/40 rounded-xl text-xs text-white outline-none font-mono text-left focus:ring-1 focus:ring-cyan-500/50"
+                  dir="ltr"
+                />
+                {formGlassUrl.trim() && (
+                  <div className="aspect-video max-w-xs rounded-xl overflow-hidden border border-white/10 bg-black relative pointer-events-none" aria-hidden="true">
+                    {(() => {
+                      const yt = formGlassUrl.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([\w-]{11})/);
+                      if (yt) {
+                        return (
+                          <iframe
+                            src={`https://www.youtube.com/embed/${yt[1]}?mute=1&autoplay=0&loop=1&playlist=${yt[1]}&controls=0`}
+                            className="absolute inset-0 w-full h-full opacity-60 blur-[1px]"
+                            allow="encrypted-media"
+                            title="preview"
+                          />
+                        );
+                      }
+                      return (
+                        <video
+                          src={formGlassUrl.trim()}
+                          muted
+                          loop
+                          autoPlay
+                          playsInline
+                          className="absolute inset-0 w-full h-full object-cover opacity-60 blur-[1px]"
+                        />
+                      );
+                    })()}
+                    <span className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
+                    <span className="absolute bottom-2 right-2 text-[9px] text-cyan-300 kurdish-text font-bold">پێشبینین — وەک بۆ کڕیار دەردەکەوێت</span>
+                  </div>
+                )}
+                <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={formGlassEnabled}
+                      onChange={(e) => setFormGlassEnabled(e.target.checked)}
+                      className="w-4 h-4 accent-cyan-500"
+                    />
+                    <span className="text-[11px] text-gray-300 kurdish-text font-bold">پیشاندانی چالاک بێت (Enabled for users)</span>
+                  </label>
+                  <button
+                    type="button"
+                    disabled={isLoading}
+                    onClick={handleSaveGlass}
+                    className="sm:mr-auto py-2.5 px-5 bg-cyan-600 hover:bg-cyan-700 text-white font-black text-xs rounded-xl transition duration-150 flex items-center justify-center gap-2"
+                  >
+                    <Check className="w-4 h-4" />
+                    پاشەکەوتی پێشبینین
+                  </button>
                 </div>
-              ) : (
-                <div className="overflow-x-auto rounded-xl border border-white/5">
-                  <table className="w-full text-right text-xs">
-                    <thead>
-                      <tr className="bg-white/5 text-gray-400 text-[10px] border-b border-white/5">
-                        <th className="p-3 kurdish-text">کۆدی تیکێت (VIP Code)</th>
-                        <th className="p-3 kurdish-text">کڕیار (Customer Details)</th>
-                        <th className="p-3 kurdish-text">بەکارهێنان (Limit 2)</th>
-                        <th className="p-3 kurdish-text">دواین ئامێر / ئایپی (Last Device/IP)</th>
-                        <th className="p-3 kurdish-text">دۆخی بلیت (Status)</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/5">
-                      {filteredTickets.map((ticket) => (
+              </div>
+            </div>
+          </motion.div>
+        )}
+
+        {/* ============================================================= */}
+        {/* TAB 4 — TICKETS & USAGE ARCHIVE (both rooms)                   */}
+        {/* ============================================================= */}
+        {activeSubTab === "archive" && (
+          <motion.div key="archive" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="bg-[#0f1013] border border-white/5 rounded-3xl p-6 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="space-y-1">
+                <h3 className="text-sm font-black text-white kurdish-text flex items-center gap-2">
+                  <Users className="w-4 h-4 text-cyan-400" />
+                  ئەرشیفی وردی بەکارهێنانی هەردوو ژوور (Tickets & Usage Archive)
+                </h3>
+                <p className="text-xs text-gray-400 kurdish-text">کۆدی VIP Lounge + کۆدەکانی Cinema Window: ناوی بەکارهێنەر، ژمارەی بەکارهێنان، جۆری ئامێر، کاتی ماوە، و دۆخی زیندوو.</p>
+              </div>
+
+              <div className="relative w-full sm:w-56 col">
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">
+                  <Search className="w-3.5 h-3.5" />
+                </span>
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="بگەڕێ لە نێوان کۆدەکان یان ناوەکان..."
+                  className="w-full pr-9 pl-3 py-1.5 bg-black/45 border border-white/5  focus:border-cyan-500/40 rounded-xl text-xs text-white kurdish-text outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Quick stats across BOTH rooms */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="p-3 rounded-2xl bg-purple-500/5 border border-purple-500/15 text-center">
+                <span className="block text-lg font-black text-purple-300 tabular-nums">{tickets.length}</span>
+                <span className="text-[10px] text-gray-400 kurdish-text">بلیتی VIP Lounge</span>
+              </div>
+              <div className="p-3 rounded-2xl bg-amber-500/5 border border-amber-500/15 text-center">
+                <span className="block text-lg font-black text-amber-300 tabular-nums">{cinemaCodes.length}</span>
+                <span className="text-[10px] text-gray-400 kurdish-text">کۆدی Cinema Window ({activeCinemaCount} چالاک)</span>
+              </div>
+              <div className="p-3 rounded-2xl bg-green-500/5 border border-green-500/15 text-center">
+                <span className="block text-lg font-black text-green-400 tabular-nums">{liveTicketCount}</span>
+                <span className="text-[10px] text-gray-400 kurdish-text">دانیشتی زیندوو ئێستا</span>
+              </div>
+              <div className="p-3 rounded-2xl bg-red-500/5 border border-red-500/15 text-center">
+                <span className="block text-lg font-black text-red-400 tabular-nums">{expiredTicketCount}</span>
+                <span className="text-[10px] text-gray-400 kurdish-text">بەسەرچووە (هەردوو ژوور)</span>
+              </div>
+            </div>
+
+            {filteredTickets.length === 0 && cinemaCodes.filter(c =>
+              c.id.toLowerCase().includes(searchQuery.toLowerCase())
+            ).length === 0 ? (
+              <div className="p-12 text-center border border-white/5 bg-white/5 rounded-2xl text-xs text-gray-400 kurdish-text">
+                هیچ بلیتێک سازنەکراوە لەم بەشەدا بۆ ئەم تەوەری خەسڵەتە.
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-xl border border-white/5" data-tick={nowTick}>
+                <table className="w-full text-right text-xs min-w-[960px]">
+                  <thead>
+                    <tr className="bg-white/5 text-gray-400 text-[10px] border-b border-white/5">
+                      <th className="p-3 kurdish-text">ژوور</th>
+                      <th className="p-3 kurdish-text">کۆدی تیکێت</th>
+                      <th className="p-3 kurdish-text">بەکارهێنەر (Username)</th>
+                      <th className="p-3 kurdish-text">بەکارهێنان</th>
+                      <th className="p-3 kurdish-text">جۆری ئامێر (Device)</th>
+                      <th className="p-3 kurdish-text">کاتی ماوە (Hours Left)</th>
+                      <th className="p-3 kurdish-text">دۆخی دانیشتن (Live)</th>
+                      <th className="p-3 kurdish-text">بلیت</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5">
+                    {filteredTickets.map((ticket) => {
+                      // Expiry math runs every render; nowTick keeps the
+                      // countdown chips fresh without a manual refresh.
+                      const left = hoursLeftOn(ticket.expiresAt);
+                      const expired = left !== null && left <= 0;
+                      const live = isSessionLive(ticket);
+                      return (
                         <tr key={ticket.code} className="hover:bg-white/5 transition duration-150">
                           <td className="p-3">
+                            <span className="px-2 py-0.5 rounded-md bg-purple-500/10 text-purple-300 border border-purple-500/25 text-[9px] font-black kurdish-text whitespace-nowrap">
+                              👑 هۆڵی شاهانە
+                            </span>
+                          </td>
+                          <td className="p-3">
                             <div className="flex items-center gap-2">
-                              <span className="font-mono bg-purple-500/10 border border-purple-500/20 text-purple-400 px-1.5 py-1 rounded text-[11px] select-all">
+                              <span className={`font-mono px-1.5 py-1 rounded text-[11px] select-all border ${
+                                expired
+                                  ? "bg-red-500/5 border-red-500/20 text-red-400 line-through"
+                                  : "bg-purple-500/10 border-purple-500/20 text-purple-400"
+                              }`}>
                                 {ticket.code}
                               </span>
-                              <button 
+                              <button
                                 onClick={() => handleCopy(ticket.code)}
                                 className="p-1.5 hover:bg-white/10 text-gray-400 hover:text-white rounded-md transition"
                               >
@@ -948,492 +1956,154 @@ export const TicketVIPModule: React.FC<TicketVIPModuleProps> = ({ currentUser })
                             )}
                           </td>
                           <td className="p-3">
-                            <span className="font-sans font-black text-gray-300">
-                              {ticket.usedCount} / 2
-                            </span>
+                            <span className="font-sans font-black text-gray-300">{ticket.usedCount} / 2</span>
                           </td>
                           <td className="p-3">
-                            {ticket.lastIp ? (
-                              <div className="space-y-0.5">
-                                <span className="block text-[10px] font-mono text-gray-300">{ticket.lastIp}</span>
-                                <span className="block text-[9px] text-[#00e1ff] font-semibold kurdish-text">📍 {ticket.lastDevice}</span>
+                            {(ticket.lastDevice || ticket.activeDevice) ? (
+                              <div className="space-y-0.5 max-w-[170px]">
+                                <span className="block text-[11px] font-bold text-[#00e1ff] kurdish-text" dir="ltr">
+                                  {describeDevice(ticket.activeDevice || ticket.lastDevice)}
+                                </span>
+                                <span className="block text-[9px] text-gray-500 font-mono truncate" dir="ltr" title={(ticket.activeDevice || ticket.lastDevice)}>
+                                  {(ticket.activeDevice || ticket.lastDevice).substring(0, 40)}…
+                                </span>
                               </div>
                             ) : (
-                              <span className="text-gray-500 text-[10px] kurdish-text">تاوەک ئێستە مۆتیڤ نەکراوە</span>
+                              <span className="text-gray-500 text-[10px] kurdish-text">چالاک نەکراوە</span>
                             )}
                           </td>
                           <td className="p-3">
+                            {left === null ? (
+                              <span className="px-2 py-0.5 rounded-md bg-slate-500/10 text-slate-300 border border-slate-400/20 text-[10px] font-black kurdish-text">
+                                ∞ بێ کۆتایی
+                              </span>
+                            ) : expired ? (
+                              <span className="px-2 py-0.5 rounded-md bg-red-500/10 text-red-400 border border-red-500/25 text-[10px] font-black kurdish-text">
+                                ٠ — بەسەرچووە
+                              </span>
+                            ) : left >= 24 ? (
+                              <span className="px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 text-[10px] font-black tabular-nums" title={ticket.expiresAt}>
+                                {Math.floor(left / 24)}ڕۆژ {Math.floor(left % 24)}کاتژ
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-400 border border-amber-500/25 text-[10px] font-black tabular-nums animate-pulse" title={ticket.expiresAt}>
+                                {Math.floor(left)}کاتژ {Math.floor((left % 1) * 60)}خ
+                              </span>
+                            )}
+                          </td>
+                          <td className="p-3">
+                            <div className="space-y-0.5">
+                              <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-black border ${
+                                live
+                                  ? "bg-green-500/15 text-green-400 border-green-500/30"
+                                  : "bg-zinc-500/10 text-zinc-400 border-zinc-500/20"
+                              }`}>
+                                <span className={`w-1.5 h-1.5 rounded-full ${live ? "bg-green-400 animate-pulse" : "bg-zinc-500"}`} />
+                                {live ? "زیندوو ئێستا" : "ئۆفلاین"}
+                              </span>
+                              {ticket.lastActiveAt && (
+                                <span className="block text-[9px] text-gray-500 kurdish-text">
+                                  دواین چالاکی: {new Date(ticket.lastActiveAt).toLocaleString("en-GB", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="p-3">
                             <span className={`px-2.5 py-0.5 rounded text-[10px] font-bold ${
-                              ticket.status === "Expired" 
-                                ? "bg-red-500/10 text-red-500 border border-red-500/25" 
-                                : "bg-emerald-500/10 text-emerald-400 border border-emerald-500/25"
+                              expired || ticket.status === "Expired"
+                                ? "bg-red-500/10 text-red-500 border border-red-500/25"
+                                : ticket.status === "used"
+                                  ? "bg-zinc-500/10 text-zinc-400 border border-zinc-500/25"
+                                  : "bg-emerald-500/10 text-emerald-400 border border-emerald-500/25"
                             } kurdish-text`}>
-                              {ticket.status === "Expired" ? "خراپبوو / بەسەرچوو" : "چالاکە"}
+                              {expired || ticket.status === "Expired" ? "بەسەرچوو" : ticket.status === "used" ? "قوفڵکراو" : "چالاکە"}
                             </span>
                           </td>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          </motion.div>
-        )}
-
-        {/* TAB 2: PENDING USER SCREENSHOTS ACCESS REQUESTS QUEUE */}
-        {activeSubTab === "requests" && (
-          <motion.div key="requests" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="bg-[#0f1013] border border-white/5 rounded-3xl p-6 space-y-4">
-            <div className="space-y-1">
-              <h3 className="text-sm font-black text-white kurdish-text flex items-center gap-2">
-                <FileText className="w-5 h-5 text-amber-500 animate-pulse" />
-                داواکارییە چاوەڕوانکراکانی بەژداربووان (Pending Access Requests Queue)
-              </h3>
-              <p className="text-xs text-gray-400 kurdish-text">پێداچوونەوە بکە بە ناردراوەکان، تەماشای پسوڵەی گواستنەوەی فاستپەی/زین کاش بکە، و بە کلیلێک کۆدی VIP بێ هاوتا ساز بکە.</p>
-            </div>
-
-            {vipRequests.filter(r => r.status === "Pending").length === 0 ? (
-              <div className="p-16 text-center border border-white/5 bg-white/5 rounded-2xl text-xs text-gray-400 kurdish-text">
-                ✓ هیج داواکارییەکی پسوڵە پێشکەش نەکراوە یان سەرجەمیان پێداچوونەوەیان بۆ کراوە.
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
-                {vipRequests.filter(r => r.status === "Pending").map((req) => (
-                  <div key={req.id} className="p-5 rounded-2xl bg-black/40 border border-amber-500/10 hover:border-amber-500/20 transition-all flex flex-col justify-between gap-4">
-                    
-                    {/* User and timestamp details */}
-                    <div className="space-y-3">
-                      <div className="flex justify-between items-start gap-2">
-                        <div>
-                          <span className="text-[10px] bg-amber-500/15 text-amber-400 font-extrabold px-2 py-0.5 rounded-lg mb-1.5 inline-block">داواکاری نوێ</span>
-                          <h4 className="text-sm font-black text-white kurdish-text">{req.customerName}</h4>
-                          <span className="text-xs font-mono text-zinc-300 block" dir="ltr">📞 {req.customerPhone}</span>
-                        </div>
-                        <span className="text-[9px] text-zinc-500 font-medium">
-                          {new Date(req.createdAt).toLocaleString("en-US", { hour12: true })}
-                        </span>
-                      </div>
-
-                      {/* Expandable Image container to review receipt screenshot */}
-                      {req.bankScreenshot && (
-                        !(req.bankScreenshot.startsWith("data:") || req.bankScreenshot.startsWith("http")) ? (
-                          <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl text-right">
-                            <span className="text-[10px] font-bold kurdish-text block text-emerald-500">جۆری تەسدیقکردن:</span>
-                            <span className="text-[11px] font-medium font-sans">{req.bankScreenshot}</span>
-                          </div>
-                        ) : (
-                          <div className="space-y-1">
-                            <span className="text-[10px] text-gray-400 kurdish-text block font-bold">پسوڵەی سپێردراو (Click to expand):</span>
-                            <div 
-                              onClick={() => setActiveScreenshot(req.bankScreenshot)}
-                              className="h-32 w-full bg-zinc-950 rounded-xl overflow-hidden relative cursor-zoom-in border border-white/5 hover:border-amber-500/30 group transition"
-                            >
-                              <img 
-                                src={req.bankScreenshot} 
-                                alt="Receipt Screenshot" 
-                                className="w-full h-full object-cover group-hover:scale-105 transition duration-200"
-                                referrerPolicy="no-referrer"
-                              />
-                              <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-1.5 text-xs text-white">
-                                <Eye className="w-4 h-4 text-amber-500" />
-                                گه ورەکردنی پسوڵە
+                      );
+                    })}
+                    {cinemaCodes
+                      .filter(c =>
+                        c.id.toLowerCase().includes(searchQuery.toLowerCase())
+                      )
+                      .map((c) => {
+                        const left = hoursLeftOn(c.expiresAt);
+                        const expired = c.status === "EXPIRED" || (left !== null && left <= 0);
+                        return (
+                          <tr key={c.id} className="hover:bg-white/5 transition duration-150">
+                            <td className="p-3">
+                              <span className="px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/25 text-[9px] font-black kurdish-text whitespace-nowrap">
+                                🎬 Cinema Window
+                              </span>
+                            </td>
+                            <td className="p-3">
+                              <div className="flex items-center gap-2">
+                                <span className={`font-mono px-1.5 py-1 rounded text-[11px] select-all border ${
+                                  expired
+                                    ? "bg-red-500/5 border-red-500/20 text-red-400 line-through"
+                                    : "bg-amber-500/10 border-amber-500/20 text-amber-300"
+                                }`} dir="ltr">{c.id}</span>
+                                <button
+                                  onClick={() => handleCopy(c.id)}
+                                  className="p-1.5 hover:bg-white/10 text-gray-400 hover:text-white rounded-md transition"
+                                >
+                                  {copiedCode === c.id ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
+                                </button>
                               </div>
-                            </div>
-                          </div>
-                        )
-                      )}
-
-                      {/* Admin movie binding select/input option */}
-                      <div className="space-y-1.5 text-right bg-white/[0.02] p-3 rounded-xl border border-white/5">
-                        <label className="text-[10px] text-gray-300 font-black kurdish-text block">بەستنەوە بە ڤیدیۆ/فیلمی تایبەت (ئارەزوومەند):</label>
-                        <select
-                          value={requestVideoUrls[req.id] || ""}
-                          onChange={(e) => setRequestVideoUrls({ ...requestVideoUrls, [req.id]: e.target.value })}
-                          className="w-full px-3 py-1.5 bg-zinc-900 border border-white/10 rounded-lg text-xs text-white outline-none focus:border-purple-500/40"
-                        >
-                          <option value="">هەموو فیلمەکان (سەرانسەری گشتی)</option>
-                          {vipVideos.map(v => (
-                            <option key={v.id} value={v.videoUrl}>{v.title}</option>
-                          ))}
-                        </select>
-                        <input 
-                          type="text"
-                          placeholder="یان لێرە ڕاستەوخۆ بەستەر بنووسە..."
-                          value={requestVideoUrls[req.id] || ""}
-                          onChange={(e) => setRequestVideoUrls({ ...requestVideoUrls, [req.id]: e.target.value })}
-                          className="w-full px-3 py-1.5 bg-zinc-900 border border-white/10 rounded-lg text-xs placeholder:text-gray-600 outline-none focus:border-purple-500/40 font-mono"
-                          dir="ltr"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Action button triggers */}
-                    <div className="grid grid-cols-2 gap-3 pt-2 border-t border-white/5">
-                      <button
-                        onClick={() => handleDeleteRequest(req.id)}
-                        className="py-2.5 bg-red-500/10 hover:bg-red-500/20 text-red-500 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer"
-                      >
-                        ڕەتکردنەوە (Decline)
-                      </button>
-
-                      <button
-                        onClick={() => handleApproveRequest(req.id)}
-                        className="py-2.5 bg-amber-500 hover:bg-amber-600 text-black rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 cursor-pointer"
-                      >
-                        <Sparkles className="w-3.5 h-3.5" />
-                        پەسەندکردن و کۆد
-                      </button>
-                    </div>
-
-                  </div>
-                ))}
+                            </td>
+                            <td className="p-3">
+                              <h4 className="font-bold text-white kurdish-text">
+                                {c.source === "admin" ? "کۆدی ئیداری (بێ پسوڵە)" : "کڕیاری پارەدراو"}
+                              </h4>
+                              <p className="text-[10px] text-gray-500 font-mono" dir="ltr">{c.createdBy || "system"}</p>
+                            </td>
+                            <td className="p-3">
+                              <span className="font-sans font-black text-gray-300">{c.usedAt ? "1 / 1" : "0 / 1"}</span>
+                            </td>
+                            <td className="p-3">
+                              <span className="text-gray-500 text-[10px] kurdish-text">تاک-بەکارهێنان</span>
+                            </td>
+                            <td className="p-3">
+                              {left === null ? (
+                                <span className="px-2 py-0.5 rounded-md bg-slate-500/10 text-slate-300 border border-slate-400/20 text-[10px] font-black kurdish-text">—</span>
+                              ) : expired ? (
+                                <span className="px-2 py-0.5 rounded-md bg-red-500/10 text-red-400 border border-red-500/25 text-[10px] font-black kurdish-text">
+                                  ٠ — بەسەرچووە
+                                </span>
+                              ) : left >= 24 ? (
+                                <span className="px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 text-[10px] font-black tabular-nums" title={c.expiresAt}>
+                                  {Math.floor(left / 24)}ڕۆژ {Math.floor(left % 24)}کاتژ
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-400 border border-amber-500/25 text-[10px] font-black tabular-nums animate-pulse" title={c.expiresAt}>
+                                  {Math.floor(left)}کاتژ {Math.floor((left % 1) * 60)}خ
+                                </span>
+                              )}
+                            </td>
+                            <td className="p-3">
+                              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-black border bg-zinc-500/10 text-zinc-400 border-zinc-500/20">
+                                <span className="w-1.5 h-1.5 rounded-full bg-zinc-500" />
+                                ئۆفلاین
+                              </span>
+                            </td>
+                            <td className="p-3">
+                              <span className={`px-2.5 py-0.5 rounded text-[10px] font-bold ${
+                                expired
+                                  ? "bg-red-500/10 text-red-500 border border-red-500/25"
+                                  : c.status === "USED"
+                                    ? "bg-zinc-500/10 text-zinc-400 border border-zinc-500/25"
+                                    : "bg-emerald-500/10 text-emerald-400 border border-emerald-500/25"
+                              } kurdish-text`}>
+                                {expired ? "بەسەرچوو" : c.status === "USED" ? "بەکارهێنراو" : "چالاکە"}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
               </div>
             )}
-          </motion.div>
-        )}
-
-        {/* TAB 3: CURRENT CINEMA WINDOW ROOM */}
-        {activeSubTab === "cinema" && (
-          <motion.div key="cinema" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="bg-[#0f1013] border border-white/5 rounded-3xl p-6 space-y-6">
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-              <div>
-                <h3 className="text-sm font-black text-white kurdish-text flex items-center gap-2">
-                  <Ticket className="w-5 h-5 text-amber-400" />
-                  Cinema Window - Current VIP Room
-                </h3>
-                <p className="mt-1 text-xs text-gray-400 kurdish-text">
-                  Manage the exact Cinema Window room shown in the highlighted yellow slot. This updates only cinema_1.
-                </p>
-              </div>
-              <div className="px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[10px] font-black">
-                Room ID: {cinemaRoom?.id || "cinema_1"}
-              </div>
-            </div>
-
-            <form onSubmit={handleSaveCinemaWindow} className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_420px] gap-6">
-              <div className="space-y-5">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-xs text-gray-300 kurdish-text font-bold">Room title</label>
-                    <input
-                      type="text"
-                      value={cinemaName}
-                      onChange={(e) => setCinemaName(e.target.value)}
-                      className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white kurdish-text outline-none"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-xs text-gray-300 kurdish-text font-bold">Movie ID / admin reference</label>
-                    <input
-                      type="text"
-                      value={cinemaMovieId}
-                      onChange={(e) => setCinemaMovieId(e.target.value)}
-                      className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white font-mono outline-none"
-                      dir="ltr"
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-xs text-gray-300 kurdish-text font-bold">Description</label>
-                  <textarea
-                    value={cinemaDescription}
-                    rows={3}
-                    onChange={(e) => setCinemaDescription(e.target.value)}
-                    className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white kurdish-text outline-none resize-none"
-                  />
-                </div>
-
-                <FileUploaderInput
-                  label="Poster / cover image for this Cinema Window"
-                  value={cinemaPosterUrl}
-                  onChange={setCinemaPosterUrl}
-                  description="This poster appears on the public Cinema Window card and payment modal."
-                  placeholder="https://domain.com/poster.jpg"
-                  adminName={adminName}
-                  onError={(err) => setErrorText(err)}
-                />
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-xs text-gray-300 kurdish-text font-bold">Preview / trailer URL</label>
-                    <input
-                      type="text"
-                      value={cinemaPreviewUrl}
-                      onChange={(e) => setCinemaPreviewUrl(e.target.value)}
-                      placeholder="https://youtube.com/embed/..."
-                      className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white font-mono outline-none"
-                      dir="ltr"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-xs text-gray-300 kurdish-text font-bold">Private full movie link</label>
-                    <input
-                      type="text"
-                      value={cinemaFullVideoReference}
-                      onChange={(e) => setCinemaFullVideoReference(e.target.value)}
-                      placeholder="https://domain.com/full-movie.mp4"
-                      className="w-full px-4 py-2.5 bg-black/40 border border-amber-500/20 focus:border-amber-500/60 rounded-xl text-xs text-white font-mono outline-none"
-                      dir="ltr"
-                    />
-                    <p className="text-[10px] text-amber-300/80 kurdish-text">
-                      This link is returned only after a valid Cinema Window access code is verified.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-xs text-gray-300 kurdish-text font-bold">Price</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={cinemaPrice}
-                      onChange={(e) => setCinemaPrice(e.target.value)}
-                      className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white font-mono outline-none"
-                      dir="ltr"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-xs text-gray-300 kurdish-text font-bold">Currency</label>
-                    <input
-                      type="text"
-                      value={cinemaCurrency}
-                      onChange={(e) => setCinemaCurrency(e.target.value)}
-                      className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white font-mono outline-none"
-                      dir="ltr"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-xs text-gray-300 kurdish-text font-bold">Access hours</label>
-                    <input
-                      type="number"
-                      min="1"
-                      value={cinemaAccessHours}
-                      onChange={(e) => setCinemaAccessHours(e.target.value)}
-                      className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white font-mono outline-none"
-                      dir="ltr"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-xs text-gray-300 kurdish-text font-bold">Status</label>
-                    <select
-                      value={cinemaStatus}
-                      onChange={(e) => setCinemaStatus(e.target.value as CinemaWindowAdminRoom["status"])}
-                      className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white outline-none"
-                    >
-                      <option value="ACTIVE">ACTIVE</option>
-                      <option value="DRAFT">DRAFT</option>
-                      <option value="DISABLED">DISABLED</option>
-                      <option value="EXPIRED">EXPIRED</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-5">
-                <div className="p-4 rounded-2xl bg-amber-500/5 border border-amber-500/15">
-                  <h4 className="text-xs font-black text-amber-300 kurdish-text mb-2">
-                    Admin payment receiving account
-                  </h4>
-                  <p className="text-[10px] text-zinc-400 kurdish-text leading-relaxed">
-                    These payment details are stored on the current Cinema Window room and also mirrored to VIP settings.
-                  </p>
-                </div>
-
-                <FileUploaderInput
-                  label="QR code for payment"
-                  value={formQr}
-                  onChange={setFormQr}
-                  description="FastPay, bank, wallet, or manual transfer QR."
-                  placeholder="https://domain.com/payment-qr.png"
-                  adminName={adminName}
-                  onError={(err) => setErrorText(err)}
-                />
-
-                <FileUploaderInput
-                  label="Bank / wallet logo"
-                  value={formLogo}
-                  onChange={setFormLogo}
-                  description="Optional logo shown with the admin payment account."
-                  placeholder="https://domain.com/payment-logo.png"
-                  adminName={adminName}
-                  onError={(err) => setErrorText(err)}
-                />
-
-                <div className="space-y-1.5">
-                  <label className="text-xs text-gray-300 kurdish-text font-bold">Bank / wallet account details</label>
-                  <textarea
-                    value={formDetails}
-                    rows={4}
-                    onChange={(e) => setFormDetails(e.target.value)}
-                    placeholder="FastPay: 0750xxxxxxx&#10;Bank account: ..."
-                    className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white kurdish-text outline-none resize-none"
-                  />
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-xs text-gray-300 kurdish-text font-bold">Customer payment instructions</label>
-                  <textarea
-                    value={formInst}
-                    rows={4}
-                    onChange={(e) => setFormInst(e.target.value)}
-                    placeholder="Tell customers how to pay and send receipt."
-                    className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-amber-500/40 rounded-xl text-xs text-white kurdish-text outline-none resize-none"
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={isLoading}
-                  className="w-full py-3 bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-black font-black text-xs rounded-xl transition duration-150 flex items-center justify-center gap-2 shadow-lg shadow-amber-500/15"
-                >
-                  <Check className="w-4 h-4" />
-                  Save current Cinema Window room
-                </button>
-              </div>
-            </form>
-          </motion.div>
-        )}
-
-        {/* TAB 4: VIP WALLET & QR CONFIGURATION */}
-        {activeSubTab === "settings" && (
-          <motion.div key="settings" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-2xl bg-[#0f1013] border border-white/5 rounded-3xl p-6 space-y-6">
-            <h3 className="text-sm font-black text-white kurdish-text flex items-center gap-2">
-              <QrCode className="w-5 h-5 text-purple-400" />
-              ڕێکخستنەکانی پارەدانی بلیتی VIP و بارکردنی لۆگۆ
-            </h3>
-
-            <form onSubmit={handleSaveSettings} className="space-y-5">
-              
-              <FileUploaderInput
-                label="کۆدی QR بۆ پارەدان (QR Code)"
-                value={formQr}
-                onChange={setFormQr}
-                description="کۆدی QR فاستپەی یان ڕەسمی ژمارەکەت لێرە باربکە یان بنووسە."
-                placeholder="https://i.ibb.co/3kWy3m9/fastpay-qr-mock.png"
-                adminName={adminName}
-                onError={(err) => setErrorText(err)}
-              />
-
-              <FileUploaderInput
-                label="لۆگۆی بانک یان ئایکۆنی ڕێگای پارەدان (Bank / Payment Logo)"
-                value={formLogo}
-                onChange={setFormLogo}
-                description="ئایکۆنی یان لۆگۆی تایبەت بە جۆری بانکەکە یان فاستپەی باربکە بۆ پیشاندان لە دەستپێکی پەڕەی کڕیاردا."
-                placeholder="https://i.ibb.co/..."
-                adminName={adminName}
-                onError={(err) => setErrorText(err)}
-              />
-
-              <div className="space-y-1.5">
-                <label className="text-xs text-gray-300 kurdish-text font-bold">زانیاری زیاتری حسابەکەت (Bank accounts / Wallet lists)</label>
-                <textarea
-                  value={formDetails}
-                  rows={3}
-                  onChange={(e) => setFormDetails(e.target.value)}
-                  placeholder="فاستپەی: 07501234567&#10;فایبەر کورتکراو: FIB-000302"
-                  className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-purple-500/30 rounded-xl text-xs text-white kurdish-text outline-none resize-none"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs text-gray-300 kurdish-text font-bold">سەرپەرشتیار و ڕێنمایی نووسراو (Custom Client Ticket Instructions)</label>
-                <textarea
-                  value={formInst}
-                  rows={4}
-                  onChange={(e) => setFormInst(e.target.value)}
-                  placeholder="ڕێنمایی بۆ کڕیار لێرە پۆست بکە..."
-                  className="w-full px-4 py-2.5 bg-black/40 border border-white/5 focus:border-purple-500/30 rounded-xl text-xs text-white kurdish-text outline-none resize-none"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={isLoading}
-                className="py-3 px-6 bg-purple-600 hover:bg-purple-700 text-white font-black text-xs rounded-xl transition duration-150 flex items-center justify-center gap-2 shadow-lg shadow-purple-600/15"
-              >
-                پاشەکەوتکردنی ڕێکخستنەکان
-              </button>
-
-            </form>
-          </motion.div>
-        )}
-        
-        {/* TAB 4: VIP VIDEO UPLOAD */}
-        {activeSubTab === "video" && (
-          <motion.div key="video" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-3xl bg-[#0f1013] border border-white/5 rounded-3xl p-6 space-y-6">
-            <h3 className="text-sm font-black text-white kurdish-text flex items-center gap-2">
-              <Smartphone className="w-5 h-5 text-purple-400" />
-              بەڕێوبەرایەتی ڤیدیۆکانی VIP
-            </h3>
-            
-            <div className="bg-black/40 border border-white/5 rounded-xl p-4">
-              <div className="space-y-4">
-                <input 
-                  type="text" 
-                  placeholder="ناوی ڤیدیۆ" 
-                  className="w-full px-4 py-2 bg-zinc-900 border border-white/5 rounded-xl text-xs text-white"
-                  value={customerName /* reusing temp state for simplicity */}
-                  onChange={(e) => setCustomerName(e.target.value)}
-                />
-                <input 
-                  type="text" 
-                  placeholder="بەستەری ڤیدیۆ (URL)" 
-                  className="w-full px-4 py-2 bg-zinc-900 border border-white/5 rounded-xl text-xs text-white"
-                  value={videoUrl}
-                  onChange={(e) => setVideoUrl(e.target.value)}
-                />
-                <input 
-                  type="text" 
-                  placeholder="بەستەری ترەیلەر (Trailer URL - ئارەزوومەند)" 
-                  className="w-full px-4 py-2 bg-zinc-900 border border-white/5 rounded-xl text-xs text-white"
-                  value={trailerUrl}
-                  onChange={(e) => setTrailerUrl(e.target.value)}
-                />
-                <button 
-                  onClick={async () => {
-                     if (!customerName.trim() || !videoUrl.trim()) {
-                       setErrorText("⚠️ ناو و بەستەری ڤیدیۆکە پێویستن!");
-                       return;
-                     }
-                     await addDoc(collection(db, "vip_videos"), {
-                       title: customerName.trim(),
-                       videoUrl: videoUrl.trim(),
-                       trailerUrl: trailerUrl.trim(),
-                       sortOrder: vipVideos.length,
-                       createdAt: new Date().toISOString()
-                     });
-                     setCustomerName(""); setVideoUrl(""); setTrailerUrl("");
-                     setSuccessText("✓ ڤیدیۆی VIP بە سەرکەوتوویی زیادکرا.");
-                  }}
-                  className="px-4 py-2 bg-purple-600 text-white rounded-lg text-xs font-black"
-                >
-                  زیادکردنی ڤیدیۆ
-                </button>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              {vipVideos.map(v => (
-                <div key={v.id} className="flex justify-between items-center gap-3 p-3 bg-white/5 rounded-xl border border-white/10">
-                  <div className="min-w-0">
-                    <span className="text-xs text-white block truncate">{v.title}</span>
-                    {v.trailerUrl && (
-                      <span className="text-[9px] text-amber-400 font-black block mt-0.5">🎬 ترەیلەر دیاریکراوە</span>
-                    )}
-                  </div>
-                  <button 
-                  onClick={async () => {
-                     await deleteDoc(doc(db, "vip_videos", v.id));
-                     setSuccessText("✓ ڤیدیۆی VIP سڕایەوە.");
-                  }}
-                  className="p-2 bg-red-500/10 text-red-500 rounded-lg text-xs"
-                  ><Trash2 className="w-3 h-3" /></button>
-                </div>
-              ))}
-            </div>
           </motion.div>
         )}
       </AnimatePresence>

@@ -38,6 +38,13 @@ export interface Movie {
   fileLrunUrl?: string;
   external_link?: string;
   externalMovieLink?: string;
+  // --- Automatic Kurdish (ckb) subtitle pipeline (server-generated) ---
+  /** Public URL of the pre-generated Sorani WebVTT track, when ready. */
+  kurdishSubtitleUrl?: string;
+  /** queued | processing | ready | failed | skipped */
+  kurdishSubtitleStatus?: string;
+  /** Which priority supplied the source text (subtitle-url / youtube-track / pasted / stt). */
+  kurdishSubtitleSource?: string;
   // --- Live metrics / social metrics (server-enriched) ---
   /** Total number of users who added this movie to their favorites. */
   favoriteCount?: number;

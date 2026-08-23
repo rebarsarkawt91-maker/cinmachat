@@ -26,6 +26,12 @@ export type CcSettings = {
   textColor: string;
   showSubtitle: boolean;
   showOriginal: boolean;
+  /**
+   * Vertical position of the subtitle block inside the player.
+   * 0 = lowest (near the bottom edge), 100 = highest. Persisted so the
+   * user's preferred up/down shift survives reloads on every player surface.
+   */
+  subtitleOffsetY: number;
 };
 
 export const SUBTITLE_LANGUAGES = [
@@ -45,7 +51,35 @@ export const CC_FONT_SIZES: { key: CcSettings["fontSize"]; label: string; cls: s
 export const CC_TEXT_COLORS = ["#ffffff", "#FFFF00", "#00FFFF", "#00FF00", "#FF8800", "#FF5555"];
 
 const CC_SETTINGS_KEY = "cinemachat-cc-settings";
-const DEFAULT_CC: CcSettings = { fontSize: "md", bgOpacity: 0.8, textColor: "#ffffff", showSubtitle: true, showOriginal: false };
+const DEFAULT_CC: CcSettings = { fontSize: "md", bgOpacity: 0.8, textColor: "#ffffff", showSubtitle: true, showOriginal: false, subtitleOffsetY: 15 };
+
+/**
+ * Maps the stored 0-100 vertical offset to a CSS `bottom` percentage inside the
+ * player frame (6% .. 36%). Shared by every subtitle surface so the position
+ * control behaves identically on all players.
+ */
+export function ccSubtitleBottomPercent(offsetY: number | undefined): string {
+  const v = Math.max(0, Math.min(100, Number(offsetY ?? DEFAULT_CC.subtitleOffsetY) || 0));
+  return `${(6 + (v / 100) * 30).toFixed(2)}%`;
+}
+
+/**
+ * True while a subtitle load has been stuck in "loading" longer than `delayMs`.
+ * Surfaces use this to swap the small loading pill for a prominent
+ * "slow network — pause the video until subtitles load" hint.
+ */
+export function useDelayedSubtitleLoad(status: SubtitleStatus, delayMs = 9000): boolean {
+  const [delayed, setDelayed] = useState(false);
+  useEffect(() => {
+    if (status !== "loading") {
+      setDelayed(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setDelayed(true), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [status, delayMs]);
+  return delayed;
+}
 
 export function loadCcSettings(): CcSettings {
   try {
@@ -87,6 +121,26 @@ const SYSTEM_PATTERNS = [
   /^#+\s*(?:subtitle|translation|output)/i,
 ];
 
+// ---------------------------------------------------------------------------
+// Non-speech "noise" tags — [Music], [Laughter], [ هەناسەدان ], [ پێکەنین ],
+// [ مۆسیقا ], [cry], [Applause] ... — are stripped so viewers only see spoken
+// dialogue. This also shrinks translation batches (fewer wasted characters)
+// and stops sound descriptions from being translated into odd text.
+// ---------------------------------------------------------------------------
+const SOUND_TAG_CONTENT_RE =
+  /(هەناسەدان|پێکەنین|مۆسیقا|گریان|ژاڕ|قیژا|چیرپ|چەپڵە|دەنگ|ئاواز|گۆرانی|شینکردن|\b(?:music|instrumental|theme song|applause|applauding|laughter|laughing|laughs?|sighs?|sighing|breaths?|breathing|breathes?|exhales?|inhales?|pants?|panting|crys?|crying|cries|sobbing|sobs?|whimpers?|screams?|screaming|shrieks?|shouts?|shouting|yells?|yelling|whispers?|whispering|gasps?|gasping|groans?|groaning|moans?|chuckles?|chuckling|giggles?|giggling|sniffles?|sniffs?|coughs?|coughing|sneezes?|sneezing|clears? throat|throat clearing|silence|silent|pause|pauses|speaks?|speaking|singing|sings?|sung|humming|hums?|cheering|cheers?|clapping|claps?|gunshots?|gunfire|explosions?|blasts?|footsteps?|door slams?|doorbell|knocking|knocks?|thunder|rumbles?|phone rings?|ringtone|heartbeat|narrator|voice[- ]?over|no dialogue|inaudible|mumbles?|mumbling|muttering|mutters?|stammers?|stammering|stutters?|stuttering)\b)/i;
+
+const BRACKET_TAG_RE = /[[【〔]\s*([^[】〕]{1,64}?)\s*[\]】〕]/g;
+
+function stripSoundTags(line: string): string {
+  if (isStructureLine(line)) return line;
+  return String(line || "")
+    .replace(BRACKET_TAG_RE, (match, inner: string) =>
+      SOUND_TAG_CONTENT_RE.test(inner) ? " " : match,
+    )
+    .replace(/\s{2,}/g, " ");
+}
+
 function metadataProbe(line: string): string {
   return String(line || "")
     .replace(/<\d{2}:\d{2}:\d{2}[\.,]\d{3}>/g, "")
@@ -116,15 +170,17 @@ function isMetadataLine(line: string): boolean {
 
 function stripMetadataFragments(line: string): string {
   if (isStructureLine(line)) return line;
-  return String(line || "")
+  const stripped = String(line || "")
     .replace(/\bkurd\s*[-_.]*\s*zhin\b/gi, "")
     .replace(/\bkurdzhin\b/gi, "")
     .replace(/کورد\s*ژین/g, "")
     .replace(/\s*(?:[-–—|•]+)\s*(?:translated|subtitle(?:s)?|caption(?:s)?)\s+(?:by|from)\s+.*$/i, "")
     .replace(/(?:https?:\/\/|www\.)\S+/gi, "")
     .replace(/\s{2,}/g, " ")
-    .replace(/^\s*[-–—|•:]+|[-–—|•:]+\s*$/g, "")
-    .trim();
+    .replace(/^\s*[-–—|•:]+|[-–—|•:]+\s*$/g, "");
+  // Remove [sound] noise tags last so whole-line tags collapse to "" and get
+  // dropped by the sanitize/parse loops.
+  return stripSoundTags(stripped).trim();
 }
 
 export function sanitizeSubtitleText(subtitleText: string): string {

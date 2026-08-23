@@ -15,7 +15,8 @@ import {
   Download,
   Sparkles,
   RefreshCw,
-  ThumbsUp
+  ThumbsUp,
+  Trash2
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -26,8 +27,43 @@ import {
   getDoc,
   getDocs,
   addDoc,
-  updateDoc
+  updateDoc,
+  deleteDoc
 } from "../../lib/firebase";
+
+// Receipt images are stored as compressed base64 data-URLs (Firebase Storage is
+// not available on the Spark plan) — keep them small.
+const MAX_RECEIPT_BYTES = 250 * 1024;
+
+// Hours remaining until a ticket's expiry ISO stamp (null = open-ended).
+const hoursLeftOnTicket = (expiresAt?: string): number | null => {
+  if (!expiresAt) return null;
+  const t = new Date(expiresAt).getTime();
+  if (Number.isNaN(t)) return null;
+  return (t - Date.now()) / 3600000;
+};
+
+const isExpiredTicket = (ticket: any): boolean => {
+  const left = hoursLeftOnTicket(ticket?.expiresAt);
+  return left !== null && left <= 0;
+};
+
+// Compact Kurdish countdown label ("٣ڕۆژ ٥کاتژ" style).
+const formatRemainingTime = (hours: number): string => {
+  const totalMinutes = Math.max(0, Math.floor(hours * 60));
+  const d = Math.floor(totalMinutes / 1440);
+  const h = Math.floor((totalMinutes % 1440) / 60);
+  const m = totalMinutes % 60;
+  if (d > 0) return `${d}ڕۆژ ${h}کاتژ`;
+  if (h > 0) return `${h}کاتژ ${m}خولەک`;
+  return `${m}خولەک`;
+};
+
+// Pull the YouTube video id out of common URL shapes (watch/shorts/youtu.be).
+export const extractYouTubeId = (url: string): string | null => {
+  const m = url.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([\w-]{11})/);
+  return m ? m[1] : null;
+};
 
 interface VIPRoomModalProps {
   isOpen: boolean;
@@ -97,22 +133,132 @@ export const VIPRoomModal: React.FC<VIPRoomModalProps> = ({ isOpen, onClose, onJ
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [requestSaved, setRequestSaved] = useState<any>(null);
 
-  // Status check state for previous users' requests stored in LocalStorage
-  const [trackedRequestId, setTrackedRequestId] = useState<string | null>(null);
-  const [trackedRequestStatus, setTrackedRequestStatus] = useState<any>(null);
-  const [isCheckingStatus, setIsCheckingStatus] = useState(false);
+  // Optional payment receipt photo (base64 data-URL, max 250KB).
+  const [receiptImage, setReceiptImage] = useState("");
+
+  // Status check state for this user's previous requests stored in LocalStorage.
+  // Multiple requests are supported; each id gets a live Firestore listener so
+  // approvals show up instantly and stale ones can be deleted by the user.
+  const [myRequestIds, setMyRequestIds] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem("vipRoom_myRequests");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed.slice(0, 10);
+      }
+      // Migrate the legacy single-request key if it exists
+      const legacy = localStorage.getItem("vipRoom_myPendingRequest");
+      return legacy ? [legacy] : [];
+    } catch {
+      return [];
+    }
+  });
+  const [requestStatuses, setRequestStatuses] = useState<Record<string, any>>({});
+  const [deletingReqId, setDeletingReqId] = useState<string | null>(null);
+
+  // 30s ticker keeps the golden-ticket hours-left countdown fresh.
+  const [nowTick, setNowTick] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNowTick(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, []);
 
   // Load VIP Configuration and track previous requests on mount
   useEffect(() => {
     if (isOpen) {
       fetchSettings();
-      const savedReqId = localStorage.getItem("vipRoom_myPendingRequest");
-      if (savedReqId) {
-        setTrackedRequestId(savedReqId);
-        checkTrackedRequestStatus(savedReqId);
-      }
     }
   }, [isOpen]);
+
+  // Persist the tracked request ids whenever they change
+  useEffect(() => {
+    try {
+      localStorage.setItem("vipRoom_myRequests", JSON.stringify(myRequestIds));
+    } catch (err) {
+      console.warn(err);
+    }
+  }, [myRequestIds]);
+
+  // Live listeners: one per tracked request. When the admin approves any of
+  // them, the code auto-fills in the verify tab without a refresh.
+  useEffect(() => {
+    if (!isOpen || myRequestIds.length === 0) return;
+    const unsubs = myRequestIds.map((id) =>
+      onSnapshot(
+        doc(db, "vip_requests", id),
+        (snap) => {
+          setRequestStatuses((prev) => {
+            const next = { ...prev };
+            if (snap.exists()) {
+              next[id] = { id: snap.id, ...snap.data() };
+            } else {
+              next[id] = { missing: true };
+            }
+            return next;
+          });
+        },
+        (err) => console.warn(`vip_requests listener (${id}):`, err),
+      ),
+    );
+    return () => unsubs.forEach((u) => u());
+  }, [isOpen, myRequestIds]);
+
+  // Auto-fill the code field from the newest approved request
+  useEffect(() => {
+    const approved = Object.values(requestStatuses).find(
+      (r: any) => r && r.status === "Approved" && r.approvedCode,
+    );
+    if (approved) setCode(approved.approvedCode);
+  }, [requestStatuses]);
+
+  // LIVE ADMIN SYNC — settings stream: when the admin edits the QR code,
+  // payment details, instructions or logo in Module 15 (TicketVIPModule), an
+  // open modal reflects the change instantly, no refresh needed.
+  useEffect(() => {
+    if (!isOpen) return;
+    const unsub = onSnapshot(
+      doc(db, "vip_settings", "default"),
+      (snap) => {
+        if (snap.exists()) setVipSettings(snap.data());
+      },
+      (err) => console.warn("vip_settings live sync:", err),
+    );
+    return () => unsub();
+  }, [isOpen]);
+
+  // LIVE ADMIN SYNC — active ticket stream: follows the holder's ticket doc so
+  // admin-side changes (validity extension, usage reset, device data) land
+  // here immediately; expiry flips the golden ticket into its blocked state,
+  // and a deleted ticket drops the user back to the entry form.
+  useEffect(() => {
+    if (!isOpen || !verifiedTicket?.code) return;
+    const ticketCode = verifiedTicket.code;
+    const unsub = onSnapshot(
+      doc(db, "vip_tickets", ticketCode),
+      (snap) => {
+        if (!snap.exists()) {
+          setVerifiedTicket(null);
+          try {
+            localStorage.removeItem("vipRoom_verifiedTicket");
+          } catch (err) {
+            console.warn(err);
+          }
+          setErrorMsg("⚠️ بلیتەکەت لەلایەن بەڕێوبەرەوە لابراوە!");
+          return;
+        }
+        const data = snap.data();
+        setVerifiedTicket((prev: any) => ({ ...(prev || {}), ...data, id: snap.id }));
+        try {
+          localStorage.setItem("vipRoom_verifiedTicket", JSON.stringify({ id: snap.id, ...data }));
+        } catch (err) {
+          console.warn(err);
+        }
+      },
+      (err) => console.warn(`vip_tickets live sync (${ticketCode}):`, err),
+    );
+    return () => unsub();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, verifiedTicket?.code]);
 
   const fetchSettings = async () => {
     try {
@@ -125,11 +271,22 @@ export const VIPRoomModal: React.FC<VIPRoomModalProps> = ({ isOpen, onClose, onJ
             const tSnap = await getDoc(doc(db, "vip_tickets", parsed.code));
             if (tSnap.exists()) {
               const ticketData = tSnap.data();
-              setVerifiedTicket(ticketData);
-              try {
-                localStorage.setItem("vipRoom_verifiedTicket", JSON.stringify(ticketData));
-              } catch (err) {
-                console.warn(err);
+              if (isExpiredTicket(ticketData)) {
+                // Deadline passed since last visit: archive it and lock the user out
+                updateDoc(doc(db, "vip_tickets", parsed.code), { status: "Expired" }).catch(() => {});
+                localStorage.removeItem("vipRoom_verifiedTicket");
+                setVerifiedTicket(null);
+                setErrorMsg("⚠️ بلیتەکەت کاتی تەواو بوو! تکایە بلیتێکی نوێ بکڕە بۆ گەڕانەوە.");
+              } else {
+                setVerifiedTicket({ id: parsed.code, ...ticketData });
+                try {
+                  localStorage.setItem(
+                    "vipRoom_verifiedTicket",
+                    JSON.stringify({ id: parsed.code, ...ticketData }),
+                  );
+                } catch (err) {
+                  console.warn(err);
+                }
               }
             } else {
               setVerifiedTicket(null);
@@ -158,43 +315,26 @@ export const VIPRoomModal: React.FC<VIPRoomModalProps> = ({ isOpen, onClose, onJ
     }
   };
 
-  const checkTrackedRequestStatus = async (reqId: string) => {
-    setIsCheckingStatus(true);
+  // Remove one of this user's own requests from Firestore and the tracker list
+  const handleDeleteMyRequest = async (reqId: string) => {
+    if (!window.confirm("دڵنیایی لە سڕینەوەی ئەم داواکارییە؟ ئەم کارە ناگەڕێتەوە!")) return;
     try {
-      const snap = await getDoc(doc(db, "vip_requests", reqId));
-      if (snap.exists()) {
-        const found = { id: snap.id, ...snap.data() } as any;
-        setTrackedRequestStatus(found);
-        // If approved, automatically fill code & highlight to make user flow effortless
-        if (found.status === "Approved" && found.approvedCode) {
-          setCode(found.approvedCode);
-        }
-      }
+      setDeletingReqId(reqId);
+      await deleteDoc(doc(db, "vip_requests", reqId));
+      setMyRequestIds((prev) => prev.filter((x) => x !== reqId));
+      setRequestStatuses((prev) => {
+        const next = { ...prev };
+        delete next[reqId];
+        return next;
+      });
+      setErrorMsg("");
     } catch (err) {
-      console.error("Error checking request status:", err);
+      console.error(err);
+      setErrorMsg("کێشە لە سڕینەوەی داواکاری هەیە!");
     } finally {
-      setIsCheckingStatus(false);
+      setDeletingReqId(null);
     }
   };
-
-  // Real-time request status: when the admin approves the tracked request, the
-  // code auto-fills here instantly (no refresh needed).
-  useEffect(() => {
-    if (!trackedRequestId) return;
-    const unsub = onSnapshot(
-      doc(db, "vip_requests", trackedRequestId),
-      (snap) => {
-        if (!snap.exists()) return;
-        const found = { id: snap.id, ...snap.data() } as any;
-        setTrackedRequestStatus(found);
-        if (found.status === "Approved" && found.approvedCode) {
-          setCode(found.approvedCode);
-        }
-      },
-      (err) => console.warn("vip_requests listener:", err),
-    );
-    return () => unsub();
-  }, [trackedRequestId]);
 
   const handleVerify = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -211,7 +351,12 @@ export const VIPRoomModal: React.FC<VIPRoomModalProps> = ({ isOpen, onClose, onJ
       const snap = await getDoc(doc(db, "vip_tickets", code.trim()));
       if (snap.exists()) {
         const ticketData = { id: snap.id, ...snap.data() } as any;
-        if (ticketData.status === "active" || ticketData.status === "used") {
+        // Expiration gate: an expired ticket is archived and rejected even if
+        // its status field still says "active" (admin may not have noticed).
+        if (isExpiredTicket(ticketData)) {
+          updateDoc(doc(db, "vip_tickets", code.trim()), { status: "Expired" }).catch(() => {});
+          setErrorMsg("⚠️ ئەم بلیتە بەسەرچووە! کاتی مۆڵەتی تەواو بووە.");
+        } else if (ticketData.status === "active" || ticketData.status === "used") {
           // Increment usage counter and record the activating device.
           const nextUsedCount = Math.min((ticketData.usedCount || 0) + 1, 2);
           const device = (typeof navigator !== "undefined" ? navigator.userAgent || "" : "").substring(0, 120);
@@ -261,7 +406,8 @@ export const VIPRoomModal: React.FC<VIPRoomModalProps> = ({ isOpen, onClose, onJ
       const reqRef = await addDoc(collection(db, "vip_requests"), {
         customerName: vName.trim(),
         customerPhone: vPhone.trim(),
-        bankScreenshot: "ڕەوانەکرا بۆ وەتسئاپ / Manual WhatsApp Flow",
+        // Real receipt image (base64) when provided, otherwise the manual flow marker
+        bankScreenshot: receiptImage || "ڕەوانەکرا بۆ وەتسئاپ / Manual WhatsApp Flow",
         status: "Pending",
         createdAt: new Date().toISOString(),
       });
@@ -275,17 +421,36 @@ export const VIPRoomModal: React.FC<VIPRoomModalProps> = ({ isOpen, onClose, onJ
       };
 
       setRequestSaved(requestData);
-      localStorage.setItem("vipRoom_myPendingRequest", reqRef.id);
-      setTrackedRequestId(reqRef.id);
-      setTrackedRequestStatus(requestData);
+      setMyRequestIds((prev) => (prev.includes(reqRef.id) ? prev : [reqRef.id, ...prev].slice(0, 10)));
       setActiveTab("requested");
       setVName("");
       setVPhone("");
+      setReceiptImage("");
     } catch (err) {
       setErrorMsg("کێشەیەک هەیە لە تۆمارکردنی داواکاری!");
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  // Receipt photo picker with size validation + local preview (no Storage)
+  const handleReceiptPick = (file?: File | null) => {
+    if (!file) return;
+    if (!/^image\/(png|jpe?g|webp)$/i.test(file.type)) {
+      setErrorMsg("⚠️ تکایە ڕەسمێکی PNG / JPG / WebP هەڵبژێرە!");
+      return;
+    }
+    if (file.size > MAX_RECEIPT_BYTES) {
+      setErrorMsg("⚠️ قەبارەی ڕەسم زۆر گەورەیە — کەمتر لە 250KB بێت!");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setErrorMsg("");
+      setReceiptImage(typeof reader.result === "string" ? reader.result : "");
+    };
+    reader.onerror = () => setErrorMsg("خوێندنەوەی فایلەکە سەرکەوتوو نەبوو!");
+    reader.readAsDataURL(file);
   };
 
   const downloadTicketAsImage = (ticket: any) => {
@@ -436,6 +601,17 @@ export const VIPRoomModal: React.FC<VIPRoomModalProps> = ({ isOpen, onClose, onJ
       return;
     }
 
+    // Stamp a live-session heartbeat so the admin archive shows this ticket as
+    // "زیندوو ئێستا" (live) while the holder is watching. Fire-and-forget: a
+    // failed write must never block entering the VIP room.
+    if (verifiedTicket?.code) {
+      updateDoc(doc(db, "vip_tickets", verifiedTicket.code), {
+        isLive: true,
+        lastActiveAt: new Date().toISOString(),
+        activeDevice: (typeof navigator !== "undefined" ? navigator.userAgent || "" : "").substring(0, 120),
+      }).catch((err) => console.warn("Live stamp skipped:", err));
+    }
+
     const officialVipRoom = {
       id: "vip_room_official_premium",
       name: "کۆڕی شاهانەی VIP (Premium Lounge)",
@@ -465,18 +641,51 @@ export const VIPRoomModal: React.FC<VIPRoomModalProps> = ({ isOpen, onClose, onJ
           className="relative w-full max-w-xl bg-[#090a0d] border border-amber-500/15 rounded-[2.5rem] overflow-hidden shadow-2xl shadow-amber-500/5 p-6 md:p-8"
           dir="rtl"
         >
+          {/* Silent glass preview trailer — plays muted behind the door card so
+              visitors see a taste of the VIP room before entering. */}
+          {!verifiedTicket && vipSettings?.glassPreviewEnabled && vipSettings?.glassPreviewUrl?.trim() && (
+            <div className="absolute inset-0 pointer-events-none overflow-hidden" aria-hidden="true">
+              {(() => {
+                const url = vipSettings.glassPreviewUrl.trim();
+                const ytId = extractYouTubeId(url);
+                if (ytId) {
+                  return (
+                    <iframe
+                      src={`https://www.youtube.com/embed/${ytId}?mute=1&autoplay=1&loop=1&playlist=${ytId}&controls=0&playsinline=1`}
+                      className="absolute inset-0 w-full h-full opacity-40 blur-sm scale-110 border-0"
+                      allow="autoplay; encrypted-media"
+                      title="VIP preview"
+                    />
+                  );
+                }
+                return (
+                  <video
+                    src={url}
+                    autoPlay
+                    muted
+                    loop
+                    playsInline
+                    className="absolute inset-0 w-full h-full object-cover opacity-40 blur-sm scale-110"
+                  />
+                );
+              })()}
+              {/* Dark gradient wash keeps the foreground form readable */}
+              <div className="absolute inset-0 bg-gradient-to-b from-[#090a0d]/70 via-[#090a0d]/85 to-[#090a0d]" />
+            </div>
+          )}
+
           {/* Top closing cross */}
           <button
             onClick={onClose}
             id="btn-close-vip-modal"
-            className="absolute top-6 left-6 p-2 text-gray-500 hover:text-white hover:bg-white/5 rounded-full transition-all"
+            className="absolute top-6 left-6 z-20 p-2 text-gray-500 hover:text-white hover:bg-white/5 rounded-full transition-all"
           >
             <X className="w-5 h-5" />
           </button>
 
           {/* Verification phase / Requested / Form Access Tabs */}
           {!verifiedTicket ? (
-            <div className="space-y-6">
+            <div className="relative z-10 space-y-6">
               
               {/* Tabs header togglers */}
               <div className="flex gap-2 p-1 bg-[#121318]/90 border border-white/5 rounded-2xl mx-auto max-w-[340px] mt-2 shadow-inner">
@@ -504,39 +713,76 @@ export const VIPRoomModal: React.FC<VIPRoomModalProps> = ({ isOpen, onClose, onJ
                 </button>
               </div>
 
-              {/* Status Checker Widget for user convenience if they have a saved token */}
-              {trackedRequestId && (
-                <div className="p-3 bg-amber-500/5 border border-amber-500/10 rounded-2xl flex items-center justify-between gap-3 text-right">
-                  <div className="flex items-center gap-2">
-                    <Clock className="w-4 h-4 text-amber-500 animate-pulse" />
-                    <div>
-                      <span className="text-[10px] text-gray-400 block kurdish-text">دواین داواکاری تۆ</span>
-                      <span className="text-xs font-semibold text-white font-mono">
-                        {trackedRequestStatus ? `ناو: ${trackedRequestStatus.customerName}` : "خەریکی هێنانەوەی زانیاری..."}
-                      </span>
-                    </div>
-                  </div>
+              {/* My requests tracker: live statuses via onSnapshot + user delete */}
+              {myRequestIds.length > 0 && (
+                <div className="space-y-2">
+                  <span className="text-[10px] text-gray-500 kurdish-text font-bold flex items-center gap-1.5 px-1">
+                    <Clock className="w-3.5 h-3.5 text-amber-500" />
+                    داواکارییەکانی من ({myRequestIds.length})
+                  </span>
+                  {myRequestIds.map((rid) => {
+                    const st = requestStatuses[rid];
+                    const isApproved = st?.status === "Approved";
+                    const isMissing = !!st?.missing;
+                    return (
+                      <div
+                        key={rid}
+                        className={`p-3 border rounded-2xl flex items-center justify-between gap-3 text-right ${
+                          isApproved
+                            ? "bg-green-500/5 border-green-500/15"
+                            : isMissing
+                              ? "bg-zinc-500/5 border-white/5"
+                              : "bg-amber-500/5 border-amber-500/10"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Clock
+                            className={`w-4 h-4 shrink-0 ${
+                              isApproved ? "text-green-400" : isMissing ? "text-zinc-500" : "text-amber-500 animate-pulse"
+                            }`}
+                          />
+                          <div className="min-w-0 text-right">
+                            <span className="text-[10px] text-gray-400 block kurdish-text truncate max-w-[160px]" title={st?.customerName || ""}>
+                              {st?.customerName || "..."}
+                            </span>
+                            <span className="text-[9px] font-mono text-gray-600 truncate block max-w-[160px]" dir="ltr">{rid}</span>
+                          </div>
+                        </div>
 
-                  <div className="flex items-center gap-3">
-                    {trackedRequestStatus && (
-                      <span className={`px-2.5 py-1 text-[9px] font-black rounded-lg ${
-                        trackedRequestStatus.status === "Approved" 
-                          ? "bg-green-500/20 text-green-400 border border-green-500/20" 
-                          : "bg-amber-500/20 text-amber-400 border border-amber-500/20"
-                      }`}>
-                        {trackedRequestStatus.status === "Approved" ? "پەسەندکرا ✓" : "چاوەڕوانە ⏳"}
-                      </span>
-                    )}
+                        <div className="flex items-center gap-2 shrink-0">
+                          {isApproved && (
+                            <span className="px-2.5 py-1 text-[9px] font-black rounded-lg bg-green-500/20 text-green-400 border border-green-500/20 kurdish-text">
+                              پەسەندکرا ✓ کۆدت بۆ پڕکراوەتەوە
+                            </span>
+                          )}
+                          {isMissing && (
+                            <span className="px-2.5 py-1 text-[9px] font-black rounded-lg bg-zinc-500/15 text-zinc-400 border border-white/10 kurdish-text">
+                              لابراوە / ڕەتکراوە
+                            </span>
+                          )}
+                          {!st && (
+                            <span className="px-2.5 py-1 text-[9px] font-black rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/20 kurdish-text">
+                              چاوەڕوانە ⏳
+                            </span>
+                          )}
+                          {!isApproved && !st?.missing && st?.status !== undefined && st.status !== "Pending" && st.status !== "Approved" && (
+                            <span className="px-2.5 py-1 text-[9px] font-black rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/20 kurdish-text">
+                              {st.status}
+                            </span>
+                          )}
 
-                    <button
-                      onClick={() => checkTrackedRequestStatus(trackedRequestId)}
-                      disabled={isCheckingStatus}
-                      className="p-1.5 hover:bg-white/5 text-gray-400 hover:text-white rounded-lg transition"
-                      title="نوێکردنەوەی دۆخی داواکاری"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${isCheckingStatus ? "animate-spin" : ""}`} />
-                    </button>
-                  </div>
+                          <button
+                            onClick={() => handleDeleteMyRequest(rid)}
+                            disabled={deletingReqId === rid}
+                            className="p-1.5 hover:bg-red-500/10 text-gray-500 hover:text-red-400 rounded-lg transition disabled:opacity-40 cursor-pointer"
+                            title="سڕینەوەی ئەم داواکارییە"
+                          >
+                            <Trash2 className={`w-3.5 h-3.5 ${deletingReqId === rid ? "animate-pulse" : ""}`} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
 
@@ -657,6 +903,50 @@ export const VIPRoomModal: React.FC<VIPRoomModalProps> = ({ isOpen, onClose, onJ
                       </div>
                     </div>
 
+                    {/* Payment receipt upload (optional, stored as base64) */}
+                    <div className="space-y-2.5 p-4 rounded-2xl bg-black/30 border border-white/5">
+                      <label className="text-[10px] text-gray-300 kurdish-text font-bold flex items-center gap-1.5">
+                        <Upload className="w-3.5 h-3.5 text-amber-400" />
+                        وێنەی پسوڵەی پارەدان (ئارەزوومەندانە — کەمتر لە 250KB)
+                      </label>
+                      {receiptImage ? (
+                        <div className="flex items-center gap-3">
+                          <img
+                            src={receiptImage}
+                            alt="Receipt preview"
+                            className="w-20 h-20 object-cover rounded-xl border border-emerald-500/30"
+                            referrerPolicy="no-referrer"
+                          />
+                          <div className="flex-1 space-y-1.5">
+                            <span className="block text-[10px] text-emerald-400 kurdish-text font-bold flex items-center gap-1">
+                              <Check className="w-3 h-3" />
+                              پسوڵەکە ئامادەیە بۆ ناردن
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setReceiptImage("")}
+                              className="px-3 py-1.5 bg-red-600/10 hover:bg-red-600/20 border border-red-500/20 text-red-400 text-[10px] font-black rounded-lg transition cursor-pointer"
+                            >
+                              لابردنی وێنە
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <label className="flex flex-col items-center justify-center gap-2 p-5 border border-dashed border-white/10 hover:border-amber-500/40 rounded-xl cursor-pointer transition group">
+                          <span className="w-9 h-9 rounded-full bg-amber-500/10 group-hover:bg-amber-500/20 flex items-center justify-center text-amber-400 transition">
+                            <Upload className="w-4 h-4" />
+                          </span>
+                          <span className="text-[10px] text-gray-500 kurdish-text">کرتە بکە و وێنەی پسوڵەکەت بارکە</span>
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp"
+                            className="hidden"
+                            onChange={(e) => handleReceiptPick(e.target.files?.[0])}
+                          />
+                        </label>
+                      )}
+                    </div>
+
                     <div className="space-y-4 bg-amber-500/5 p-5 rounded-2xl border border-amber-500/10 text-right">
                       <div className="flex items-start gap-3">
                         <span className="text-xl shrink-0">💬</span>
@@ -732,12 +1022,34 @@ export const VIPRoomModal: React.FC<VIPRoomModalProps> = ({ isOpen, onClose, onJ
             </div>
           ) : (
             /* PHASE 2: AUTOMATED PREMIUM GOLDEN TICKET DISPLAY */
-            <div className="space-y-6">
+            <div className="relative z-10 space-y-6">
               <div className="text-center space-y-1">
                 <span className="text-[9px] bg-gradient-to-r from-amber-500 to-yellow-500 text-black px-3 py-1 rounded-full font-black uppercase tracking-wider shadow-lg">Premium VIP Cinema Pass</span>
                 <h3 className="text-2xl font-black text-amber-400 kurdish-text mt-2.5">بلیتی شاهانەی VIP چالاککرا</h3>
                 <p className="text-xs text-gray-400 font-mono">ID: {verifiedTicket.code}</p>
+                {/* Live validity countdown — refreshes with the 30s ticker */}
+                <p data-tick={nowTick} className="text-[11px] font-black">
+                  {(() => {
+                    const left = hoursLeftOnTicket(verifiedTicket?.expiresAt);
+                    if (left === null)
+                      return <span className="text-slate-300 kurdish-text">∞ مۆڵەتی بێ کۆتایی</span>;
+                    if (left <= 0)
+                      return <span className="text-red-400 kurdish-text">بەسەرچووە — کۆتایی مۆڵەت: {new Date(verifiedTicket.expiresAt).toLocaleString("en-GB")}</span>;
+                    return (
+                      <span className={left < 24 ? "text-amber-400 kurdish-text" : "text-emerald-400 kurdish-text"}>
+                        کاتی ماوە: {formatRemainingTime(left)}
+                      </span>
+                    );
+                  })()}
+                </p>
               </div>
+
+              {isExpiredTicket(verifiedTicket) && (
+                <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-2xl text-red-400 text-xs font-black kurdish-text flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  بلیتەکەت بەسەرچووە! تکایە لە تبابی "داواکاری بلیت نوێ" بلیتێکی نوێ بکڕە.
+                </div>
+              )}
 
               {/* Golden layout */}
               <div className="p-5 rounded-3xl bg-gradient-to-b from-[#111216] to-[#08090b] border border-amber-500/20 space-y-5 relative shadow-inner overflow-hidden">
@@ -814,10 +1126,11 @@ export const VIPRoomModal: React.FC<VIPRoomModalProps> = ({ isOpen, onClose, onJ
 
                 <button
                   onClick={handleStartViewing}
-                  className="py-3.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-black font-black text-xs rounded-2xl transition duration-150 flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 active:scale-[0.98] cursor-pointer"
+                  disabled={isExpiredTicket(verifiedTicket)}
+                  className="py-3.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-black font-black text-xs rounded-2xl transition duration-150 flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 active:scale-[0.98] cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
                 >
                   <Ticket className="w-4 h-4 shrink-0" />
-                  دەستپێکردنی سەیرکردن
+                  {isExpiredTicket(verifiedTicket) ? "بلیت بەسەرچووە" : "دەستپێکردنی سەیرکردن"}
                 </button>
               </div>
 

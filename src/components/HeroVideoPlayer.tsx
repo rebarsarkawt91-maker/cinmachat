@@ -6,7 +6,6 @@ import {
   VolumeX,
   Captions,
   CaptionsOff,
-  Ticket,
   Youtube,
   Instagram,
   Facebook,
@@ -42,7 +41,6 @@ const HeroVideoPlayer: React.FC<{
   hasInteracted: boolean;
   heroPlaylist?: string[];
   config: any;
-  setShowVipModal: React.Dispatch<React.SetStateAction<boolean>>;
   activeAudioSource?: "hero" | "room";
   isMoviePlayerOpen?: boolean;
 }> = ({
@@ -54,7 +52,6 @@ const HeroVideoPlayer: React.FC<{
   hasInteracted,
   heroPlaylist,
   config,
-  setShowVipModal,
   activeAudioSource = "hero",
   isMoviePlayerOpen = false,
 }) => {
@@ -818,15 +815,6 @@ const HeroVideoPlayer: React.FC<{
             ) : (
               <CaptionsOff className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 opacity-80 transition-transform group-hover/cc:scale-110" />
             )}
-          </button>
-
-          <button
-            onClick={() => setShowVipModal(true)}
-            className="pointer-events-auto p-2 md:p-3 bg-black/50 hover:bg-amber-500/20 border border-white/10 hover:border-amber-500/30 rounded-xl md:rounded-2xl text-white hover:text-amber-400 backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/vip"
-            title="هۆڵی VIP Room"
-            id="hero-vip-btn"
-          >
-            <Ticket className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/vip:rotate-12" />
           </button>
 
           <button

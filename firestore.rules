@@ -254,7 +254,19 @@ service cloud.firestore {
         && (data.get('lastIp', null) == null || data.lastIp is string)
         && (data.get('lastDevice', null) == null || data.lastDevice is string)
         && data.get('status', 'active') in ['active', 'used', 'Expired']
-        && (data.get('createdAt', null) == null || data.createdAt is string || data.createdAt is timestamp);
+        && (data.get('createdAt', null) == null || data.createdAt is string || data.createdAt is timestamp)
+        // Section 15 generator validity fields (all optional, strictly typed):
+        // expiresAt = computed ISO deadline, validDays/validHours = the inputs
+        // the admin chose, createdBy = admin username.
+        && (data.get('expiresAt', null) == null || data.expiresAt is string || data.expiresAt is timestamp)
+        && (data.get('validDays', null) == null || (data.validDays is int && data.validDays >= 0))
+        && (data.get('validHours', null) == null || (data.validHours is int && data.validHours >= 0))
+        && (data.get('createdBy', null) == null || (data.createdBy is string && data.createdBy.size() <= 100))
+        // Live-session tracking written by the VIP modal when a holder starts
+        // viewing: lastActiveAt freshness drives the admin "LIVE" badge.
+        && (data.get('lastActiveAt', null) == null || data.lastActiveAt is string || data.lastActiveAt is timestamp)
+        && (data.get('activeDevice', null) == null || data.activeDevice is string)
+        && (data.get('isLive', null) == null || data.isLive is bool);
     }
 
     function isValidVipVideo(data) {
@@ -446,6 +458,36 @@ service cloud.firestore {
       allow read: if true;
       allow create, update: if isValidBannedIp(incoming());
       allow delete: if ipId != '_meta';
+    }
+
+    // --- Unblock Requests (Security Shield Section 11 queue) ---
+    // Blocked users submit name + phone + device metadata straight from the
+    // block screen. They are by definition NOT authenticated (anonymous Firebase
+    // Auth is DISABLED on this project), so a validated public create is the only
+    // workable gate (same pattern as vip_requests/user_activity_logs). The admin
+    // panel listens in real time via onSnapshot and removes docs after resolving.
+    function isValidUnblockRequest(data) {
+      return data.get('name', '') is string
+        && data.get('name', '').size() > 0 && data.get('name', '').size() <= 60
+        && data.get('phone', '') is string
+        && data.get('phone', '').size() > 0 && data.get('phone', '').size() <= 20
+        && (data.get('deviceId', null) == null || (data.deviceId is string && data.deviceId.size() <= 128))
+        && (data.get('ip', null) == null || (data.ip is string && data.ip.size() <= 64))
+        && (data.get('device', null) == null || (data.device is string && data.device.size() <= 300))
+        && (data.get('browser', null) == null || (data.browser is string && data.browser.size() <= 100))
+        && (data.get('location', null) == null || (data.location is string && data.location.size() <= 200))
+        && data.get('status', 'pending') == 'pending'
+        && (data.get('blockedAt', null) == null || data.blockedAt is string)
+        && (data.get('requestedAt', null) == null || data.requestedAt is string)
+        && (data.get('timestamp', null) == null || data.timestamp is timestamp);
+    }
+
+    match /unblockRequests/{requestId} {
+      allow read: if true;
+      allow create: if isValidUnblockRequest(incoming());
+      // No update: requests are immutable once submitted; admins resolve by
+      // unbanning via the server API then deleting the document.
+      allow delete: if requestId != '_meta';
     }
 
     // --- Module 9 Channel & Brand Settings (channel_settings) ---

@@ -31,6 +31,7 @@ import {
   Phone,
   Trash2,
   ChevronDown,
+  ChevronUp,
   UserPlus,
   UserCircle2,
   AtSign,
@@ -52,6 +53,10 @@ import {
   hasPlayableBuffer,
   type NativeVideoLoadState,
 } from "../../utils/videoBuffering";
+import {
+  ccSubtitleBottomPercent,
+  useDelayedSubtitleLoad,
+} from "../../hooks/useSubtitleManager";
 import { ProfileCard } from "./ProfileCard";
 import {
   CINEMA_CHAT_ROOM_ID,
@@ -182,7 +187,7 @@ interface CinemaChatRoomProps {
   /** Reports the current video source URL back to the parent for subtitle generation. */
   onSourceUrl?: (url: string) => void;
   /** CC display settings from parent. */
-  ccSettings?: { fontSize: string; bgOpacity: number; textColor: string; showSubtitle: boolean; showOriginal: boolean };
+  ccSettings?: { fontSize: string; bgOpacity: number; textColor: string; showSubtitle: boolean; showOriginal: boolean; subtitleOffsetY?: number };
   /** Font size entry for current CC setting. */
   ccFontSizeEntry?: { key: string; label: string; cls: string; mobileCls: string };
   /** Computed subtitle style from parent. */
@@ -192,7 +197,7 @@ interface CinemaChatRoomProps {
   /** Whether CC settings panel is open. */
   showCcPanel?: boolean;
   /** Callback to update CC settings from the panel. */
-  onUpdateCcSettings?: (updater: (prev: { fontSize: 'sm' | 'md' | 'lg' | 'xl'; bgOpacity: number; textColor: string; showSubtitle: boolean; showOriginal: boolean }) => { fontSize: 'sm' | 'md' | 'lg' | 'xl'; bgOpacity: number; textColor: string; showSubtitle: boolean; showOriginal: boolean }) => void;
+  onUpdateCcSettings?: (updater: (prev: { fontSize: 'sm' | 'md' | 'lg' | 'xl'; bgOpacity: number; textColor: string; showSubtitle: boolean; showOriginal: boolean; subtitleOffsetY?: number }) => { fontSize: 'sm' | 'md' | 'lg' | 'xl'; bgOpacity: number; textColor: string; showSubtitle: boolean; showOriginal: boolean; subtitleOffsetY?: number }) => void;
 }
 const PLAYBACK_HEARTBEAT_MS = 8000;
 const MAX_VOICE_SECONDS = 12;
@@ -335,6 +340,9 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
   onUpdateCcSettings,
 }) => {
   const myId = identity.id;
+  // True when the subtitle pipeline has been stuck "loading" for a while —
+  // swaps the small spinner pill for the "pause the video" network hint.
+  const subtitleDelayed = useDelayedSubtitleLoad(subtitleStatus);
 
   const [state, setState] = useState<CinemaChatRoomState>(() =>
     normalizeCinemaChatState(null),
@@ -1483,7 +1491,10 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                                 : undefined;
                             if (!activeCue && !activeOriginalCue) return null;
                             return (
-                              <div className="pointer-events-none absolute inset-x-3 bottom-16 z-10 flex flex-col items-center gap-1">
+                              <div
+                                className="pointer-events-none absolute inset-x-3 z-10 flex flex-col items-center gap-1 transition-[bottom] duration-300"
+                                style={{ bottom: ccSubtitleBottomPercent(ccSettings?.subtitleOffsetY) }}
+                              >
                                 {activeOriginalCue && (
                                   <div
                                     dir="auto"
@@ -1514,12 +1525,23 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                             );
                           })()}
                           {subtitleLang !== "off" && subtitleStatus === "loading" && (
-                            <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center gap-2 px-4 py-3 pointer-events-none">
-                              <div className="flex items-center gap-2 rounded-xl bg-black/70 px-3 py-2 text-[10px] text-red-400">
-                                <Loader2 className="w-3 h-3 animate-spin" />
-                                <span>{subtitleMessage || "وەردەگێڕدرێت..."}</span>
+                            subtitleDelayed ? (
+                              <div className="absolute inset-x-0 bottom-16 z-20 flex items-center justify-center gap-2 px-4 pointer-events-none">
+                                <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-black/85 px-4 py-2 text-xs text-amber-300 shadow-[0_2px_14px_rgba(0,0,0,0.8)] backdrop-blur-sm">
+                                  <Pause className="w-4 h-4 shrink-0 animate-pulse" />
+                                  <span className="kurdish-text font-bold">
+                                    ئینتەرنێت خاویە — تکایە ڤیدیۆکە وەستێنە (Pause) تا ژێرنووس بار بێت
+                                  </span>
+                                </div>
                               </div>
-                            </div>
+                            ) : (
+                              <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center gap-2 px-4 py-3 pointer-events-none">
+                                <div className="flex items-center gap-2 rounded-xl bg-black/70 px-3 py-2 text-[10px] text-red-400">
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                  <span>{subtitleMessage || "وەردەگێڕدرێت..."}</span>
+                                </div>
+                              </div>
+                            )
                           )}
                           {subtitleLang !== "off" && subtitleStatus === "error" && (
                             <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center px-4 py-3">
@@ -1595,6 +1617,40 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                                         {fs.label}
                                       </button>
                                     ))}
+                                  </div>
+                                </div>
+                                {/* Vertical subtitle position (up/down shift) */}
+                                <div>
+                                  <div className="flex items-center justify-between mb-0.5">
+                                    <span className="text-[8px] font-bold text-zinc-500">شوێنی ژێرنووس</span>
+                                    <span className="text-[7px] text-zinc-600 tabular-nums">{Math.round(ccSettings?.subtitleOffsetY ?? 15)}%</span>
+                                  </div>
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => onUpdateCcSettings?.((s) => ({ ...s, subtitleOffsetY: Math.max(0, Math.round(s.subtitleOffsetY) - 10) }))}
+                                      className="w-5 h-5 shrink-0 flex items-center justify-center rounded bg-white/5 hover:bg-white/15 text-zinc-300 transition-all cursor-pointer active:scale-95"
+                                      title="نزم بکەرەوە (Move down)"
+                                    >
+                                      <ChevronDown className="w-3 h-3" />
+                                    </button>
+                                    <input
+                                      type="range"
+                                      min={0}
+                                      max={100}
+                                      step={5}
+                                      value={ccSettings?.subtitleOffsetY ?? 15}
+                                      onChange={(e) => onUpdateCcSettings?.((s) => ({ ...s, subtitleOffsetY: Number(e.target.value) }))}
+                                      className="flex-1 h-0.5 accent-brand-primary cursor-pointer"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => onUpdateCcSettings?.((s) => ({ ...s, subtitleOffsetY: Math.min(100, Math.round(s.subtitleOffsetY) + 10) }))}
+                                      className="w-5 h-5 shrink-0 flex items-center justify-center rounded bg-white/5 hover:bg-white/15 text-zinc-300 transition-all cursor-pointer active:scale-95"
+                                      title="بەرزی بکەرەوە (Move up)"
+                                    >
+                                      <ChevronUp className="w-3 h-3" />
+                                    </button>
                                   </div>
                                 </div>
                                 <div>

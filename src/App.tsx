@@ -92,6 +92,7 @@ import { UsersIcon } from "lucide-react";
 import "plyr-react/plyr.css";
 import { GoogleGenAI } from "@google/genai";
 import ImmersiveShieldedPlayer from "./components/Player/ImmersiveShieldedPlayer";
+import { useDelayedSubtitleLoad } from "./hooks/useSubtitleManager";
 import YouTubeResilientPlayer from "./components/Player/YouTubeResilientPlayer";
 import { api } from "./services/api";
 import { useI18n } from "./i18n";
@@ -1004,6 +1005,50 @@ const transformLink = (url: string) => {
   return url;
 };
 
+// ---------------------------------------------------------------------------
+// Universal video-server link detection.
+// One smart input ("خانەی جۆکەری لینک") replaces the individual per-server
+// inputs. The pasted URL is matched by hostname against every supported
+// provider and stored in exactly one formData slot, so publishing, player
+// routing (`streamingUrl.includes(host)` checks) and the server pipeline all
+// behave exactly as if the admin had used the dedicated per-server field.
+// ---------------------------------------------------------------------------
+type VideoProviderKey =
+  | "youtubeMovieUrl"
+  | "vidsrcUrl"
+  | "vidmolyUrl"
+  | "streamwishUrl"
+  | "fileLrunUrl"
+  | "hdtodayUrl"
+  | "otherVideoUrl";
+
+const detectVideoProvider = (
+  rawUrl: string,
+): { key: VideoProviderKey; label: string } => {
+  const url = (rawUrl || "").toLowerCase();
+  const match = (needle: string) => url.includes(needle);
+
+  if (match("youtube.com") || match("youtu.be")) {
+    return { key: "youtubeMovieUrl", label: "یوتوب" };
+  }
+  if (match("vidsrc")) {
+    return { key: "vidsrcUrl", label: "VidSrc" };
+  }
+  if (match("vidmoly") || match("molystream")) {
+    return { key: "vidmolyUrl", label: "Vidmoly" };
+  }
+  if (match("streamwish")) {
+    return { key: "streamwishUrl", label: "StreamWish" };
+  }
+  if (match("filelrun") || match("filemoon")) {
+    return { key: "fileLrunUrl", label: "FileLrun / FileMoon" };
+  }
+  if (match("hdtoday")) {
+    return { key: "hdtodayUrl", label: "HDToday" };
+  }
+  return { key: "otherVideoUrl", label: "سێرڤەری تر" };
+};
+
 const ContentModule = ({
   onPost,
   onSyncNow,
@@ -1060,6 +1105,47 @@ const ContentModule = ({
     type: "success" | "error" | null;
     message: string;
   }>({ type: null, message: "" });
+
+  // --- Universal video-server link ("خانەی جۆکەری لینک") ---------------------
+  // Single input that replaces the individual HDToday / VidSrc / Vidmoly /
+  // StreamWish / FileLrun / Other fields. The detected provider decides which
+  // formData slot receives the URL; all other server slots are cleared so
+  // exactly one source is active at publish time.
+  const [universalVideoLink, setUniversalVideoLink] = useState("");
+  const detectedProvider = useMemo(
+    () => detectVideoProvider(universalVideoLink),
+    [universalVideoLink],
+  );
+  const handleUniversalVideoLinkChange = (value: string) => {
+    setUniversalVideoLink(value);
+    if (!value.trim()) {
+      // Emptying the field clears every server slot.
+      setFormData((prev) => ({
+        ...prev,
+        hdtodayUrl: "",
+        vidsrcUrl: "",
+        vidmolyUrl: "",
+        streamwishUrl: "",
+        fileLrunUrl: "",
+        otherVideoUrl: "",
+        youtubeMovieUrl: "",
+      }));
+      return;
+    }
+    const provider = detectVideoProvider(value);
+    setFormData((prev) => ({
+      ...prev,
+      hdtodayUrl: "",
+      vidsrcUrl: "",
+      vidmolyUrl: "",
+      streamwishUrl: "",
+      fileLrunUrl: "",
+      otherVideoUrl: "",
+      youtubeMovieUrl: "",
+      [provider.key]: value.trim(),
+    }));
+  };
+
   const [isExtracting, setIsExtracting] = useState(false);
   const [isPosting, setIsPosting] = useState(false);
   const [isImdbFetching, setIsImdbFetching] = useState(false);
@@ -1486,6 +1572,7 @@ const ContentModule = ({
         whatsappLink: "",
         externalMovieLink: "",
       });
+      setUniversalVideoLink("");
       setUploadedDims(null);
 
       setTimeout(() => setPostStatus({ type: null, message: "" }), 5000);
@@ -1594,7 +1681,7 @@ const ContentModule = ({
           </h3>
           <p className="text-gray-500 kurdish-text text-sm">
             لێرە دەتوانیت فیلمەکان بە سێ هەنگاوی جیاواز بڵاوبکەیتەوە (IMDb یان
-            YouTube بۆ زانیاری، HDToday بۆ پەخش)
+            YouTube بۆ زانیاری، خانەی جۆکەری لینک بۆ پەخش)
           </p>
         </div>
         <div className="flex items-center gap-3 w-full md:w-auto">
@@ -1861,19 +1948,17 @@ const ContentModule = ({
           </div>
 
           <div className="p-8 bg-zinc-900/50 border border-white/10 rounded-[2.5rem] space-y-4">
-            <label className="text-xs font-black text-blue-300 kurdish-text uppercase tracking-widest flex items-center gap-2 mb-2">
+            <label className="text-xs font-black text-emerald-400 kurdish-text uppercase tracking-widest flex items-center gap-2 mb-2">
               <Globe className="w-4 h-4" />
-              سەرچاوەی Streaming
+              ٢. خانەی جۆکەری لینک
             </label>
             <div className="flex items-center gap-2">
               <input
                 type="text"
-                placeholder="لینکی سەرچاوەی streaming..."
-                value={formData.streamingSourceUrl}
-                onChange={(e) =>
-                  setFormData({ ...formData, streamingSourceUrl: e.target.value })
-                }
-                className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-6 py-3 text-white kurdish-text outline-none focus:border-blue-400 transition-all text-xs"
+                placeholder="لینکی فیلم لە هەر سێرڤەرێک (یوتوب, HDToday, VidSrc, Vidmoly, StreamWish, FileLrun, streaming...)..."
+                value={universalVideoLink}
+                onChange={(e) => handleUniversalVideoLinkChange(e.target.value)}
+                className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-6 py-3 text-white kurdish-text outline-none focus:border-emerald-500 transition-all text-xs"
               />
               <CategoryDropdown
                 value={formData.category}
@@ -1883,235 +1968,36 @@ const ContentModule = ({
               />
               <button
                 onClick={handlePublish}
-                className="px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl text-xs font-bold"
+                className="px-4 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl text-xs font-bold"
               >
                 بڵاوکردنەوە
               </button>
             </div>
+            {universalVideoLink.trim() && (
+              <p className="text-[10px] text-emerald-400 kurdish-text flex items-center gap-1.5">
+                <ShieldCheck className="w-3 h-3" />
+                سێرڤەر دۆزرایەوە: {detectedProvider.label}
+              </p>
+            )}
           </div>
 
-          <div className="p-8 bg-zinc-900/50 border border-white/10 rounded-[2.5rem] space-y-4">
-            <label className="text-xs font-black text-green-500 kurdish-text uppercase tracking-widest flex items-center gap-2 mb-2">
-              <Globe className="w-4 h-4" />
-              ٢. سەرچاوەی HDToday
-            </label>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                placeholder="HDtoday.tr link..."
-                value={formData.hdtodayUrl}
-                onChange={(e) =>
-                  setFormData({ ...formData, hdtodayUrl: e.target.value })
-                }
-                className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-6 py-3 text-white kurdish-text outline-none focus:border-green-500 transition-all text-xs"
-              />
-              <CategoryDropdown
-                value={formData.category}
-                onChange={(v: string) =>
-                  setFormData({ ...formData, category: v })
-                }
-              />
-              <button
-                onClick={handlePublish}
-                className="px-4 py-3 bg-green-600 hover:bg-green-700 text-white rounded-2xl text-xs font-bold"
-              >
-                بڵاوکردنەوە
-              </button>
-            </div>
-          </div>
-
+          {/* Subtitle source (optional): pasted .srt/.vtt content feeds the
+              automatic Kurdish subtitle pipeline as priority #3. The universal
+              link field above is the only video-server input. */}
           <div className="p-8 bg-zinc-900/50 border border-white/10 rounded-[2.5rem] space-y-4">
             <label className="text-xs font-black text-brand-primary kurdish-text uppercase tracking-widest flex items-center gap-2 mb-2">
               <Tv className="w-4 h-4" />
-              ٣. سەرچاوەی یوتوب (فیلم)
+              Subtitle Text (Copy & Paste the .srt/.vtt content here)
             </label>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                placeholder="YouTube link..."
-                value={formData.youtubeMovieUrl}
-                onChange={(e) =>
-                  setFormData({ ...formData, youtubeMovieUrl: e.target.value })
-                }
-                className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-6 py-3 text-white kurdish-text outline-none focus:border-brand-primary transition-all text-xs"
-              />
-              <CategoryDropdown
-                value={formData.category}
-                onChange={(v: string) =>
-                  setFormData({ ...formData, category: v })
-                }
-              />
-              <button
-                onClick={handlePublish}
-                className="px-4 py-3 bg-brand-primary hover:bg-red-700 text-white rounded-2xl text-xs font-bold"
-              >
-                بڵاوکردنەوە
-              </button>
-            </div>
-            <div>
-              <label className="text-xs font-black text-brand-primary kurdish-text uppercase tracking-widest flex items-center gap-2 mb-2">
-                Subtitle Text (Copy & Paste the .srt/.vtt content here)
-              </label>
-              <textarea
-                rows={6}
-                placeholder="Paste your .srt/.vtt subtitle content here..."
-                value={formData.subtitleText}
-                onChange={(e) =>
-                  setFormData({ ...formData, subtitleText: e.target.value })
-                }
-                className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-3 text-white kurdish-text outline-none focus:border-brand-primary transition-all text-xs font-mono resize-y"
-              />
-            </div>
-          </div>
-
-          <div className="p-8 bg-zinc-900/50 border border-white/10 rounded-[2.5rem] space-y-4">
-            <label className="text-xs font-black text-gray-500 kurdish-text uppercase tracking-widest flex items-center gap-2 mb-2">
-              <Globe className="w-4 h-4" />
-              ٤. سەرچاوەی تر
-            </label>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                placeholder="Other link..."
-                value={formData.otherVideoUrl}
-                onChange={(e) =>
-                  setFormData({ ...formData, otherVideoUrl: e.target.value })
-                }
-                className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-6 py-3 text-white kurdish-text outline-none focus:border-gray-500 transition-all text-xs"
-              />
-              <CategoryDropdown
-                value={formData.category}
-                onChange={(v: string) =>
-                  setFormData({ ...formData, category: v })
-                }
-              />
-              <button
-                onClick={handlePublish}
-                className="px-4 py-3 bg-gray-600 hover:bg-gray-700 text-white rounded-2xl text-xs font-bold"
-              >
-                بڵاوکردنەوە
-              </button>
-            </div>
-          </div>
-
-          <div className="p-8 bg-zinc-900/50 border border-white/10 rounded-[2.5rem] space-y-4">
-            <label className="text-xs font-black text-purple-500 kurdish-text uppercase tracking-widest flex items-center gap-2 mb-2">
-              <Play className="w-4 h-4" />
-              ٥. سێرڤەری VidSrc
-            </label>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                placeholder="vidsrc.me/embed/movie?imdb=tt..."
-                value={formData.vidsrcUrl}
-                onChange={(e) =>
-                  setFormData({ ...formData, vidsrcUrl: e.target.value })
-                }
-                className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-6 py-3 text-white kurdish-text outline-none focus:border-purple-500 transition-all text-xs"
-              />
-              <CategoryDropdown
-                value={formData.category}
-                onChange={(v: string) =>
-                  setFormData({ ...formData, category: v })
-                }
-              />
-              <button
-                onClick={handlePublish}
-                className="px-4 py-3 bg-purple-600 hover:bg-purple-700 text-white rounded-2xl text-xs font-bold"
-              >
-                بڵاوکردنەوە
-              </button>
-            </div>
-          </div>
-
-          <div className="p-8 bg-zinc-900/50 border border-white/10 rounded-[2.5rem] space-y-4">
-            <label className="text-xs font-black text-brand-primary kurdish-text uppercase tracking-widest flex items-center gap-2 mb-2">
-              <Radio className="w-4 h-4" />
-              ٦. سێرڤەری Vidmoly
-            </label>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                placeholder="vidmoly.to/embed-..."
-                value={formData.vidmolyUrl}
-                onChange={(e) =>
-                  setFormData({ ...formData, vidmolyUrl: e.target.value })
-                }
-                className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-6 py-3 text-white kurdish-text outline-none focus:border-brand-primary transition-all text-xs"
-              />
-              <CategoryDropdown
-                value={formData.category}
-                onChange={(v: string) =>
-                  setFormData({ ...formData, category: v })
-                }
-              />
-              <button
-                onClick={handlePublish}
-                className="px-4 py-3 bg-red-600 hover:bg-red-700 text-white rounded-2xl text-xs font-bold"
-              >
-                بڵاوکردنەوە
-              </button>
-            </div>
-          </div>
-
-          <div className="p-8 bg-zinc-900/50 border border-white/10 rounded-[2.5rem] space-y-4">
-            <label className="text-xs font-black text-blue-400 kurdish-text uppercase tracking-widest flex items-center gap-2 mb-2">
-              <Play className="w-4 h-4" />
-              ٧. سێرڤەری StreamWish
-            </label>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                placeholder="streamwish.to/e/..."
-                value={formData.streamwishUrl}
-                onChange={(e) =>
-                  setFormData({ ...formData, streamwishUrl: e.target.value })
-                }
-                className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-6 py-3 text-white kurdish-text outline-none focus:border-blue-400 transition-all text-xs"
-              />
-              <CategoryDropdown
-                value={formData.category}
-                onChange={(v: string) =>
-                  setFormData({ ...formData, category: v })
-                }
-              />
-              <button
-                onClick={() => handlePublish()}
-                className="px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl text-xs font-bold"
-              >
-                بڵاوکردنەوە
-              </button>
-            </div>
-          </div>
-
-          <div className="p-8 bg-zinc-900/50 border border-white/10 rounded-[2.5rem] space-y-4">
-            <label className="text-xs font-black text-orange-400 kurdish-text uppercase tracking-widest flex items-center gap-2 mb-2">
-              <Database className="w-4 h-4" />
-              ٨. سێرڤەری FileLrun
-            </label>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                placeholder="filelrun.to/e/..."
-                value={formData.fileLrunUrl}
-                onChange={(e) =>
-                  setFormData({ ...formData, fileLrunUrl: e.target.value })
-                }
-                className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-6 py-3 text-white kurdish-text outline-none focus:border-orange-400 transition-all text-xs"
-              />
-              <CategoryDropdown
-                value={formData.category}
-                onChange={(v: string) =>
-                  setFormData({ ...formData, category: v })
-                }
-              />
-              <button
-                onClick={() => handlePublish()}
-                className="px-4 py-3 bg-orange-600 hover:bg-orange-700 text-white rounded-2xl text-xs font-bold"
-              >
-                بڵاوکردنەوە
-              </button>
-            </div>
+            <textarea
+              rows={6}
+              placeholder="Paste your .srt/.vtt subtitle content here..."
+              value={formData.subtitleText}
+              onChange={(e) =>
+                setFormData({ ...formData, subtitleText: e.target.value })
+              }
+              className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-3 text-white kurdish-text outline-none focus:border-brand-primary transition-all text-xs font-mono resize-y"
+            />
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -5921,6 +5807,24 @@ const subtitleTextToVtt = (subtitleText: string) => {
   return `WEBVTT\n\n${cleanText.replace(/\r+/g, "").replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, "$1.$2")}\n`;
 };
 
+// ---------------------------------------------------------------------------
+// Non-speech "noise" tags — [Music], [ هەناسەدان ], [ پێکەنین ], [ مۆسیقا ],
+// [cry], [Applause] ... — are stripped from dialogue lines so viewers only
+// see spoken content. Mirrors the stripper in useSubtitleManager.
+// ---------------------------------------------------------------------------
+const SOUND_TAG_CONTENT_RE =
+  /(هەناسەدان|پێکەنین|مۆسیقا|گریان|ژاڕ|قیژا|چیرپ|چەپڵە|دەنگ|ئاواز|گۆرانی|شینکردن|\b(?:music|instrumental|theme song|applause|applauding|laughter|laughing|laughs?|sighs?|sighing|breaths?|breathing|breathes?|exhales?|inhales?|pants?|panting|crys?|crying|cries|sobbing|sobs?|whimpers?|screams?|screaming|shrieks?|shouts?|shouting|yells?|yelling|whispers?|whispering|gasps?|gasping|groans?|groaning|moans?|chuckles?|chuckling|giggles?|giggling|sniffles?|sniffs?|coughs?|coughing|sneezes?|sneezing|clears? throat|throat clearing|silence|silent|pause|pauses|speaks?|speaking|singing|sings?|sung|humming|hums?|cheering|cheers?|clapping|claps?|gunshots?|gunfire|explosions?|blasts?|footsteps?|door slams?|doorbell|knocking|knocks?|thunder|rumbles?|phone rings?|ringtone|heartbeat|narrator|voice[- ]?over|no dialogue|inaudible|mumbles?|mumbling|muttering|mutters?|stammers?|stammering|stutters?|stuttering)\b)/i;
+
+const BRACKET_TAG_RE = /[[【〔]\s*([^[】〕]{1,64}?)\s*[\]】〕]/g;
+
+const stripSoundTagFragments = (line: string): string =>
+  String(line || "")
+    .replace(BRACKET_TAG_RE, (match, inner: string) =>
+      SOUND_TAG_CONTENT_RE.test(inner) ? " " : match,
+    )
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
 const CINEMA_WINDOW_SUBTITLE_LANGUAGES = [
   { code: "off", label: "داخستن", shortLabel: "داخستن CC" },
   { code: "ckb", label: "کوردی", shortLabel: "کوردی CC" },
@@ -5971,10 +5875,22 @@ type CcSettings = {
   textColor: string;
   showSubtitle: boolean;
   showOriginal: boolean;
+  /** Vertical position of the subtitle block inside the player (0=lowest, 100=highest). */
+  subtitleOffsetY: number;
 };
 
 const CC_SETTINGS_STORAGE_KEY = 'cinemachat-cc-settings';
-const DEFAULT_CC_SETTINGS: CcSettings = { fontSize: 'md', bgOpacity: 0.8, textColor: '#ffffff', showSubtitle: true, showOriginal: false };
+const DEFAULT_CC_SETTINGS: CcSettings = { fontSize: 'md', bgOpacity: 0.8, textColor: '#ffffff', showSubtitle: true, showOriginal: false, subtitleOffsetY: 15 };
+
+/**
+ * Maps the stored 0-100 vertical offset to a CSS `bottom` percentage inside
+ * the player frame (6% .. 36%). Mirrors ccSubtitleBottomPercent() from
+ * useSubtitleManager so every player surface positions subtitles identically.
+ */
+const ccSubtitleBottomPercent = (offsetY: number | undefined): string => {
+  const v = Math.max(0, Math.min(100, Number(offsetY ?? DEFAULT_CC_SETTINGS.subtitleOffsetY) || 0));
+  return `${(6 + (v / 100) * 30).toFixed(2)}%`;
+};
 const CC_FONT_SIZES: { key: CcSettings['fontSize']; label: string; cls: string; mobileCls: string }[] = [
   { key: 'sm', label: 'A-', cls: 'text-sm md:text-base', mobileCls: 'text-[11px]' },
   { key: 'md', label: 'A', cls: 'text-lg md:text-2xl', mobileCls: 'text-base' },
@@ -6037,7 +5953,7 @@ const parseCinemaWindowSubtitleCues = (subtitleText: string): CinemaWindowSubtit
     index += 1;
     while (index < lines.length && lines[index].trim()) {
       const line = lines[index].trim();
-      if (!/^(Kind|Language):/i.test(line)) textLines.push(line);
+      if (!/^(Kind|Language):/i.test(line)) textLines.push(stripSoundTagFragments(line));
       index += 1;
     }
 
@@ -6942,6 +6858,12 @@ export default function App() {
   // Main Modal Player customized states
   const [isIframePlaying, setIsIframePlaying] = useState(true);
   const [isIframeMuted, setIsIframeMuted] = useState(false);
+  // Volume level (0-100) for players we can control natively (direct <video>,
+  // Plyr, YouTube iframe API). Cross-origin embeds ignore it gracefully.
+  const [iframeVolume, setIframeVolume] = useState(100);
+  // Whether the vertical volume slider popup above the mute button is shown
+  // (opens on hover / focus, closes on leave — standard player UX).
+  const [volumeSliderOpen, setVolumeSliderOpen] = useState(false);
   const [isIframeFullscreen, setIsIframeFullscreen] = useState(false);
 
   // Immersive cinematic player: zoom multiplier and active menu.
@@ -7372,6 +7294,41 @@ export default function App() {
 
     // 3. Control the cinematic shielded embed (mute / unmute) if active
     postVideoCommand("streaming-player", isMuted ? "mute" : "unMute");
+  };
+
+  // Apply a volume level to every controllable player surface. Cross-origin
+  // embeds (ImmersiveShieldedPlayer) can't be scripted, so they simply ignore
+  // the command — the slider stays available for the surfaces that support it.
+  const applyIframeVolume = (rawVolume: number) => {
+    const volume = Math.max(0, Math.min(100, Math.round(rawVolume)));
+    setIframeVolume(volume);
+
+    // Unmute automatically when the user raises volume while muted.
+    if (isIframeMuted && volume > 0) {
+      toggleIframeMute();
+    }
+
+    // 1. Direct-stream fallback <video> (YouTubeResilientPlayer "direct" mode).
+    const directVideo = document.getElementById("room-player-direct-video") as HTMLVideoElement | null;
+    if (directVideo) {
+      try {
+        directVideo.volume = volume / 100;
+      } catch { /* ignore */ }
+    }
+
+    // 2. Plyr (native video files).
+    if (plyrRef.current?.plyr) {
+      try {
+        plyrRef.current.plyr.volume = volume / 100;
+      } catch { /* ignore */ }
+    }
+
+    // 3. YouTube embed: iframe API setVolume command.
+    const roomPlayer = document.getElementById("room-player") as HTMLIFrameElement | null;
+    roomPlayer?.contentWindow?.postMessage(
+      JSON.stringify({ event: "command", func: "setVolume", args: [volume] }),
+      "https://www.youtube.com",
+    );
   };
 
   const toggleFullscreenMain = () => {
@@ -9482,13 +9439,31 @@ export default function App() {
   const [cinemaWindowSubtitleCues, setCinemaWindowSubtitleCues] = useState<CinemaWindowSubtitleCue[]>([]);
   const [originalCinemaWindowSubtitleCues, setOriginalCinemaWindowSubtitleCues] = useState<CinemaWindowSubtitleCue[]>([]);
   const [cinemaWindowPlaybackTime, setCinemaWindowPlaybackTime] = useState(0);
-  const [cinemaWindowSubtitleLang, setCinemaWindowSubtitleLang] = useState("ckb");
+  // Selected subtitle language persists across reloads (and therefore across
+  // fullscreen / orientation changes / seeks, which never remount this tree).
+  const [cinemaWindowSubtitleLang, setCinemaWindowSubtitleLang] = useState(() => {
+    try {
+      return localStorage.getItem("cinemachat_cc_subtitle_lang") || "ckb";
+    } catch {
+      return "ckb";
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("cinemachat_cc_subtitle_lang", cinemaWindowSubtitleLang);
+    } catch {
+      /* storage unavailable */
+    }
+  }, [cinemaWindowSubtitleLang]);
   const [cinemaWindowSubtitleStatus, setCinemaWindowSubtitleStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [cinemaWindowSubtitleMessage, setCinemaWindowSubtitleMessage] = useState("");
   const [cinemaWindowSubtitleRetryKey, setCinemaWindowSubtitleRetryKey] = useState(0);
   const [ccSettings, setCcSettings] = useState<CcSettings>(loadCcSettings);
   const [showCcPanel, setShowCcPanel] = useState(false);
   useEffect(() => { saveCcSettings(ccSettings); }, [ccSettings]);
+  // True when the Cinema Window subtitle pipeline has been stuck "loading" for
+  // a while (slow network) — drives the "pause the video" hint over the video.
+  const cinemaWindowDelayedLoad = useDelayedSubtitleLoad(cinemaWindowSubtitleStatus);
 
   // Gate: subtitle fetching, translation, and CC overlay are only active when
   // the user is inside one of the three main watch rooms. Outside these rooms
@@ -9571,16 +9546,36 @@ export default function App() {
   const subtitleWindowIndex =
     cinemaWindowSubtitleLang === "ckb" ? Math.floor(subtitlePlaybackTime / 60) : 0;
 
-  // The movie's stored subtitle file URL (pre-existing .srt/.vtt, not AI).
-  const subtitleMovieFileUrl = useMemo(() => {
+  // The movie object backing the active watch room — used to resolve both the
+  // stored subtitle file URL and the pre-generated Kurdish (ckb) track.
+  const activeSubtitleMovie = useMemo(() => {
     if (activeCinemaWindowRoom?.movieId) {
-      return movies.find((m) => m.id === activeCinemaWindowRoom.movieId)?.subtitleUrl || "";
+      return movies.find((m) => m.id === activeCinemaWindowRoom.movieId) || null;
     }
     if (selectedDramaRoom && selectedMovie?.id) {
-      return selectedMovie.subtitleUrl || "";
+      return selectedMovie;
     }
-    return "";
+    return null;
   }, [activeCinemaWindowRoom?.movieId, selectedDramaRoom, selectedMovie?.id, movies]);
+
+  // The movie's stored subtitle file URL (pre-existing .srt/.vtt, not AI).
+  const subtitleMovieFileUrl = useMemo(
+    () => activeSubtitleMovie?.subtitleUrl || "",
+    [activeSubtitleMovie],
+  );
+
+  // Server-generated Kurdish Sorani track (background pipeline). When present,
+  // the ckb subtitle mode uses it directly instead of asking the server to
+  // translate on demand.
+  const kurdishPreGeneratedUrl = useMemo(
+    () =>
+      cinemaWindowSubtitleLang === "ckb"
+        ? activeSubtitleMovie?.kurdishSubtitleStatus === "ready" && activeSubtitleMovie?.kurdishSubtitleUrl
+          ? activeSubtitleMovie.kurdishSubtitleUrl
+          : ""
+        : "",
+    [activeSubtitleMovie, cinemaWindowSubtitleLang],
+  );
 
   const cinemaWindowActiveSubtitleText = useMemo(() => {
     if (!cinemaWindowSubtitleCues.length) return "";
@@ -9814,6 +9809,47 @@ export default function App() {
       }
     };
 
+    // Fast path: the movie already carries a server-generated Kurdish Sorani
+    // track (background publish pipeline). Fetch it directly — no on-demand
+    // translation request, no rate limits. Falls through to the normal
+    // pipeline if the fetch fails for any reason.
+    if (kurdishPreGeneratedUrl) {
+      setCinemaWindowSubtitleStatus("loading");
+      setCinemaWindowSubtitleMessage(`ژێرنوسی ${selectedSubtitleLanguage.label} ئامادە دەبێت...`);
+      fetch(kurdishPreGeneratedUrl)
+        .then((response) => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return response.text();
+        })
+        .then((vttText) => {
+          if (!vttText.trim()) throw new Error("Empty subtitle file");
+          cinemaWindowSubtitleCache.set(cacheKey, {
+            vttText,
+            sourceLang: "ckb",
+            rawText: vttText,
+          } as any);
+          objectUrl = URL.createObjectURL(new Blob([vttText], { type: "text/vtt" }));
+          if (cancelled) {
+            URL.revokeObjectURL(objectUrl);
+            return;
+          }
+          setCinemaWindowSubtitleUrl(objectUrl);
+          setCinemaWindowSubtitleCues(parseCinemaWindowSubtitleCues(vttText));
+          setOriginalCinemaWindowSubtitleCues([]);
+          setCinemaWindowSubtitleStatus("ready");
+          setCinemaWindowSubtitleMessage(`${selectedSubtitleLanguage.label} ئامادەیە`);
+        })
+        .catch(() => {
+          window.clearTimeout(timeoutId);
+          if (!cancelled) loadSubtitle();
+        });
+      return () => {
+        cancelled = true;
+        window.clearTimeout(timeoutId);
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+      };
+    }
+
     loadSubtitle()
       .then((subtitle) => {
         if (!subtitle) return;
@@ -9862,6 +9898,7 @@ export default function App() {
     cinemaWindowSubtitleLang,
     subtitleWindowIndex,
     subtitleMovieFileUrl,
+    kurdishPreGeneratedUrl,
     cinemaWindowSubtitleRetryKey,
   ]);
 
@@ -12205,7 +12242,10 @@ export default function App() {
                             onStalled={handleCinemaWindowNativeVideoFailure}
                           />
                           {isInMainWatchRoom && cinemaWindowActiveSubtitleText && ccSettings.showSubtitle && (
-                            <div className="pointer-events-none absolute inset-x-3 bottom-16 z-10 flex flex-col items-center gap-1">
+                            <div
+                              className="pointer-events-none absolute inset-x-3 z-10 flex flex-col items-center gap-1 transition-[bottom] duration-300"
+                              style={{ bottom: ccSubtitleBottomPercent(ccSettings.subtitleOffsetY) }}
+                            >
                               {cinemaWindowActiveOriginalText && (
                                 <div
                                   dir="auto"
@@ -12225,12 +12265,23 @@ export default function App() {
                             </div>
                           )}
                           {isInMainWatchRoom && cinemaWindowSubtitleStatus === "loading" && !cinemaWindowActiveSubtitleText && (
-                            <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center gap-2 px-4 py-3 pointer-events-none">
-                              <div className="flex items-center gap-2 rounded-xl bg-black/70 px-3 py-2 text-xs text-red-400">
-                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                <span className="kurdish-text">{cinemaWindowSubtitleMessage || "وەردەگێڕدرێت..."}</span>
+                            cinemaWindowDelayedLoad ? (
+                              <div className="absolute inset-x-0 bottom-16 z-20 flex items-center justify-center gap-2 px-4 pointer-events-none">
+                                <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-black/85 px-4 py-2 text-xs text-amber-300 shadow-[0_2px_14px_rgba(0,0,0,0.8)] backdrop-blur-sm">
+                                  <Pause className="w-4 h-4 shrink-0 animate-pulse" />
+                                  <span className="kurdish-text font-bold">
+                                    ئینتەرنێت خاویە — تکایە ڤیدیۆکە وەستێنە (Pause) تا ژێرنووس بار بێت
+                                  </span>
+                                </div>
                               </div>
-                            </div>
+                            ) : (
+                              <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center gap-2 px-4 py-3 pointer-events-none">
+                                <div className="flex items-center gap-2 rounded-xl bg-black/70 px-3 py-2 text-xs text-red-400">
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  <span className="kurdish-text">{cinemaWindowSubtitleMessage || "وەردەگێڕدرێت..."}</span>
+                                </div>
+                              </div>
+                            )
                           )}
                         {/* Error indicator with retry */}
                         {isInMainWatchRoom && cinemaWindowSubtitleStatus === "error" && (
@@ -12384,6 +12435,41 @@ export default function App() {
                             {fs.label}
                           </button>
                         ))}
+                      </div>
+                    </div>
+
+                    {/* Vertical subtitle position (up/down shift) */}
+                    <div className="border-t border-white/10 pt-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-zinc-500 text-xs">شوێنی ژێرنووس</span>
+                        <span className="text-[10px] text-zinc-600 tabular-nums">{Math.round(ccSettings.subtitleOffsetY)}%</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setCcSettings((s) => ({ ...s, subtitleOffsetY: Math.max(0, Math.round(s.subtitleOffsetY) - 10) }))}
+                          className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/15 text-zinc-300 transition-all cursor-pointer active:scale-95"
+                          title="نزم بکەرەوە (Move down)"
+                        >
+                          <ChevronDown className="w-3.5 h-3.5" />
+                        </button>
+                        <input
+                          type="range"
+                          min={0}
+                          max={100}
+                          step={5}
+                          value={ccSettings.subtitleOffsetY}
+                          onChange={(e) => setCcSettings((s) => ({ ...s, subtitleOffsetY: Number(e.target.value) }))}
+                          className="flex-1 h-1 accent-brand-primary cursor-pointer"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setCcSettings((s) => ({ ...s, subtitleOffsetY: Math.min(100, Math.round(s.subtitleOffsetY) + 10) }))}
+                          className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/15 text-zinc-300 transition-all cursor-pointer active:scale-95"
+                          title="بەرزی بکەرەوە (Move up)"
+                        >
+                          <ChevronUp className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </div>
 
@@ -13094,7 +13180,7 @@ export default function App() {
             ccSubtitleStyle={ccSubtitleStyle}
             onToggleCcPanel={() => setShowCcPanel((v) => !v)}
             showCcPanel={showCcPanel}
-            onUpdateCcSettings={(fn) => setCcSettings(fn)}
+            onUpdateCcSettings={(fn) => setCcSettings((prev) => ({ ...prev, ...fn(prev) }))}
           />
           {/* CinemaChat private Friend → Connect (ephemeral 1-to-1 chat). The
               CinemaChat card opens THIS modal; the watch room above stays
@@ -13248,6 +13334,9 @@ export default function App() {
                           iframeId="streaming-player"
                           title={`${selectedMovie?.title || "CinemaChat"} — Cinematic Player`}
                           scale={immersiveScale}
+                          // Shift the provider's native subtitles upward in step
+                          // with the user's subtitle-position setting (0-15%).
+                          subtitleOffset={Math.round((ccSettings.subtitleOffsetY / 100) * 15)}
                         /> // Cinematic Shielded Player for external embeds
                       ) : (
                         <div className="relative w-full h-full flex items-center justify-center bg-black">
@@ -13264,7 +13353,10 @@ export default function App() {
                           Cinema Window renders its own overlay inside its native
                           <video> block; this covers the main App player only. */}
                       {isDramaRoomActive && cinemaWindowActiveSubtitleText && ccSettings.showSubtitle && (
-                        <div className="pointer-events-none absolute inset-x-3 bottom-16 z-10 flex flex-col items-center gap-1">
+                        <div
+                          className="pointer-events-none absolute inset-x-3 z-10 flex flex-col items-center gap-1 transition-[bottom] duration-300"
+                          style={{ bottom: ccSubtitleBottomPercent(ccSettings.subtitleOffsetY) }}
+                        >
                           {cinemaWindowActiveOriginalText && (
                             <div
                               dir="auto"
@@ -13284,12 +13376,23 @@ export default function App() {
                         </div>
                       )}
                       {isDramaRoomActive && cinemaWindowSubtitleStatus === "loading" && !cinemaWindowActiveSubtitleText && (
-                        <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center gap-2 px-4 py-3 pointer-events-none">
-                          <div className="flex items-center gap-2 rounded-xl bg-black/70 px-3 py-2 text-xs text-red-400">
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            <span className="kurdish-text">{cinemaWindowSubtitleMessage || "وەردەگێڕدرێت..."}</span>
+                        cinemaWindowDelayedLoad ? (
+                          <div className="absolute inset-x-0 bottom-16 z-20 flex items-center justify-center gap-2 px-4 pointer-events-none">
+                            <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-black/85 px-4 py-2 text-xs text-amber-300 shadow-[0_2px_14px_rgba(0,0,0,0.8)] backdrop-blur-sm">
+                              <Pause className="w-4 h-4 shrink-0 animate-pulse" />
+                              <span className="kurdish-text font-bold">
+                                ئینتەرنێت خاویە — تکایە ڤیدیۆکە وەستێنە (Pause) تا ژێرنووس بار بێت
+                              </span>
+                            </div>
                           </div>
-                        </div>
+                        ) : (
+                          <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center gap-2 px-4 py-3 pointer-events-none">
+                            <div className="flex items-center gap-2 rounded-xl bg-black/70 px-3 py-2 text-xs text-red-400">
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <span className="kurdish-text">{cinemaWindowSubtitleMessage || "وەردەگێڕدرێت..."}</span>
+                            </div>
+                          </div>
+                        )
                       )}
                           {isDramaRoomActive && cinemaWindowSubtitleStatus === "error" && (
                             <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center px-4 py-3">
@@ -13412,30 +13515,33 @@ export default function App() {
                       )}
                       
                       {/* Pro Player Overlay UI */}
-                      {/* Top Header: Cinemachat Branding, Title and Close Button */}
-                      <div className="absolute top-0 inset-x-0 p-6 flex items-center justify-between z-50 bg-gradient-to-b from-black/90 to-transparent pointer-events-none font-sans">
-                        <div className="flex items-center gap-2 pointer-events-auto">
+                      {/* Top Header: Cinemachat Branding, Title and Close Button.
+                          Typography is deliberately constrained (smaller on
+                          mobile, clamped widths + single-line truncation) so
+                          long Kurdish titles never wrap into the video area. */}
+                      <div className="absolute top-0 inset-x-0 p-3 sm:p-6 flex items-center justify-between gap-3 z-50 bg-gradient-to-b from-black/90 to-transparent pointer-events-none font-sans">
+                        <div className="flex items-center gap-2 min-w-0 pointer-events-auto">
                           <button
                             type="button"
                             aria-label="Close player"
                             onClick={closePlayerToDetails}
-                            className="p-2.5 bg-black/60 hover:bg-red-600 rounded-full text-white transition-all backdrop-blur-md border border-white/10 cursor-pointer shadow-lg hover:scale-105 active:scale-95"
+                            className="p-2 sm:p-2.5 shrink-0 bg-black/60 hover:bg-red-600 rounded-full text-white transition-all backdrop-blur-md border border-white/10 cursor-pointer shadow-lg hover:scale-105 active:scale-95"
                             title="Close"
                           >
                             <X className="w-5 h-5" />
                           </button>
 
-                          <div className="flex flex-col ml-3">
-                            <span className="text-sm font-black text-brand-primary kurdish-text tracking-wider drop-shadow-md">
+                          <div className="flex flex-col ml-1 sm:ml-3 min-w-0">
+                            <span className="text-[10px] md:text-sm font-black text-brand-primary kurdish-text tracking-wider drop-shadow-md truncate">
                               سینەما چات • CinemaChat
                             </span>
-                            <h2 className="text-lg font-bold text-white kurdish-text drop-shadow-lg leading-snug">
+                            <h2 className="text-sm md:text-lg font-bold text-white kurdish-text drop-shadow-lg leading-snug truncate max-w-[62vw] sm:max-w-[45vw] lg:max-w-xl">
                               {selectedMovie.title}
                             </h2>
                           </div>
                         </div>
-                        
-                        <div className="px-4 py-1.5 bg-black/60 backdrop-blur-md rounded-full border border-white/5 text-[10px] uppercase font-bold tracking-widest text-brand-primary font-mono hidden sm:block">
+
+                        <div className="shrink-0 px-2.5 md:px-4 py-1.5 bg-black/60 backdrop-blur-md rounded-full border border-white/5 text-[8px] md:text-[10px] uppercase font-bold tracking-widest text-brand-primary font-mono hidden sm:block">
                           CINEMACHAT PRO PLAYER
                         </div>
                       </div>
@@ -13471,23 +13577,66 @@ export default function App() {
                           [5] Play/Pause · [6] Back 10s ·
                           [7] Exit Fullscreen · [8] Mute */}
                       <div className="absolute bottom-0 right-0 z-50 h-16 flex items-center gap-1.5 md:gap-2 px-4 md:px-6 pointer-events-auto select-none font-sans">
-                        {/* [6] Mute / Audio Toggle (leftmost of the cluster) */}
-                        <button
-                          type="button"
-                          onClick={toggleIframeMute}
-                          className={`w-10 h-10 md:w-11 md:h-11 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border ${
-                            isIframeMuted
-                              ? "bg-red-600 hover:bg-red-700 text-white border-red-500/40"
-                              : "bg-black/60 hover:bg-white/10 text-white border-white/10"
-                          }`}
-                          title="ڕاگرتنی دەنگ (Mute)"
+                        {/* [6] Mute / Audio Toggle + vertical Volume slider.
+                            Hovering (or focusing) the mute control reveals a
+                            vertically-centered volume slider popup above it —
+                            standard player UX. Touch users tap the speaker to
+                            toggle mute; drag the slider to fine-tune level. */}
+                        <div
+                          className="relative flex items-center"
+                          onMouseEnter={() => setVolumeSliderOpen(true)}
+                          onMouseLeave={() => setVolumeSliderOpen(false)}
+                          onBlur={(e) => {
+                            // Close when focus leaves the mute + slider group
+                            // (keyboard & touch users get an open/close path).
+                            if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                              setVolumeSliderOpen(false);
+                            }
+                          }}
                         >
-                          {isIframeMuted ? (
-                            <VolumeX className="w-4.5 h-4.5 md:w-5 md:h-5" />
-                          ) : (
-                            <Volume2 className="w-4.5 h-4.5 md:w-5 md:h-5" />
+                          {volumeSliderOpen && (
+                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 z-50 flex flex-col items-center gap-1.5 rounded-2xl bg-black/85 backdrop-blur-md border border-white/10 px-2 pt-2 pb-3 shadow-2xl">
+                              <span className="text-[10px] font-bold text-white tabular-nums leading-none">
+                                {isIframeMuted ? 0 : iframeVolume}
+                              </span>
+                              <input
+                                type="range"
+                                min={0}
+                                max={100}
+                                step={5}
+                                value={isIframeMuted ? 0 : iframeVolume}
+                                onChange={(e) => applyIframeVolume(Number(e.target.value))}
+                                aria-label="ئاستی دەنگ (Volume)"
+                                title="ئاستی دەنگ (Volume)"
+                                className="accent-brand-primary cursor-pointer"
+                                style={{
+                                  width: "1.25rem",
+                                  height: "6rem",
+                                  writingMode: "vertical-lr",
+                                  direction: "rtl",
+                                  WebkitAppearance: "slider-vertical",
+                                } as React.CSSProperties}
+                              />
+                            </div>
                           )}
-                        </button>
+                          <button
+                            type="button"
+                            onClick={toggleIframeMute}
+                            onFocus={() => setVolumeSliderOpen(true)}
+                            className={`w-10 h-10 md:w-11 md:h-11 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border ${
+                              isIframeMuted
+                                ? "bg-red-600 hover:bg-red-700 text-white border-red-500/40"
+                                : "bg-black/60 hover:bg-white/10 text-white border-white/10"
+                            }`}
+                            title="ڕاگرتنی دەنگ (Mute)"
+                          >
+                            {isIframeMuted ? (
+                              <VolumeX className="w-4.5 h-4.5 md:w-5 md:h-5" />
+                            ) : (
+                              <Volume2 className="w-4.5 h-4.5 md:w-5 md:h-5" />
+                            )}
+                          </button>
+                        </div>
 
                         {/* [5] Exit Fullscreen (active while fullscreen) */}
                         <button
@@ -13731,6 +13880,41 @@ export default function App() {
                                           {fs.label}
                                         </button>
                                       ))}
+                                    </div>
+                                  </div>
+
+                                  {/* Vertical subtitle position (up/down shift) */}
+                                  <div>
+                                    <div className="flex items-center justify-between mb-1">
+                                      <span className="text-[9px] font-bold text-zinc-500">شوێنی ژێرنووس</span>
+                                      <span className="text-[8px] text-zinc-600 tabular-nums">{Math.round(ccSettings.subtitleOffsetY)}%</span>
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                      <button
+                                        type="button"
+                                        onClick={() => setCcSettings((s) => ({ ...s, subtitleOffsetY: Math.max(0, Math.round(s.subtitleOffsetY) - 10) }))}
+                                        className="w-6 h-6 shrink-0 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/15 text-zinc-300 transition-all cursor-pointer active:scale-95"
+                                        title="نزم بکەرەوە (Move down)"
+                                      >
+                                        <ChevronDown className="w-3 h-3" />
+                                      </button>
+                                      <input
+                                        type="range"
+                                        min={0}
+                                        max={100}
+                                        step={5}
+                                        value={ccSettings.subtitleOffsetY}
+                                        onChange={(e) => setCcSettings((s) => ({ ...s, subtitleOffsetY: Number(e.target.value) }))}
+                                        className="flex-1 h-1 accent-brand-primary cursor-pointer"
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() => setCcSettings((s) => ({ ...s, subtitleOffsetY: Math.min(100, Math.round(s.subtitleOffsetY) + 10) }))}
+                                        className="w-6 h-6 shrink-0 flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/15 text-zinc-300 transition-all cursor-pointer active:scale-95"
+                                        title="بەرزی بکەرەوە (Move up)"
+                                      >
+                                        <ChevronUp className="w-3 h-3" />
+                                      </button>
                                     </div>
                                   </div>
 
