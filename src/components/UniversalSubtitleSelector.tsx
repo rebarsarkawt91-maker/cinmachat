@@ -78,9 +78,9 @@ export interface UniversalSubtitleSelectorProps {
   variant?: "floating" | "inline";
   /** Tooltip/title on the trigger button */
   title?: string;
-  /** Optional extra action in the menu footer (e.g. open CC settings panel) */
+  /** Optional extra action rendered as a menu row below the languages (opens CC settings panel) */
   onSettingsClick?: () => void;
-  /** Highlights the settings footer entry while the parent panel is open */
+  /** Highlights the settings menu row while the parent panel is open */
   settingsActive?: boolean;
 }
 
@@ -315,35 +315,39 @@ export function UniversalSubtitleSelector({
               );
             })}
 
-            {(onSettingsClick || onRetry) && (
-              <div className="uss-panel-foot">
-                {onSettingsClick && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsOpen(false);
-                      onSettingsClick();
-                    }}
-                    className={`uss-foot-btn${settingsActive ? " uss-foot-btn--active" : ""}`}
-                  >
-                    <Settings2 className="w-3 h-3" />
-                    <span>ڕێکخستن</span>
-                  </button>
-                )}
-                {status === "error" && onRetry && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsOpen(false);
-                      onRetry();
-                    }}
-                    className="uss-foot-btn uss-foot-btn--retry"
-                  >
-                    <RefreshCw className="w-3 h-3" />
-                    <span>دووبارە</span>
-                  </button>
-                )}
-              </div>
+            {/* Settings + retry — rendered as REGULAR menu rows directly
+                below the last language choice, using the exact same
+                .uss-item geometry/spacing so the whole menu reads as one
+                uniform list (replaces the old detached .uss-panel-foot). */}
+            {onSettingsClick && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setIsOpen(false);
+                  onSettingsClick();
+                }}
+                className={`uss-item${
+                  settingsActive ? " uss-item--settings-open" : ""
+                }`}
+              >
+                <span>ڕێکخستن</span>
+                <Settings2 className="uss-item-check" strokeWidth={2.5} />
+              </button>
+            )}
+            {status === "error" && onRetry && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setIsOpen(false);
+                  onRetry();
+                }}
+                className="uss-item uss-item--retry"
+              >
+                <span>دووبارە</span>
+                <RefreshCw className="uss-item-check" strokeWidth={2.5} />
+              </button>
             )}
           </div>
         </>

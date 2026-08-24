@@ -50,6 +50,14 @@ export const CC_FONT_SIZES: { key: CcSettings["fontSize"]; label: string; cls: s
 
 export const CC_TEXT_COLORS = ["#ffffff", "#FFFF00", "#00FFFF", "#00FF00", "#FF8800", "#FF5555"];
 
+/**
+ * Subtitle sync lead (seconds). Active-cue lookup runs slightly AHEAD of the
+ * reported playback time so subtitle lines — especially Kurdish Sorani, whose
+ * translation pipeline tends to land a beat late — appear exactly with the
+ * audio instead of trailing behind it. Shared by every player surface.
+ */
+export const SUBTITLE_SYNC_LEAD_S = 0.25;
+
 const CC_SETTINGS_KEY = "cinemachat-cc-settings";
 const DEFAULT_CC: CcSettings = { fontSize: "md", bgOpacity: 0.8, textColor: "#ffffff", showSubtitle: true, showOriginal: false, subtitleOffsetY: 15 };
 
@@ -489,14 +497,17 @@ export function useSubtitleManager({
   const activeText = useMemo(() => {
     if (!ccSettings.showSubtitle || mode === "off") return "";
     if (!translatedCues.length) return "";
-    const cue = translatedCues.find((c) => playbackTime >= c.start && playbackTime <= c.end);
+    // Evaluate slightly ahead of playback so cues appear in sync (see constant).
+    const t = playbackTime + SUBTITLE_SYNC_LEAD_S;
+    const cue = translatedCues.find((c) => t >= c.start && t <= c.end);
     return cue?.text || "";
   }, [ccSettings.showSubtitle, mode, playbackTime, translatedCues]);
 
   const activeOriginalText = useMemo(() => {
     if (!ccSettings.showSubtitle || !isOriginal(mode)) return "";
     if (!originalCues.length) return "";
-    const cue = originalCues.find((c) => playbackTime >= c.start && playbackTime <= c.end);
+    const t = playbackTime + SUBTITLE_SYNC_LEAD_S;
+    const cue = originalCues.find((c) => t >= c.start && t <= c.end);
     return cue?.text || "";
   }, [ccSettings.showSubtitle, mode, playbackTime, originalCues]);
 

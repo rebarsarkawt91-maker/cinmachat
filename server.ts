@@ -14,6 +14,21 @@ import bcrypt from 'bcryptjs';
 import net from 'node:net';
 import { rateLimiter, sanitizationMiddleware, createAdminGuard, logFailedAttempt } from './security';
 import { generateSubtitle, translateSrtViaGemini } from './features/subtitles/subtitleGenerator.js';
+import {
+  SCHEMA_VERSION,
+  normalizeHeroValue,
+  computeHeroPairUpdate,
+  computeLegacyHeroUpdate,
+  isHeroCleared,
+  buildCanonicalConfig,
+  isCanonicalHeroDoc,
+  verifyPersistedConfig,
+  deriveHeroView,
+  migrateLegacyHeroConfig,
+  revisionCountOf,
+  nextRevision,
+  HERO_LEGACY_FS_FIELDS
+} from './features/hero/heroConfig.js';
 import { execFile } from 'node:child_process';
 import * as XLSX from 'xlsx';
 // `import admin from` (esModuleInterop) resolves firebase-admin's CJS
@@ -1751,8 +1766,12 @@ const INITIAL_DB = {
   users: [] as any[],
   categories: ["هەمووی", "ئاکشن", "کۆمیدی", "دراما", "ترسناک", "ئەنیمێ", "دۆکیومێنتاری"],
   heroConfig: {
-    heroVideoUrl: '',
-    heroPlaylist: [] as string[]
+    // CANONICAL MODEL: explicit slots + revision. heroVideoUrl/heroPlaylist are
+    // DERIVED views (see deriveHeroView) — never store them as source of truth.
+    video1: null as { url: string; videoId: string } | null,
+    video2: null as { url: string; videoId: string } | null,
+    heroRevision: 0,
+    updatedAt: null as string | null
   },
   syncGroups: {
     "global_room_official": {
@@ -2091,7 +2110,14 @@ const saveMovieViewsToFirestore = (counts: Record<string, number>): void => {
 
 const HERO_CONFIG_DOC = 'config/featured';
 
+// Local QA kill switch: HERO_DISABLE_FIRESTORE=1 forces the hero config to
+// persist in db.json ONLY (no Firestore REST reads/writes at all). Needed so
+// local testing can never touch production data through the hardcoded
+// fallback key below. Production must NOT set this variable.
+const HERO_FIRESTORE_DISABLED = process.env.HERO_DISABLE_FIRESTORE === '1';
+
 const loadHeroConfigFromFirestore = async (): Promise<Record<string, any> | null> => {
+  if (HERO_FIRESTORE_DISABLED) return null;
   const res = await fetchWithTimeout(
     firestoreDocUrl(HERO_CONFIG_DOC, ''),
     { headers: { Accept: 'application/json' } },
@@ -2103,72 +2129,130 @@ const loadHeroConfigFromFirestore = async (): Promise<Record<string, any> | null
   const fields = data?.fields;
   if (!fields || typeof fields !== 'object') return null;
 
+  // Generic Firestore value -> plain JS converter. Handles explicit nullValue
+  // (an EXPLICIT CLEAR must survive the round-trip as null, not be dropped),
+  // nested mapValue (video1/video2 slots) and arrayValue.
+  const convertValue = (v: any): any => {
+    if (!v || typeof v !== 'object') return '';
+    if (v.nullValue !== undefined) return null;
+    if (v.stringValue !== undefined) return v.stringValue;
+    if (v.booleanValue !== undefined) return v.booleanValue;
+    if (v.integerValue !== undefined) return Number(v.integerValue);
+    if (v.doubleValue !== undefined) return v.doubleValue;
+    if (v.arrayValue) {
+      return (v.arrayValue.values || []).map((item: any) => convertValue(item));
+    }
+    if (v.mapValue) {
+      const nested: Record<string, any> = {};
+      for (const [nk, nv] of Object.entries(v.mapValue.fields || {})) {
+        nested[nk] = convertValue(nv);
+      }
+      return nested;
+    }
+    return '';
+  };
+
   const result: Record<string, any> = {};
   for (const [key, val] of Object.entries(fields)) {
-    const v = val as any;
-    if (v.stringValue !== undefined) result[key] = v.stringValue;
-    else if (v.booleanValue !== undefined) result[key] = v.booleanValue;
-    else if (v.integerValue !== undefined) result[key] = Number(v.integerValue);
-    else if (v.doubleValue !== undefined) result[key] = v.doubleValue;
-    else if (v.arrayValue?.values) {
-      result[key] = v.arrayValue.values.map((item: any) =>
-        item.stringValue ?? item.integerValue ?? item.doubleValue ?? item.booleanValue ?? ''
-      );
-    } else if (v.mapValue?.fields) {
-      const nested: Record<string, any> = {};
-      for (const [nk, nv] of Object.entries(v.mapValue.fields)) {
-        const nvo = nv as any;
-        nested[nk] = nvo.stringValue ?? nvo.booleanValue ?? nvo.integerValue ?? nvo.doubleValue ?? '';
-      }
-      result[key] = nested;
-    }
+    result[key] = convertValue(val);
   }
   return result;
 };
 
-const saveHeroConfigToFirestore = (heroConfig: Record<string, any>): void => {
-  if (!heroConfig || !FIREBASE_API_KEY || FIREBASE_API_KEY === '') return;
-  const fields: Record<string, any> = {};
-  if (heroConfig.heroVideoUrl) {
-    fields.heroVideoUrl = { stringValue: String(heroConfig.heroVideoUrl) };
-  }
-  if (Array.isArray(heroConfig.heroPlaylist)) {
-    fields.heroPlaylist = {
-      arrayValue: {
-        values: heroConfig.heroPlaylist
-          .filter(Boolean)
-          .map((url: string) => ({ stringValue: String(url) }))
+// Firestore typed-value builders for the canonical model.
+const heroEntryToFsValue = (entry: { url: string; videoId: string } | null): Record<string, any> => {
+  if (!entry) return { nullValue: null };
+  return {
+    mapValue: {
+      fields: {
+        url: { stringValue: entry.url },
+        videoId: { stringValue: entry.videoId || '' }
       }
-    };
-  }
-  if (Object.keys(fields).length === 0) return;
-  // Clear stale fields left by previous client-side writes so they never
-  // override the current playlist.  Using nullValue + updateMask deletes
-  // the field from the Firestore document.
-  fields.heroPlaylistData = { nullValue: null };
-  fields.video_trailers = { nullValue: null };
-  fields.updatedAt = { stringValue: new Date().toISOString() };
+    }
+  };
+};
+const fsStringOrClear = (value: string | undefined | null): Record<string, any> =>
+  value ? { stringValue: value } : { nullValue: null };
 
-  const url = firestoreDocUrl(
-    HERO_CONFIG_DOC,
-    '&updateMask.fieldPaths=heroVideoUrl&updateMask.fieldPaths=heroPlaylist&updateMask.fieldPaths=heroPlaylistData&updateMask.fieldPaths=video_trailers&updateMask.fieldPaths=updatedAt'
-  );
-  fetchWithTimeout(
-    url,
-    {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fields })
-    },
-    8000
-  )
-    .then((r) => {
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      console.log('[hero] Firestore write-through succeeded');
-    })
-    .catch((err: any) =>
-      console.warn('[hero] Firestore write-through failed:', err?.message || err)
+// Builds the complete config/featured field map for the canonical state.
+const buildHeroFsFields = (state: Record<string, any>): Record<string, any> => {
+  const view = deriveHeroView(state);
+  const firstVideoId = (view.heroVideoUrl ? extractYoutubeVideoId(view.heroVideoUrl) : '') || '';
+  const fields: Record<string, any> = {
+    // Canonical slots (source of truth):
+    schemaVersion: { integerValue: String(SCHEMA_VERSION) },
+    configured: { booleanValue: true },
+    video1: heroEntryToFsValue(view.video1),
+    video2: heroEntryToFsValue(view.video2),
+    heroRevision: { stringValue: view.heroRevision },
+    updatedAt: { stringValue: new Date().toISOString() },
+    // Derived legacy view — explicitly cleared via nullValue when empty:
+    heroVideoUrl: fsStringOrClear(view.heroVideoUrl),
+    heroPlaylist: view.heroPlaylist.length > 0
+      ? { arrayValue: { values: view.heroPlaylist.map((url: string) => ({ stringValue: String(url) })) } }
+      : { nullValue: null },
+    // Promo-card metadata derived from slot 1 (kept for catalog consumers):
+    embedUrl: fsStringOrClear(view.heroVideoUrl ? `https://www.youtube.com/embed/${firstVideoId}` : ''),
+    url: fsStringOrClear(view.heroVideoUrl),
+    videoUrl: fsStringOrClear(view.heroVideoUrl),
+    isYouTube: { booleanValue: !!firstVideoId },
+    videoId: fsStringOrClear(firstVideoId),
+    image: fsStringOrClear(firstVideoId ? `https://img.youtube.com/vi/${firstVideoId}/maxresdefault.jpg` : ''),
+    tags: { arrayValue: { values: [{ stringValue: 'هەمووی' }] } },
+    quality: { stringValue: '4K' },
+    description: { stringValue: 'نوێترین فیلمی سەرەکی' }
+  };
+  for (const key of HERO_LEGACY_FS_FIELDS) fields[key] = { nullValue: null };
+  return fields;
+};
+
+const HERO_FS_MASK_PATHS = [
+  ...Object.keys(buildHeroFsFields({ video1: null, video2: null, schemaVersion: SCHEMA_VERSION, heroRevision: '0' })),
+];
+
+/**
+ * AWAITS the Firestore write-through so callers can verify persistence.
+ * Resolves { ok, doc } where doc is the raw REST document on success.
+ * Never throws — persistence problems surface through ok:false.
+ */
+const persistHeroConfigToFirestore = async (
+  state: Record<string, any>
+): Promise<{ ok: boolean; doc?: any; error?: string }> => {
+  if (HERO_FIRESTORE_DISABLED) return { ok: false, error: 'firestore-disabled' };
+  if (!state || !FIREBASE_API_KEY || FIREBASE_API_KEY === '') {
+    return { ok: false, error: 'firestore-disabled' };
+  }
+  const fields = buildHeroFsFields(state);
+  const maskPaths = HERO_FS_MASK_PATHS.join('&updateMask.fieldPaths=');
+  try {
+    const r = await fetchWithTimeout(
+      firestoreDocUrl(HERO_CONFIG_DOC, `&updateMask.fieldPaths=${maskPaths}`),
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fields })
+      },
+      8000
     );
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    // Read-back from Firestore itself (read-after-write, authoritative copy).
+    const getRes = await fetchWithTimeout(
+      firestoreDocUrl(HERO_CONFIG_DOC, ''),
+      { headers: { Accept: 'application/json' } },
+      8000
+    );
+    if (!getRes.ok) throw new Error(`read-back HTTP ${getRes.status}`);
+    console.log('[hero] Firestore write-through + read-back succeeded');
+    return { ok: true, doc: await getRes.json() };
+  } catch (err: any) {
+    console.warn('[hero] Firestore write-through failed:', err?.message || err);
+    return { ok: false, error: String(err?.message || err) };
+  }
+};
+
+// Fire-and-forget wrapper for legacy call sites that must not block.
+const saveHeroConfigToFirestore = (state: Record<string, any>): void => {
+  void persistHeroConfigToFirestore(state);
 };
 
 // Persist a single movie's category tags to Firestore (movies/{id}) — the
@@ -2804,6 +2888,179 @@ async function startServer() {
     };
   }
 
+  // ── Canonical hero state helpers + shared save handler ───────────────────
+  // Every access to db.heroConfig goes through getHeroState() so legacy shapes
+  // loaded from old db.json files are migrated in place, exactly once.
+  const getHeroState = (): Record<string, any> => {
+    db.heroConfig = migrateLegacyHeroConfig(db.heroConfig);
+    return db.heroConfig;
+  };
+
+  const hasOwnKey = (obj: any, key: string): boolean =>
+    Object.prototype.hasOwnProperty.call(obj || {}, key);
+
+  /**
+   * THE single authoritative save path for the Hero configuration.
+   *
+   * Flow: validate BOTH non-empty URLs → build ONE canonical schemaVersion-2
+   * document → atomically replace db.heroConfig → persist db.json → PATCH
+   * Firestore (when configured) → READ BACK from each authoritative store →
+   * compare schemaVersion/configured/videoIds/revision → only then report
+   * success. Any mismatch or write failure returns non-2xx and persists
+   * nothing partially (validation happens before any mutation).
+   *
+   * opts.requireBothFields: dedicated admin endpoint mode — both video1 and
+   * video2 MUST be present (empty string = clear that slot).
+   */
+  const saveHeroConfigCore = async (
+    body: any,
+    opts: { requireBothFields?: boolean } = {}
+  ): Promise<{ status: number; payload: Record<string, any> }> => {
+    const hasV1 = hasOwnKey(body, 'video1');
+    const hasV2 = hasOwnKey(body, 'video2');
+    const legacyPlaylist = body?.heroPlaylist;
+    const legacySingle = body?.heroVideoUrl;
+
+    if (opts.requireBothFields && (!hasV1 || !hasV2)) {
+      return {
+        status: 400,
+        payload: {
+          success: false,
+          error: 'هەردوو خانەی video1 و video2 پێویستن — بەتاڵ مانای سڕینەوەیە.'
+        }
+      };
+    }
+    if (!hasV1 && !hasV2 && legacyPlaylist === undefined && legacySingle === undefined) {
+      return {
+        status: 400,
+        payload: { success: false, error: 'video1/video2 required (empty string clears the slot)' }
+      };
+    }
+
+    // QA-only failure injection (Test F). Never active unless explicitly set.
+    if (process.env.HERO_SIMULATE_PERSIST_FAILURE === '1') {
+      console.warn('[hero] SIMULATED persist failure (HERO_SIMULATE_PERSIST_FAILURE=1)');
+      return {
+        status: 500,
+        payload: { success: false, simulated: true, error: 'هەڵە لە پاشەکەوتکردندا (تاقیکردنەوە).' }
+      };
+    }
+
+    try {
+      const state = getHeroState();
+      // Validation happens inside the pure helpers and THROWS before any
+      // storage mutation — atomicity guaranteed.
+      let nextPair: { video1: any; video2: any };
+      if (hasV1 || hasV2) {
+        const { next } = computeHeroPairUpdate(state, body);
+        nextPair = { video1: next.video1, video2: next.video2 };
+      } else {
+        nextPair = computeLegacyHeroUpdate(state, legacyPlaylist, legacySingle);
+      }
+      const auditLabel = isHeroCleared(nextPair) ? 'Clear Hero Videos' : 'Update Hero Video';
+
+      // ── ATOMIC WRITE: one complete canonical document replaces the old ──
+      const intended = buildCanonicalConfig(
+        nextPair.video1,
+        nextPair.video2,
+        state.heroRevision,
+        new Date().toISOString()
+      );
+      db.heroConfig = {
+        schemaVersion: intended.schemaVersion,
+        configured: true,
+        video1: intended.video1,
+        video2: intended.video2,
+        heroRevision: intended.heroRevision,
+        updatedAt: intended.updatedAt
+      };
+      await saveDB(db);
+
+      // Durable write-through to Firestore (awaited so we can verify it).
+      const fsEnabled = !HERO_FIRESTORE_DISABLED && !!FIREBASE_API_KEY && FIREBASE_API_KEY !== '';
+      const fsResult = fsEnabled ? await persistHeroConfigToFirestore(db.heroConfig) : { ok: false, error: 'firestore-disabled' };
+
+      // ── READ-AFTER-WRITE from the SAME authoritative stores ────────────
+      // Local store: re-parse db.json from DISK (never trust memory).
+      let localOk = false;
+      try {
+        const freshDb: any = await loadDB();
+        const mismatch = verifyPersistedConfig(freshDb?.heroConfig, intended);
+        localOk = !mismatch;
+        if (mismatch) console.error('[hero] local read-back mismatch:', mismatch);
+      } catch (err: any) {
+        console.error('[hero] local read-back failed:', err?.message || err);
+      }
+      // Remote store: independent GET of config/featured through the same
+      // generic converter used at boot (nullValue-aware).
+      let remoteOk: boolean | null = null; // null == disabled/skipped
+      if (fsEnabled) {
+        try {
+          const remoteDoc = await loadHeroConfigFromFirestore();
+          const mismatch = remoteDoc ? verifyPersistedConfig(remoteDoc, intended) : 'remote doc missing';
+          remoteOk = !mismatch;
+          if (mismatch) console.error('[hero] Firestore read-back mismatch:', mismatch);
+        } catch (err: any) {
+          console.error('[hero] Firestore read-back failed:', err?.message || err);
+          remoteOk = false;
+        }
+      } else if (fsResult.ok) {
+        remoteOk = true;
+      }
+
+      if (!localOk || remoteOk === false) {
+        return {
+          status: 500,
+          payload: {
+            success: false,
+            error: 'پاشەکەوتکردن پشتڕاست نەکرایەوە — تکایە دووبارە هەوڵ بدەوە.',
+            verification: { local: localOk, firestore: remoteOk }
+          }
+        };
+      }
+
+      if (body?.adminName) {
+        await addAuditLog(
+          db,
+          String(body.adminName),
+          auditLabel,
+          auditLabel === 'Clear Hero Videos'
+            ? 'هەموو لینکەکانی Hero Video سڕانەوە'
+            : 'لینکی Hero Video نوێکرایەوە'
+        );
+      }
+      const view = deriveHeroView(db.heroConfig);
+      console.log(`[hero] SAVED+VERIFIED — revision ${view.heroRevision}, playlist [${view.heroPlaylist.length}]`, view.heroPlaylist);
+      return {
+        status: 200,
+        payload: {
+          success: true,
+          verified: true,
+          config: view,
+          persistence: { local: true, firestore: remoteOk }
+        }
+      };
+    } catch (err: any) {
+      if (String(err?.message || '').startsWith('INVALID_HERO_URL')) {
+        return {
+          status: 400,
+          payload: {
+            success: false,
+            error: 'لینکی ڤیدیۆ دروست نییە — تکایە تەنها بەستەری یوتیوبێتی ڤیدیۆیەک دابنێ (بۆ نموونە https://youtu.be/XXXXXXXXXXX).'
+          }
+        };
+      }
+      console.error('[hero] Save failed:', err);
+      return { status: 500, payload: { success: false, error: 'hero save failed' } };
+    }
+  };
+
+  const handleHeroSave = async (req: any, res: any) => {
+    if (!req.body) return res.status(400).json({ success: false, error: 'Body is empty' });
+    const result = await saveHeroConfigCore(req.body);
+    return res.status(result.status).json(result.payload);
+  };
+
   // Support Module 17 - Super Admin (Owner) Seed
   const ownerUserSeedName = "admin";
   const ownerUserSeedPassword =
@@ -3331,15 +3588,48 @@ async function startServer() {
 
   // Re-hydrate hero config from Firestore so it survives Render restarts.
   // The local db.json is ephemeral; Firestore is the durable source of truth.
+  //
+  // ADOPTION RULES:
+  //  - Canonical remote doc (has numeric heroRevision): adopt VERBATIM —
+  //    including explicit clears. An admin clear must survive restarts, so a
+  //    cleared remote can never be overwritten by an older local URL.
+  //  - Legacy remote doc: only non-empty content is adopted (old docs cannot
+  //    express "cleared", so absence of links means "nothing to restore").
   try {
     const remoteHero = await loadHeroConfigFromFirestore();
-    if (remoteHero && (remoteHero.heroVideoUrl || (Array.isArray(remoteHero.heroPlaylist) && remoteHero.heroPlaylist.length > 0))) {
-      if (!db.heroConfig) db.heroConfig = {};
-      if (remoteHero.heroVideoUrl) db.heroConfig.heroVideoUrl = remoteHero.heroVideoUrl;
-      if (Array.isArray(remoteHero.heroPlaylist) && remoteHero.heroPlaylist.length > 0) {
-        db.heroConfig.heroPlaylist = remoteHero.heroPlaylist;
+    if (remoteHero) {
+      // A canonical doc (schemaVersion>=2 / configured flag / numeric-revision
+      // slot model) is adopted VERBATIM — including explicit clears. Legacy
+      // docs without any canonical marker are migrated only when they hold
+      // actual content, so an old db.json can never resurrect videos after
+      // an admin cleared them in the authoritative store.
+      const remoteIsCanonical = isCanonicalHeroDoc(remoteHero);
+      if (remoteIsCanonical) {
+        const migrated = migrateLegacyHeroConfig(remoteHero);
+        db.heroConfig = {
+          video1: migrated.video1,
+          video2: migrated.video2,
+          heroRevision: migrated.heroRevision,
+          updatedAt: migrated.updatedAt
+        };
+        const slotCount = [migrated.video1, migrated.video2].filter(Boolean).length;
+        console.log(`[DB] Restored canonical hero config from Firestore (revision ${migrated.heroRevision}, ${slotCount > 0 ? slotCount + ' video(s)' : 'CLEARED'})`);
+      } else if (remoteHero.heroVideoUrl || (Array.isArray(remoteHero.heroPlaylist) && remoteHero.heroPlaylist.length > 0)) {
+        const state = getHeroState();
+        const toEntry = (raw: any) => {
+          const url = String(raw || '').trim();
+          return url ? { url, videoId: extractYoutubeVideoId(url) || '' } : null;
+        };
+        if (remoteHero.heroVideoUrl) state.video1 = toEntry(remoteHero.heroVideoUrl);
+        if (Array.isArray(remoteHero.heroPlaylist) && remoteHero.heroPlaylist.length > 0) {
+          state.video1 = toEntry(remoteHero.heroPlaylist[0]);
+          state.video2 = toEntry(remoteHero.heroPlaylist[1]);
+        }
+        state.heroRevision = nextRevision(state.heroRevision);
+        console.log('[DB] Restored legacy hero config from Firestore:', [state.video1, state.video2].filter(Boolean).length, 'video(s)');
+      } else {
+        console.log('[DB] Remote hero doc exists but holds no links — keeping current state');
       }
-      console.log('[DB] Restored hero config from Firestore:', db.heroConfig.heroPlaylist?.length || 0, 'video(s)');
     }
   } catch (err: any) {
     console.warn('[DB] Could not load hero config from Firestore:', err?.message || err);
@@ -8844,54 +9134,33 @@ async function startServer() {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
-    res.json(db.heroConfig);
+    // Canonical view: schemaVersion/configured/slots/revision + derived legacy fields.
+    res.json({ success: true, config: deriveHeroView(getHeroState()) });
   });
 
-  app.post('/api/admin/hero', async (req, res) => {
-    const playlist = req.body.heroPlaylist;
-    const singleUrl = req.body.heroVideoUrl;
-    const { adminName } = req.body;
-
-    if (playlist && Array.isArray(playlist) && playlist.filter(Boolean).length > 0) {
-      db.heroConfig.heroPlaylist = playlist.filter(Boolean);
-      db.heroConfig.heroVideoUrl = playlist[0] || '';
-      await addAuditLog(db, adminName, "Update Hero Playlist", `پلیلیستی ڤیدیۆ نوێکرایەوە`);
-      await saveDB(db);
-      saveHeroConfigToFirestore(db.heroConfig);
-      return res.json({ success: true, config: db.heroConfig });
-    }
-
-    // Fallback: accept a single heroVideoUrl directly
-    if (singleUrl && typeof singleUrl === 'string' && singleUrl.trim()) {
-      const clean = singleUrl.trim();
-      db.heroConfig.heroVideoUrl = clean;
-      db.heroConfig.heroPlaylist = [clean];
-      await addAuditLog(db, adminName, "Update Hero Video", `ڤیدیۆی سەرەکی نوێکرایەوە`);
-      await saveDB(db);
-      saveHeroConfigToFirestore(db.heroConfig);
-      return res.json({ success: true, config: db.heroConfig });
-    }
-
-    res.status(400).json({ success: false, error: "heroPlaylist or heroVideoUrl is required" });
+  // ── CANONICAL ADMIN HERO ENDPOINT ────────────────────────────────────────
+  // The admin UI uses exactly this pair. Full-form semantics: the request
+  // MUST carry both video1 and video2 (empty string = clear that slot), and
+  // HTTP 200 is returned only after read-after-write verification succeeds.
+  app.get('/api/admin/hero-config', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.json({ success: true, config: deriveHeroView(getHeroState()) });
   });
 
-  // Alias for hero update
-  app.post('/api/movies/hero', async (req, res) => {
-    if (!req.body) return res.status(400).json({ success: false, error: "Body is empty" });
-    const playlist = req.body.heroPlaylist;
-    if (playlist && Array.isArray(playlist)) {
-      const filtered = playlist.filter(Boolean);
-      if (filtered.length === 0) {
-        return res.status(400).json({ success: false, error: "heroPlaylist is empty after filtering" });
-      }
-      db.heroConfig.heroPlaylist = filtered;
-      db.heroConfig.heroVideoUrl = filtered[0] || '';
-      await saveDB(db);
-      saveHeroConfigToFirestore(db.heroConfig);
-      return res.json({ success: true, config: db.heroConfig });
-    }
-    res.status(400).json({ success: false, error: "heroPlaylist is required" });
+  app.put('/api/admin/hero-config', async (req: any, res: any) => {
+    if (!req.body) return res.status(400).json({ success: false, error: 'Body is empty' });
+    const result = await saveHeroConfigCore(req.body, { requireBothFields: true });
+    return res.status(result.status).json(result.payload);
   });
+
+  // Legacy aliases kept for old clients — same authoritative core underneath.
+  app.post('/api/admin/hero', handleHeroSave);
+
+  // Alias for hero update — identical semantics (video1/video2 with explicit
+  // clear support; legacy heroPlaylist/heroVideoUrl still accepted).
+  app.post('/api/movies/hero', handleHeroSave);
 
   app.post('/api/admin/post-movie', async (req, res) => {
     if (!req.body) {
@@ -9120,12 +9389,22 @@ async function startServer() {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
+    const heroView = deriveHeroView(getHeroState());
     res.json({
       ads,
       trackerText, // Expose tracker text
       socialLinks,
-      heroVideoUrl: db.heroConfig?.heroVideoUrl || '',
-      heroPlaylist: db.heroConfig?.heroPlaylist || [],
+      // Canonical slots + revision (explicit clears are observable):
+      // Canonical slots + revision + configured marker (explicit clears are
+      // observable, never inferred):
+      video1: heroView.video1,
+      video2: heroView.video2,
+      heroRevision: heroView.heroRevision,
+      schemaVersion: heroView.schemaVersion,
+      configured: heroView.configured,
+      // Derived legacy fields — empty string/array when cleared:
+      heroVideoUrl: heroView.heroVideoUrl,
+      heroPlaylist: heroView.heroPlaylist,
       youtubeChannelUrl: db.youtubeUrl || db.youtubeChannelUrl || 'https://www.youtube.com/',
       youtubeUrl: db.youtubeUrl || 'https://www.youtube.com/',
       tiktokUrl: db.tiktokUrl || 'https://www.tiktok.com/',
@@ -9138,21 +9417,18 @@ async function startServer() {
     const { ads: newAds, socialLinks: newSocialLinks, heroVideoUrl, heroPlaylist, youtubeChannelUrl, youtubeUrl, tiktokUrl, instagramUrl, facebookUrl, roomVideoUrl, trackerText: newTrackerText } = req.body;
     if (newAds) ads = newAds;
     if (newSocialLinks) socialLinks = newSocialLinks;
-    if (heroPlaylist && Array.isArray(heroPlaylist) && heroPlaylist.length > 0) {
-      const filtered = heroPlaylist.filter(Boolean);
-      if (filtered.length > 0) {
-        if (!db.heroConfig) db.heroConfig = {};
-        db.heroConfig.heroPlaylist = filtered;
-        db.heroConfig.heroVideoUrl = filtered[0] || '';
-        saveHeroConfigToFirestore(db.heroConfig);
+    // Hero update via the generic config endpoint. Routes through the same
+    // authoritative core (validate → atomic write → verify) as the dedicated
+    // endpoints; an invalid URL never aborts unrelated config fields — it
+    // only skips the hero write and is reported back via heroError.
+    let heroError: string | null = null;
+    if (heroPlaylist !== undefined || heroVideoUrl !== undefined) {
+      const heroResult = await saveHeroConfigCore({ heroPlaylist, heroVideoUrl });
+      if (!heroResult.payload.success) {
+        heroError = String(heroResult.payload.error || 'hero save failed');
       }
-    } else if (heroVideoUrl !== undefined) {
-      if (!db.heroConfig) db.heroConfig = {};
-      db.heroConfig.heroVideoUrl = heroVideoUrl;
-      // Also update heroPlaylist if only heroVideoUrl is provided
-      db.heroConfig.heroPlaylist = [heroVideoUrl];
-      saveHeroConfigToFirestore(db.heroConfig);
     }
+    const postHeroView = deriveHeroView(getHeroState());
     if (youtubeChannelUrl !== undefined) {
       db.youtubeChannelUrl = youtubeChannelUrl;
     }
@@ -9177,10 +9453,14 @@ async function startServer() {
     await saveDB(db);
     res.json({
       success: true,
+      heroError,
       ads,
       socialLinks,
-      heroVideoUrl: db.heroConfig?.heroVideoUrl || '',
-      heroPlaylist: db.heroConfig?.heroPlaylist || [],
+      heroVideoUrl: postHeroView.heroVideoUrl,
+      heroPlaylist: postHeroView.heroPlaylist,
+      video1: postHeroView.video1,
+      video2: postHeroView.video2,
+      heroRevision: postHeroView.heroRevision,
       roomVideoUrl: db.config?.roomVideoUrl || '',
       youtubeChannelUrl: db.youtubeUrl || db.youtubeChannelUrl,
       youtubeUrl: db.youtubeUrl,
@@ -9205,30 +9485,29 @@ async function startServer() {
     if (facebookUrl !== undefined) {
       db.facebookUrl = facebookUrl || 'https://www.facebook.com/';
     }
-    if (heroPlaylist && Array.isArray(heroPlaylist) && heroPlaylist.length > 0) {
-      const filtered = heroPlaylist.filter(Boolean);
-      if (filtered.length > 0) {
-        if (!db.heroConfig) db.heroConfig = {};
-        db.heroConfig.heroPlaylist = filtered;
-        db.heroConfig.heroVideoUrl = filtered[0] || '';
-        saveHeroConfigToFirestore(db.heroConfig);
+    // Same authoritative core as everywhere else (empty list/string clears).
+    let adminHeroError: string | null = null;
+    if (heroPlaylist !== undefined || heroVideoUrl !== undefined) {
+      const adminHeroResult = await saveHeroConfigCore({ heroPlaylist, heroVideoUrl });
+      if (!adminHeroResult.payload.success) {
+        adminHeroError = String(adminHeroResult.payload.error || 'hero save failed');
       }
-    } else if (heroVideoUrl !== undefined) {
-      if (!db.heroConfig) db.heroConfig = {};
-      db.heroConfig.heroVideoUrl = heroVideoUrl;
-      db.heroConfig.heroPlaylist = [heroVideoUrl];
-      saveHeroConfigToFirestore(db.heroConfig);
     }
+    const adminHeroView = deriveHeroView(getHeroState());
     await saveDB(db);
     res.json({
       success: true,
+      heroError: adminHeroError,
       youtubeChannelUrl: db.youtubeUrl,
       youtubeUrl: db.youtubeUrl,
       tiktokUrl: db.tiktokUrl,
       instagramUrl: db.instagramUrl,
       facebookUrl: db.facebookUrl,
-      heroVideoUrl: db.heroConfig?.heroVideoUrl || '',
-      heroPlaylist: db.heroConfig?.heroPlaylist || [],
+      heroVideoUrl: adminHeroView.heroVideoUrl,
+      heroPlaylist: adminHeroView.heroPlaylist,
+      video1: adminHeroView.video1,
+      video2: adminHeroView.video2,
+      heroRevision: adminHeroView.heroRevision,
     });
   });
 
@@ -9263,12 +9542,17 @@ async function startServer() {
       results = results.map((m: any) => enrichMovie(m));
 
       const ytRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
-      const heroUrl = db.heroConfig.heroVideoUrl;
+      // Canonical hero view — when the admin cleared the config this is
+      // empty by design: NO movie-data or catalog fallback may resurrect a
+      // video here. The hero-promo card still exists (grid consistency) but
+      // carries no playable link.
+      const heroView = deriveHeroView(getHeroState());
+      const heroUrl = heroView.heroVideoUrl;
       const ytMatch = heroUrl ? heroUrl.match(ytRegex) : null;
       const isYouTube = !!ytMatch;
       const embedUrl = isYouTube ? `https://www.youtube.com/embed/${ytMatch![1]}` : (heroUrl || '');
 
-      const heroPlaylist = db.heroConfig.heroPlaylist || [];
+      const heroPlaylist = heroView.heroPlaylist;
       const heroMovie: any = {
         id: 'hero-promo',
         title: 'پرۆمۆی تایبەت',

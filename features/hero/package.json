@@ -1,0 +1,7 @@
+{
+  "name": "cinemachat-hero",
+  "version": "1.0.0",
+  "description": "Standalone CommonJS module: canonical Hero video config model shared by the server endpoints.",
+  "private": true,
+  "type": "commonjs"
+}

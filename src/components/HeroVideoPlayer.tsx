@@ -40,6 +40,7 @@ const HeroVideoPlayer: React.FC<{
   setIsHeroMuted: React.Dispatch<React.SetStateAction<boolean>>;
   hasInteracted: boolean;
   heroPlaylist?: string[];
+  heroReady?: boolean;
   config: any;
   activeAudioSource?: "hero" | "room";
   isMoviePlayerOpen?: boolean;
@@ -51,6 +52,7 @@ const HeroVideoPlayer: React.FC<{
   setIsHeroMuted,
   hasInteracted,
   heroPlaylist,
+  heroReady = false,
   config,
   activeAudioSource = "hero",
   isMoviePlayerOpen = false,
@@ -60,9 +62,11 @@ const HeroVideoPlayer: React.FC<{
   const setIsMuted = setIsHeroMuted;
 
   // ─── WELCOME SEQUENCE ────────────────────────────────────────────────
-  // The welcome overlay displays for 3 seconds on top of the player.
-  // The YouTube iframe loads and buffers BEHIND the overlay so video
-  // plays instantly when the overlay fades — zero perceived loading.
+  // The intro overlay displays for ~3 seconds ONCE per homepage mount while
+  // the exact Video 1 prepares behind it.  It must NEVER appear between
+  // playlist entries (welcomeComplete latches true for the whole mount) and
+  // must NOT run at all when the canonical config is empty — a static hero
+  // with no video shows instantly instead.
   const [welcomeComplete, setWelcomeComplete] = useState(false);
 
   useEffect(() => {
@@ -74,20 +78,22 @@ const HeroVideoPlayer: React.FC<{
   // Resolve the playlist of YouTube video IDs from the URLs array.
   // Only valid 11-character IDs are kept; raw URLs or unparseable entries
   // are dropped so the YT Player API never receives a full URL string.
-  // Falls back to a test video ID when no admin data exists (for local dev
-  // verification).  IDs resolve IMMEDIATELY so the YT iframe can preload
-  // behind the welcome overlay.
-  const DEV_TEST_VIDEO_ID = "rBC36gXR0xA";
+  // NO FALLBACK: an empty (or cleared) admin config yields an empty queue —
+  // the player then mounts nothing at all and the hero stays static. No
+  // hardcoded sample, no cached link, no catalog substitute may ever play.
   const playlistIds = useMemo(() => {
     const urls = heroPlaylist?.filter((u) => u && u.trim() !== "") || [];
-    if (urls.length === 0) return [DEV_TEST_VIDEO_ID];
+    if (urls.length === 0) return [];
 
-    const extracted = urls
+    return urls
       .map((u) => getYTId(u) || (isYTVideoId(u) ? u : null))
       .filter((id): id is string => id !== null && id.trim() !== "");
-
-    return extracted.length > 0 ? extracted : [DEV_TEST_VIDEO_ID];
   }, [heroPlaylist]);
+
+  // STATIC-ONLY MODE: the authoritative config has been loaded (heroReady)
+  // and it holds NO videos. The hero must show its static poster/title/
+  // buttons IMMEDIATELY — no intro timer, no YouTube init, no spinner.
+  const staticOnly = heroReady && playlistIds.length === 0;
 
   const playlistIndexRef = useRef(0);
   // Reset index when the playlist changes (admin saved a new config)
@@ -107,6 +113,24 @@ const HeroVideoPlayer: React.FC<{
   const deliberatePauseRef = useRef(false);
   const isMutedRef = useRef(isHeroMuted);
   isMutedRef.current = isHeroMuted;
+
+  // ── HERO VOLUME LEVEL ────────────────────────────────────────────────
+  // Slider level (0-100) for the header volume popup. Defaults to 100 so
+  // every autoplay/unmute path behaves EXACTLY as before until the user
+  // actually drags the slider.
+  const [heroVolume, setHeroVolume] = useState(100);
+  const heroVolumeRef = useRef(100);
+  heroVolumeRef.current = heroVolume;
+  // Last non-zero level — used when unmuting after a drag to zero.
+  const lastAudibleVolumeRef = useRef(100);
+  const [volumePopupOpen, setVolumePopupOpen] = useState(false);
+  const volumeMenuRef = useRef<HTMLDivElement | null>(null);
+  const volumeTrackRef = useRef<HTMLDivElement | null>(null);
+  const volumeDragRef = useRef(false);
+  const volumeCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
   const safetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const advancingRef = useRef(false); // guard against double-advance
@@ -116,10 +140,12 @@ const HeroVideoPlayer: React.FC<{
   //   1. The 3-second timer has completed (welcomeComplete)
   //   2. The YouTube player has fired PLAYING state (hasStartedPlaying)
   //      OR no video is configured (so there's nothing to wait for).
-  // This guarantees zero black frames — the user never sees a non-playing
-  // screen behind the overlay.
-  const overlayDismissed = welcomeComplete && (
-    hasStartedPlaying || !videoId || !isYTVideoId(videoId)
+  // EXCEPTION: staticOnly (config loaded + empty) bypasses the timer so the
+  // static hero appears instantly with zero video-loading sequence.
+  const overlayDismissed = staticOnly || (
+    welcomeComplete && (
+      hasStartedPlaying || !videoId || !isYTVideoId(videoId)
+    )
   );
   const [ccEnabled, setCcEnabled] = useState(true);
   const [onlineViewers, setOnlineViewers] = useState(0);
@@ -185,6 +211,38 @@ const HeroVideoPlayer: React.FC<{
     }
   };
 
+  // ── VOLUME HELPERS ─────────────────────────────────────────────────
+  // Update the slider UI + mirror refs (single source of truth).
+  const commitHeroVolume = (v: number) => {
+    heroVolumeRef.current = v;
+    setHeroVolume(v);
+    if (v > 0) lastAudibleVolumeRef.current = v;
+  };
+
+  // Volume to restore when leaving mute: the slider level, or the last
+  // audible level if it was dragged all the way down.
+  const restoreHeroVolume = () =>
+    heroVolumeRef.current > 0 ? heroVolumeRef.current : lastAudibleVolumeRef.current;
+
+  // Slider drag / track click → live player volume. Dragging is an
+  // explicit user gesture on the audio bus, so it claims audio control.
+  const applyHeroVolume = (val: number) => {
+    const v = Math.max(0, Math.min(100, Math.round(val)));
+    takeAudioControl();
+    commitHeroVolume(v);
+    const player = playerRef.current;
+    if (v === 0) {
+      safePlayerCall(player, "mute");
+      setIsMuted(true);
+      return;
+    }
+    if (isMutedRef.current) {
+      safePlayerCall(player, "unMute");
+      setIsMuted(false); // the isMuted sync effect re-verifies below
+    }
+    safePlayerCall(player, "setVolume", v);
+  };
+
   const toggleMute = () => {
     const player = playerRef.current;
     const next = !isMuted;
@@ -193,8 +251,11 @@ const HeroVideoPlayer: React.FC<{
       if (next) {
         safePlayerCall(player, "mute");
       } else {
+        // Unmute restores the SLIDER level (not a hardcoded 100).
+        const vol = restoreHeroVolume();
+        commitHeroVolume(vol);
         safePlayerCall(player, "unMute");
-        safePlayerCall(player, "setVolume", 100);
+        safePlayerCall(player, "setVolume", vol);
       }
     }
     setIsMuted(next);
@@ -214,8 +275,10 @@ const HeroVideoPlayer: React.FC<{
     const player = playerRef.current;
     if (!player) return;
     takeAudioControl();
+    const vol = restoreHeroVolume();
+    commitHeroVolume(vol);
     safePlayerCall(player, "unMute");
-    safePlayerCall(player, "setVolume", 100);
+    safePlayerCall(player, "setVolume", vol);
     safePlayerCall(player, "playVideo");
     setIsMuted(false);
     forcePlay(player, 4);
@@ -246,7 +309,7 @@ const HeroVideoPlayer: React.FC<{
       }
 
       safePlayerCall(player, "unMute");
-      safePlayerCall(player, "setVolume", 100);
+      safePlayerCall(player, "setVolume", restoreHeroVolume());
       safePlayerCall(player, "playVideo");
 
       const stillMuted = safePlayerCall(player, "isMuted") === true;
@@ -330,7 +393,12 @@ const HeroVideoPlayer: React.FC<{
   // useEffect detects the videoId change and creates a completely fresh
   // YT.Player instance — no loadVideoById hot-swap that causes freezes.
   const advanceToNextVideo = () => {
-    if (advancingRef.current) return; // already in-flight
+    if (advancingRef.current) return; // already in-flight — duplicate ENDED guard
+    // Empty playlist (config cleared mid-session): reset to slot 0 and stop.
+    if (playlistIds.length === 0) {
+      playlistIndexRef.current = 0;
+      return;
+    }
     advancingRef.current = true;
 
     if (safetyTimerRef.current) {
@@ -441,6 +509,8 @@ const HeroVideoPlayer: React.FC<{
           unmuteRetryTimerRef.current = null;
         }
         setIsHeroMuted(false);
+        // Fresh player starts at full volume by design — sync the slider.
+        commitHeroVolume(100);
       }
 
       // Create a completely fresh player instance
@@ -472,7 +542,7 @@ const HeroVideoPlayer: React.FC<{
             // satisfies browser autoplay policy; we revoke it the
             // instant the player is ready so audio always plays.
             safePlayerCall(event.target, "unMute");
-            safePlayerCall(event.target, "setVolume", 100);
+            safePlayerCall(event.target, "setVolume", restoreHeroVolume());
             forcePlay(event.target, 30);
             // Micro-retry loop: keep forcing audio every 100ms for 1s in
             // case the browser accepted playVideo but deferred the unmute.
@@ -497,7 +567,7 @@ const HeroVideoPlayer: React.FC<{
               // Belt-and-suspenders: force unmute on every PLAYING event
               // in case onReady unmute was blocked by browser policy
               safePlayerCall(event.target, "unMute");
-              safePlayerCall(event.target, "setVolume", 100);
+              safePlayerCall(event.target, "setVolume", restoreHeroVolume());
               deliberatePauseRef.current = false;
               setHasStartedPlaying(true);
               setIsPlaying(true);
@@ -531,7 +601,7 @@ const HeroVideoPlayer: React.FC<{
       // unmuted at full volume BEFORE playback begins (re-enforced in
       // onReady the moment the API reports the player ready).
       safePlayerCall(playerRef.current, "unMute");
-      safePlayerCall(playerRef.current, "setVolume", 100);
+      safePlayerCall(playerRef.current, "setVolume", restoreHeroVolume());
     };
 
     apiReady.current.then(initPlayer);
@@ -573,8 +643,10 @@ const HeroVideoPlayer: React.FC<{
       const player = playerRef.current;
       if (player && isMutedRef.current) {
         takeAudioControl();
+        const vol = restoreHeroVolume();
+        commitHeroVolume(vol);
         safePlayerCall(player, "unMute");
-        safePlayerCall(player, "setVolume", 100);
+        safePlayerCall(player, "setVolume", vol);
         setIsMuted(false);
       }
       document.removeEventListener("pointerdown", onFirstInteraction);
@@ -587,6 +659,55 @@ const HeroVideoPlayer: React.FC<{
       document.removeEventListener("touchstart", onFirstInteraction);
     };
   }, []);
+
+  // ── VOLUME POPUP: CLEAN DISMISSAL ───────────────────────────────────
+  // Closes on any click outside the popup and on Escape. Capture phase
+  // so the hero tap-overlay can never swallow the event first.
+  useEffect(() => {
+    if (!volumePopupOpen) return undefined;
+    const onDocPointerDown = (e: PointerEvent) => {
+      if (
+        volumeMenuRef.current &&
+        e.target instanceof Node &&
+        !volumeMenuRef.current.contains(e.target)
+      ) {
+        setVolumePopupOpen(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setVolumePopupOpen(false);
+    };
+    document.addEventListener("pointerdown", onDocPointerDown, true);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onDocPointerDown, true);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [volumePopupOpen]);
+
+  // Never leave a pending hover-close timer behind on unmount.
+  useEffect(
+    () => () => {
+      if (volumeCloseTimerRef.current) {
+        clearTimeout(volumeCloseTimerRef.current);
+        volumeCloseTimerRef.current = null;
+      }
+    },
+    [],
+  );
+
+  // ── VOLUME POPUP: TRACK POINTER MATH ────────────────────────────────
+  // Vertical fill = bottom(0%) → top(100%). Works for click-to-jump and
+  // smooth dragging (pointer capture keeps drag events on the track even
+  // when the cursor leaves it). Direction-neutral under RTL.
+  const applyVolumeFromPointer = (clientY: number) => {
+    const track = volumeTrackRef.current;
+    if (!track) return;
+    const rect = track.getBoundingClientRect();
+    if (rect.height <= 0) return;
+    const ratio = 1 - (clientY - rect.top) / rect.height;
+    applyHeroVolume(ratio * 100);
+  };
 
   useEffect(() => {
     if (playerRef.current) {
@@ -636,7 +757,7 @@ const HeroVideoPlayer: React.FC<{
       setIsHeroMuted(!shouldUnmute);
       if (shouldUnmute) {
         safePlayerCall(playerRef.current, "unMute");
-        safePlayerCall(playerRef.current, "setVolume", 100);
+        safePlayerCall(playerRef.current, "setVolume", restoreHeroVolume());
         setIsMuted(false);
       }
     }
@@ -664,7 +785,7 @@ const HeroVideoPlayer: React.FC<{
       setIsHeroMuted(!shouldUnmute);
       if (shouldUnmute) {
         safePlayerCall(playerRef.current, "unMute");
-        safePlayerCall(playerRef.current, "setVolume", 100);
+        safePlayerCall(playerRef.current, "setVolume", restoreHeroVolume());
         setIsMuted(false);
       }
     }
@@ -732,8 +853,10 @@ const HeroVideoPlayer: React.FC<{
                 const player = playerRef.current;
                 if (player) {
                   takeAudioControl();
+                  const vol = restoreHeroVolume();
+                  commitHeroVolume(vol);
                   safePlayerCall(player, "unMute");
-                  safePlayerCall(player, "setVolume", 100);
+                  safePlayerCall(player, "setVolume", vol);
                 }
                 setIsMuted(false);
                 setIsPlaying(true);
@@ -777,25 +900,134 @@ const HeroVideoPlayer: React.FC<{
             </span>
           </div>
 
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              toggleMute();
+          {/* ── VOLUME CONTROL + VERTICAL SLIDER POPUP ──────────────────
+              The icon keeps its mute/unmute toggle; hovering (desktop) or
+              tapping reveals a vertical 0-100% slider dropdown below the
+              icon row. Centered anchor keeps it RTL-safe; pointer capture
+              gives smooth dragging; clicks outside dismiss it cleanly. */}
+          <div
+            ref={volumeMenuRef}
+            className="relative pointer-events-auto"
+            onMouseEnter={() => {
+              if (volumeCloseTimerRef.current) {
+                clearTimeout(volumeCloseTimerRef.current);
+                volumeCloseTimerRef.current = null;
+              }
+              setVolumePopupOpen(true);
             }}
-            className={`pointer-events-auto p-2 md:p-3 bg-black/50 border rounded-xl md:rounded-2xl backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/audio ${
-              !isMuted
-                ? "text-green-400 border-green-500/20 hover:border-green-500/35 hover:bg-green-500/15"
-                : "text-white border-white/10 hover:border-white/25 hover:bg-white/10"
-            }`}
-            title={!isMuted ? "بێدەنگکردن" : "کاراکردنی دەنگ"}
-            id="hero-mute-btn"
+            onMouseLeave={() => {
+              if (volumeCloseTimerRef.current) clearTimeout(volumeCloseTimerRef.current);
+              volumeCloseTimerRef.current = setTimeout(
+                () => setVolumePopupOpen(false),
+                160,
+              );
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
           >
-            {!isMuted ? (
-              <Volume2 className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/audio:scale-110" />
-            ) : (
-              <VolumeX className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 opacity-80 transition-transform group-hover/audio:scale-110" />
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleMute();
+                setVolumePopupOpen(true);
+              }}
+              className={`p-2 md:p-3 bg-black/50 border rounded-xl md:rounded-2xl backdrop-blur-md transition-all duration-200 cursor-pointer shadow-lg active:scale-[0.98] group/audio ${
+                !isMuted
+                  ? "text-green-400 border-green-500/20 hover:border-green-500/35 hover:bg-green-500/15"
+                  : "text-white border-white/10 hover:border-white/25 hover:bg-white/10"
+              }`}
+              title={!isMuted ? "بێدەنگکردن" : "کاراکردنی دەنگ"}
+              id="hero-mute-btn"
+            >
+              {!isMuted ? (
+                <Volume2 className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 transition-transform group-hover/audio:scale-110" />
+              ) : (
+                <VolumeX className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 opacity-80 transition-transform group-hover/audio:scale-110" />
+              )}
+            </button>
+
+            {/* Vertical slider popup (opens DOWNWARD from the icon) */}
+            {volumePopupOpen && (
+              <div
+                className="absolute top-full mt-2 left-1/2 -translate-x-1/2 z-[80] flex flex-col items-center gap-2 p-3 rounded-2xl bg-black/90 backdrop-blur-md border border-white/10 shadow-2xl select-none"
+                onMouseEnter={() => {
+                  if (volumeCloseTimerRef.current) {
+                    clearTimeout(volumeCloseTimerRef.current);
+                    volumeCloseTimerRef.current = null;
+                  }
+                }}
+                onMouseLeave={() => {
+                  if (volumeCloseTimerRef.current) clearTimeout(volumeCloseTimerRef.current);
+                  volumeCloseTimerRef.current = setTimeout(
+                    () => setVolumePopupOpen(false),
+                    160,
+                  );
+                }}
+              >
+                <span className="text-[10px] font-mono font-bold text-zinc-200 tabular-nums leading-none">
+                  {Math.round(heroVolume)}%
+                </span>
+
+                {/* Vertical track — click to jump, drag for smooth control */}
+                <div
+                  ref={volumeTrackRef}
+                  role="slider"
+                  aria-label="ئاستی دەنگ"
+                  aria-orientation="vertical"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(heroVolume)}
+                  tabIndex={0}
+                  className="relative h-28 w-6 cursor-pointer touch-none outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/60 rounded-full"
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    volumeDragRef.current = true;
+                    try {
+                      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                    } catch (_) {}
+                    applyVolumeFromPointer(e.clientY);
+                  }}
+                  onPointerMove={(e) => {
+                    if (!volumeDragRef.current) return;
+                    applyVolumeFromPointer(e.clientY);
+                  }}
+                  onPointerUp={(e) => {
+                    volumeDragRef.current = false;
+                    try {
+                      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+                    } catch (_) {}
+                  }}
+                  onPointerCancel={() => {
+                    volumeDragRef.current = false;
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "ArrowUp") {
+                      e.preventDefault();
+                      applyHeroVolume(heroVolumeRef.current + 10);
+                    } else if (e.key === "ArrowDown") {
+                      e.preventDefault();
+                      applyHeroVolume(heroVolumeRef.current - 10);
+                    }
+                  }}
+                >
+                  {/* Rail */}
+                  <div className="absolute left-1/2 top-0 bottom-0 w-1.5 -translate-x-1/2 rounded-full bg-white/10" />
+                  {/* Red fill (bottom → top) */}
+                  <div
+                    className="absolute left-1/2 bottom-0 w-1.5 -translate-x-1/2 rounded-full bg-gradient-to-t from-brand-primary to-red-400"
+                    style={{ height: `${heroVolume}%` }}
+                  />
+                  {/* Thumb */}
+                  <div
+                    className="absolute left-1/2 -translate-x-1/2 translate-y-1/2 w-3.5 h-3.5 rounded-full bg-white ring-2 ring-brand-primary shadow-lg pointer-events-none"
+                    style={{ bottom: `${heroVolume}%` }}
+                  />
+                </div>
+
+                <Volume2 className="w-3.5 h-3.5 text-brand-primary" />
+              </div>
             )}
-          </button>
+          </div>
 
           <button
             onClick={(e) => {

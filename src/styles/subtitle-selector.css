@@ -188,45 +188,31 @@
   height: 15px;
 }
 
+/* No stray gap after the final row so the list fills the rounded
+   container evenly (items above each keep the standard 4px rhythm). */
+.uss-item:last-of-type {
+  margin-bottom: 0;
+}
+
+/* Settings/retry rows reuse the exact .uss-item geometry; these modifiers
+   only tint state so they read as part of the same uniform list. */
+.uss-item--settings-open {
+  border-color: rgba(229, 9, 20, 0.45);
+  color: #fff;
+}
+.uss-item--retry {
+  background: rgba(229, 9, 20, 0.14);
+  color: #fca5a5;
+}
+.uss-item--retry:hover {
+  background: rgba(229, 9, 20, 0.28);
+  transform: none;
+}
+
 .uss-divider {
   height: 1px;
   margin: 6px 2px;
   background: rgba(255, 255, 255, 0.08);
-}
-
-/* Footer row inside the panel (retry / settings slots) */
-.uss-panel-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  padding-top: 6px;
-  margin-top: 2px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-}
-.uss-foot-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 9px;
-  border-radius: 9px;
-  border: none;
-  background: rgba(255, 255, 255, 0.05);
-  color: #d4d4d8;
-  font-size: 10px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: background 0.15s ease;
-}
-.uss-foot-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
-}
-.uss-foot-btn--retry {
-  background: rgba(229, 9, 20, 0.16);
-  color: #fca5a5;
-}
-.uss-foot-btn--retry:hover {
-  background: rgba(229, 9, 20, 0.32);
 }
 
 /* ------------------------------------------------------------------ */

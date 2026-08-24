@@ -92,7 +92,7 @@ import { UsersIcon } from "lucide-react";
 import "plyr-react/plyr.css";
 import { GoogleGenAI } from "@google/genai";
 import ImmersiveShieldedPlayer from "./components/Player/ImmersiveShieldedPlayer";
-import { useDelayedSubtitleLoad } from "./hooks/useSubtitleManager";
+import { useDelayedSubtitleLoad, SUBTITLE_SYNC_LEAD_S } from "./hooks/useSubtitleManager";
 import YouTubeResilientPlayer from "./components/Player/YouTubeResilientPlayer";
 import SubtitleJobStatus from "./components/Player/SubtitleJobStatus";
 import { api } from "./services/api";
@@ -817,6 +817,13 @@ const getCachedHeroVideoUrl = () => {
   return sanitizeHeroUrl(cached);
 };
 
+// Numeric prefix of a canonical heroRevision string ("<count>-<millis>").
+// Used to ignore stale Firestore snapshots — never to fabricate revisions.
+const revisionCountOf = (revision: string): number => {
+  const n = parseInt(String(revision || ""), 10);
+  return Number.isFinite(n) ? Math.max(0, n) : -1;
+};
+
 const getCachedHeroPlaylist = (): string[] => {
   try {
     const raw = safeStorage.get(HERO_PLAYLIST_LOCAL_KEY);
@@ -835,7 +842,13 @@ const setCachedHeroVideoUrl = (url: string) => {
 
 const setCachedHeroPlaylist = (urls: string[]) => {
   const cleaned = urls.map(sanitizeHeroUrl).filter(Boolean);
-  if (cleaned.length === 0) return;
+  // EMPTY LIST == EXPLICIT CLEAR: remove BOTH keys so a cleared config can
+  // never be resurrected from localStorage on the next offline boot.
+  if (cleaned.length === 0) {
+    safeStorage.remove(HERO_PLAYLIST_LOCAL_KEY);
+    safeStorage.remove(HERO_VIDEO_LOCAL_KEY);
+    return;
+  }
   // Purge-then-write: removing BOTH keys before writing guarantees no
   // stale URL survives a new upload (e.g., when the new playlist is
   // shorter than the old one, leftover tail entries would linger).
@@ -2388,46 +2401,90 @@ const BroadcastModule = ({ onBroadcast }: any) => {
   );
 };
 
-const HeroModule = ({ onSync }: any) => {
+type HeroSyncResult = {
+  ok: boolean;
+  cancelled?: boolean;
+  cleared?: boolean;
+  config?: any;
+  error?: string;
+};
+
+const HeroModule = ({ onSync }: { onSync: (url1: string, url2: string, hasExisting: boolean) => Promise<HeroSyncResult> }) => {
   const [heroVideoUrl, setHeroVideoUrl] = useState("");
   const [heroVideoUrl2, setHeroVideoUrl2] = useState("");
+  // Tracks whether ANY hero link currently exists server-side. Only a real
+  // existing config triggers the destructive-clear confirmation; an empty
+  // form saving empty fields is an idempotent no-op clear (no prompt).
+  const [hasExistingHero, setHasExistingHero] = useState(false);
+  // Save lifecycle: the button never navigates, never closes Admin, and only
+  // reports success after the server's verified response (PUT → read-back on
+  // the server + independent GET verification on this client).
+  const [isSaving, setIsSaving] = useState(false);
+  type SaveStatus = { type: "idle" | "saving" | "success" | "error"; message: string };
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>({ type: "idle", message: "" });
 
   useEffect(() => {
-    fetchApi("/api/admin/hero")
+    let alive = true;
+    fetchApi("/api/admin/hero-config")
       .then((res) => res.json())
       .then((data) => {
-        if (data && Array.isArray(data.heroPlaylist) && data.heroPlaylist.length > 0) {
-          const clean1 = String(data.heroPlaylist[0] || "").trim();
-          const clean2 = String(data.heroPlaylist[1] || "").trim();
-          setHeroVideoUrl(clean1);
-          setHeroVideoUrl2(clean2);
-          setCachedHeroPlaylist(data.heroPlaylist.map((u: string) => String(u || "").trim()).filter(Boolean));
-        } else if (data && data.heroVideoUrl) {
-          const clean = String(data.heroVideoUrl).trim();
-          setHeroVideoUrl(clean);
-          if (clean) setCachedHeroVideoUrl(clean);
-        } else {
-          // Fallback to local cache when server unreachable
-          const cachedPlaylist = getCachedHeroPlaylist();
-          if (cachedPlaylist.length > 0) {
-            setHeroVideoUrl(cachedPlaylist[0] || "");
-            setHeroVideoUrl2(cachedPlaylist[1] || "");
-          } else {
-            setHeroVideoUrl(getCachedHeroVideoUrl());
-          }
-        }
+        if (!alive) return;
+        // Canonical response shape: { success, config } with explicit slots.
+        // NOTE: no localStorage fallback — stale cache must never pre-fill
+        // the form and get re-saved after an intentional clear.
+        const cfg = data?.config || {};
+        const p1 = String(cfg?.video1?.url ?? "").trim();
+        const p2 = String(cfg?.video2?.url ?? "").trim();
+        setHasExistingHero(!!(p1 || p2));
+        setHeroVideoUrl(p1);
+        setHeroVideoUrl2(p2);
       })
       .catch((err) => {
+        if (!alive) return;
+        // Offline: leave fields empty rather than resurrecting cached links
+        // that may have just been cleared on another device.
         console.error("Failed to load initial hero config:", err);
-        const cachedPlaylist = getCachedHeroPlaylist();
-        if (cachedPlaylist.length > 0) {
-          setHeroVideoUrl(cachedPlaylist[0] || "");
-          setHeroVideoUrl2(cachedPlaylist[1] || "");
-        } else {
-          setHeroVideoUrl(getCachedHeroVideoUrl());
-        }
       });
+    return () => {
+      alive = false;
+    };
   }, []);
+
+  const handleSaveClick = async () => {
+    if (isSaving) return; // double-click guard
+    setSaveStatus({ type: "saving", message: "تکایە چاوەڕێ بکە... زانیارییەکان پاشەکەوت دەکرێت." });
+    try {
+      const result = await onSync(heroVideoUrl, heroVideoUrl2, hasExistingHero);
+      if (result.cancelled) {
+        setSaveStatus({ type: "idle", message: "" });
+        return; // user backed out of the clear prompt
+      }
+      if (!result.ok) {
+        // Keep both typed values exactly as entered; stay on Section 7.
+        setSaveStatus({
+          type: "error",
+          message: result.error || "پاشەکەوتکردن سەرکەوتوو نەبوو — تکایە دووبارە هەوڵ بدەوە.",
+        });
+        return;
+      }
+      // VERIFIED SUCCESS — sync both fields from the canonical server answer.
+      const cfg = result.config || {};
+      const p1 = String(cfg?.video1?.url ?? "").trim();
+      const p2 = String(cfg?.video2?.url ?? "").trim();
+      setHeroVideoUrl(p1);
+      setHeroVideoUrl2(p2);
+      setHasExistingHero(!!(p1 || p2));
+      setSaveStatus({
+        type: "success",
+        message: result.cleared
+          ? "هەموو لینکەکانی Hero Video بە سەرکەوتوویی سڕانەوە."
+          : "فیلمی سەرەکی بە سەرکەوتوویی پاشەکەوت کرا و پشتڕاست کرایەوە!",
+      });
+    } catch (err) {
+      console.error("Hero save unexpected error:", err);
+      setSaveStatus({ type: "error", message: "هەڵەیەکی چاوەڕواننەکراو ڕوویدا — تکایە دووبارە هەوڵ بدەوە." });
+    }
+  };
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -2469,11 +2526,31 @@ const HeroModule = ({ onSync }: any) => {
             className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-white text-center font-bold outline-none focus:border-red-600 tracking-widest text-sm"
           />
           <button
-            onClick={() => onSync(heroVideoUrl, heroVideoUrl2)}
-            className="w-full py-5 bg-white text-black rounded-2xl font-black kurdish-text text-lg hover:bg-white/80 transition-all active:scale-95 shadow-2xl mt-4"
+            type="button"
+            onClick={handleSaveClick}
+            disabled={isSaving}
+            className={`w-full py-5 rounded-2xl font-black kurdish-text text-lg transition-all active:scale-95 shadow-2xl mt-4 ${
+              isSaving
+                ? "bg-white/60 text-black/50 cursor-wait"
+                : "bg-white text-black hover:bg-white/80"
+            }`}
           >
-            جێگیرکردن وەکو فیلمی سەرەکی
+            {isSaving ? "پاشەکەوت دەکرێت..." : "جێگیرکردن وەکو فیلمی سەرەکی"}
           </button>
+          {saveStatus.message && (
+            <p
+              role="status"
+              className={`kurdish-text text-sm font-bold text-center mt-3 px-4 py-2 rounded-xl ${
+                saveStatus.type === "error"
+                  ? "text-red-400 bg-red-600/10 border border-red-600/30"
+                  : saveStatus.type === "success"
+                    ? "text-emerald-400 bg-emerald-600/10 border border-emerald-600/30"
+                    : "text-gray-300 bg-white/5 border border-white/10"
+              }`}
+            >
+              {saveStatus.message}
+            </p>
+          )}
         </div>
       </div>
 
@@ -6832,6 +6909,16 @@ export default function App() {
   const [featuredMovieFromDB, setFeaturedMovieFromDB] = useState<Movie | null>(
     null,
   );
+  // HERO CONFIG READINESS GATE: until the server (or Firestore snapshot)
+  // answers at least once, heroPlaylist stays EMPTY — no catalog movie, no
+  // cached link and no hardcoded video may start playing on a guess. After
+  // the first answer the playlist is whatever the canonical config says,
+  // including [] when the admin explicitly cleared it.
+  const [heroConfigReady, setHeroConfigReady] = useState(false);
+  // Highest canonical heroRevision this client has VERIFIED from the server.
+  // Firestore snapshots older than this (or lacking a canonical marker) are
+  // ignored so nothing can silently roll the hero back to stale content.
+  const knownHeroRevisionRef = useRef(-1);
   const [currentVideoIndex, setCurrentVideoIndex] = useState(0);
   const [index, setIndex] = useState(0);
   const [roomIndex, setRoomIndex] = useState(0);
@@ -7784,13 +7871,15 @@ export default function App() {
       videoUrl,
       isYouTube,
       videoId,
-      // No hardcoded fallback — empty array forces the hero player to stay
-      // in its welcome/loading state until the admin saves a real playlist.
-      heroPlaylist: (base as any).video_trailers ||
-        (base as any).heroPlaylist ||
-        [],
+      // NO FALLBACKS of any kind:
+      //  - before the first server/snapshot answer (heroConfigReady=false)
+      //    and after an admin clear, this is [] — the hero stays static.
+      //  - movie-data fields like video_trailers can NEVER feed the hero.
+      heroPlaylist: heroConfigReady
+        ? ((base as any).heroPlaylist as string[]) || []
+        : [],
     };
-  }, [featuredMovieFromDB, featuredMovie, globalStreamURL]);
+  }, [featuredMovieFromDB, featuredMovie, globalStreamURL, heroConfigReady]);
 
   useEffect(() => {
     console.log("[DEBUG] activeFeaturedMovie updated:", activeFeaturedMovie);
@@ -8332,9 +8421,10 @@ export default function App() {
     setShowPlayer(true);
   }, [selectedMovie]);
 
-  // Close the player and return to the details panel. The existing design
-  // intentionally keeps the details mounted behind the player so state is
-  // preserved; closing the player simply brings that panel back to the front.
+  // Step-back close: hide ONLY the player layer, revealing the details panel
+  // mounted behind it. Used exclusively by the regular movie flow where the
+  // details panel is genuinely part of the session; room/VIP/URL sessions
+  // never mount details, so they must quit outright instead (see Escape below).
   const closePlayerToDetails = useCallback(() => {
     setShowPlayer(false);
     setIsMovieDetailsOpen(true);
@@ -8360,15 +8450,18 @@ export default function App() {
     }
   }, []);
 
-  // Escape closes ONLY the active foreground layer: the player first (returning
-  // to details), then the details panel (full close). There is a single handler
-  // so there is never more than one Escape-triggered close path.
+  // Escape closes ONLY the active foreground layer: while the player is up it
+  // steps back to the details panel IF that panel is actually part of the
+  // session (regular movie flow); room/VIP/URL sessions quit outright so the
+  // user never flashes through a details/rating screen they never opened.
+  // There is a single handler so there is never more than one Escape-triggered
+  // close path — matching the single visible X button on the player overlay.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (showPlayer) {
+      if (showPlayer && isMovieDetailsOpen) {
         closePlayerToDetails();
-      } else if (isMovieDetailsOpen) {
+      } else if (showPlayer || isMovieDetailsOpen) {
         closeMovieModal();
       }
     };
@@ -9580,16 +9673,19 @@ export default function App() {
 
   const cinemaWindowActiveSubtitleText = useMemo(() => {
     if (!cinemaWindowSubtitleCues.length) return "";
+    // Match slightly ahead of playback so Sorani lines land with the audio.
+    const t = subtitlePlaybackTime + SUBTITLE_SYNC_LEAD_S;
     const activeCue = cinemaWindowSubtitleCues.find(
-      (cue) => subtitlePlaybackTime >= cue.start && subtitlePlaybackTime <= cue.end,
+      (cue) => t >= cue.start && t <= cue.end,
     );
     return activeCue?.text || "";
   }, [subtitlePlaybackTime, cinemaWindowSubtitleCues]);
 
   const cinemaWindowActiveOriginalText = useMemo(() => {
     if (!ccSettings.showOriginal || !originalCinemaWindowSubtitleCues.length) return "";
+    const t = subtitlePlaybackTime + SUBTITLE_SYNC_LEAD_S;
     const activeCue = originalCinemaWindowSubtitleCues.find(
-      (cue) => subtitlePlaybackTime >= cue.start && subtitlePlaybackTime <= cue.end,
+      (cue) => t >= cue.start && t <= cue.end,
     );
     return activeCue?.text || "";
   }, [subtitlePlaybackTime, originalCinemaWindowSubtitleCues, ccSettings.showOriginal]);
@@ -9954,11 +10050,38 @@ export default function App() {
     const unsub = firestoreSnapshot(
       doc(db, "config", "featured"),
       (snap) => {
+        // First snapshot answer — hero config is now known (even if empty).
+        setHeroConfigReady(true);
         try {
           if (snap.exists()) {
-            const data = snap.data();
+            const data = snap.data() as any;
+            // ── STALE-SNAPSHOT GUARD ────────────────────────────────────
+            // Once this client has verified a canonical revision from the
+            // authoritative server, only equal-or-newer canonical snapshots
+            // may update the hero. Legacy-shaped docs and older revisions
+            // are ignored outright — no rollback, no legacy resurrection.
+            const snapRevCount = (() => {
+              const raw = String(data?.heroRevision ?? "");
+              const n = parseInt(raw, 10);
+              return Number.isFinite(n) ? n : -1;
+            })();
+            const snapIsCanonical =
+              Number(data?.schemaVersion) >= 2 ||
+              data?.configured === true ||
+              snapRevCount >= 0;
+            if (!snapIsCanonical && knownHeroRevisionRef.current >= 0) return;
+            if (snapRevCount >= 0 && snapRevCount < knownHeroRevisionRef.current) {
+              console.log("[Hero] Ignoring stale snapshot revision", snapRevCount);
+              return;
+            }
+            if (snapRevCount > knownHeroRevisionRef.current) {
+              knownHeroRevisionRef.current = snapRevCount;
+            }
             console.log("New Firebase Data:", data); // FORCE UPDATE LOG
             setFeaturedMovieFromDB(data as Movie);
+          } else {
+            // Doc absent == nothing configured; never fall back to catalog.
+            setFeaturedMovieFromDB(null);
           }
         } catch (err) {
           console.warn("Featured config mapping failed:", err);
@@ -11029,9 +11152,13 @@ export default function App() {
           instagramUrl: data.instagramUrl || prev.instagramUrl,
           facebookUrl: data.facebookUrl || prev.facebookUrl,
         }));
-        // Cache hero playlist (full array) and single URL for offline fallback
-        if (Array.isArray(data.heroPlaylist) && data.heroPlaylist.length > 0) {
-          setCachedHeroPlaylist(data.heroPlaylist);
+        // Cache hero playlist from the AUTHORITATIVE server answer. An empty
+        // array overwrites/purges any stale cache — a cleared config must
+        // never resurrect an old link from localStorage.
+        if (Array.isArray(data.heroPlaylist)) {
+          setCachedHeroPlaylist(
+            data.heroPlaylist.filter((u: unknown) => typeof u === "string" && u.trim() !== ""),
+          );
         } else if (data?.heroVideoUrl) {
           setCachedHeroVideoUrl(String(data.heroVideoUrl));
         }
@@ -11044,6 +11171,9 @@ export default function App() {
             heroVideoUrl: cachedHero,
           }));
         }
+      } finally {
+        // The server answered (success or not): stop withholding the hero.
+        setHeroConfigReady(true);
       }
     };
     fetchConfig();
@@ -12553,6 +12683,7 @@ export default function App() {
                   setIsHeroMuted={setIsHeroMuted}
                   hasInteracted={hasInteracted}
                   heroPlaylist={activeFeaturedMovie?.heroPlaylist}
+                  heroReady={heroConfigReady}
                   config={config}
                   activeAudioSource={activeAudioSource}
                   isMoviePlayerOpen={!!selectedMovie && showPlayer}
@@ -13488,23 +13619,14 @@ export default function App() {
                       )}
                       
                       {/* Pro Player Overlay UI */}
-                      {/* Top Header: Cinemachat Branding, Title and Close Button.
-                          Typography is deliberately constrained (smaller on
-                          mobile, clamped widths + single-line truncation) so
-                          long Kurdish titles never wrap into the video area. */}
+                      {/* Top Header: Cinemachat Branding and Title. The close
+                          X deliberately lives ONLY as the single modal-level
+                          button at the absolute top-right (full quit); this
+                          header no longer renders its own duplicate X that
+                          bounced users into the details/rating view. */}
                       <div className="absolute top-0 inset-x-0 p-3 sm:p-6 flex items-center justify-between gap-3 z-50 bg-gradient-to-b from-black/90 to-transparent pointer-events-none font-sans">
                         <div className="flex items-center gap-2 min-w-0 pointer-events-auto">
-                          <button
-                            type="button"
-                            aria-label="Close player"
-                            onClick={closePlayerToDetails}
-                            className="p-2 sm:p-2.5 shrink-0 bg-black/60 hover:bg-red-600 rounded-full text-white transition-all backdrop-blur-md border border-white/10 cursor-pointer shadow-lg hover:scale-105 active:scale-95"
-                            title="Close"
-                          >
-                            <X className="w-5 h-5" />
-                          </button>
-
-                          <div className="flex flex-col ml-1 sm:ml-3 min-w-0">
+                          <div className="flex flex-col min-w-0">
                             <span className="text-[10px] md:text-sm font-black text-brand-primary kurdish-text tracking-wider drop-shadow-md truncate">
                               سینەما چات • CinemaChat
                             </span>
@@ -13611,20 +13733,10 @@ export default function App() {
                           </button>
                         </div>
 
-                        {/* [5] Exit Fullscreen (active while fullscreen) */}
-                        <button
-                          type="button"
-                          onClick={toggleFullscreenMain}
-                          disabled={!isIframeFullscreen}
-                          className={`w-10 h-10 md:w-11 md:h-11 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border border-white/10 ${
-                            isIframeFullscreen
-                              ? "bg-white/10 hover:bg-white/20 text-white"
-                              : "bg-black/60 text-white/25 cursor-not-allowed opacity-50"
-                          }`}
-                          title="داخستنی فول سکرین (Exit Fullscreen)"
-                        >
-                          <Minimize className="w-4.5 h-4.5 md:w-5 md:h-5" />
-                        </button>
+                        {/* [5] Fullscreen — consolidated into the SINGLE toggle
+                            at the right edge of the cluster (was split across
+                            two disabled/enabled Maximize + Minimize buttons).
+                            Kept here only as a layout marker. */}
 
                         {/* [6] Back 10s (skip back) / [5] Play-Pause / [4] Forward 10s */}
                         <button
@@ -13820,7 +13932,12 @@ export default function App() {
                             {showCcPanel && (
                               <>
                                 <div className="fixed inset-0 z-[65]" onClick={() => setShowCcPanel(false)} />
-                                <div className="absolute bottom-full right-0 mb-2 z-[70] w-56 max-h-[65vh] overflow-y-auto rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-3 shadow-2xl space-y-3 overscroll-contain">
+                                {/* Lifted well above the trigger with mb-24
+                                    (96px — matches --uss-panel-gap of the
+                                    subtitle selector) so the panel clears the
+                                    full-width seek/timeline overlay and is
+                                    never clipped behind it. */}
+                                <div className="absolute bottom-full right-0 mb-24 z-[70] w-56 max-h-[65vh] overflow-y-auto rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-3 shadow-2xl space-y-3 overscroll-contain">
                                   <div className="flex items-center justify-between">
                                     <span className="text-[9px] font-black text-zinc-400 uppercase tracking-widest kurdish-text">ڕێکخستنی ژێرنوس</span>
                                     <button onClick={() => setShowCcPanel(false)} className="text-zinc-500 hover:text-white text-xs cursor-pointer">✕</button>
@@ -13941,19 +14058,30 @@ export default function App() {
                           </div>
                          )}
 
-                        {/* [1] Fullscreen Expand (rightmost of the cluster) */}
+                        {/* [1] Fullscreen toggle — the ONE consolidated fullscreen
+                            control for the whole player (enter + exit in the
+                            same spot, horizontally aligned with the cluster).
+                            Icon mirrors the current state: Maximize to enter,
+                            Minimize to exit. */}
                         <button
                           type="button"
                           onClick={toggleFullscreenMain}
-                          disabled={isIframeFullscreen}
                           className={`w-10 h-10 md:w-11 md:h-11 flex items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer shadow-lg backdrop-blur-md border border-white/10 ${
                             isIframeFullscreen
-                              ? "bg-black/60 text-white/25 cursor-not-allowed opacity-50"
-                              : "bg-white/10 hover:bg-white/20 text-white"
+                              ? "bg-white/10 hover:bg-white/20 text-white"
+                              : "bg-black/60 hover:bg-white/10 text-white"
                           }`}
-                          title="گەورەکردنی شاشە بۆ فول سکرین (Fullscreen)"
+                          title={
+                            isIframeFullscreen
+                              ? "داخستنی فول سکرین (Exit Fullscreen)"
+                              : "گەورەکردنی شاشە بۆ فول سکرین (Fullscreen)"
+                          }
                         >
-                          <Maximize className="w-4.5 h-4.5 md:w-5 md:h-5" />
+                          {isIframeFullscreen ? (
+                            <Minimize className="w-4.5 h-4.5 md:w-5 md:h-5" />
+                          ) : (
+                            <Maximize className="w-4.5 h-4.5 md:w-5 md:h-5" />
+                          )}
                         </button>
                       </div>
 
@@ -15486,93 +15614,114 @@ const trailerId = movie.trailerUrl
 
                       {adminTab === "hero" && (
                         <HeroModule
-                          onSync={async (url1: string, url2?: string) => {
+                          onSync={async (url1: string, url2?: string, hasExisting?: boolean) => {
                             const cleanUrl1 = (url1 || "").trim();
-                            if (!cleanUrl1) {
-                              alert("تکایە لینکی ڤیدیۆ بنووسە پێش جێگیرکردن.");
-                              return;
+                            const cleanUrl2 = (url2 || "").trim();
+                            const clearingAll = cleanUrl1 === "" && cleanUrl2 === "";
+
+                            // Destructive clear needs explicit confirmation —
+                            // but ONLY when something actually exists to clear.
+                            if (clearingAll && hasExisting) {
+                              if (!window.confirm("دڵنیایت دەتەوێت هەموو لینکەکانی Hero Video بسڕیتەوە؟")) {
+                                return { ok: false, cancelled: true };
+                              }
                             }
 
-                            // Build the playlist from provided URLs
-                            const playlist: string[] = [cleanUrl1];
-                            const cleanUrl2 = (url2 || "").trim();
-                            if (cleanUrl2) playlist.push(cleanUrl2);
-
-                            // ── Step 1: Save to server FIRST (authoritative) ──────
-                            const payload = {
-                              adminName: currentUser?.username || "Admin",
-                              heroVideoUrl: cleanUrl1,
-                              heroPlaylist: playlist,
-                            };
-
-                            let saved = false;
-                            let serverConfig: any = null;
+                            // ── ONE authoritative request ──────────────────
+                            // Full-form semantics: BOTH fields always sent;
+                            // an empty string explicitly clears that slot.
+                            // The server validates → atomically persists →
+                            // reads back → only then answers HTTP 200.
+                            let res: Response;
                             try {
-                              const heroSaveAttempts = [
-                                { path: "/api/movies/hero", body: payload },
-                                { path: "/api/admin/hero", body: payload },
-                                {
-                                  path: "/api/admin/config",
-                                  body: {
-                                    adminName: currentUser?.username || "Admin",
-                                    heroVideoUrl: cleanUrl1,
-                                    heroPlaylist: playlist,
-                                  },
+                              res = await fetchApi("/api/admin/hero-config", {
+                                method: "PUT",
+                                headers: {
+                                  "Content-Type": "application/json",
+                                  "Cache-Control": "no-store",
                                 },
-                              ];
+                                body: JSON.stringify({
+                                  adminName: currentUser?.username || "Admin",
+                                  video1: cleanUrl1,
+                                  video2: cleanUrl2,
+                                }),
+                              });
+                            } catch (err) {
+                              console.error("Hero save network error:", err);
+                              return { ok: false, error: "پەیوەندی بە سێرڤەرەوە نەکرا — تکایە دووبارە هەوڵ بدەوە." };
+                            }
 
-                              for (const attempt of heroSaveAttempts) {
-                                const res = await fetchApi(attempt.path, {
-                                  method: "POST",
-                                  headers: { "Content-Type": "application/json" },
-                                  body: JSON.stringify(attempt.body),
+                            let payload: any = null;
+                            try { payload = await res.json(); } catch {}
+                            if (!res.ok || !payload?.success || !payload?.verified) {
+                              console.warn("[HeroModule] save rejected:", res.status, payload);
+                              return {
+                                ok: false,
+                                error: String(
+                                  payload?.error ||
+                                    `پاشەکەوتکردن سەرکەوتوو نەبوو (HTTP ${res.status}) — تکایە دووبارە هەوڵ بدەوە.`,
+                                ),
+                              };
+                            }
+
+                            // ── Independent no-cache verification GET ───────
+                            // One extra authoritative read; homepage/admin
+                            // state updates ONLY when it matches the save.
+                            try {
+                              const verifyRes = await fetchApi("/api/admin/hero-config", {
+                                method: "GET",
+                                headers: { "Cache-Control": "no-store" },
+                                cache: "no-store" as RequestCache,
+                              });
+                              const verifyPayload = await verifyRes.json();
+                              const savedCfg = verifyPayload?.config;
+                              const sameRev =
+                                String(savedCfg?.heroRevision ?? "") ===
+                                String(payload.config?.heroRevision ?? "");
+                              const idOf = (e: any) => (e?.videoId ? String(e.videoId) : null);
+                              const sameIds =
+                                idOf(savedCfg?.video1) === idOf(payload.config?.video1) &&
+                                idOf(savedCfg?.video2) === idOf(payload.config?.video2);
+                              if (!verifyRes.ok || !sameRev || !sameIds) {
+                                console.error("[HeroModule] GET-after-save mismatch", {
+                                  sameRev,
+                                  sameIds,
+                                  savedCfg,
                                 });
-                                if (res.ok) {
-                                  saved = true;
-                                  try { serverConfig = await res.json(); } catch {}
-                                  break;
-                                }
-                                console.warn(`[HeroModule] ${attempt.path} failed (${res.status}): ${await res.text()}`);
+                                return { ok: false, error: "پشتڕاستکردنەوەی پاشەکەوت سەرکەوتوو نەبوو — تکایە دووبارە هەوڵ بدەوە." };
                               }
                             } catch (err) {
-                              console.error("Hero sync error:", err);
+                              console.error("[HeroModule] verification GET failed:", err);
+                              return { ok: false, error: "پشتڕاستکردنەوەی خوێندنەوە سەرکەوتوو نەبوو — تکایە دووبارە هەوڵ بدەوە." };
                             }
 
-                            // ── Step 2: Extract server-confirmed playlist ──────────
-                            // The server overwrites db.heroConfig and returns the
-                            // actual saved state.  Use it so the client never holds
-                            // data that differs from the database.
-                            const confirmedPlaylist: string[] =
-                              serverConfig?.config?.heroPlaylist ||
-                              serverConfig?.heroPlaylist ||
-                              playlist; // fallback to sent data if server didn't echo back
+                            // ── VERIFIED SUCCESS: adopt server truth everywhere ──
+                            const confirmed = payload.config;
+                            const confirmedPlaylist: string[] = Array.isArray(confirmed.heroPlaylist)
+                              ? confirmed.heroPlaylist.filter(
+                                  (u: unknown) => typeof u === "string" && u.trim() !== "",
+                                )
+                              : [];
 
-                            // ── Step 3: PURGE old cache, re-populate with confirmed data ──
+                            // Cache purge/repopulate from verified data (empty wipes keys).
                             setCachedHeroPlaylist(confirmedPlaylist);
 
-                            // ── Step 4: Apply confirmed data to React state ────────
-                            const firstUrl = confirmedPlaylist[0] || cleanUrl1;
-                            const isYoutube =
-                              firstUrl.includes("youtube.com") ||
-                              firstUrl.includes("youtu.be");
-                            const vidId = isYoutube
-                              ? extractYouTubeId(firstUrl) || firstUrl
-                              : firstUrl;
-                            const heroVideoEmbedUrl = isYoutube
-                              ? `https://www.youtube.com/embed/${vidId}`
-                              : firstUrl;
-
+                            const firstUrl = confirmedPlaylist[0] || "";
+                            const vidId = firstUrl ? extractYouTubeId(firstUrl) || "" : "";
                             setFeaturedMovieFromDB({
                               id: "hero-promo",
                               title: "فیلمی سەرەکی",
-                              embedUrl: heroVideoEmbedUrl,
-                              isYouTube: isYoutube,
+                              embedUrl: firstUrl,
+                              isYouTube: !!vidId,
                               videoId: vidId,
                               image: "",
                               tags: ["هەمووی"],
                               quality: "4K",
                               description: "نوێترین فیلمی سەرەکی",
                               heroPlaylist: confirmedPlaylist,
+                              heroRevision: String(confirmed.heroRevision || ""),
+                              schemaVersion: Number(confirmed.schemaVersion) || 2,
+                              configured: true,
                             } as any);
 
                             setConfig((prev) => ({
@@ -15581,42 +15730,18 @@ const trailerId = movie.trailerUrl
                             }));
                             setCurrentVideoIndex(0);
 
-                            // ── Step 5: Firestore full-replace (DELETES stale fields) ──
-                            // setDoc WITHOUT merge:true replaces the ENTIRE document,
-                            // so legacy fields from older writes (heroPlaylistData,
-                            // video_trailers, old embedUrl/url variants) are deleted
-                            // outright — no previous link survives a new insertion.
-                            try {
-                              const yt1 = cleanUrl1.includes("youtube.com") || cleanUrl1.includes("youtu.be");
-                              const id1 = yt1 ? extractYouTubeId(cleanUrl1) : null;
+                            // Remember this revision so a stale Firestore
+                            // snapshot can never roll the hero back.
+                            knownHeroRevisionRef.current = revisionCountOf(
+                              String(confirmed.heroRevision || ""),
+                            );
+                            setHeroConfigReady(true);
 
-                              await setDoc(doc(db, "config", "featured"), {
-                                id: "hero-promo",
-                                title: "فیلمی سەرەکی",
-                                embedUrl: yt1 && id1 ? `https://www.youtube.com/embed/${id1}` : cleanUrl1,
-                                url: cleanUrl1,
-                                videoUrl: cleanUrl1,
-                                isYouTube: yt1,
-                                videoId: id1 || "",
-                                image: id1 ? `https://img.youtube.com/vi/${id1}/maxresdefault.jpg` : "",
-                                tags: ["هەمووی"],
-                                quality: "4K",
-                                description: "نوێترین فیلمی سەرەکی",
-                                heroPlaylist: confirmedPlaylist,
-                                updatedAt: new Date().toISOString(),
-                              });
-                              console.log("[Hero] Firestore full-replace with hero playlist:", confirmedPlaylist);
-                            } catch (firestoreErr: any) {
-                              console.warn("[Hero] Firestore write failed (server write-through will cover):", firestoreErr?.message || firestoreErr);
-                            }
-
-                            // ── Step 6: Result ─────────────────────────────────────
-                            if (saved) {
-                              alert("فیلمی سەرەکی بە سەرکەوتوویی جێگیرکرا!");
-                            } else {
-                              // Offline-first: local state + cache are already set
-                              alert("فیلمی سەرەکی جێگیرکرا بەڵام سێرڤەر نەدۆزرایەوە. کاتێک ئینتەرنەت بگەڕێتەوە خۆکارانە جێگیر دەبێت.");
-                            }
+                            return {
+                              ok: true,
+                              cleared: clearingAll,
+                              config: confirmed,
+                            };
                           }}
                         />
                       )}

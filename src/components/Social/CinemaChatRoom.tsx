@@ -57,6 +57,7 @@ import {
 import {
   ccSubtitleBottomPercent,
   useDelayedSubtitleLoad,
+  SUBTITLE_SYNC_LEAD_S,
 } from "../../hooks/useSubtitleManager";
 import { ProfileCard } from "./ProfileCard";
 import {
@@ -1481,13 +1482,16 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                           {/* AI subtitle overlay for CinemaChat — renders on top
                               of whichever player type is active. */}
                           {subtitleCues && displayTime > 0 && subtitleLang !== "off" && (ccSettings?.showSubtitle !== false) && (() => {
+                            // Match slightly ahead of playback so cues appear
+                            // in sync with the audio (see SUBTITLE_SYNC_LEAD_S).
+                            const t = displayTime + SUBTITLE_SYNC_LEAD_S;
                             const activeCue = subtitleCues.find(
-                              (c) => displayTime >= c.start && displayTime <= c.end,
+                              (c) => t >= c.start && t <= c.end,
                             );
                             const activeOriginalCue =
                               subtitleLang === "both"
                                 ? originalSubtitleCues?.find(
-                                    (c) => displayTime >= c.start && displayTime <= c.end,
+                                    (c) => t >= c.start && t <= c.end,
                                   )
                                 : undefined;
                             if (!activeCue && !activeOriginalCue) return null;
@@ -1883,22 +1887,37 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                               control cluster in the main player. The popup menu
                               opens upward into the video area. */}
                           {subtitleLanguages && subtitleLanguages.length > 0 && (
-                            <UniversalSubtitleSelector
-                              value={roomToSelectorLang(subtitleLang || "ckb")}
-                              onChange={(lang) => onSubtitleLangChange?.(selectorToRoomLang(lang))}
-                              status={subtitleStatus}
-                              message={subtitleMessage}
-                              onRetry={onSubtitleRetry}
-                              languages={subtitleLanguages
-                                .filter((lang) => lang.code !== "off")
-                                .map((lang) => ({
-                                  code: roomToSelectorLang(lang.code),
-                                  label: lang.label,
-                                  shortLabel: ROOM_LANG_SHORT[lang.code] || lang.shortLabel,
-                                }))}
-                              onSettingsClick={() => onToggleCcPanel?.()}
-                              settingsActive={!!showCcPanel}
-                            />
+                            <div
+                              className="relative"
+                              /* The trigger sits UNDER the seek/timeline row
+                                 inside this bar; raise the popup + toasts well
+                                 past that row (same technique as the main
+                                 player's 96px lift) so they are never clipped
+                                 behind the timeline. */
+                              style={
+                                {
+                                  "--uss-panel-gap": "48px",
+                                  "--uss-toast-gap": "48px",
+                                } as React.CSSProperties
+                              }
+                            >
+                              <UniversalSubtitleSelector
+                                value={roomToSelectorLang(subtitleLang || "ckb")}
+                                onChange={(lang) => onSubtitleLangChange?.(selectorToRoomLang(lang))}
+                                status={subtitleStatus}
+                                message={subtitleMessage}
+                                onRetry={onSubtitleRetry}
+                                languages={subtitleLanguages
+                                  .filter((lang) => lang.code !== "off")
+                                  .map((lang) => ({
+                                    code: roomToSelectorLang(lang.code),
+                                    label: lang.label,
+                                    shortLabel: ROOM_LANG_SHORT[lang.code] || lang.shortLabel,
+                                  }))}
+                                onSettingsClick={() => onToggleCcPanel?.()}
+                                settingsActive={!!showCcPanel}
+                              />
+                            </div>
                           )}
                           {state.sessionState === SESSION_STATES.READY && (
                             <button
