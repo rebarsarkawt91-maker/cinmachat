@@ -11,6 +11,12 @@
   display: inline-flex;
   font-family: Inter, "Space Grotesk", system-ui, sans-serif;
   -webkit-tap-highlight-color: transparent;
+  /* Vertical clearance between the trigger and the popup menu / toasts.
+     Hosts embedded INSIDE a player control bar (main player) raise this so
+     the panel clears the timeline/seek row above the buttons; default fits
+     free-floating placements (Cinema Chat Room). */
+  --uss-panel-gap: 10px;
+  --uss-toast-gap: 12px;
 }
 
 /* ------------------------------------------------------------------ */
@@ -107,7 +113,7 @@
 /* ------------------------------------------------------------------ */
 .uss-panel {
   position: absolute;
-  bottom: calc(100% + 10px);
+  bottom: calc(100% + var(--uss-panel-gap));
   inset-inline-end: 0;
   z-index: 90;
   width: 200px;
@@ -228,7 +234,7 @@
 /* ------------------------------------------------------------------ */
 .uss-toasts {
   position: absolute;
-  bottom: calc(100% + 12px);
+  bottom: calc(100% + var(--uss-toast-gap));
   inset-inline-start: 50%;
   transform: translateX(-50%);
   z-index: 95;

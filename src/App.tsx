@@ -94,6 +94,7 @@ import { GoogleGenAI } from "@google/genai";
 import ImmersiveShieldedPlayer from "./components/Player/ImmersiveShieldedPlayer";
 import { useDelayedSubtitleLoad } from "./hooks/useSubtitleManager";
 import YouTubeResilientPlayer from "./components/Player/YouTubeResilientPlayer";
+import SubtitleJobStatus from "./components/Player/SubtitleJobStatus";
 import { api } from "./services/api";
 import { useI18n } from "./i18n";
 import {
@@ -12264,39 +12265,23 @@ export default function App() {
                               </div>
                             </div>
                           )}
-                          {isInMainWatchRoom && cinemaWindowSubtitleStatus === "loading" && !cinemaWindowActiveSubtitleText && (
-                            cinemaWindowDelayedLoad ? (
-                              <div className="absolute inset-x-0 bottom-16 z-20 flex items-center justify-center gap-2 px-4 pointer-events-none">
-                                <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-black/85 px-4 py-2 text-xs text-amber-300 shadow-[0_2px_14px_rgba(0,0,0,0.8)] backdrop-blur-sm">
-                                  <Pause className="w-4 h-4 shrink-0 animate-pulse" />
-                                  <span className="kurdish-text font-bold">
-                                    ئینتەرنێت خاویە — تکایە ڤیدیۆکە وەستێنە (Pause) تا ژێرنووس بار بێت
-                                  </span>
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center gap-2 px-4 py-3 pointer-events-none">
-                                <div className="flex items-center gap-2 rounded-xl bg-black/70 px-3 py-2 text-xs text-red-400">
-                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                  <span className="kurdish-text">{cinemaWindowSubtitleMessage || "وەردەگێڕدرێت..."}</span>
-                                </div>
-                              </div>
-                            )
-                          )}
-                        {/* Error indicator with retry */}
-                        {isInMainWatchRoom && cinemaWindowSubtitleStatus === "error" && (
-                            <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center px-4 py-3">
-                              <div className="flex items-center gap-2 rounded-xl bg-red-950/80 border border-red-500/20 px-3 py-2 text-xs text-red-300">
-                                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                                <span className="kurdish-text">{cinemaWindowSubtitleMessage || "بەردەست نییە"}</span>
-                                <button
-                                  onClick={() => setCinemaWindowSubtitleRetryKey((k) => k + 1)}
-                                  className="ml-1 p-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-200 transition-colors shrink-0 cursor-pointer"
-                                  title="Retry subtitle generation"
-                                >
-                                  <RefreshCw className="w-3 h-3" />
-                                </button>
-                              </div>
+                          {/* Live subtitle-generation status (loading/error).
+                              Raised above the native <video> controls into the
+                              clear zone so it never clips behind player chrome;
+                              shows live pipeline progress via SubtitleJobStatus. */}
+                          {isInMainWatchRoom &&
+                            (cinemaWindowSubtitleStatus === "error" ||
+                              (cinemaWindowSubtitleStatus === "loading" &&
+                                !cinemaWindowActiveSubtitleText)) && (
+                            <div className="absolute inset-x-0 bottom-[84px] z-20">
+                              <SubtitleJobStatus
+                                status={cinemaWindowSubtitleStatus}
+                                message={cinemaWindowSubtitleMessage}
+                                movieId={activeSubtitleMovie?.id}
+                                enabled={isInMainWatchRoom}
+                                delayedLoad={cinemaWindowDelayedLoad}
+                                onRetry={() => setCinemaWindowSubtitleRetryKey((k) => k + 1)}
+                              />
                             </div>
                           )}
                         </div>
@@ -13375,40 +13360,28 @@ export default function App() {
                           </div>
                         </div>
                       )}
-                      {isDramaRoomActive && cinemaWindowSubtitleStatus === "loading" && !cinemaWindowActiveSubtitleText && (
-                        cinemaWindowDelayedLoad ? (
-                          <div className="absolute inset-x-0 bottom-16 z-20 flex items-center justify-center gap-2 px-4 pointer-events-none">
-                            <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-black/85 px-4 py-2 text-xs text-amber-300 shadow-[0_2px_14px_rgba(0,0,0,0.8)] backdrop-blur-sm">
-                              <Pause className="w-4 h-4 shrink-0 animate-pulse" />
-                              <span className="kurdish-text font-bold">
-                                ئینتەرنێت خاویە — تکایە ڤیدیۆکە وەستێنە (Pause) تا ژێرنووس بار بێت
-                              </span>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center gap-2 px-4 py-3 pointer-events-none">
-                            <div className="flex items-center gap-2 rounded-xl bg-black/70 px-3 py-2 text-xs text-red-400">
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                              <span className="kurdish-text">{cinemaWindowSubtitleMessage || "وەردەگێڕدرێت..."}</span>
-                            </div>
-                          </div>
-                        )
+                      {/* Live subtitle-generation status (loading/error) for
+                          Drama Rooms. Positioned in the clear zone ABOVE the
+                          seek/timeline row and the control bar — the same
+                          vertical slot the volume slider popup uses — so it
+                          never hides behind the bottom chrome or YouTube
+                          shield blocks. Renders live pipeline progress via
+                          SubtitleJobStatus (stage, ETA, slow-network). */}
+                      {isDramaRoomActive &&
+                        (cinemaWindowSubtitleStatus === "error" ||
+                          (cinemaWindowSubtitleStatus === "loading" &&
+                            !cinemaWindowActiveSubtitleText)) && (
+                        <div className="absolute inset-x-0 bottom-[108px] z-20">
+                          <SubtitleJobStatus
+                            status={cinemaWindowSubtitleStatus}
+                            message={cinemaWindowSubtitleMessage}
+                            movieId={activeSubtitleMovie?.id}
+                            enabled={isDramaRoomActive}
+                            delayedLoad={cinemaWindowDelayedLoad}
+                            onRetry={() => setCinemaWindowSubtitleRetryKey((k) => k + 1)}
+                          />
+                        </div>
                       )}
-                          {isDramaRoomActive && cinemaWindowSubtitleStatus === "error" && (
-                            <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center px-4 py-3">
-                              <div className="flex items-center gap-2 rounded-xl bg-red-950/80 border border-red-500/20 px-3 py-2 text-xs text-red-300">
-                                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                                <span className="kurdish-text">{cinemaWindowSubtitleMessage || "بەردەست نییە"}</span>
-                                <button
-                                  onClick={() => setCinemaWindowSubtitleRetryKey((k) => k + 1)}
-                                  className="ml-1 p-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-200 transition-colors shrink-0 cursor-pointer"
-                                  title="Retry subtitle generation"
-                                >
-                                  <RefreshCw className="w-3 h-3" />
-                                </button>
-                              </div>
-                            </div>
-                          )}
 
                       {/* Playback speed HUD (shows after a speed change via the
                           speed menu or press-and-hold on the video). */}
@@ -13816,7 +13789,19 @@ export default function App() {
                             the user switch subtitle language from inside the main
                             player without needing the Cinema Window sidebar. */}
                         {isDramaRoomActive && (
-                          <div className="relative">
+                          <div
+                            className="relative"
+                            /* The trigger lives INSIDE the bottom control bar;
+                               lift its popup + toasts well above the seek/timeline
+                               row so they never overlap it (matches the volume
+                               slider's above-the-bar placement logic). */
+                            style={
+                              {
+                                "--uss-panel-gap": "96px",
+                                "--uss-toast-gap": "96px",
+                              } as React.CSSProperties
+                            }
+                          >
                             <UniversalSubtitleSelector
                               value={toSelectorSubtitleLang(cinemaWindowSubtitleLang)}
                               onChange={(lang) => {

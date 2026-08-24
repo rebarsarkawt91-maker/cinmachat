@@ -46,6 +46,7 @@ import { Movie, SocialUser } from "../../types";
 import YouTubeResilientPlayer from "../Player/YouTubeResilientPlayer";
 import ImmersiveShieldedPlayer from "../Player/ImmersiveShieldedPlayer";
 import VideoLoadOverlay from "../Player/VideoLoadOverlay";
+import SubtitleJobStatus from "../Player/SubtitleJobStatus";
 import UniversalSubtitleSelector, {
   type UniversalSubtitleLang,
 } from "../UniversalSubtitleSelector";
@@ -1524,61 +1525,29 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                               </div>
                             );
                           })()}
-                          {subtitleLang !== "off" && subtitleStatus === "loading" && (
-                            subtitleDelayed ? (
-                              <div className="absolute inset-x-0 bottom-16 z-20 flex items-center justify-center gap-2 px-4 pointer-events-none">
-                                <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-black/85 px-4 py-2 text-xs text-amber-300 shadow-[0_2px_14px_rgba(0,0,0,0.8)] backdrop-blur-sm">
-                                  <Pause className="w-4 h-4 shrink-0 animate-pulse" />
-                                  <span className="kurdish-text font-bold">
-                                    ئینتەرنێت خاویە — تکایە ڤیدیۆکە وەستێنە (Pause) تا ژێرنووس بار بێت
-                                  </span>
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center gap-2 px-4 py-3 pointer-events-none">
-                                <div className="flex items-center gap-2 rounded-xl bg-black/70 px-3 py-2 text-[10px] text-red-400">
-                                  <Loader2 className="w-3 h-3 animate-spin" />
-                                  <span>{subtitleMessage || "وەردەگێڕدرێت..."}</span>
-                                </div>
-                              </div>
-                            )
-                          )}
-                          {subtitleLang !== "off" && subtitleStatus === "error" && (
-                            <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center px-4 py-3">
-                              <div className="flex items-center gap-2 rounded-xl bg-red-950/80 border border-red-500/20 px-3 py-2 text-[10px] text-red-300">
-                                <AlertCircle className="w-3 h-3 shrink-0" />
-                                <span>{subtitleMessage || "بەردەست نییە"}</span>
-                                <button
-                                  onClick={onSubtitleRetry}
-                                  className="ml-1 p-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-200 transition-colors shrink-0 cursor-pointer"
-                                  title="Retry subtitle"
-                                >
-                                  <RotateCcw className="w-2.5 h-2.5" />
-                                </button>
-                              </div>
-                            </div>
-                          )}
-                          {/* CC language toggle for CinemaChat */}
-                          {subtitleLanguages && subtitleLanguages.length > 0 && (
-                            <div className="absolute bottom-[74px] right-4 z-[80] overflow-visible">
-                              <UniversalSubtitleSelector
-                                value={roomToSelectorLang(subtitleLang || "ckb")}
-                                onChange={(lang) => onSubtitleLangChange?.(selectorToRoomLang(lang))}
-                                status={subtitleStatus}
+                          {/* Live subtitle-generation status (loading/error).
+                              Raised above the player's native controls into the
+                              clear zone (same vertical logic as the CC toggle);
+                              shows live pipeline progress via SubtitleJobStatus. */}
+                          {subtitleLang !== "off" &&
+                            (subtitleStatus === "error" ||
+                              subtitleStatus === "loading") && (
+                            <div className="absolute inset-x-0 bottom-[84px] z-20">
+                              <SubtitleJobStatus
+                                status={subtitleStatus || "idle"}
                                 message={subtitleMessage}
+                                movieId={movieData?.id}
+                                enabled
+                                delayedLoad={subtitleDelayed}
                                 onRetry={onSubtitleRetry}
-                                languages={subtitleLanguages
-                                  .filter((lang) => lang.code !== "off")
-                                  .map((lang) => ({
-                                    code: roomToSelectorLang(lang.code),
-                                    label: lang.label,
-                                    shortLabel: ROOM_LANG_SHORT[lang.code] || lang.shortLabel,
-                                  }))}
-                                onSettingsClick={() => onToggleCcPanel?.()}
-                                settingsActive={!!showCcPanel}
                               />
                             </div>
                           )}
+                          {/* NOTE: the CC language toggle used to float here
+                              (absolute bottom-[74px] right-4). It now lives
+                              INSIDE the primary Controls bar below the player,
+                              aligned with the same row layout as the main
+                              player's volume/fullscreen cluster. */}
 
                           {/* CC Settings Panel for CinemaChat */}
                           {showCcPanel && (
@@ -1908,6 +1877,29 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                         </div>
 
                         <div className="flex items-center gap-2">
+                          {/* CC language toggle — now part of the primary
+                              control bar (was floating over the video), so all
+                              player controls share one row like the volume
+                              control cluster in the main player. The popup menu
+                              opens upward into the video area. */}
+                          {subtitleLanguages && subtitleLanguages.length > 0 && (
+                            <UniversalSubtitleSelector
+                              value={roomToSelectorLang(subtitleLang || "ckb")}
+                              onChange={(lang) => onSubtitleLangChange?.(selectorToRoomLang(lang))}
+                              status={subtitleStatus}
+                              message={subtitleMessage}
+                              onRetry={onSubtitleRetry}
+                              languages={subtitleLanguages
+                                .filter((lang) => lang.code !== "off")
+                                .map((lang) => ({
+                                  code: roomToSelectorLang(lang.code),
+                                  label: lang.label,
+                                  shortLabel: ROOM_LANG_SHORT[lang.code] || lang.shortLabel,
+                                }))}
+                              onSettingsClick={() => onToggleCcPanel?.()}
+                              settingsActive={!!showCcPanel}
+                            />
+                          )}
                           {state.sessionState === SESSION_STATES.READY && (
                             <button
                               onClick={startPlayback}
