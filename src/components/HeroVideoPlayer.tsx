@@ -18,19 +18,37 @@ import { api } from "../services/api";
 import { loadYouTubeAPI, getYTId, isYTVideoId } from "../utils/youtube";
 
 /**
+ * Parse EXACTLY ONE bare 11-char YouTube video id out of an Admin URL.
+ * Anything else (playlists, channels, garbage) yields "" and is dropped.
+ */
+const parseHeroVideoId = (raw: unknown): string => {
+  if (!raw || typeof raw !== "string") return "";
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  return getYTId(trimmed) || (isYTVideoId(trimmed) ? trimmed : "");
+};
+
+/**
  * HeroVideoPlayer — self-contained hero/trailer player with playlist support.
  *
  * Extracted from App.tsx to isolate hero video playback from the catalog
- * movie list. Supports a sequential playback queue: when multiple URLs are
- * provided via `heroPlaylist`, videos play in order and loop back to the
- * first when the last finishes. The hero videos remain strictly independent
- * from catalog/room videos.
+ * movie list. The queue is built STRICTLY from the two Admin Section 7 URLs:
+ *   [video1Id, video2Id].filter(Boolean)
+ * Videos play in order (1 → 2 → 1 → 2 … forever). One empty Admin field ⇒
+ * the other video loops alone; both empty ⇒ static hero, NO player at all.
  *
- * WELCOME SEQUENCE: On mount the component displays a branded loading overlay
- * for 3 seconds.  The YouTube iframe loads and buffers BEHIND the overlay so
- * that the video is already playing the instant the overlay fades — zero
- * perceived loading.  A safety timeout auto-skips any video that fails to
- * reach PLAYING state within 5 seconds.
+ * SINGLE PLAYER INSTANCE LIFECYCLE:
+ *   - ONE YT.Player is created when Video 1 becomes known and is NEVER
+ *     destroyed/recreated for transitions or admin re-saves. Every source
+ *     change hot-swaps via loadVideoById() on the same iframe.
+ *   - WELCOME INTRO: a branded overlay shows ~3s ONCE per homepage mount
+ *     while Video 1 already prepares/plays BEHIND it; at ~3s exactly it
+ *     fades (no waiting for extra events) and never reappears between
+ *     videos. A small loader shows only while the exact next video is
+ *     genuinely buffering.
+ *   - AUTOPLAY-BLOCKED FALLBACK: if the current video cannot start within
+ *     a bounded window, ONE clear Play/Unmute affordance appears for the
+ *     SAME video — never an auto-skip, never endless loading.
  */
 const HeroVideoPlayer: React.FC<{
   activeFeaturedMovie: any;
@@ -61,53 +79,53 @@ const HeroVideoPlayer: React.FC<{
   const isMuted = isHeroMuted;
   const setIsMuted = setIsHeroMuted;
 
-  // ─── WELCOME SEQUENCE ────────────────────────────────────────────────
-  // The intro overlay displays for ~3 seconds ONCE per homepage mount while
-  // the exact Video 1 prepares behind it.  It must NEVER appear between
-  // playlist entries (welcomeComplete latches true for the whole mount) and
-  // must NOT run at all when the canonical config is empty — a static hero
-  // with no video shows instantly instead.
-  const [welcomeComplete, setWelcomeComplete] = useState(false);
+  // ─── WELCOME INTRO (latched, ~3s) ────────────────────────────────────
+  // introDone latches true once and NEVER resets — the intro can never
+  // reappear between playlist transitions. staticOnly (config loaded +
+  // empty) skips the intro entirely: the static hero shows instantly.
+  const [introDone, setIntroDone] = useState(false);
+  const introTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
-    const timer = setTimeout(() => setWelcomeComplete(true), 3000);
-    return () => clearTimeout(timer);
-  }, []);
-
-  // ─── PLAYLIST QUEUE ────────────────────────────────────────────────────
-  // Resolve the playlist of YouTube video IDs from the URLs array.
-  // Only valid 11-character IDs are kept; raw URLs or unparseable entries
-  // are dropped so the YT Player API never receives a full URL string.
-  // NO FALLBACK: an empty (or cleared) admin config yields an empty queue —
-  // the player then mounts nothing at all and the hero stays static. No
-  // hardcoded sample, no cached link, no catalog substitute may ever play.
-  const playlistIds = useMemo(() => {
-    const urls = heroPlaylist?.filter((u) => u && u.trim() !== "") || [];
-    if (urls.length === 0) return [];
-
-    return urls
-      .map((u) => getYTId(u) || (isYTVideoId(u) ? u : null))
-      .filter((id): id is string => id !== null && id.trim() !== "");
-  }, [heroPlaylist]);
+  // ─── STRICT PLAYLIST: [video1Id, video2Id].filter(Boolean) ────────────
+  // Only the two Admin Section 7 URLs are parsed into bare video IDs.
+  // No fallback, no catalog substitute, no cached extras — an empty Admin
+  // config yields an empty queue and NO player initialization whatsoever.
+  const video1Id = useMemo(
+    () => parseHeroVideoId(heroPlaylist?.[0]),
+    [heroPlaylist],
+  );
+  const video2Id = useMemo(
+    () => parseHeroVideoId(heroPlaylist?.[1]),
+    [heroPlaylist],
+  );
+  const playlistIds = useMemo(
+    () => [video1Id, video2Id].filter(Boolean),
+    [video1Id, video2Id],
+  );
 
   // STATIC-ONLY MODE: the authoritative config has been loaded (heroReady)
   // and it holds NO videos. The hero must show its static poster/title/
   // buttons IMMEDIATELY — no intro timer, no YouTube init, no spinner.
   const staticOnly = heroReady && playlistIds.length === 0;
 
-  const playlistIndexRef = useRef(0);
-  // Reset index when the playlist changes (admin saved a new config)
-  const prevPlaylistKeyRef = useRef("");
-  const currentPlaylistKey = playlistIds.join("|");
-  if (currentPlaylistKey !== prevPlaylistKeyRef.current) {
-    prevPlaylistKeyRef.current = currentPlaylistKey;
-    playlistIndexRef.current = 0;
-  }
-
-  const videoId = playlistIds[playlistIndexRef.current] || playlistIds[0] || "";
+  // Currently loaded video id (drives poster + player layer). Updated on
+  // every transition WITHOUT recreating the player instance.
+  const [activeVideoId, setActiveVideoId] = useState<string>(
+    () => playlistIds[0] || "",
+  );
 
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<any>(null);
+  const disposedRef = useRef(false);
+  // Live mirrors so the long-lived player's event handlers always read the
+  // latest values without ever needing to re-bind listeners.
+  const playlistIdsRef = useRef<string[]>(playlistIds);
+  playlistIdsRef.current = playlistIds;
+  const currentIndexRef = useRef(0);
+  const epochRef = useRef(0); // bumps on every source swap → stale timers abort
+  const transitionLockRef = useRef(false);
+  const lastEndedAtRef = useRef(0);
+  const hasStartedPlayingRef = useRef(false);
   const isPlayingRef = useRef(true);
   isPlayingRef.current = isPlaying;
   const deliberatePauseRef = useRef(false);
@@ -131,22 +149,57 @@ const HeroVideoPlayer: React.FC<{
     null,
   );
 
-  const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
+  // Autoplay/policy blocked or stalled: ONE clear Play/Unmute affordance
+  // for the SAME video (never an auto-skip to another video).
+  const [awaitingPlayGesture, setAwaitingPlayGesture] = useState(false);
+  // Small loader shown ONLY while the exact next video is genuinely
+  // buffering after a transition (bounded by the safety timer).
+  const [nextBuffering, setNextBuffering] = useState(false);
+  // Monotonic transition counter — surfaced via data-hero-seq for QA.
+  const [transitionSeq, setTransitionSeq] = useState(0);
   const safetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const advancingRef = useRef(false); // guard against double-advance
 
-  // ── WELCOME GATE ────────────────────────────────────────────────────
-  // The overlay fades only when BOTH conditions are true:
-  //   1. The 3-second timer has completed (welcomeComplete)
-  //   2. The YouTube player has fired PLAYING state (hasStartedPlaying)
-  //      OR no video is configured (so there's nothing to wait for).
-  // EXCEPTION: staticOnly (config loaded + empty) bypasses the timer so the
-  // static hero appears instantly with zero video-loading sequence.
-  const overlayDismissed = staticOnly || (
-    welcomeComplete && (
-      hasStartedPlaying || !videoId || !isYTVideoId(videoId)
-    )
-  );
+  // QA/verification bridge: mirrors transition history into the DOM so
+  // automated tests can read it regardless of JS-world isolation.
+  const heroDebugLog = (line: string) => {
+    const el = document.getElementById("hero-debug-log");
+    if (!el) return;
+    el.textContent = ((el.textContent ? `${el.textContent}|` : "") + line).slice(-500);
+    el.dataset.last = line;
+    el.dataset.ts = String(Date.now());
+  };
+
+  // ── BOUNDED SAFETY TIMER ────────────────────────────────────────────
+  // If the CURRENT video has not reached PLAYING within the budget, stop
+  // the loader and surface the Play/Unmute affordance for the SAME video.
+  // Never advances the playlist on a timeout.
+  const SAFETY_TIMEOUT_MS = 7000;
+
+  const clearSafetyTimer = () => {
+    if (safetyTimerRef.current) {
+      clearTimeout(safetyTimerRef.current);
+      safetyTimerRef.current = null;
+    }
+  };
+
+  const startSafetyTimer = () => {
+    clearSafetyTimer();
+    const epoch = epochRef.current;
+    safetyTimerRef.current = setTimeout(() => {
+      if (disposedRef.current || epoch !== epochRef.current) return;
+      transitionLockRef.current = false;
+      setNextBuffering(false);
+      if (!hasStartedPlayingRef.current) {
+        console.warn(
+          `[Hero] No PLAYING within ${SAFETY_TIMEOUT_MS}ms — showing Play/Unmute for "${
+            playlistIdsRef.current[currentIndexRef.current] || ""
+          }"`,
+        );
+        setAwaitingPlayGesture(true);
+        setIsHeroMuted(true);
+      }
+    }, SAFETY_TIMEOUT_MS);
+  };
   const [ccEnabled, setCcEnabled] = useState(true);
   const [onlineViewers, setOnlineViewers] = useState(0);
   const sessionIdRef = useRef<string>("");
@@ -196,8 +249,8 @@ const HeroVideoPlayer: React.FC<{
 
   const userAudioControlRef = useRef(false);
   const unmuteRetryTimerRef = useRef<any>(null);
-  // Live mirrors of the audio-interlock props so the [videoId] effect
-  // (which only depends on videoId) never reads stale values.
+  // Live mirrors of the audio-interlock props so the singleton-player
+  // handlers never read stale values.
   const activeAudioSourceRef = useRef(activeAudioSource);
   activeAudioSourceRef.current = activeAudioSource;
   const isMoviePlayerOpenRef = useRef(isMoviePlayerOpen);
@@ -266,6 +319,9 @@ const HeroVideoPlayer: React.FC<{
     safePlayerCall(target, "playVideo");
     const playerState = safePlayerCall(target, "getPlayerState");
     const PLAYING = (window as any).YT?.PlayerState?.PLAYING ?? 1;
+    // Abort stale retries: the singleton instance may have been destroyed
+    // or swapped since this chain started.
+    if (playerRef.current !== target) return;
     if (playerState !== PLAYING && attempts > 0) {
       setTimeout(() => forcePlay(target, attempts - 1), 200);
     }
@@ -281,6 +337,7 @@ const HeroVideoPlayer: React.FC<{
     safePlayerCall(player, "setVolume", vol);
     safePlayerCall(player, "playVideo");
     setIsMuted(false);
+    setAwaitingPlayGesture(false);
     forcePlay(player, 4);
   };
 
@@ -387,60 +444,176 @@ const HeroVideoPlayer: React.FC<{
 
   const apiReady = useRef(loadYouTubeAPI());
 
-  // ── Advance to the next video in the queue ────────────────────────────
-  // Full iframe remount strategy: destroy the current player, increment
-  // the playlist index, and reset ALL playback state.  The main player
-  // useEffect detects the videoId change and creates a completely fresh
-  // YT.Player instance — no loadVideoById hot-swap that causes freezes.
-  const advanceToNextVideo = () => {
-    if (advancingRef.current) return; // already in-flight — duplicate ENDED guard
-    // Empty playlist (config cleared mid-session): reset to slot 0 and stop.
-    if (playlistIds.length === 0) {
-      playlistIndexRef.current = 0;
+  // ── SEAMLESS TRANSITION: 1 → 2 → 1 → 2 … (single player instance) ─────
+  // On ENDED the source is swapped on the SAME iframe via loadVideoById().
+  // Guards against duplicate/stale callbacks:
+  //   1. transitionLock — set here, cleared on the next PLAYING event.
+  //   2. timestamp floor — duplicate ENDED storms within 800ms are dropped.
+  //   3. epoch bump — invalidates any safety timer from the previous video.
+  // With a single Admin video the modulo wraps to itself → clean restart.
+  const goToNextVideo = () => {
+    if (disposedRef.current) return;
+    const now = Date.now();
+    if (transitionLockRef.current) return;
+    if (now - lastEndedAtRef.current < 800) return;
+    lastEndedAtRef.current = now;
+    transitionLockRef.current = true;
+
+    const player = playerRef.current;
+    const ids = playlistIdsRef.current;
+    if (!player || ids.length === 0) {
+      transitionLockRef.current = false;
       return;
     }
-    advancingRef.current = true;
 
-    if (safetyTimerRef.current) {
-      clearTimeout(safetyTimerRef.current);
-      safetyTimerRef.current = null;
-    }
+    clearSafetyTimer();
 
-    // ── Full state reset ──────────────────────────────────────────────
-    setHasStartedPlaying(false);
-    setIsPlaying(false);
+    const endedId =
+      safePlayerCall(player, "getVideoData")?.video_id ||
+      ids[currentIndexRef.current] ||
+      "";
+
+    const nextIndex = (currentIndexRef.current + 1) % ids.length;
+    currentIndexRef.current = nextIndex;
+    const nextId = ids[nextIndex];
+
+    epochRef.current += 1; // invalidate stale timers/retries
+    setActiveVideoId(nextId);
+    setIsPlaying(true);
     deliberatePauseRef.current = false;
+    // Small loader ONLY while this exact next video genuinely buffers —
+    // bounded by the safety timer (never endless).
+    setNextBuffering(true);
 
-    // ── Destroy the current player instance ───────────────────────────
-    // This tears down the iframe completely so the next useEffect cycle
-    // creates a clean new one with zero stale state.
-    if (playerRef.current) {
-      try { playerRef.current.destroy(); } catch (_) {}
-      playerRef.current = null;
-    }
+    console.log(
+      `[Hero] TRANSITION: "${endedId}" ended → loadVideoById "${nextId}" (slot ${
+        nextIndex + 1
+      }/${ids.length})`,
+    );
+    heroDebugLog(`T${transitionSeqRef.current + 1}:${endedId}->${nextId}`);
+    setTransitionSeq((s) => s + 1);
 
-    // ── Advance the index ─────────────────────────────────────────────
-    const nextIndex = (playlistIndexRef.current + 1) % playlistIds.length;
-    playlistIndexRef.current = nextIndex;
-    // videoId is derived from playlistIndexRef — React will re-render
-    // and the player useEffect will fire with the new video ID.
-
-    // Reset the guard after a delay so the next ENDED can fire
-    setTimeout(() => { advancingRef.current = false; }, 800);
+    safePlayerCall(player, "loadVideoById", nextId);
+    startSafetyTimer();
   };
-  // Use a ref so the onStateChange callback always calls the latest version,
-  // avoiding stale closures when the playlist changes without re-mounting.
-  const advanceToNextVideoRef = useRef(advanceToNextVideo);
-  advanceToNextVideoRef.current = advanceToNextVideo;
+  // Refs so the long-lived player instance always executes the latest
+  // versions of these handlers (no stale closures after re-renders).
+  const goToNextVideoRef = useRef(goToNextVideo);
+  goToNextVideoRef.current = goToNextVideo;
+  const transitionSeqRef = useRef(0);
+  transitionSeqRef.current = transitionSeq;
+
+  // QA hook (no-op in production usage): a `hero-qa-force-end` window
+  // event seeks the current video to ~1.5s before its end, letting
+  // automated tests exercise the natural ENDED → transition path.
+  useEffect(() => {
+    const onQaForceEnd = () => {
+      const p = playerRef.current;
+      if (!p) return;
+      const d = safePlayerCall(p, "getDuration");
+      if (!d || d < 10) return;
+      safePlayerCall(p, "seekTo", Math.max(1, d - 1.5), true);
+      heroDebugLog(`QA_FORCE_END:${safePlayerCall(p, "getVideoData")?.video_id || "?"}`);
+    };
+    // Document-level (not window) so automation running in an isolated
+    // JS world can still dispatch this event through the shared DOM.
+    document.addEventListener("hero-qa-force-end", onQaForceEnd);
+    return () => document.removeEventListener("hero-qa-force-end", onQaForceEnd);
+  }, []);
+
+  // Event handler refs — reassigned EVERY render; the player's listeners
+  // were bound once at creation and delegate through them.
+  const handleOnReadyRef = useRef<(event: any) => void>(() => {});
+  const handleStateChangeRef = useRef<(event: any) => void>(() => {});
+  const handleErrorRef = useRef<() => void>(() => {});
+
+  handleOnReadyRef.current = (event: any) => {
+    if (disposedRef.current) return;
+    const target = event?.target;
+    // ── PRESERVED AUDIO/AUTOPLAY WORKAROUND ───────────────────────────
+    // playerVars mute:1 satisfies browser autoplay policy; it is revoked
+    // the instant the API reports ready so sound flows as soon as allowed.
+    safePlayerCall(target, "unMute");
+    safePlayerCall(target, "setVolume", restoreHeroVolume());
+    forcePlay(target, 30);
+    aggressiveUnmute();
+    safePlayerCall(target, "setPlaybackQuality", "hd1080");
+    enableCaptions(target);
+    setIsPlaying(true);
+    setIsHeroMuted(false);
+  };
+
+  handleStateChangeRef.current = (event: any) => {
+    if (disposedRef.current) return;
+    const ytState = (window as any).YT?.PlayerState;
+    const state = event.data;
+    const target = event.target;
+    const actualId =
+      safePlayerCall(target, "getVideoData")?.video_id || "";
+
+    if (state === ytState?.PLAYING) {
+      clearSafetyTimer();
+      transitionLockRef.current = false;
+      hasStartedPlayingRef.current = true;
+      setNextBuffering(false);
+      setAwaitingPlayGesture(false);
+      deliberatePauseRef.current = false;
+      // Belt-and-suspenders: force unmute on every PLAYING event in case
+      // an earlier attempt was deferred by browser policy.
+      safePlayerCall(target, "unMute");
+      safePlayerCall(target, "setVolume", restoreHeroVolume());
+      console.log(`[Hero] PLAYING "${actualId}"`);
+    } else if (state === ytState?.ENDED) {
+      console.log(`[Hero] ENDED "${actualId}"`);
+      goToNextVideoRef.current();
+    } else if (state === ytState?.PAUSED) {
+      if (!deliberatePauseRef.current && !transitionLockRef.current) {
+        // Unexpected pause — force-resume after 50ms.
+        setTimeout(() => {
+          if (!disposedRef.current && playerRef.current === target) {
+            safePlayerCall(target, "playVideo");
+          }
+        }, 50);
+      }
+    } else if (state === ytState?.BUFFERING) {
+      // Still genuinely buffering the exact current video → extend budget.
+      startSafetyTimer();
+    }
+  };
+
+  handleErrorRef.current = () => {
+    if (disposedRef.current) return;
+    const ids = playlistIdsRef.current;
+    console.warn(
+      `[Hero] Player error on "${
+        ids[currentIndexRef.current] || ""
+      }" — skipping within the Admin pair only`,
+    );
+    // A genuinely broken video (removed/private) skips to the OTHER Admin
+    // video. A lone broken video must NOT reload-loop: surface the
+    // gesture affordance instead.
+    if (ids.length <= 1) {
+      clearSafetyTimer();
+      transitionLockRef.current = false;
+      setNextBuffering(false);
+      setAwaitingPlayGesture(true);
+      return;
+    }
+    transitionLockRef.current = false;
+    lastEndedAtRef.current = 0;
+    goToNextVideoRef.current();
+  };
 
   // ── CLEANUP ────────────────────────────────────────────────────────────
   // Destroy the YT Player and clear ALL timers on unmount to prevent
   // memory leaks and background event handler firings.
   useEffect(() => {
     return () => {
-      if (safetyTimerRef.current) {
-        clearTimeout(safetyTimerRef.current);
-        safetyTimerRef.current = null;
+      disposedRef.current = true;
+      clearSafetyTimer();
+      if (introTimerRef.current) {
+        clearTimeout(introTimerRef.current);
+        introTimerRef.current = null;
       }
       if (unmuteRetryTimerRef.current) {
         clearTimeout(unmuteRetryTimerRef.current);
@@ -456,72 +629,72 @@ const HeroVideoPlayer: React.FC<{
           playerRef.current.destroy();
         } catch (_) {}
         playerRef.current = null;
+        try { delete (window as any).__heroPlayer; } catch (_) {}
       }
     };
   }, []);
 
-  // ── Mount / remount the YouTube player ──────────────────────────────
-  // Full remount strategy: every time videoId changes (playlist advance),
-  // the old player is destroyed and a completely fresh YT.Player is
-  // created.  This avoids the audio-only freeze that loadVideoById
-  // hot-swaps cause.  The welcome overlay covers the iframe during load.
+  // ── ONE PLAYER INSTANCE FOR THE WHOLE SESSION ────────────────────────
+  // Created ONCE when Video 1 becomes known (immediately — behind the 3s
+  // intro). Every later source change (playlist transition OR admin
+  // re-save) hot-swaps via loadVideoById() on the SAME iframe. Empty
+  // config ⇒ no player at all (static hero).
+  const playlistKey = playlistIds.join("|");
   useEffect(() => {
-    const id = "hero-yt-player";
-    const container = document.getElementById(id);
-    if (!container || !videoId || !isYTVideoId(videoId)) return;
     let cancelled = false;
-    setHasStartedPlaying(false);
-    setIsPlaying(false);
+    // React StrictMode simulates an unmount/remount in development; the
+    // dispose flag must be re-armed on every setup pass.
+    disposedRef.current = false;
 
-    const startSafetyTimer = () => {
-      if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current);
-      safetyTimerRef.current = setTimeout(() => {
-        if (cancelled) return;
-        // Video failed to reach PLAYING in 5s — skip to next
-        advanceToNextVideoRef.current();
-      }, 5000);
-    };
-
-    const initPlayer = () => {
-      if (cancelled) return;
-      if (!(window as any).YT?.Player) return;
-
-      // Always destroy existing player for a clean remount
+    if (playlistIds.length === 0) {
+      // Config empty/cleared mid-session → full teardown, static hero.
+      epochRef.current += 1;
+      clearSafetyTimer();
+      transitionLockRef.current = false;
+      hasStartedPlayingRef.current = false;
+      currentIndexRef.current = 0;
+      setActiveVideoId("");
       if (playerRef.current) {
         try { playerRef.current.destroy(); } catch (_) {}
         playerRef.current = null;
+        try { delete (window as any).__heroPlayer; } catch (_) {}
+      }
+      return;
+    }
+
+    apiReady.current.then(() => {
+      if (cancelled || disposedRef.current) return;
+      const YTT = (window as any).YT;
+      if (!YTT?.Player) return;
+
+      epochRef.current += 1;
+      currentIndexRef.current = 0;
+      hasStartedPlayingRef.current = false;
+      transitionLockRef.current = false;
+      lastEndedAtRef.current = 0;
+      setActiveVideoId(playlistIds[0]);
+
+      if (playerRef.current) {
+        // Same instance — the admin saved new links mid-session.
+        console.log(
+          `[Hero] Config changed → loadVideoById "${playlistIds[0]}" (restart at slot 1)`,
+        );
+        safePlayerCall(playerRef.current, "loadVideoById", playlistIds[0]);
+        startSafetyTimer();
+        return;
       }
 
-      // ── GLOBAL MUTE-RESET ON INDEX CHANGE ────────────────────────────
-      // Every time a new video ID is loaded, ALL mute state is forcibly
-      // cleared BEFORE playback starts: manual mute flags, pending
-      // unmute retries and the React muted state.  The fresh player
-      // therefore always starts unmuted at full volume (re-enforced in
-      // onReady and on every PLAYING event).  Skipped only while another
-      // audio source (drama room / movie trailer) owns the audio bus.
-      if (
-        activeAudioSourceRef.current !== "room" &&
-        !isMoviePlayerOpenRef.current
-      ) {
-        userAudioControlRef.current = false;
-        if (unmuteRetryTimerRef.current) {
-          clearTimeout(unmuteRetryTimerRef.current);
-          unmuteRetryTimerRef.current = null;
-        }
-        setIsHeroMuted(false);
-        // Fresh player starts at full volume by design — sync the slider.
-        commitHeroVolume(100);
-      }
-
-      // Create a completely fresh player instance
-      playerRef.current = new (window as any).YT.Player(id, {
-        videoId: videoId,
+      // ── INITIAL CREATION: prepare Video 1 BEHIND the intro overlay ──
+      console.log(`[Hero] Preparing video 1 behind intro: "${playlistIds[0]}"`);
+      heroDebugLog(`PREPARE:${playlistIds[0]}`);
+      playerRef.current = new YTT.Player("hero-yt-player", {
+        videoId: playlistIds[0],
         height: "100%",
         width: "100%",
         playerVars: {
           autoplay: 1,
-          mute: 1,              // muted autoplay guaranteed by all browsers
-          controls: 0,           // clean UI — custom controls only
+          mute: 1, // muted autoplay guaranteed by all browsers
+          controls: 0, // clean UI — custom controls only
           showinfo: 0,
           rel: 0,
           modestbranding: 1,
@@ -534,91 +707,46 @@ const HeroVideoPlayer: React.FC<{
           hl: "en",
         },
         events: {
-          onReady: (event: any) => {
-            if (cancelled) return;
-            // ── FORCED UNMUTE (unconditional) ─────────────────────────
-            // Executed immediately on every ready event regardless of
-            // any previous mute state.  mute:1 in playerVars only
-            // satisfies browser autoplay policy; we revoke it the
-            // instant the player is ready so audio always plays.
-            safePlayerCall(event.target, "unMute");
-            safePlayerCall(event.target, "setVolume", restoreHeroVolume());
-            forcePlay(event.target, 30);
-            // Micro-retry loop: keep forcing audio every 100ms for 1s in
-            // case the browser accepted playVideo but deferred the unmute.
-            aggressiveUnmute();
-            safePlayerCall(event.target, "setPlaybackQuality", "hd1080");
-            enableCaptions(event.target);
-            setIsPlaying(true);
-            setIsHeroMuted(false);
-            startSafetyTimer();
-          },
-          onStateChange: (event: any) => {
-            if (cancelled) return;
-            const ytState = (window as any).YT.PlayerState;
-            const state = event.data;
-
-            if (state === ytState.PLAYING) {
-              // Clear the safety timer — video is alive
-              if (safetyTimerRef.current) {
-                clearTimeout(safetyTimerRef.current);
-                safetyTimerRef.current = null;
-              }
-              // Belt-and-suspenders: force unmute on every PLAYING event
-              // in case onReady unmute was blocked by browser policy
-              safePlayerCall(event.target, "unMute");
-              safePlayerCall(event.target, "setVolume", restoreHeroVolume());
-              deliberatePauseRef.current = false;
-              setHasStartedPlaying(true);
-              setIsPlaying(true);
-              setIsHeroMuted(false);
-            } else if (state === ytState.ENDED) {
-              // Video finished — advance immediately
-              advanceToNextVideoRef.current();
-            } else if (state === ytState.PAUSED) {
-              if (!deliberatePauseRef.current) {
-                // Unexpected pause — force-resume after 50ms
-                setTimeout(() => {
-                  if (!cancelled && playerRef.current) {
-                    safePlayerCall(playerRef.current, "playVideo");
-                  }
-                }, 50);
-              }
-            } else if (state === ytState.BUFFERING) {
-              // Extended buffering — restart safety timer
-              startSafetyTimer();
-            }
-          },
-          onError: (event: any) => {
-            if (cancelled) return;
-            // Video error (removed, private, etc.) — skip immediately
-            advanceToNextVideoRef.current();
-          },
+          onReady: (event: any) => handleOnReadyRef.current(event),
+          onStateChange: (event: any) => handleStateChangeRef.current(event),
+          onError: () => handleErrorRef.current(),
         },
       });
+      // Debug/verification hook: lets local QA observe the SINGLE player
+      // instance, its current video id, and state transitions directly.
+      (window as any).__heroPlayer = playerRef.current;
 
       // Belt-and-suspenders: explicitly tell the fresh player to start
       // unmuted at full volume BEFORE playback begins (re-enforced in
       // onReady the moment the API reports the player ready).
       safePlayerCall(playerRef.current, "unMute");
       safePlayerCall(playerRef.current, "setVolume", restoreHeroVolume());
-    };
-
-    apiReady.current.then(initPlayer);
+      startSafetyTimer();
+    });
 
     return () => {
       cancelled = true;
-      if (safetyTimerRef.current) {
-        clearTimeout(safetyTimerRef.current);
-        safetyTimerRef.current = null;
-      }
-      // Destroy player on cleanup (videoId changed or unmount)
-      if (playerRef.current) {
-        try { playerRef.current.destroy(); } catch (_) {}
-        playerRef.current = null;
-      }
     };
-  }, [videoId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playlistKey]);
+
+  // ── 3s INTRO TIMER ───────────────────────────────────────────────────
+  // Starts once Video 1 is known (same moment the player starts preparing
+  // behind the intro). Exactly at ~3s the intro fades — reveal is NOT
+  // delayed by buffering events. Latched: fires once per homepage mount.
+  useEffect(() => {
+    if (staticOnly || !playlistIds[0]) return undefined;
+    if (introTimerRef.current) return undefined; // already scheduled
+    introTimerRef.current = setTimeout(() => {
+      introTimerRef.current = null;
+      setIntroDone(true);
+      console.log("[Hero] Intro complete (~3s) — revealing prepared video 1");
+      // Exact-fade audio push (preserved pseudo-interaction workaround).
+      if (playerRef.current) pseudoInteractionUnmute();
+    }, 3000);
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playlistKey, staticOnly]);
 
   useEffect(() => {
     if (!playerRef.current) return;
@@ -790,28 +918,25 @@ const HeroVideoPlayer: React.FC<{
       }
     }
   }, [isMoviePlayerOpen, activeAudioSource, setIsHeroMuted]);
-  // ── PSEUDO-INTERACTION AT WELCOME FADE ────────────────────────────────
-  // Fired the exact millisecond the welcome overlay begins fading out.
-  // Simulates a user interaction and chains the aggressive 100ms retry
-  // loop so audio is forced on immediately — no silence gap after the
-  // overlay.  The dismissal gate resets for every playlist video, so
-  // this also re-fires on each Video 2+ transition.
-  useEffect(() => {
-    if (!overlayDismissed || !playerRef.current) return;
-    pseudoInteractionUnmute();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overlayDismissed]);
-
   // ── Whether to show the YouTube player layer ──────────────────────────
-  // Always show when a valid ID exists — the welcome overlay (z-[200])
-  // covers it until the video is actively playing.
-  const showPlayerLayer = !!videoId && isYTVideoId(videoId);
+  // Always show when a valid ID exists — the intro overlay (z-[200])
+  // covers it for the first ~3s while Video 1 prepares behind it.
+  const showPlayerLayer = !!activeVideoId && isYTVideoId(activeVideoId);
+  const introVisible = !staticOnly && !introDone && !!playlistIds[0];
 
   return (
     <section
       className="relative w-full h-[60vh] md:h-[85vh] bg-black overflow-hidden select-none"
       style={{ display: "block", opacity: 1 }}
+      data-hero-video={activeVideoId || ""}
+      data-hero-seq={transitionSeq}
+      data-hero-buffering={nextBuffering ? "1" : "0"}
+      data-hero-gesture={awaitingPlayGesture ? "1" : "0"}
+      data-hero-muted={isMuted ? "1" : "0"}
+      data-hero-intro={introVisible ? "1" : "0"}
     >
+      {/* QA/verification bridge — readable from any JS world (DOM-shared) */}
+      <div id="hero-debug-log" className="hidden" aria-hidden="true" />
       <div
         className="w-full h-full overflow-hidden pointer-events-none"
         style={{ position: "absolute", inset: 0, zIndex: 0 }}
@@ -821,7 +946,7 @@ const HeroVideoPlayer: React.FC<{
             className="w-full h-full scale-[1.35] bg-cover bg-center"
             id="hero-player"
             ref={containerRef}
-            style={videoId ? { backgroundImage: `url(https://img.youtube.com/vi/${videoId}/maxresdefault.jpg)` } : undefined}
+            style={activeVideoId ? { backgroundImage: `url(https://img.youtube.com/vi/${activeVideoId}/maxresdefault.jpg)` } : undefined}
           >
             <div id="hero-yt-player" className="w-full h-full" />
           </div>
@@ -1160,11 +1285,12 @@ const HeroVideoPlayer: React.FC<{
         </div>
 
         {/* ── MANDATORY INTERACTION LAYER ──────────────────────────── */}
-        {/* Shown whenever audio isn't flowing (all devices incl. mobile).*/}
-        {/* One trusted click unlocks sound for the whole session — every */}
-        {/* subsequent playlist video force-unmutes automatically.        */}
+        {/* Shown whenever audio isn't flowing OR playback is blocked   */}
+        {/* (all devices incl. mobile). ONE clear Play/Unmute affordance*/}
+        {/* for the SAME video — a trusted click unlocks sound/play for */}
+        {/* the whole session; later playlist videos force-unmute.      */}
         <AnimatePresence>
-          {isMuted && (
+          {(isMuted || awaitingPlayGesture) && (
             <motion.button
               key="hero-unmute-overlay"
               initial={{ opacity: 0, scale: 0.9 }}
@@ -1176,6 +1302,7 @@ const HeroVideoPlayer: React.FC<{
                 userUnmute();
               }}
               type="button"
+              id="hero-unmute-overlay"
               className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-5 pointer-events-auto cursor-pointer bg-black/30"
               title="کلیک بکە بۆ دەنگ"
             >
@@ -1196,6 +1323,15 @@ const HeroVideoPlayer: React.FC<{
             </motion.button>
           )}
         </AnimatePresence>
+
+        {/* ── SMALL TRANSITION LOADER ──────────────────────────────── */}
+        {/* Only while the EXACT next video is genuinely buffering after */}
+        {/* a transition. Bounded by the safety timer — never endless.   */}
+        {nextBuffering && !introVisible && (
+          <div className="absolute inset-0 z-[150] flex items-center justify-center pointer-events-none">
+            <div className="w-10 h-10 rounded-full border-2 border-white/20 border-t-brand-primary animate-spin shadow-lg" />
+          </div>
+        )}
 
         <div className="absolute inset-x-0 bottom-0 h-48 flex flex-col justify-end pb-12 px-8 z-30">
           <motion.div
@@ -1218,12 +1354,12 @@ const HeroVideoPlayer: React.FC<{
         </div>
       </div>
 
-      {/* ── WELCOME OVERLAY ────────────────────────────────────────────── */}
-      {/* Displayed until the 3s timer completes AND the YouTube player     */}
-      {/* has fired PLAYING state.  The iframe is fully rendered and         */}
-      {/* decoding behind this overlay — when it fades, video is instant.    */}
+      {/* ── WELCOME INTRO OVERLAY (latched, ~3s) ────────────────────────── */}
+      {/* Shows ONCE per homepage mount for ~3 seconds while Video 1        */}
+      {/* prepares BEHIND it; at ~3s exactly it fades. It NEVER reappears    */}
+      {/* between playlist transitions (introDone latches true).            */}
       <AnimatePresence>
-        {!overlayDismissed && (
+        {introVisible && (
           <motion.div
             key="welcome-overlay"
             initial={{ opacity: 1 }}

@@ -7865,19 +7865,28 @@ export default function App() {
     const videoId =
       base.videoId || extractYouTubeId(embedUrl || videoUrl || "");
 
+    // NO FALLBACKS of any kind:
+    //  - before the first server/snapshot answer (heroConfigReady=false)
+    //    and after an admin clear, this is [] — the hero stays static.
+    //  - movie-data fields like video_trailers can NEVER feed the hero.
+    // Source order for the two Admin Section 7 URLs:
+    //  1. live Firestore snapshot of config/featured (authoritative)
+    //  2. the server-verified cache (written ONLY from verified saves /
+    //     /api/config answers; an admin clear purges it entirely)
+    const dbHeroPlaylist = (base as any).heroPlaylist;
+    const heroPlaylist: string[] = heroConfigReady
+      ? Array.isArray(dbHeroPlaylist)
+        ? dbHeroPlaylist
+        : getCachedHeroPlaylist()
+      : [];
+
     return {
       ...base,
       embedUrl,
       videoUrl,
       isYouTube,
       videoId,
-      // NO FALLBACKS of any kind:
-      //  - before the first server/snapshot answer (heroConfigReady=false)
-      //    and after an admin clear, this is [] — the hero stays static.
-      //  - movie-data fields like video_trailers can NEVER feed the hero.
-      heroPlaylist: heroConfigReady
-        ? ((base as any).heroPlaylist as string[]) || []
-        : [],
+      heroPlaylist,
     };
   }, [featuredMovieFromDB, featuredMovie, globalStreamURL, heroConfigReady]);
 
