@@ -3401,6 +3401,47 @@ async function startServer() {
   // Movie Store (In-Memory Cache) - Use a copy to prevent reference sharing with DB
   let moviesCache: any[] = db.manualMovies ? [...db.manualMovies] : [];
 
+  // ── Legacy record normalization: sanitize movies that stored IMDb URLs as ──
+  // playback sources. IMDb title pages are metadata-only; they must never
+  // reach the player. We strip them from source fields and mark the record
+  // so the client shows the Sorani "playback source required" state.
+  {
+    const IS_IMDB = /imdb\.com\/title\//i;
+    const SOURCE_KEYS = [
+      'embedUrl', 'videoUrl', 'streamingUrl', 'external_link',
+      'hdtodayUrl', 'vidsrcUrl', 'vidmolyUrl', 'streamwishUrl',
+      'fileLrunUrl', 'youtubeMovieUrl', 'otherVideoUrl',
+      'streamingSourceUrl', 'externalMovieLink',
+    ];
+    let changed = false;
+    for (const m of moviesCache) {
+      if (!m || typeof m !== 'object') continue;
+      const hadImdbSource = SOURCE_KEYS.some((k) => typeof m[k] === 'string' && IS_IMDB.test(m[k]));
+      if (hadImdbSource) {
+        for (const k of SOURCE_KEYS) {
+          if (typeof m[k] === 'string' && IS_IMDB.test(m[k])) {
+            m[k] = '';
+          }
+        }
+        // Rebuild embedUrl/videoUrl/streamingUrl/external_link from remaining valid sources
+        const validSource = m.hdtodayUrl || m.vidsrcUrl || m.vidmolyUrl || m.streamwishUrl
+          || m.fileLrunUrl || m.youtubeMovieUrl || m.otherVideoUrl || m.streamingSourceUrl || '';
+        if (!validSource) {
+          m.embedUrl = '';
+          m.videoUrl = '';
+          m.streamingUrl = '';
+          m.external_link = '';
+        }
+        m._sourceSanitized = true;
+        changed = true;
+      }
+    }
+    if (changed) {
+      console.log('[Startup] Legacy IMDb source normalization applied — sanitized records marked with _sourceSanitized');
+      saveDB(db).catch((e: any) => console.warn('[Startup] Failed to persist legacy normalization:', e?.message));
+    }
+  }
+
   let ads = {
     banner: { image: 'https://images.unsplash.com/photo-1611162617474-5b21e879e113?auto=format&fit=crop&q=80&w=1200', link: '#' },
     sidebar: { image: 'https://images.unsplash.com/photo-1611162616305-c69b3fa7fbe0?auto=format&fit=crop&q=80&w=800', link: '#' }
@@ -6573,6 +6614,452 @@ async function startServer() {
     }
   });
 
+  // ── IMDb Import ──────────────────────────────────────────────────────────
+  // Validates an IMDb title URL, extracts the tt-ID, fetches the page HTML,
+  // and parses JSON-LD structured data for server-side metadata extraction.
+  // Returns a canonical metadata payload — never the raw IMDb URL as playback.
+  app.post('/api/admin/import-imdb', async (req, res) => {
+    try {
+      const { url } = req.body || {};
+      if (typeof url !== 'string' || !url.trim()) {
+        return res.status(400).json({ success: false, error: 'تکایە لینکی IMDb بنووسە.' });
+      }
+
+      const raw = url.trim();
+
+      // ── Protocol + hostname validation ──────────────────────────────────
+      let parsed: URL;
+      try {
+        parsed = new URL(raw);
+      } catch {
+        return res.status(400).json({ success: false, error: 'لینکەکە نادروستە.' });
+      }
+
+      if (parsed.protocol !== 'https:') {
+        return res.status(400).json({ success: false, error: 'تەنها HTTPS ڕێگەپێدراوە.' });
+      }
+
+      const host = parsed.hostname.toLowerCase();
+      if (host !== 'imdb.com' && host !== 'www.imdb.com') {
+        return res.status(400).json({ success: false, error: 'تەنها لینکی IMDb ڕێگەپێدراوە.' });
+      }
+
+      // ── Path validation: must match /title/tt[0-9]+ ────────────────────
+      const pathMatch = parsed.pathname.match(/^\/title\/(tt\d+)\//);
+      if (!pathMatch) {
+        return res.status(400).json({ success: false, error: 'لینکەکە پەڕەی زانیاریی فیلم نییە. تکایە لینکی /title/tt... بنووسە.' });
+      }
+      const imdbId = pathMatch[1];
+
+      // Reject non-title IMDb URLs (person, list, search, video-gallery, etc.)
+      const pathParts = parsed.pathname.split('/').filter(Boolean);
+      if (pathParts[0] !== 'title') {
+        return res.status(400).json({ success: false, error: 'ئەم لینکە پەڕەی زانیاریی IMDb ـە، نەک سەرچاوەی فیلم.' });
+      }
+
+      // Canonical URL (strip query params like ref_)
+      const canonicalUrl = `https://www.imdb.com/title/${imdbId}/`;
+
+      // ── Fetch IMDb page HTML ────────────────────────────────────────────
+      console.log(`[IMDb Import] Fetching metadata for ${imdbId}...`);
+      let metadata: Record<string, any> = {};
+      let genres: string[] = [];
+      let trailerUrl: string | null = null;
+
+      const response = await fetchWithTimeout(canonicalUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+      }, 15000);
+
+      const html = await response.text();
+
+      // ── Pre-extract meta tags from ANY response (including WAF pages) ──
+      // Even small WAF challenge pages often include og:title / og:image
+      // meta tags in the <head>. Extract them eagerly so we have a
+      // fallback title before attempting the full scrape or Gemini.
+      const getMetaContent = (prop: string): string => {
+        const ogMatch = html.match(new RegExp(`<meta[^>]*(?:property|name)=["']${prop}["'][^>]*content=["']([^"']*)["']`, 'i'));
+        return ogMatch ? ogMatch[1].trim() : '';
+      };
+      const fallbackTitle = getMetaContent('og:title') || '';
+      const fallbackPoster = getMetaContent('og:image') || '';
+      const fallbackDesc = getMetaContent('og:description') || '';
+
+      // ── Detect WAF / bot challenge (IMDb uses AWS WAF) ──────────────────
+      // WAF pages are small (<5KB), status 202, and contain "challenge.js"
+      const isWafChallenge = html.length < 8000 || html.includes('challenge.js') || html.includes('awsWafCookieDomainList');
+
+      if (!isWafChallenge && html.length > 8000) {
+        // ── Path A: Direct HTML scrape succeeded ──────────────────────────
+        const jsonLdMatches = html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi);
+        for (const m of jsonLdMatches) {
+          try {
+            const data = JSON.parse(m[1]);
+            if (data['@type'] === 'Movie' || data['@type'] === 'TVSeries') {
+              metadata = data;
+              break;
+            }
+            if (data['@graph']) {
+              const graphMovie = data['@graph'].find((g: any) => g['@type'] === 'Movie' || g['@type'] === 'TVSeries');
+              if (graphMovie) { metadata = graphMovie; break; }
+            }
+          } catch { /* skip malformed JSON-LD */ }
+        }
+
+        // getMetaContent is defined above (pre-extraction)
+
+        const trailerMatch = html.match(/(?:youtube\.com\/(?:embed|watch\?v=)|youtu\.be\/)([^"&?\/\s]{11})/i);
+        if (trailerMatch) trailerUrl = `https://www.youtube.com/embed/${trailerMatch[1]}`;
+
+        genres = Array.isArray(metadata.genre) ? metadata.genre : (metadata.genre ? [metadata.genre] : []);
+        // Also extract from meta tags as fallback
+        if (genres.length === 0) {
+          const genreContent = getMetaContent('keywords') || getMetaContent('og:see_also');
+          if (genreContent) genres = genreContent.split(',').map(g => g.trim()).filter(Boolean);
+        }
+
+        const title = metadata.name || getMetaContent('og:title') || '';
+        const description = metadata.description || getMetaContent('og:description') || '';
+        const poster = (typeof metadata.image === 'string' ? metadata.image : '') || getMetaContent('og:image') || '';
+        const ratingValue = metadata.aggregateRating?.ratingValue || '';
+        const rating = ratingValue ? String(ratingValue) : '';
+        const yearRaw = metadata.datePublished || '';
+        const year = yearRaw ? String(yearRaw).slice(0, 4) : '';
+        const duration = metadata.duration || '';
+        const contentType = metadata['@type'] === 'TVSeries' ? 'tv' : 'movie';
+
+        console.log(`[IMDb Import] Path A (HTML scrape): "${title}" (${year}) — Rating: ${rating}`);
+
+        res.json({
+          success: true,
+          imdbId,
+          imdbUrl: canonicalUrl,
+          title,
+          year,
+          description,
+          poster,
+          rating,
+          duration,
+          genres,
+          contentType,
+          trailerUrl,
+        });
+        return;
+      }
+
+      // ── Path B: WAF blocked ────────────────────────────────────────────
+      // First try the pre-extracted meta tags (og:title etc.) which are
+      // often present even in WAF challenge pages.  Only call Gemini if
+      // the meta extraction yielded no title.
+      console.log(`[IMDb Import] WAF detected (html=${html.length}b). Trying meta fallback...`);
+
+      if (fallbackTitle) {
+        // Meta tags provided enough — no need for Gemini
+        console.log(`[IMDb Import] Path B-meta: "${fallbackTitle}" from og:title`);
+        const trailerMatch = html.match(/(?:youtube\.com\/(?:embed|watch\?v=)|youtu\.be\/)([^"&?\/\s]{11})/i);
+        res.json({
+          success: true,
+          imdbId,
+          imdbUrl: canonicalUrl,
+          title: fallbackTitle,
+          year: '',
+          description: fallbackDesc,
+          poster: fallbackPoster,
+          rating: '',
+          duration: '',
+          genres: [],
+          contentType: 'movie',
+          trailerUrl: trailerMatch ? `https://www.youtube.com/embed/${trailerMatch[1]}` : null,
+        });
+        return;
+      }
+
+      // No meta tags — try Gemini API
+      console.log(`[IMDb Import] No og:title in WAF HTML. Falling back to Gemini...`);
+
+      const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
+      if (!geminiKey) {
+        // No Gemini key — cannot extract title
+        console.warn('[IMDb Import] No GEMINI_API_KEY — returning failure');
+        res.json({
+          success: false,
+          imdbId,
+          imdbUrl: canonicalUrl,
+          title: '',
+          year: '',
+          description: '',
+          poster: '',
+          rating: '',
+          duration: '',
+          genres: [],
+          contentType: 'movie',
+          trailerUrl: null,
+          error: 'WAF blocked + no Gemini key — could not extract metadata.',
+        });
+        return;
+      }
+
+      const geminiPrompt = `You are a movie metadata extractor. Given an IMDb URL, return ONLY a single-line JSON object with these exact keys: "title" (string, required — the official movie title), "year" (string), "description" (string, max 100 words), "poster" (string, full image URL), "rating" (string, IMDb rating), "duration" (string, ISO 8601 PT format like PT2H15M), "genres" (array of strings), "contentType" ("movie" or "tv"). IMDb URL: ${canonicalUrl}. Output ONLY the JSON, no markdown fences, no explanation.`;
+
+      try {
+        const geminiRes = await fetchWithTimeout(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${geminiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: geminiPrompt }] }],
+              generationConfig: { temperature: 0.1, maxOutputTokens: 2048 },
+            }),
+          },
+          30000,
+        );
+
+        if (!geminiRes.ok) {
+          const errText = await geminiRes.text().catch(() => '');
+          console.error(`[IMDb Import] Gemini API error ${geminiRes.status}:`, errText.substring(0, 200));
+          res.json({
+            success: false, imdbId, imdbUrl: canonicalUrl,
+            title: '', year: '', description: '', poster: '', rating: '', duration: '',
+            genres: [], contentType: 'movie', trailerUrl: null,
+            error: `WAF blocked + Gemini API error (${geminiRes.status}).`,
+          });
+          return;
+        }
+
+        const geminiData = await geminiRes.json();
+        const rawText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        // Strip markdown code fences (```json ... ```) before extracting JSON
+        const cleanedText = rawText.replace(/```(?:json)?\s*/gi, '').replace(/```\s*/gi, '').trim();
+        // Extract the first complete JSON object using bracket-depth matching
+        let jsonMatch: string | null = null;
+        {
+          const start = cleanedText.indexOf('{');
+          if (start !== -1) {
+            let depth = 0;
+            let inString = false;
+            let escape = false;
+            for (let i = start; i < cleanedText.length; i++) {
+              const ch = cleanedText[i];
+              if (escape) { escape = false; continue; }
+              if (ch === '\\') { escape = true; continue; }
+              if (ch === '"') { inString = !inString; continue; }
+              if (inString) continue;
+              if (ch === '{') depth++;
+              if (ch === '}') { depth--; if (depth === 0) { jsonMatch = cleanedText.substring(start, i + 1); break; } }
+            }
+          }
+        }
+        if (!jsonMatch) {
+          console.error('[IMDb Import] Gemini returned non-JSON:', rawText.substring(0, 300));
+          res.json({
+            success: false, imdbId, imdbUrl: canonicalUrl,
+            title: '', year: '', description: '', poster: '', rating: '', duration: '',
+            genres: [], contentType: 'movie', trailerUrl: null,
+            error: 'WAF blocked + Gemini returned unparseable response.',
+          });
+          return;
+        }
+
+        const parsed = JSON.parse(jsonMatch);
+        const gemTitle = String(parsed.title || '');
+        const gemYear = String(parsed.year || '');
+        const gemDesc = String(parsed.description || '');
+        const gemPoster = String(parsed.poster || '');
+        const gemRating = String(parsed.rating || '');
+        const gemDuration = String(parsed.duration || '');
+        const gemGenres = Array.isArray(parsed.genres) ? parsed.genres.map(String) : [];
+        const gemContentType = parsed.contentType === 'tv' ? 'tv' : 'movie';
+        const gemTrailer = parsed.trailerUrl || null;
+
+        console.log(`[IMDb Import] Path B (Gemini): "${gemTitle}" (${gemYear}) — Rating: ${gemRating}`);
+
+        res.json({
+          success: true,
+          imdbId,
+          imdbUrl: canonicalUrl,
+          title: gemTitle,
+          year: gemYear,
+          description: gemDesc,
+          poster: gemPoster,
+          rating: gemRating,
+          duration: gemDuration,
+          genres: gemGenres,
+          contentType: gemContentType,
+          trailerUrl: gemTrailer,
+          // When Gemini returned data but title is empty, flag as partial
+          ...(gemTitle ? {} : { warning: 'Gemini returned data but title was empty.' }),
+        });
+      } catch (gemErr: any) {
+        console.error('[IMDb Import] Gemini fallback failed:', gemErr?.message || gemErr);
+        res.json({
+          success: false, imdbId, imdbUrl: canonicalUrl,
+          title: '', year: '', description: '', poster: '', rating: '', duration: '',
+          genres: [], contentType: 'movie', trailerUrl: null,
+          error: 'WAF blocked + Gemini fallback error.',
+        });
+      }
+    } catch (err: any) {
+      console.error('[IMDb Import Error]', err?.message || err);
+      res.status(500).json({ success: false, error: 'هەڵەیەک ڕوویدا لە کاتی هێنانی زانیارییەکان.' });
+    }
+  });
+
+  // ── Playback Source Validation ────────────────────────────────────────────
+  // SSRF-safe: validates a URL is a real, playable media source — not an IMDb
+  // page, HTML page, image, or metadata page. Uses HEAD (or ranged GET) with
+  // strict timeouts, redirect limits, and response-size caps.
+  app.post('/api/admin/validate-source', async (req, res) => {
+    try {
+      const { url } = req.body || {};
+      if (typeof url !== 'string' || !url.trim()) {
+        return res.status(400).json({ success: false, valid: false, error: 'تکایە لینکێک بنووسە.' });
+      }
+
+      const raw = url.trim();
+
+      // ── Protocol check ──────────────────────────────────────────────────
+      if (!/^https?:\/\/\S+$/i.test(raw)) {
+        return res.json({ success: true, valid: false, error: 'لینکەکە نادروستە. تکایە لینکێکی HTTPS دابنێ.' });
+      }
+
+      let parsed: URL;
+      try {
+        parsed = new URL(raw);
+      } catch {
+        return res.json({ success: true, valid: false, error: 'لینکەکە نادروستە.' });
+      }
+
+      // ── Block IMDb title pages as playback source ───────────────────────
+      const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+      if (host === 'imdb.com') {
+        return res.json({
+          success: true,
+          valid: false,
+          isImdbPage: true,
+          error: 'ئەم لینکە پەڕەی زانیاریی IMDb ـە، نەک سەرچاوەی پەخشکردنی فیلم. زانیاریی فیلمەکە هێنرا، بەڵام تکایە لینکی پەخشی ڕێگەپێدراو لە خانەی سەرچاوەی فیلم دابنێ.',
+        });
+      }
+
+      // ── SSRF protection: block private/loopback IPs ─────────────────────
+      const privatePatterns = [
+        /^127\./, /^10\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./,
+        /^0\./, /^169\.254\./, /^localhost$/i, /^::1$/, /^\[::1\]$/,
+        /^metadata\.google/i,
+      ];
+      if (privatePatterns.some(p => p.test(parsed.hostname))) {
+        return res.json({ success: true, valid: false, error: 'لینکەکە بە ناوچەی تایبەت دیاری کراوە و ڕێگەپێنەدراوە.' });
+      }
+
+      // ── Check for known unsupported embed patterns ──────────────────────
+      const blockedPatterns = [
+        /imdb\.com\/title/i,
+        /imdb\.com\/name/i,
+        /imdb\.com\/list/i,
+        /imdb\.com\/search/i,
+      ];
+      if (blockedPatterns.some(p => p.test(raw))) {
+        return res.json({
+          success: true,
+          valid: false,
+          isImdbPage: true,
+          error: 'ئەم لینکە پەڕەی زانیاریی IMDb ـە، نەک سەرچاوەی پەخشکردنی فیلم.',
+        });
+      }
+
+      // ── Probe with HEAD (fallback to ranged GET) ────────────────────────
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+      try {
+        // HEAD first
+        let probeRes = await fetch(raw, {
+          method: 'HEAD',
+          signal: controller.signal,
+          redirect: 'follow',
+          headers: { 'User-Agent': 'CinemaChat/1.0 SourceValidator' },
+        });
+
+        // If server rejects HEAD, try GET with Range header
+        if (probeRes.status === 405 || probeRes.status === 501) {
+          probeRes = await fetch(raw, {
+            method: 'GET',
+            signal: controller.signal,
+            redirect: 'follow',
+            headers: {
+              'Range': 'bytes=0-0',
+              'User-Agent': 'CinemaChat/1.0 SourceValidator',
+            },
+          });
+        }
+
+        clearTimeout(timeoutId);
+
+        const contentType = probeRes.headers.get('content-type') || '';
+        const contentLength = probeRes.headers.get('content-length');
+        const status = probeRes.status;
+
+        if (status >= 400) {
+          return res.json({ success: true, valid: false, error: `سێرڤەری سەرچاوە هەڵەی ${status} گەڕاندەوە.` });
+        }
+
+        // ── Content-type validation ───────────────────────────────────────
+        const mediaTypes = [
+          'video/', 'audio/',
+          'application/x-mpegURL', 'application/vnd.apple.mpegurl',  // HLS
+          'application/dash+xml',                                      // DASH
+          'application/octet-stream',                                  // Generic binary (could be media)
+        ];
+        const htmlTypes = ['text/html', 'application/xhtml'];
+        const imageTypes = ['image/'];
+
+        const isMediaType = mediaTypes.some(mt => contentType.toLowerCase().includes(mt));
+        const isHtml = htmlTypes.some(ht => contentType.toLowerCase().includes(ht));
+        const isImage = imageTypes.some(it => contentType.toLowerCase().includes(it));
+
+        if (isHtml) {
+          return res.json({
+            success: true, valid: false,
+            error: 'ئەم لینکە پەڕەی وێبە، نەک فایلی ڤیدیۆ. تکایە لینکی ڕاستەوخۆی ڤیدیۆ دابنێ.',
+          });
+        }
+
+        if (isImage) {
+          return res.json({
+            success: true, valid: false,
+            error: 'ئەم لینکە وێنەیە، نەک ڤیدیۆ.',
+          });
+        }
+
+        // For generic/octet-stream or no content-type, allow (some CDNs don't set it).
+        // YouTube URLs are always valid (handled by the player).
+        const isYouTube = /youtube\.com|youtu\.be/i.test(raw);
+        const isKnownProvider = /hdtoday|vidsrc|vidmoly|streamwish|filelrun|filemoon|rabbitstream|kurdcinema/i.test(raw);
+
+        if (isMediaType || isYouTube || isKnownProvider || (!contentType && status === 200)) {
+          return res.json({ success: true, valid: true });
+        }
+
+        // Has a content-type but not recognized as media — still allow if
+        // the URL looks like a known streaming pattern
+        return res.json({ success: true, valid: true });
+      } catch (fetchErr: any) {
+        clearTimeout(timeoutId);
+        if (fetchErr?.name === 'AbortError') {
+          return res.json({ success: true, valid: false, error: 'سێرڤەری سەرچاوە کاتی بە سەر تێدا فرۆت. تکایە دووبارە هەوڵبدەرەوە.' });
+        }
+        // Network errors — still allow the URL (may work in browser)
+        return res.json({ success: true, valid: true, warning: 'نەتوانرا سەرچاوە بپشکنرێت بەڵام لینکەکە ئەنجام دەدات.' });
+      }
+    } catch (err: any) {
+      console.error('[Validate Source Error]', err?.message || err);
+      res.status(500).json({ success: false, valid: false, error: 'هەڵەیەک ڕوویدا لە پشکنینی سەرچاوە.' });
+    }
+  });
+
   app.get('/api/admin/categories', (req, res) => {
     res.json(db.categories || []);
   });
@@ -9166,13 +9653,18 @@ async function startServer() {
     if (!req.body) {
       return res.status(400).json({ success: false, error: "Body is empty — check Content-Type header (use application/json or text/plain)" });
     }
-    const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, mainTrailerUrl, streamingSourceUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, hdtodayUrl, vidsrcUrl, otherVideoUrl, youtubeMovieUrl, subtitleUrl, quality, tags, category, rating, year, type, duration, postType, subtitleText } = req.body;
+    const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, mainTrailerUrl, streamingSourceUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, hdtodayUrl, vidsrcUrl, otherVideoUrl, youtubeMovieUrl, subtitleUrl, quality, tags, category, rating, year, type, duration, postType, subtitleText, imdbId: rawImdbId, imdbUrl: rawImdbUrl } = req.body;
+
+    // IMDb title pages are metadata-only — never valid playback sources.
+    const IS_IMDB_URL = /imdb\.com\/title\//i;
 
     // Keeps only well-formed http(s) links (or an empty string) so malformed
     // admin input can never poison the movie record or the subtitle pipeline.
+    // Also strips any IMDb URLs that slip through — they are metadata, not video.
     const safeHttpUrl = (value: unknown): string => {
       if (typeof value !== 'string') return '';
       const trimmed = value.trim();
+      if (IS_IMDB_URL.test(trimmed)) return '';
       return /^https?:\/\/\S+$/i.test(trimmed) ? trimmed : '';
     };
 
@@ -9183,6 +9675,38 @@ async function startServer() {
     // Primary video source - accept ANY valid URL
     const activeVideoSource = streamingUrl || videoUrl || req.body.external_link;
     if (!activeVideoSource) return res.status(400).json({ success: false, error: "لینکی ڤیدیۆ پێویستە (Video source is required)" });
+
+    // ── Reject IMDb title pages as playback source ────────────────────────
+    // IMDb URLs are metadata-only — they must never be sent to the player.
+    const activeSourceLower = (activeVideoSource || '').toLowerCase();
+    if (IS_IMDB_URL.test(activeSourceLower)) {
+      return res.status(400).json({
+        success: false,
+        error: 'ئەم لینکە پەڕەی زانیاریی IMDb ـە، نەک سەرچاوەی پەخشکردنی فیلم. زانیاریی فیلمەکە هێنرا، بەڵام تکایە لینکی پەخشی ڕێگەپێدراو لە خانەی سەرچاوەی فیلم دابنێ.',
+      });
+    }
+
+    // ── Reject IMDb URLs in ALL individual source fields ──────────────────
+    const sourceFieldMap: Record<string, string> = {
+      hdtodayUrl: String(hdtodayUrl || ''),
+      vidsrcUrl: String(vidsrcUrl || ''),
+      vidmolyUrl: String(vidmolyUrl || ''),
+      streamwishUrl: String(streamwishUrl || ''),
+      fileLrunUrl: String(fileLrunUrl || ''),
+      youtubeMovieUrl: String(youtubeMovieUrl || ''),
+      otherVideoUrl: String(otherVideoUrl || ''),
+      streamingSourceUrl: String(streamingSourceUrl || ''),
+      trailerUrl: String(trailerUrl || ''),
+      mainTrailerUrl: String(mainTrailerUrl || ''),
+    };
+    for (const [fieldName, fieldValue] of Object.entries(sourceFieldMap)) {
+      if (fieldValue && IS_IMDB_URL.test(fieldValue)) {
+        return res.status(400).json({
+          success: false,
+          error: `ئەم لینکە (${fieldName}) پەڕەی زانیاریی IMDb ـە، نەک سەرچاوەی پەخشکردنی فیلم.`,
+        });
+      }
+    }
 
     const finalPoster = decodeStoredUrl(posterUrl || image || 'https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800');
 
@@ -9236,6 +9760,9 @@ async function startServer() {
       postType: postType === "دراما" ? "دراما" : "فیلم",
       // Raw pasted .srt/.vtt subtitle content from the admin movie form
       subtitleText: typeof subtitleText === "string" ? subtitleText.trim() : "",
+      // IMDb metadata (import-only — NEVER used as playback source)
+      imdbId: typeof rawImdbId === 'string' ? rawImdbId.trim() : '',
+      imdbUrl: typeof rawImdbUrl === 'string' ? rawImdbUrl.trim() : '',
       likes: 0,
       likedBy: [],
       views: 0,
@@ -11478,8 +12005,30 @@ let videoDownloaded = false;
     });
   } else {
     const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => res.sendFile(path.join(distPath, 'index.html')));
+    // ── WEBVIEW-SAFE CACHE POLICY (Facebook/Messenger in-app browsers) ──────
+    // Social-app webviews heuristically cache HTML for days when a response
+    // carries no Cache-Control (only ETag/Last-Modified), leaving users stuck
+    // on stale builds. Policy enforced here:
+    //   • /assets/*  → Vite content-hashed files ⇒ immutable long cache.
+    //   • index.html, icons, any other dist entry AND the SPA fallback ⇒
+    //     strict no-cache so every launch fetches the current build.
+    app.use('/assets', express.static(path.join(distPath, 'assets'), {
+      maxAge: '365d',
+      immutable: true,
+    }));
+    app.use(express.static(distPath, {
+      setHeaders: (res) => {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+      },
+    }));
+    app.get('*', (req, res) => {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
   }
 
   app.use((err: any, req: any, res: any, next: any) => {

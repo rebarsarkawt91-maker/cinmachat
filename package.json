@@ -27,6 +27,7 @@
     "file-saver": "^2.0.5",
     "firebase": "^12.12.1",
     "firebase-admin": "^13.10.0",
+    "hls.js": "^1.7.1",
     "html2canvas": "^1.4.1",
     "jspdf": "^4.2.1",
     "jsqr": "^1.4.0",

@@ -2320,10 +2320,15 @@ hls-video-element@^1.5.9:
     hls.js "^1.6.5"
     media-tracks "^0.3.5"
 
-hls.js@^1.6.5, hls.js@~1.6.15:
-  version "1.6.16"
-  resolved "https://registry.npmjs.org/hls.js/-/hls.js-1.6.16.tgz"
-  integrity sha512-VSIRpLfRwlAAdGL4wiTucx2ScRipo0ed1FBatWkyt832jC4CReKstga6yIhYVwGu9LOBjuX9wzmRMeQdBJtzEA==
+hls.js@^1.6.5, hls.js@^1.7.1:
+  version "1.7.1"
+  resolved "https://registry.npmjs.org/hls.js/-/hls.js-1.7.1.tgz"
+  integrity sha512-DlzIkeBAS9IIQ432k3BUf3HlwbsR0+trB1i2lDdN2gUkNkrehFurh0/48M5c1/EjlDkdGng1gwZIpwyPxvdZ/g==
+
+hls.js@~1.6.15:
+  version "1.6.19"
+  resolved "https://registry.npmjs.org/hls.js/-/hls.js-1.6.19.tgz"
+  integrity sha512-A//aZeaAgM5rgUCbTURD4gkfyw5Uag2/4Jky7CfDOukL/DN+P5DjbgK2BYteyP3/KnCkPfkGVkbLxQG2T0AbUQ==
 
 html-entities@^2.5.2, html-entities@^2.6.0:
   version "2.6.0"
@@ -3682,7 +3687,7 @@ wrappy@1:
   resolved "https://registry.npmjs.org/wrappy/-/wrappy-1.0.2.tgz"
   integrity sha512-l4Sp/DRseor9wL6EvV2+TuQn63dMkPjZ/sp9XkghTEbV9KlPS1xUsZ3u7/IQO4wxtcFB4bgpQPRcR3QCvezPcQ==
 
-ws@^8.18.0:
+ws@^8.18.0, ws@^8.21.1:
   version "8.21.1"
   resolved "https://registry.npmjs.org/ws/-/ws-8.21.1.tgz"
   integrity sha512-+0NTnW77fFN/DjQi6k/Sq/Yvk4Sgajw7urW8V+asjXnRgDs9gyGkdb7EzgfhA4goXsRIZKE28fzIXBHEzhuiWw==

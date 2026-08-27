@@ -211,17 +211,22 @@ export const searchAccountByCCId = async (
   return null;
 };
 
-/** One-stop lookup for the in-room friend request panel: accepts a CC-ID, a
- *  mobile number or an email and returns the public profile (phone lookups
- *  still respect each account's privacy settings). */
+/** One-stop lookup for the in-room friend request panel: accepts a CC-ID or a
+ *  mobile number and returns the public profile (phone lookups still respect
+ *  each account's privacy settings).
+ *
+ *  **Email is NOT a valid pairing key** — it is stored only as informational
+ *  profile data and must never be used to look up or pair two users for the
+ *  watch-together feature. Only phone number and unique code (CC-XXXX) are
+ *  valid pairing keys. */
 export const searchAccountByCCIdOrContact = async (
   raw: string,
 ): Promise<ContactSearchResult | null> => {
   const trimmed = String(raw || "").trim();
   if (!trimmed) return null;
 
-  // Emails are handled by the existing contact search directly.
-  if (trimmed.includes("@")) return searchAccountByContact(trimmed);
+  // Email addresses are NOT used for friend pairing — reject immediately.
+  if (trimmed.includes("@")) return null;
 
   const digits = trimmed.replace(/\D/g, "");
   const isPhoneLike = digits.length >= 7 && /^[\d+\s-]*$/.test(trimmed);
@@ -231,7 +236,7 @@ export const searchAccountByCCIdOrContact = async (
     const byCode = await searchAccountByCCId(trimmed);
     if (byCode) return byCode;
   }
-  // Fall back to the contact search (email already handled above, phone here).
+  // Fall back to the phone contact search.
   return searchAccountByContact(trimmed);
 };
 

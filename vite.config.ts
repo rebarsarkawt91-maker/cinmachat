@@ -18,6 +18,21 @@ export default defineConfig(({mode}) => {
         '@': path.resolve(__dirname, '.'),
       },
     },
+    build: {
+      rollupOptions: {
+        output: {
+          // Content-hashed file names guarantee every deploy emits brand-new
+          // URLs. Aggressive webviews (Facebook/Messenger) that pin old HTML
+          // can then never shadow freshly deployed code, while cached HTML
+          // always references assets that still resolve. Mirrors Vite's
+          // defaults — kept explicit so future config drift cannot silently
+          // drop hashing from entry/chunk/asset names.
+          entryFileNames: 'assets/[name]-[hash].js',
+          chunkFileNames: 'assets/[name]-[hash].js',
+          assetFileNames: 'assets/[name]-[hash].[ext]',
+        },
+      },
+    },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Re-enabled HMR with port 0 to allow Vite to find an available port

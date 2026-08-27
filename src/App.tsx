@@ -918,23 +918,29 @@ const popOutPlayer = (url: string | undefined) => {
 // Priority: embedUrl (explicitly embed-formatted) > videoUrl > source-specific fields > streamingUrl (raw) > external_link > externalMovieLink.
 // embedUrl is intentionally first because the server explicitly computes it as the embed-ready version,
 // while streamingUrl retains the raw user input (e.g. "watch?v=" instead of "embed/").
+//
+// IMDb title URLs are NEVER valid playback sources — they are metadata-only.
 function getMovieSourceUrl(movie: any): string | null {
   if (!movie) return null;
-  return (
-    movie.embedUrl ||
-    movie.videoUrl ||
-    movie.hdtodayUrl ||
-    movie.vidsrcUrl ||
-    movie.vidmolyUrl ||
-    movie.streamwishUrl ||
-    movie.fileLrunUrl ||
-    movie.youtubeMovieUrl ||
-    movie.otherVideoUrl ||
-    movie.streamingUrl ||
-    movie.external_link ||
-    movie.externalMovieLink ||
-    null
-  );
+  const isImdbUrl = (url: string) => /imdb\.com\/title\//i.test(url);
+  const candidates = [
+    movie.embedUrl,
+    movie.videoUrl,
+    movie.hdtodayUrl,
+    movie.vidsrcUrl,
+    movie.vidmolyUrl,
+    movie.streamwishUrl,
+    movie.fileLrunUrl,
+    movie.youtubeMovieUrl,
+    movie.otherVideoUrl,
+    movie.streamingUrl,
+    movie.external_link,
+    movie.externalMovieLink,
+  ];
+  for (const url of candidates) {
+    if (typeof url === 'string' && url && !isImdbUrl(url)) return url;
+  }
+  return null;
 }
 
 // Scans EVERY source field of a movie for a YouTube link. Posted movies often
@@ -974,7 +980,9 @@ const IMMERSIVE_QUALITY_PRESETS = [
   { label: "زوم (4K Zoom)", value: 1.6 },
 ];
 
-import { getYTId as extractYouTubeId, loadYouTubeAPI } from './utils/youtube'; // Use the shared utility
+import { getYTId as extractYouTubeId, loadYouTubeAPI } from './utils/youtube';
+import { classifySourceType } from './utils/sourceType';
+import HlsVideoPlayer from './components/Player/HlsVideoPlayer';
 
 // Format a seconds value as `H:MM:SS` (or `MM:SS` when under an hour) for the seek bar.
 function formatTime(seconds: number): string {
@@ -1013,8 +1021,10 @@ const CategoryDropdown = ({ value, onChange, categories, className }: any) => (
 );
 
 const transformLink = (url: string) => {
-  if (url.includes("imdb.com")) {
-    return url.replace("imdb.com", "playimdb.com");
+  // IMDb title pages are metadata-only and must never be used as playback source.
+  // Return empty string so they are excluded from all source fields.
+  if (/imdb\.com\/title\//i.test(url)) {
+    return "";
   }
   return url;
 };
@@ -1092,6 +1102,7 @@ const ContentModule = ({
     description: "",
     posterUrl: "",
     imdbUrl: "",
+    imdbId: "",
     hdtodayUrl: "",
     youtubeMovieUrl: "",
     otherVideoUrl: "",
@@ -1126,12 +1137,14 @@ const ContentModule = ({
   // formData slot receives the URL; all other server slots are cleared so
   // exactly one source is active at publish time.
   const [universalVideoLink, setUniversalVideoLink] = useState("");
+  const [universalLinkError, setUniversalLinkError] = useState("");
   const detectedProvider = useMemo(
     () => detectVideoProvider(universalVideoLink),
     [universalVideoLink],
   );
   const handleUniversalVideoLinkChange = (value: string) => {
     setUniversalVideoLink(value);
+    setUniversalLinkError("");
     if (!value.trim()) {
       // Emptying the field clears every server slot.
       setFormData((prev) => ({
@@ -1144,6 +1157,13 @@ const ContentModule = ({
         otherVideoUrl: "",
         youtubeMovieUrl: "",
       }));
+      return;
+    }
+    // ── Reject IMDb URLs as playback source ───────────────────────────────
+    if (/imdb\.com\/title\//i.test(value)) {
+      setUniversalLinkError(
+        'ئەم لینکە پەڕەی زانیاریی IMDb ـە، نەک سەرچاوەی پەخشکردنی فیلم. زانیاریی فیلمەکە هێنرا، بەڵام تکایە لینکی پەخشی ڕێگەپێدراو لە خانەی سەرچاوەی فیلم دابنێ.'
+      );
       return;
     }
     const provider = detectVideoProvider(value);
@@ -1353,79 +1373,73 @@ const ContentModule = ({
     return () => clearTimeout(timer);
   }, [formData.trailerUrl, formData.youtubeMovieUrl, formData.hdtodayUrl]);
 
+  const [imdbImportStatus, setImdbImportStatus] = useState<{
+    type: "success" | "error" | null;
+    message: string;
+    imdbId?: string;
+  }>({ type: null, message: "" });
+
   const handleImdbFetch = async () => {
     const imdbUrl = (formData.imdbUrl || "").trim();
     if (!imdbUrl) {
-      alert("تکایە لینکێک دابنێ");
+      setImdbImportStatus({ type: "error", message: "تکایە لینکێک دابنێ." });
       return;
     }
 
-    const ai = getAI();
-    if (!ai) {
-      console.warn("Gemini API key is not configured in the environment.");
-      // Skip if prompt is not configured
-    }
-
-    // Extraction logic for IMDb ID (e.g. tt1234567)
-    const imdbIdMatch =
-      imdbUrl && typeof imdbUrl === "string"
-        ? imdbUrl.match(/tt\d{7,10}/)
-        : null;
-    const imdbId = imdbIdMatch ? imdbIdMatch[0] : null;
-
     setIsImdbFetching(true);
+    setImdbImportStatus({ type: null, message: "" });
+
     try {
-      // If we found an ID, pass it to the server. Otherwise pass the URL.
-      const queryParam = imdbId
-        ? `imdbId=${imdbId}`
-        : `url=${encodeURIComponent(imdbUrl)}`;
-      const res = await fetch(`/api/admin/imdb-fetch?${queryParam}`);
+      const res = await fetch("/api/admin/import-imdb", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: imdbUrl }),
+      });
       const result = await res.json();
 
-      if (result.success && result.html && ai) {
-        // Use client-side Gemini to extract metadata from HTML
-        const prompt = `
-          Extract metadata from this HTML content.
-          Return ONLY a valid JSON object with these keys: 
-          type ("movie" or "tv"), title, year (string), rating (string, e.g. "8.5"), description, poster (URL).
-          HTML: ${result.html}
-        `;
-
-        try {
-          const geminiResult = await ai.models.generateContent({
-            model: "gemini-2.0-flash",
-            contents: [{ parts: [{ text: prompt }] }],
-          });
-          const text = geminiResult.text;
-          const jsonStr = text.replace(/```json|```/g, "").trim();
-          const movieData = JSON.parse(jsonStr);
-
-          setFormData((prev) => ({
-            ...prev,
-            title: movieData.title || prev.title,
-            description: movieData.description || prev.description,
-            posterUrl: movieData.poster || prev.posterUrl,
-            rating: movieData.rating ? String(movieData.rating) : prev.rating,
-            year: movieData.year ? String(movieData.year) : prev.year,
-            type: movieData.type || prev.type,
-          }));
-        } catch (genAiErr: any) {
-          console.error("Gemini Extraction Error:", genAiErr);
-          alert("نەتوانرا زانیارییەکان جیا بکرێنەوە");
-        }
-      } else if (result.success && result.data) {
-        // Legacy fallback
+      if (result.success && result.imdbId) {
+        // Server-side metadata extraction succeeded.
+        // When the server returns a title, ALWAYS use it — this replaces any
+        // placeholder/manual junk such as "bbb". Only fall back to prev.title
+        // when the server returned no title at all (partial import).
+        const hasTitle = typeof result.title === 'string' && result.title.trim().length > 0;
         setFormData((prev) => ({
           ...prev,
-          ...result.data,
+          imdbUrl: result.imdbUrl || imdbUrl,
+          title: hasTitle ? result.title.trim() : prev.title,
+          description: result.description || prev.description,
+          posterUrl: result.poster || prev.posterUrl,
+          rating: result.rating ? String(result.rating) : prev.rating,
+          year: result.year ? String(result.year) : prev.year,
+          type: result.contentType || prev.type,
+          duration: result.duration || prev.duration,
+          imdbId: result.imdbId,
         }));
-      } else if (result.error) {
-        alert(result.error);
+        if (hasTitle) {
+          setImdbImportStatus({
+            type: "success",
+            message: `زانیاریی "${result.title.trim()}" هێنرا — ID: ${result.imdbId}`,
+            imdbId: result.imdbId,
+          });
+        } else {
+          // Partial import: we got the IMDb ID but not the title
+          setImdbImportStatus({
+            type: "success",
+            message: `ID هێنرا (${result.imdbId}) بەڵام تایتڵ نەدۆزرایەوە. تکایە دەستی بنووسە.`,
+            imdbId: result.imdbId,
+          });
+        }
       } else {
-        alert("نەتوانرا پەڕەکە باربکرێت");
+        setImdbImportStatus({
+          type: "error",
+          message: result.error || "نەتوانرا زانیارییەکان هێنرێت.",
+        });
       }
     } catch (err) {
-      alert("هەڵەیەک ڕوویدا لە کاتی وەرگرتنی زانیارییەکان");
+      setImdbImportStatus({
+        type: "error",
+        message: "هەڵەیەک ڕوویدا لە کاتی وەرگرتنی زانیارییەکان.",
+      });
     } finally {
       setIsImdbFetching(false);
     }
@@ -1485,6 +1499,15 @@ const ContentModule = ({
       return;
     }
 
+    // ── Reject IMDb title pages as playback source ────────────────────────
+    const allLinks = Object.values(links).join(' ');
+    if (/imdb\.com\/title\//i.test(allLinks)) {
+      const imdbMsg = 'ئەم لینکە پەڕەی زانیاریی IMDb ـە، نەک سەرچاوەی پەخشکردنی فیلم. زانیاریی فیلمەکە هێنرا، بەڵام تکایە لینکی پەخشی ڕێگەپێدراو لە خانەی سەرچاوەی فیلم دابنێ.';
+      setPostStatus({ type: "error", message: imdbMsg });
+      alert(imdbMsg);
+      return;
+    }
+
     setIsPosting(true);
     setPostStatus({ type: null, message: "" });
 
@@ -1523,6 +1546,8 @@ const ContentModule = ({
       tags: finalTags,
       type: movieType,
       streamingUrl: anyLink || "",
+      // IMDb metadata — ID stored separately, URL is metadata-only
+      imdbId: formData.imdbId || "",
       // Include all links
       trailerUrl: links.trailer,
       mainTrailerUrl: links.mainTrailer,
@@ -1563,6 +1588,7 @@ const ContentModule = ({
         description: "",
         posterUrl: "",
         imdbUrl: "",
+        imdbId: "",
         hdtodayUrl: "",
         youtubeMovieUrl: "",
         otherVideoUrl: "",
@@ -1651,6 +1677,7 @@ const ContentModule = ({
         description: "",
         posterUrl: "",
         imdbUrl: "",
+        imdbId: "",
         hdtodayUrl: "",
         youtubeMovieUrl: "",
         otherVideoUrl: "",
@@ -1733,12 +1760,14 @@ const ContentModule = ({
                   type="text"
                   placeholder="لینکەکە لێرە دابنێ..."
                   value={formData.externalMovieLink}
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      externalMovieLink: e.target.value,
-                    })
-                  }
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (/imdb\.com\/title\//i.test(val)) {
+                      setPostStatus({ type: "error", message: "ئەم لینکە پەڕەی زانیاریی IMDb ـە، نەک سەرچاوەی پەخش." });
+                      return;
+                    }
+                    setFormData({ ...formData, externalMovieLink: val });
+                  }}
                   className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-white kurdish-text outline-none focus:border-brand-primary transition-all"
                 />
               </div>
@@ -1879,9 +1908,10 @@ const ContentModule = ({
                     type="text"
                     placeholder="imdb.com/title/tt..."
                     value={formData.imdbUrl}
-                    onChange={(e) =>
-                      setFormData({ ...formData, imdbUrl: e.target.value })
-                    }
+                    onChange={(e) => {
+                      setFormData({ ...formData, imdbUrl: e.target.value });
+                      setImdbImportStatus({ type: null, message: "" });
+                    }}
                     className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-white kurdish-text outline-none focus:border-blue-500 transition-all text-xs"
                   />
                   <button
@@ -1897,6 +1927,37 @@ const ContentModule = ({
                     هێنان
                   </button>
                 </div>
+                {/* Import status message */}
+                {imdbImportStatus.type && (
+                  <div className={`rounded-xl px-4 py-2.5 text-[11px] font-bold kurdish-text ${
+                    imdbImportStatus.type === "success"
+                      ? "border border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
+                      : "border border-red-500/20 bg-red-500/10 text-red-300"
+                  }`}>
+                    {imdbImportStatus.type === "success" && (
+                      <span className="font-mono text-[10px]">✓</span>
+                    )}{' '}
+                    {imdbImportStatus.message}
+                    {imdbImportStatus.imdbId && (
+                      <span className="ml-2 font-mono bg-black/30 px-2 py-0.5 rounded text-[10px]">
+                        {imdbImportStatus.imdbId}
+                      </span>
+                    )}
+                  </div>
+                )}
+                {/* IMDb ID badge */}
+                {formData.imdbId && !imdbImportStatus.type && (
+                  <div className="flex items-center gap-2 rounded-xl border border-blue-500/15 bg-blue-500/5 px-3 py-2 text-[10px] text-blue-300">
+                    <Star className="w-3 h-3" />
+                    <span className="font-mono">{formData.imdbId}</span>
+                    <button
+                      onClick={() => setFormData({ ...formData, imdbId: "", imdbUrl: "" })}
+                      className="ml-auto text-zinc-500 hover:text-red-400"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -1911,9 +1972,14 @@ const ContentModule = ({
                 type="text"
                 placeholder="لینکی یوتوبی ترایلەر..."
                 value={formData.trailerUrl}
-                onChange={(e) =>
-                  setFormData({ ...formData, trailerUrl: e.target.value })
-                }
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (/imdb\.com\/title\//i.test(val)) {
+                    setPostStatus({ type: "error", message: "ئەم لینکە پەڕەی زانیاریی IMDb ـە، نەک ترایلەر. تکایە لینکی یوتوب دابنێ." });
+                    return;
+                  }
+                  setFormData({ ...formData, trailerUrl: val });
+                }}
                 className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-6 py-3 text-white kurdish-text outline-none focus:border-red-500 transition-all text-xs"
               />
               <CategoryDropdown
@@ -1993,6 +2059,11 @@ const ContentModule = ({
                 سێرڤەر دۆزرایەوە: {detectedProvider.label}
               </p>
             )}
+            {universalLinkError && (
+              <p className="rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-[11px] font-bold text-red-300 kurdish-text">
+                {universalLinkError}
+              </p>
+            )}
           </div>
 
           {/* Subtitle source (optional): pasted .srt/.vtt content feeds the
@@ -2041,12 +2112,14 @@ const ContentModule = ({
                 type="text"
                 placeholder="لینکی ڕاستەوخۆی فیلم (وەک playimdb.com)..."
                 value={formData.externalMovieLink}
-                onChange={(e) =>
-                  setFormData({
-                    ...formData,
-                    externalMovieLink: e.target.value,
-                  })
-                }
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (/imdb\.com\/title\//i.test(val)) {
+                    setPostStatus({ type: "error", message: "ئەم لینکە پەڕەی زانیاریی IMDb ـە، نەک سەرچاوەی پەخش." });
+                    return;
+                  }
+                  setFormData({ ...formData, externalMovieLink: val });
+                }}
                 className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-white kurdish-text outline-none focus:border-brand-primary transition-all"
               />
               <p className="text-[10px] text-gray-500 flex items-center gap-1">
@@ -6927,6 +7000,13 @@ export default function App() {
 
   const [lastAddedMovie, setLastAddedMovie] = useState<any>(null);
   const [activeServerUrl, setActiveServerUrl] = useState<string | null>(null);
+  // ── Bounded player loading timeout ─────────────────────────────────────
+  // When the player starts loading, we set a timeout. If the media doesn't
+  // load within PLAYER_LOAD_TIMEOUT_MS, we show an error with Retry/Close.
+  const PLAYER_LOAD_TIMEOUT_MS = 30000; // 30 seconds
+  const [playerLoading, setPlayerLoading] = useState(false);
+  const [playerLoadError, setPlayerLoadError] = useState<string | null>(null);
+  const playerLoadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Tracks how the resilient YouTube player is rendering so the YouTube-only CSS
   // masks are only drawn over the embed (never over the native fallback video).
   const [youtubePlayerMode, setYoutubePlayerMode] = useState<"embed" | "direct" | "error">("embed");
@@ -7437,6 +7517,57 @@ export default function App() {
       setActiveServerUrl(null);
     }
   }, [selectedMovie]);
+
+  // ── Bounded player loading timeout ──────────────────────────────────────
+  // Start a timer when showPlayer becomes true with a valid URL.
+  // If the media doesn't signal "canplay" / "playing" within the timeout,
+  // show a Sorani error with Retry and Close actions.
+  useEffect(() => {
+    if (!showPlayer || !activeServerUrl) {
+      setPlayerLoading(false);
+      setPlayerLoadError(null);
+      if (playerLoadTimerRef.current) {
+        clearTimeout(playerLoadTimerRef.current);
+        playerLoadTimerRef.current = null;
+      }
+      return;
+    }
+    // Start loading state
+    setPlayerLoading(true);
+    setPlayerLoadError(null);
+    playerLoadTimerRef.current = setTimeout(() => {
+      setPlayerLoading(false);
+      setPlayerLoadError("ڤیدیۆکە بە کاتی بە سەر تێدا بارنەکرایەوە. تکایە دووبارە هەوڵبدەرەوە.");
+    }, PLAYER_LOAD_TIMEOUT_MS);
+
+    // Listen for any <video> or <audio> element's "playing" event inside the
+    // player container to clear the loading state (covers Plyr, direct <video>,
+    // and cross-origin embeds that inject media elements).
+    const clearLoading = () => {
+      setPlayerLoading(false);
+      setPlayerLoadError(null);
+      if (playerLoadTimerRef.current) {
+        clearTimeout(playerLoadTimerRef.current);
+        playerLoadTimerRef.current = null;
+      }
+    };
+    const container = modalPlayerRef.current;
+    if (container) {
+      container.addEventListener("playing", clearLoading, true);
+      container.addEventListener("canplay", clearLoading, true);
+    }
+
+    return () => {
+      if (playerLoadTimerRef.current) {
+        clearTimeout(playerLoadTimerRef.current);
+        playerLoadTimerRef.current = null;
+      }
+      if (container) {
+        container.removeEventListener("playing", clearLoading, true);
+        container.removeEventListener("canplay", clearLoading, true);
+      }
+    };
+  }, [showPlayer, activeServerUrl, selectedMovie?.id]);
 
   // Point 2: Page Visibility Audio Control (Data & Power Saver)
   React.useLayoutEffect(() => {
@@ -13407,71 +13538,116 @@ export default function App() {
                 >
                   {showPlayer && activeServerUrl ? (
                     <div className="absolute inset-0 bg-black flex items-center justify-center z-10 transition-all">
-                      {/* Player Content based on activeServerUrl */}
-                      {false && selectedMovie.isTooLarge ? (
-                        <div className="relative w-full h-full flex flex-col items-center justify-center bg-zinc-950 p-6 text-center">
-                          <div className="w-16 h-16 rounded-full bg-red-500/10 flex items-center justify-center mb-6">
-                            <AlertCircle className="w-8 h-8 text-red-500" />
+                      {/* ── Player routing via classifySourceType ────────────── */}
+                      {((): React.ReactNode => {
+                        const srcType = classifySourceType(activeServerUrl);
+
+                        // 1. IMDb → metadata-only, should never reach here
+                        if (srcType === "imdb") {
+                          return (
+                            <div className="relative w-full h-full flex flex-col items-center justify-center bg-zinc-950 p-6 text-center">
+                              <AlertCircle className="w-8 h-8 text-red-500 mb-3" />
+                              <p className="text-sm font-bold text-red-300 kurdish-text">
+                                ئەم لینکە زانیاریی تەنها — سەرچاوەی پلەیباک نییە
+                              </p>
+                            </div>
+                          );
+                        }
+
+                        // 2. YouTube → dedicated non-sandboxed player
+                        if (srcType === "youtube") {
+                          return (
+                            <YouTubeResilientPlayer
+                              url={activeServerUrl}
+                              iframeId="room-player"
+                              title={`${selectedMovie?.title || "CinemaChat"} — YouTube Player`}
+                              onModeChange={(mode) => {
+                                setYoutubePlayerMode(mode);
+                                if (mode !== "error") {
+                                  setPlayerLoading(false);
+                                  setPlayerLoadError(null);
+                                  if (playerLoadTimerRef.current) {
+                                    clearTimeout(playerLoadTimerRef.current);
+                                    playerLoadTimerRef.current = null;
+                                  }
+                                }
+                              }}
+                            />
+                          );
+                        }
+
+                        // 3. HLS → native hls.js player
+                        if (srcType === "hls") {
+                          return (
+                            <HlsVideoPlayer
+                              url={activeServerUrl}
+                              autoPlay
+                              muted={isRoomMuted}
+                            />
+                          );
+                        }
+
+                        // 4. Direct video (MP4/WebM) → Plyr
+                        if (srcType === "direct-video") {
+                          return (
+                            <div className="relative w-full h-full flex items-center justify-center bg-black">
+                              <Plyr
+                                ref={plyrRef}
+                                source={plyrSource}
+                                options={plyrOptions}
+                              />
+                            </div>
+                          );
+                        }
+
+                        // 5. Supported embed (known providers) → sandboxed iframe
+                        if (srcType === "supported-embed") {
+                          return (
+                            <ImmersiveShieldedPlayer
+                              url={activeServerUrl}
+                              iframeId="streaming-player"
+                              title={`${selectedMovie?.title || "CinemaChat"} — Cinematic Player`}
+                              scale={immersiveScale}
+                              subtitleOffset={Math.round((ccSettings.subtitleOffsetY / 100) * 15)}
+                            />
+                          );
+                        }
+
+                        // 6. Unsupported → Sorani error with Retry/Close
+                        return (
+                          <div className="relative w-full h-full flex flex-col items-center justify-center bg-zinc-950 p-6 text-center gap-4">
+                            <div className="w-16 h-16 rounded-full bg-red-500/10 flex items-center justify-center">
+                              <AlertCircle className="w-8 h-8 text-red-500" />
+                            </div>
+                            <h3 className="text-lg font-bold text-white kurdish-text">
+                              سەرچاوەی پەخش نەپەرکراوە
+                            </h3>
+                            <p className="text-zinc-400 text-sm max-w-xs kurdish-text">
+                              ئەم لینکە پشتگیری ناکرێت یان پێشکەشی پەخشکردنی نەناسراوە. تکایە لینکێکی ڕێگەپێدراو دابنێ.
+                            </p>
+                            <div className="flex items-center gap-3 mt-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setShowPlayer(false);
+                                  setTimeout(() => setShowPlayer(true), 100);
+                                }}
+                                className="px-5 py-2.5 bg-brand-primary hover:bg-red-700 text-white rounded-full font-bold text-sm transition-all flex items-center gap-2"
+                              >
+                                <RotateCcw className="w-4 h-4" />
+                                دووبارە هەوڵبدەرەوە
+                              </button>
+                              <button
+                                type="button"
+                                onClick={closeMovieModal}
+                                className="px-5 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-full font-bold text-sm transition-all"
+                              >
+                                داخستن
+                              </button>
+                            </div>
                           </div>
-                          <h3 className="text-xl font-bold text-white mb-2 kurdish-text">
-                            قەبارەی ڤیدیۆکە گەورەیە
-                          </h3>
-                          <p className="text-zinc-400 mb-6 text-sm max-w-xs kurdish-text">
-                            قەبارەی ئەم ڤیدیۆیە گەورەیە و ناتوانرێت ڕاستەوخۆ
-                            لێرەدا لێبدرێت. تکایە پەیوەندیمان پێوە بکە بۆ
-                            وەرگرتنی لینکی بینین.
-                          </p>
-                          {import.meta.env.VITE_WHATSAPP_NUMBER && (
-                            <a
-                              href={`https://wa.me/${import.meta.env.VITE_WHATSAPP_NUMBER}?text=${encodeURIComponent("I need help with movie: " + selectedMovie.title)}`}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="px-6 py-2 bg-[#25D366] hover:bg-[#128C7E] text-white font-bold rounded-full text-sm transition-all flex items-center gap-2"
-                            >
-                              پەیوەندی بە واتسئەپەوە بکە
-                              <ExternalLink className="w-4 h-4" />
-                            </a>
-                          )}
-                        </div> // Too Large Video Message
-                      ) : activeServerUrl.includes("youtube.com") ||
-                        activeServerUrl.includes("youtu.be") ? (
-                        <YouTubeResilientPlayer
-                          url={activeServerUrl}
-                          iframeId="room-player"
-                          title={`${selectedMovie?.title || "CinemaChat"} — YouTube Player`}
-                          onModeChange={(mode) => setYoutubePlayerMode(mode)}
-                        />
-                      ) : activeServerUrl.includes("/embed/") ||
-                        activeServerUrl.includes("hdtoday.") ||
-                        activeServerUrl.includes("vidcloud") ||
-                        activeServerUrl.includes("vidmoly") ||
-                        activeServerUrl.includes("streamwish") ||
-                        activeServerUrl.includes("filelrun") ||
-                        activeServerUrl.includes("rabbitstream") ||
-                        activeServerUrl.includes("kurdcinema") ||
-                        activeServerUrl.includes("streaming") ||
-                        activeServerUrl.includes("source") ||
-                        !activeServerUrl.match(
-                          /\.(mp4|m4v|webm|ogv)$|youtube\.com|youtu\.be/i,
-                        ) ? (
-                        <ImmersiveShieldedPlayer
-                          url={activeServerUrl}
-                          iframeId="streaming-player"
-                          title={`${selectedMovie?.title || "CinemaChat"} — Cinematic Player`}
-                          scale={immersiveScale}
-                          // Shift the provider's native subtitles upward in step
-                          // with the user's subtitle-position setting (0-15%).
-                          subtitleOffset={Math.round((ccSettings.subtitleOffsetY / 100) * 15)}
-                        /> // Cinematic Shielded Player for external embeds
-                      ) : (
-                        <div className="relative w-full h-full flex items-center justify-center bg-black">
-                          <Plyr
-                            ref={plyrRef}
-                            source={plyrSource}
-                            options={plyrOptions}
-                          />
-                        </div> // Plyr Player for direct video files
-                      )}
+                        );
+                      })()}
 
                       {/* AI subtitle overlay for Drama Rooms — renders on top of
                           whatever player type is active (YouTube, embed, or Plyr).
@@ -14136,6 +14312,44 @@ export default function App() {
                           {formatTime(playerDuration)}
                         </span>
                       </div>
+
+                      {/* ── Player loading timeout error overlay ────────────────── */}
+                      {playerLoadError && (
+                        <div className="absolute inset-0 z-[90] flex flex-col items-center justify-center bg-black/90 backdrop-blur-sm gap-4 pointer-events-auto">
+                          <div className="w-16 h-16 rounded-full bg-red-500/15 flex items-center justify-center">
+                            <AlertCircle className="w-8 h-8 text-red-400" />
+                          </div>
+                          <p className="text-sm font-bold text-red-300 kurdish-text max-w-xs text-center">
+                            {playerLoadError}
+                          </p>
+                          <div className="flex items-center gap-3">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPlayerLoadError(null);
+                                setPlayerLoading(true);
+                                playerLoadTimerRef.current = setTimeout(() => {
+                                  setPlayerLoading(false);
+                                  setPlayerLoadError("ڤیدیۆکە بە کاتی بە سەر تێدا بارنەکرایەوە. تکایە دووبارە هەوڵبدەرەوە.");
+                                }, PLAYER_LOAD_TIMEOUT_MS);
+                                setShowPlayer(false);
+                                setTimeout(() => setShowPlayer(true), 100);
+                              }}
+                              className="px-5 py-2.5 bg-brand-primary hover:bg-red-700 text-white rounded-full font-bold text-sm transition-all flex items-center gap-2"
+                            >
+                              <RotateCcw className="w-4 h-4" />
+                              دووبارە هەوڵبدەرەوە
+                            </button>
+                            <button
+                              type="button"
+                              onClick={closeMovieModal}
+                              className="px-5 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-full font-bold text-sm transition-all"
+                            >
+                              داخستن
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div className="relative h-full w-full">
@@ -14156,6 +14370,33 @@ export default function App() {
                           <Clapperboard className="w-14 h-14 text-white/20" />
                         </div>
                       )} {/* Poster / Fallback Placeholder */}
+                      {/* Playback source required — shown when activeServerUrl is null
+                          (e.g., all sources are IMDb metadata-only URLs or legacy
+                          invalid records). Displays Sorani error + WhatsApp CTA. */}
+                      {!activeServerUrl && !getMovieSourceUrl(selectedMovie) && (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm z-20 gap-3">
+                          <div className="w-14 h-14 rounded-full bg-red-500/10 flex items-center justify-center mb-2">
+                            <AlertCircle className="w-7 h-7 text-red-500" />
+                          </div>
+                          <p className="text-sm font-bold text-red-300 kurdish-text">
+                            سەرچاوەی پلەیباک نییە
+                          </p>
+                          <p className="text-xs text-zinc-400 kurdish-text max-w-[240px] text-center">
+                            تکایە سەرچاوەی ڤیدیۆکە بنووسە یان پەیوەندیمان پێوە بکە.
+                          </p>
+                          {import.meta.env.VITE_WHATSAPP_NUMBER && (
+                            <a
+                              href={`https://wa.me/${import.meta.env.VITE_WHATSAPP_NUMBER}?text=${encodeURIComponent("پەیوەندی بکە بۆ: " + selectedMovie.title)}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="mt-1 px-5 py-2 bg-[#25D366] hover:bg-[#128C7E] text-white font-bold rounded-full text-sm transition-all flex items-center gap-2"
+                            >
+                              پەیوەندی بە واتسئەپەوە بکە
+                              <ExternalLink className="w-4 h-4" />
+                            </a>
+                          )}
+                        </div>
+                      )}
                       {getMovieSourceUrl(selectedMovie) && (
                         <button
                           type="button"
