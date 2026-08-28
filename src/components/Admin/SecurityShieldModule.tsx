@@ -83,6 +83,10 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [unblockRequests, setUnblockRequests] = useState<UnblockRequest[]>([]);
   const [unblockArchive, setUnblockArchive] = useState<UnblockRequest[]>([]);
+  // Approve-in-flight id (disables the button + shows a spinner so the same
+  // request cannot be double-submitted) and the last action result message.
+  const [resolvingId, setResolvingId] = useState<string | null>(null);
+  const [unblockMessage, setUnblockMessage] = useState<{ ok: boolean; msg: string } | null>(null);
   
   // Inputs
   const [manualIpToBan, setManualIpToBan] = useState("");
@@ -311,30 +315,59 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
   };
 
   // Unblock & remove: instantly unbans the requester's device fingerprint and
-  // IP via the existing server endpoints, then clears the Firestore request
-  // document in one admin action.
+  // IP via the existing server endpoints — the unban-ip call is what actually
+  // removes the IP from the banned list — then clears the Firestore request
+  // document in one admin action. The document is only deleted AFTER every
+  // unban call returned success, so a failed request stays in the queue and can
+  // be retried instead of silently vanishing while the user stays banned.
   const handleResolveUnblockRequest = async (req: UnblockRequest) => {
+    if (resolvingId) return; // one approve at a time
     if (!confirm("ئایا دڵنیایت لە کردنەوەی بلۆکی ئەم بەکارهێنەرە و سڕینەوەی داواکارییەکەی؟")) return;
+    setResolvingId(req.id);
+    setUnblockMessage(null);
     try {
-      const body = { "Content-Type": "application/json" };
+      const jsonBody = { "Content-Type": "application/json" };
+
+      // 1) Lift the device-fingerprint ban (the primary auto-ban target).
       if (req.deviceId) {
-        await fetch("/api/admin/unban-device", {
+        const res = await fetch("/api/admin/unban-device", {
           method: "POST",
-          headers: { ...body, ...adminHeaders },
+          headers: { ...jsonBody, ...adminHeaders },
           body: JSON.stringify({ deviceId: req.deviceId, adminName }),
         });
+        if (!res.ok) throw new Error(`unban-device failed (${res.status})`);
       }
+
+      // 2) Lift the IP ban. The endpoint echoes the fresh banned list, so the
+      //    Auto-Ban tab reflects the removal immediately, not only after the
+      //    next 15s poll.
       if (req.ip) {
-        await fetch("/api/admin/unban-ip", {
+        const res = await fetch("/api/admin/unban-ip", {
           method: "POST",
-          headers: { ...body, ...adminHeaders },
+          headers: { ...jsonBody, ...adminHeaders },
           body: JSON.stringify({ ip: req.ip, adminName }),
         });
+        if (!res.ok) throw new Error(`unban-ip failed (${res.status})`);
+        const data = await res.json();
+        if (Array.isArray(data?.bannedIps)) {
+          setBannedIps(data.bannedIps);
+        } else {
+          // Belt-and-suspenders: mirror the removal locally if the payload
+          // unexpectedly lacks the list.
+          setBannedIps((prev) => prev.filter((ip) => ip !== req.ip));
+        }
       }
+
+      // 3) Only once every unban succeeded, remove the Firestore request —
+      //    onSnapshot then updates the queue and its tab badge in real time.
       await deleteDoc(doc(db, "unblockRequests", req.id));
-      loadData();
+      setUnblockMessage({ ok: true, msg: `✓ بلۆک لابرا بۆ ${req.name} (${req.phone}) — داواکارییەکە سڕایەوە.` });
     } catch (err) {
       console.error("Failed to resolve unblock request:", err);
+      setUnblockMessage({ ok: false, msg: "هەڵەیەک ڕوویدا لە لابردنی بلۆک — داواکارییەکە ماوەتەوە. تکایە دووبارە هەوڵبدەوە." });
+    } finally {
+      setResolvingId(null);
+      loadData(); // refresh the archive + banned-IP health state
     }
   };
 
@@ -846,6 +879,18 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
                 </div>
               </div>
 
+              {/* Approve / unblock action feedback (success or retry error) */}
+              {unblockMessage && (
+                <div className={`p-3 rounded-xl border text-xs font-bold kurdish-text flex items-center gap-2 ${
+                  unblockMessage.ok
+                    ? "bg-green-500/10 border-green-500/20 text-green-400"
+                    : "bg-red-500/10 border-red-500/20 text-red-400"
+                }`}>
+                  {unblockMessage.ok ? <ShieldCheck className="w-4 h-4 shrink-0" /> : <AlertTriangle className="w-4 h-4 shrink-0" />}
+                  {unblockMessage.msg}
+                </div>
+              )}
+
               {unblockRequests.length === 0 ? (
                 <div className="p-10 text-center rounded-2xl border border-white/5 bg-white/5">
                   <User className="w-12 h-12 text-brand-primary mx-auto opacity-55 mb-3" />
@@ -861,6 +906,9 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
                             <User className="w-4 h-4" />
                           </span>
                           <span className="text-sm font-black text-white kurdish-text truncate">{reqItem.name}</span>
+                          <span className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-400 text-[10px] font-black kurdish-text shrink-0">
+                            چاوەڕوانە
+                          </span>
                         </div>
                         <p className="text-xs text-gray-200 flex items-center gap-1.5">
                           <span className="text-[10px] text-gray-500 kurdish-text">مۆبایل:</span>
@@ -899,10 +947,20 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
                       <div className="text-left shrink-0 self-end sm:self-center flex sm:flex-col gap-2">
                         <button
                           onClick={() => handleResolveUnblockRequest(reqItem)}
-                          className="px-3 py-1.5 bg-green-500/10 hover:bg-green-600 text-green-500 hover:text-white rounded-lg text-[10px] font-bold kurdish-text flex items-center gap-1.5 transition duration-200"
+                          disabled={resolvingId === reqItem.id}
+                          className="px-3 py-1.5 bg-green-500/10 hover:bg-green-600 text-green-500 hover:text-white rounded-lg text-[10px] font-bold kurdish-text flex items-center gap-1.5 transition duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                          <Unlock className="w-3 h-3" />
-                          کردنەوە + سڕینەوە
+                          {resolvingId === reqItem.id ? (
+                            <>
+                              <RefreshCw className="w-3 h-3 animate-spin" />
+                              خەریکە...
+                            </>
+                          ) : (
+                            <>
+                              <Unlock className="w-3 h-3" />
+                              لابردنی بلۆک
+                            </>
+                          )}
                         </button>
                         <button
                           onClick={() => handleDeleteUnblockRequest(reqItem.id)}
