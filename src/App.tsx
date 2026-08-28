@@ -11106,14 +11106,26 @@ export default function App() {
 
     // Server-side queue sync (best-effort): the request is ALWAYS POSTed to
     // /api/unblock-request so the server db.json queue / audit log keeps a
-    // durable record of the requester's name + phone, not just Firestore. If
-    // the Firestore write failed this also serves as the fallback delivery.
+    // durable record of the requester (name + phone + IP + device), not just
+    // Firestore. If the Firestore write failed this also serves as the fallback
+    // delivery — and Section 11's admin tab reads this server queue too, so the
+    // request still lands in the active unblock-requests list.
     let serverDelivered = false;
     try {
       const res = await fetch("/api/unblock-request", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Device-Id": deviceId },
-        body: JSON.stringify({ name: cleanName, phone: cleanPhone, deviceId }),
+        body: JSON.stringify({
+          name: cleanName,
+          phone: cleanPhone,
+          deviceId,
+          ip,
+          device,
+          browser,
+          location,
+          blockedAt: blockedAt ? blockedAt.toISOString() : "",
+          requestedAt: new Date().toISOString(),
+        }),
       });
       serverDelivered = res.ok;
     } catch (err) {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { 
   ShieldCheck, 
   ShieldAlert, 
@@ -67,11 +67,57 @@ interface UnblockRequest {
   resolvedAt?: string; // archive entries only
   requestedAt?: string;
   timestamp: string;
+  // Active-queue provenance filled in by mergeUnblockQueues: `firestoreId` is the
+  // document id when the request lives in the Firestore `unblockRequests`
+  // collection, `serverId` is the id when it lives in the server db.json queue
+  // (GET /api/admin/unblock-requests). An item may exist in both — the merged
+  // view keeps a single card and clears it from every queue it belongs to.
+  firestoreId?: string;
+  serverId?: string;
 }
 
 interface SecurityShieldModuleProps {
   currentUser: any;
 }
+
+// Merge the two active unblock-request queues — the Firestore `unblockRequests`
+// collection (primary, real-time via onSnapshot) and the server db.json queue
+// (GET /api/admin/unblock-requests, which always receives the POST fallback) —
+// into a single deduplicated list so every submitted request is visible even
+// when only one delivery path succeeded. Dedupe key: device fingerprint first,
+// then IP+phone, then fallback to the request id.
+const mergeUnblockQueues = (
+  firestore: UnblockRequest[],
+  server: UnblockRequest[],
+): UnblockRequest[] => {
+  const byKey = new Map<string, UnblockRequest>();
+  const keyOf = (r: UnblockRequest): string => {
+    if (r.deviceId) return `dev:${r.deviceId}`;
+    if (r.ip && r.phone) return `ip:${r.ip}|ph:${r.phone}`;
+    if (r.id) return `id:${r.id}`;
+    return `name:${r.name}|ph:${r.phone}`;
+  };
+
+  firestore.forEach((r) => {
+    byKey.set(keyOf(r), { ...r, firestoreId: r.id, serverId: undefined });
+  });
+
+  server.forEach((r) => {
+    const k = keyOf(r);
+    const existing = byKey.get(k);
+    if (existing) {
+      // Same request already shown from Firestore — remember its server id too
+      // so approve/delete can clear both queues.
+      existing.serverId = r.id;
+    } else {
+      byKey.set(k, { ...r, serverId: r.id, firestoreId: undefined });
+    }
+  });
+
+  return Array.from(byKey.values()).sort(
+    (a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""),
+  );
+};
 
 export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ currentUser }) => {
   const [activeTab, setActiveTab] = useState<"gateway" | "firewall" | "autoban" | "filter" | "audit" | "unblock">("gateway");
@@ -81,12 +127,23 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
   const [bannedIps, setBannedIps] = useState<string[]>([]);
   const [bannedKeywords, setBannedKeywords] = useState<string[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
-  const [unblockRequests, setUnblockRequests] = useState<UnblockRequest[]>([]);
+  // Raw live Firestore queue (onSnapshot below) + raw server db.json queue
+  // (loadData poll). The rendered list is the merged `unblockRequests` below.
+  const [firestoreUnblockRequests, setFirestoreUnblockRequests] = useState<UnblockRequest[]>([]);
+  const [serverUnblockRequests, setServerUnblockRequests] = useState<UnblockRequest[]>([]);
   const [unblockArchive, setUnblockArchive] = useState<UnblockRequest[]>([]);
   // Approve-in-flight id (disables the button + shows a spinner so the same
   // request cannot be double-submitted) and the last action result message.
   const [resolvingId, setResolvingId] = useState<string | null>(null);
   const [unblockMessage, setUnblockMessage] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  // Active unblock-request queue: Firestore (real-time primary) merged with the
+  // server-side queue (durable fallback). A request "lands" in this tab through
+  // either delivery path.
+  const unblockRequests = useMemo(
+    () => mergeUnblockQueues(firestoreUnblockRequests, serverUnblockRequests),
+    [firestoreUnblockRequests, serverUnblockRequests],
+  );
   
   // Inputs
   const [manualIpToBan, setManualIpToBan] = useState("");
@@ -125,6 +182,43 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
       const auditData = await auditRes.json();
       if (Array.isArray(auditData)) setAuditLogs(auditData);
 
+      // Load the server-side ACTIVE unblock request queue (db.json) — the
+      // durable fallback the blocked client's POST /api/unblock-request always
+      // reaches. Merged with the Firestore snapshot below so every submitted
+      // request shows in the "داواکاری لابردنی بلۆک" tab regardless of which
+      // delivery path succeeded.
+      const ubqLiveRes = await fetch("/api/admin/unblock-requests", { headers: adminHeaders });
+      const ubqLiveData = await ubqLiveRes.json();
+      if (Array.isArray(ubqLiveData)) {
+        setServerUnblockRequests(
+          ubqLiveData.map((r: any): UnblockRequest => {
+            const toIso = (v: any): string | undefined => {
+              if (!v) return undefined;
+              if (typeof v === "string") {
+                const t = new Date(v);
+                return isNaN(t.getTime()) ? v : t.toISOString();
+              }
+              if (typeof v.seconds === "number") return new Date(v.seconds * 1000).toISOString();
+              return String(v);
+            };
+            return {
+              id: String(r?.id ?? ""),
+              name: r?.name ?? "",
+              phone: r?.phone ?? "",
+              ip: r?.ip || "",
+              deviceId: r?.deviceId || "",
+              device: r?.device || "",
+              browser: r?.browser || "",
+              location: r?.location || "",
+              blockedAt: toIso(r?.blockedAt),
+              requestedAt: toIso(r?.requestedAt),
+              status: r?.status || "pending",
+              timestamp: toIso(r?.timestamp) || toIso(r?.requestedAt) || new Date().toISOString(),
+            };
+          }),
+        );
+      }
+
       // Load unblock request archive history (resolved/deleted/cleared)
       const ubqArchRes = await fetch("/api/admin/unblock-requests/archive", { headers: adminHeaders });
       const ubqArchData = await ubqArchRes.json();
@@ -150,7 +244,7 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
     const unsub = onSnapshot(
       q,
       (snap) => {
-        setUnblockRequests(
+        setFirestoreUnblockRequests(
           snap.docs.map((d) => {
             const data = d.data() as Record<string, any>;
             // Normalize Firestore Timestamps to ISO strings so every render
@@ -289,12 +383,22 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
     }
   };
 
-  // Remove a request document from the Firestore queue (reviewed & dismissed
-  // without unblocking anyone).
-  const handleDeleteUnblockRequest = async (id: string) => {
+  // Remove a request from BOTH active queues (reviewed & dismissed without
+  // unblocking anyone): the Firestore document and the server db.json queue.
+  const handleDeleteUnblockRequest = async (item: UnblockRequest) => {
     try {
-      await deleteDoc(doc(db, "unblockRequests", id));
-      loadData(); // refresh archive/history panels
+      const jsonBody = { "Content-Type": "application/json" };
+      if (item.firestoreId) {
+        await deleteDoc(doc(db, "unblockRequests", item.firestoreId));
+      }
+      if (item.serverId) {
+        await fetch(`/api/admin/unblock-request/${item.serverId}`, {
+          method: "DELETE",
+          headers: { ...jsonBody, ...adminHeaders },
+          body: JSON.stringify({ adminName }),
+        });
+      }
+      loadData(); // refresh queue + archive/history panels
     } catch (err) {
       console.error("Failed to delete unblock request:", err);
     }
@@ -306,8 +410,18 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
       // writeBatch isn't part of the shared firebase lib export, and queues are
       // capped at 200 — sequential deletes are simple, safe and fast enough.
       await Promise.all(
-        unblockRequests.map((r) => deleteDoc(doc(db, "unblockRequests", r.id))),
+        firestoreUnblockRequests.map((r) => deleteDoc(doc(db, "unblockRequests", r.id))),
       );
+      // Clear the server db.json queue too so no fallback entry lingers.
+      try {
+        await fetch("/api/admin/clear-unblock-requests", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...adminHeaders },
+          body: JSON.stringify({ adminName }),
+        });
+      } catch (err) {
+        console.warn("Failed to clear server unblock queue:", err);
+      }
       loadData();
     } catch (err) {
       console.error("Failed to clear unblock requests:", err);
@@ -316,10 +430,11 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
 
   // Unblock & remove: instantly unbans the requester's device fingerprint and
   // IP via the existing server endpoints — the unban-ip call is what actually
-  // removes the IP from the banned list — then clears the Firestore request
-  // document in one admin action. The document is only deleted AFTER every
-  // unban call returned success, so a failed request stays in the queue and can
-  // be retried instead of silently vanishing while the user stays banned.
+  // removes the IP from the banned list — then clears the request from every
+  // active queue it lives in (Firestore doc and/or server db.json entry) in one
+  // admin action. The request is only removed AFTER every unban call returned
+  // success, so a failed action stays in the queue and can be retried instead
+  // of silently vanishing while the user stays banned.
   const handleResolveUnblockRequest = async (req: UnblockRequest) => {
     if (resolvingId) return; // one approve at a time
     if (!confirm("ئایا دڵنیایت لە کردنەوەی بلۆکی ئەم بەکارهێنەرە و سڕینەوەی داواکارییەکەی؟")) return;
@@ -358,16 +473,30 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
         }
       }
 
-      // 3) Only once every unban succeeded, remove the Firestore request —
-      //    onSnapshot then updates the queue and its tab badge in real time.
-      await deleteDoc(doc(db, "unblockRequests", req.id));
+      // 3) Only once every unban succeeded, clear the request from every active
+      //    queue it belongs to. onSnapshot + loadData then update the queue,
+      //    its tab badge and the archive in real time.
+      if (req.firestoreId) {
+        await deleteDoc(doc(db, "unblockRequests", req.firestoreId));
+      }
+      if (req.serverId) {
+        try {
+          await fetch(`/api/admin/unblock-request/${req.serverId}`, {
+            method: "DELETE",
+            headers: { ...jsonBody, ...adminHeaders },
+            body: JSON.stringify({ adminName }),
+          });
+        } catch (err) {
+          console.warn("Failed to clear server unblock entry:", err);
+        }
+      }
       setUnblockMessage({ ok: true, msg: `✓ بلۆک لابرا بۆ ${req.name} (${req.phone}) — داواکارییەکە سڕایەوە.` });
     } catch (err) {
       console.error("Failed to resolve unblock request:", err);
       setUnblockMessage({ ok: false, msg: "هەڵەیەک ڕوویدا لە لابردنی بلۆک — داواکارییەکە ماوەتەوە. تکایە دووبارە هەوڵبدەوە." });
     } finally {
       setResolvingId(null);
-      loadData(); // refresh the archive + banned-IP health state
+      loadData(); // refresh the queue, archive + banned-IP health state
     }
   };
 
@@ -963,7 +1092,7 @@ export const SecurityShieldModule: React.FC<SecurityShieldModuleProps> = ({ curr
                           )}
                         </button>
                         <button
-                          onClick={() => handleDeleteUnblockRequest(reqItem.id)}
+                          onClick={() => handleDeleteUnblockRequest(reqItem)}
                           className="px-3 py-1.5 bg-red-500/10 hover:bg-red-600 text-red-500 hover:text-white rounded-lg text-[10px] font-bold kurdish-text flex items-center gap-1.5 transition duration-200"
                         >
                           <Trash2 className="w-3 h-3" />
