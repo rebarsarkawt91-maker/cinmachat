@@ -170,7 +170,6 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
     },
     [connections, found, foundConn, myUid],
   );
-  const foundPeerAccepted = !!liveFoundConn && liveFoundConn.status === "accepted";
   const incomingPending = useMemo(
     () =>
       connections.filter(
@@ -231,22 +230,22 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
   // Auto-open the most recent accepted connection (e.g. right after the other
   // side accepts while the room is open on the target's device).
   //
-  // Guard: while the user is actively searching / has a found friend card on
-  // screen we do NOT auto-jump into an existing chat — that previously stole the
-  // found card away ~1s after the search finished (background snapshot landed
-  // and switched the step). The ONLY accepted auto-open during a found card is
-  // when the FOUND peer's own call/ask just got accepted (foundPeerAccepted).
+  // Guard: while a found-friend card is on screen (searchStatus === "found")
+  // we NEVER auto-jump — a background `connections` snapshot arriving after the
+  // search used to flip `foundPeerAccepted` (when the found peer was already an
+  // accepted friend) and swap the friend step for the chat, making the card
+  // vanish ~1s later. The card stays until the user acts: پێشەوە / کردنەوەی چات,
+  // "هاوڕێیەکی تر هەڵبژێرە" or clearing the input (which sets idle).
   useEffect(() => {
     if (!open || activeId) return;
-    if (searchStatus === "searching") return;
-    if (searchStatus === "found" && !foundPeerAccepted) return;
+    if (searchStatus === "searching" || searchStatus === "found") return;
     const accepted = connections.filter((c) => c.status === "accepted");
     if (accepted.length === 0) return;
     const latest = [...accepted].sort((a, b) =>
       (b.acceptedAt || b.updatedAt || "").localeCompare(a.acceptedAt || a.updatedAt || ""),
     )[0];
     setActiveId(latest.id);
-  }, [open, activeId, connections, searchStatus, foundPeerAccepted]);
+  }, [open, activeId, connections, searchStatus]);
 
   // If the active connection is closed (rejected/cancelled), drop it back to
   // the friend search step.
