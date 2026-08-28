@@ -11035,8 +11035,11 @@ export default function App() {
   // PRIMARY path: a direct Firestore write to `unblockRequests` — blocked
   // clients can always reach Firestore even when the app server refuses their
   // IP/device, so the admin queue (Security Shield Section 11) is guaranteed to
-  // receive the request in real time via onSnapshot. The legacy REST endpoint is
-  // still called best-effort afterwards purely for the server-side audit trail.
+  // receive the request in real time via onSnapshot. The request is ALSO always
+  // POSTed to the server-side /api/unblock-request queue (db.json), so the
+  // server audit trail / archive keeps its own durable record even when the
+  // Firestore write succeeds. If Firestore fails, the server queue is the
+  // fallback delivery path.
   const UNBLOCK_COOLDOWN_KEY = "cinemachat_unblock_cooldown";
   const submitUnblockRequest = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -11073,7 +11076,10 @@ export default function App() {
     const device = (typeof navigator !== "undefined" ? navigator.userAgent || "" : "").slice(0, 150);
     const deviceId = getDeviceId();
 
-    let delivered = false;
+    // PRIMARY delivery: Firestore `unblockRequests` — always reachable by a
+    // blocked client even when the app server refuses their IP/device, and the
+    // live source Section 11's onSnapshot listener renders in real time.
+    let firestoreDelivered = false;
     try {
       await addDoc(collection(db, "unblockRequests"), {
         name: cleanName,
@@ -11088,7 +11094,7 @@ export default function App() {
         requestedAt: new Date().toISOString(),
         timestamp: serverTimestamp(),
       });
-      delivered = true;
+      firestoreDelivered = true;
       try {
         safeStorage.set(UNBLOCK_COOLDOWN_KEY, String(Date.now()));
       } catch {
@@ -11098,20 +11104,23 @@ export default function App() {
       console.warn("Firestore unblock-request write failed:", err);
     }
 
-    // Secondary best-effort sync so the server audit log keeps its record.
-    if (!delivered) {
-      try {
-        const res = await fetch("/api/unblock-request", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Device-Id": deviceId },
-          body: JSON.stringify({ name: cleanName, phone: cleanPhone, deviceId }),
-        });
-        delivered = res.ok;
-      } catch (err) {
-        console.warn("Unable to submit unblock request:", err);
-      }
+    // Server-side queue sync (best-effort): the request is ALWAYS POSTed to
+    // /api/unblock-request so the server db.json queue / audit log keeps a
+    // durable record of the requester's name + phone, not just Firestore. If
+    // the Firestore write failed this also serves as the fallback delivery.
+    let serverDelivered = false;
+    try {
+      const res = await fetch("/api/unblock-request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Device-Id": deviceId },
+        body: JSON.stringify({ name: cleanName, phone: cleanPhone, deviceId }),
+      });
+      serverDelivered = res.ok;
+    } catch (err) {
+      console.warn("Unable to submit unblock request to server queue:", err);
     }
 
+    const delivered = firestoreDelivered || serverDelivered;
     if (delivered) {
       setUnblockFeedback({
         ok: true,

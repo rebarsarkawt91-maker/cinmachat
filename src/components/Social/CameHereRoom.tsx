@@ -22,6 +22,7 @@ import {
 import { SocialUser } from '../../types';
 import { getYTId, loadYouTubeAPI } from '../../utils/youtube';
 import { db, collection, getDocs } from '../../lib/firebase';
+import { censorOutgoingMessage } from '../../services/bannedWords';
 import {
   createFriendsRoom,
   getFriendsRoom,
@@ -535,10 +536,11 @@ export const CameHereRoom: React.FC<CameHereRoomProps> = ({
     if (!chatInput.trim() || !activeRoom) return;
 
     try {
+      const censored = await censorOutgoingMessage(chatInput.trim());
       await sendFriendsRoomMessage(activeRoom.id, {
         sender: usernameInput || "بەکارهێنەر",
         senderCode: userCodeInput.trim().toUpperCase(),
-        text: chatInput.trim(),
+        text: censored,
       });
       setChatInput("");
     } catch (err) {

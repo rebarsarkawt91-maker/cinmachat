@@ -32,10 +32,8 @@ import { SocialUser } from "../../types";
 import {
   EmailAuthProvider,
   getDownloadURL,
-  GoogleAuthProvider,
   linkWithCredential,
   reauthenticateWithCredential,
-  reauthenticateWithPopup,
   ref,
   storage,
   updatePassword,
@@ -119,7 +117,7 @@ const makeProfileForm = (profile?: SocialUser | null): AccountProfileForm => ({
   country: profile?.country || "",
   city: profile?.city || profile?.residence || "",
   language: profile?.language || "ckb",
-  avatar: profile?.avatarUrl || profile?.avatar || (profile as any)?.googlePhotoUrl || "",
+  avatar: profile?.avatarUrl || profile?.avatar || "",
   cover: profile?.cover || "",
   location: profile?.location && typeof profile.location === "object"
     ? {
@@ -309,9 +307,8 @@ export const AccountCenter: React.FC<AccountCenterProps> = ({
   const cameraStreamRef = useRef<MediaStream | null>(null);
   const pageScrollYRef = useRef(0);
   const completion = useMemo(() => profileCompletion(socialProfile), [socialProfile]);
-  const googlePhotoUrl = (socialProfile as any)?.googlePhotoUrl || currentUser?.photoURL || "";
   const avatar = !avatarBroken
-    ? socialProfile?.avatarUrl || socialProfile?.avatar || googlePhotoUrl || ""
+    ? socialProfile?.avatarUrl || socialProfile?.avatar || ""
     : "";
   const displayName = getDisplayName(socialProfile);
   const initials = getInitials(socialProfile);
@@ -324,7 +321,6 @@ export const AccountCenter: React.FC<AccountCenterProps> = ({
   );
   const providerIds = currentUser?.providerData?.map((item: any) => item.providerId) || [];
   const hasPasswordProvider = providerIds.includes("password");
-  const hasGoogleProvider = providerIds.includes("google.com");
   const securityMode = hasPasswordProvider ? "change" : "add";
   const hasUnsavedProfileEdits = useMemo(() => {
     if (!socialProfile || view !== "edit") return false;
@@ -477,22 +473,6 @@ export const AccountCenter: React.FC<AccountCenterProps> = ({
     }
   };
 
-  const useGooglePhoto = async () => {
-    if (!googlePhotoUrl || !onUpdateProfile) return;
-    setPhotoBusy(true);
-    setFormError("");
-    try {
-      await onUpdateProfile({ avatar: googlePhotoUrl, avatarUrl: googlePhotoUrl });
-      setForm((prev) => ({ ...prev, avatar: googlePhotoUrl }));
-      setAvatarBroken(false);
-      setFormSuccess("وێنەی گووگڵ بەکارهات.");
-    } catch (error: any) {
-      setFormError(error?.message || "وێنەی گووگڵ بەکارنەهات.");
-    } finally {
-      setPhotoBusy(false);
-    }
-  };
-
   const startSelfie = async () => {
     setCameraError("");
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -560,11 +540,10 @@ export const AccountCenter: React.FC<AccountCenterProps> = ({
     setPhotoBusy(true);
     setFormError("");
     try {
-      const fallback = googlePhotoUrl || "";
-      await onUpdateProfile({ avatar: fallback, avatarUrl: fallback });
-      setForm((prev) => ({ ...prev, avatar: fallback }));
+      await onUpdateProfile({ avatar: "", avatarUrl: "" });
+      setForm((prev) => ({ ...prev, avatar: "" }));
       setAvatarBroken(false);
-      setFormSuccess(fallback ? "وێنەکە گەڕایەوە بۆ Google photo." : "وێنەی profile لابرا.");
+      setFormSuccess("وێنەی profile لابرا.");
     } catch (error: any) {
       setFormError(error?.message || "لابردنی وێنە سەرکەوتوو نەبوو.");
     } finally {
@@ -600,18 +579,8 @@ export const AccountCenter: React.FC<AccountCenterProps> = ({
         await updatePassword(currentUser, securityForm.newPassword);
         setSecurityMessage("وشەی تێپەڕ نوێکرایەوە.");
       } else {
-        try {
-          const credential = EmailAuthProvider.credential(currentUser.email, securityForm.newPassword);
-          await linkWithCredential(currentUser, credential);
-        } catch (error: any) {
-          if (error?.code === "auth/requires-recent-login" && hasGoogleProvider) {
-            await reauthenticateWithPopup(currentUser, new GoogleAuthProvider());
-            const credential = EmailAuthProvider.credential(currentUser.email, securityForm.newPassword);
-            await linkWithCredential(currentUser, credential);
-          } else {
-            throw error;
-          }
-        }
+        const credential = EmailAuthProvider.credential(currentUser.email, securityForm.newPassword);
+        await linkWithCredential(currentUser, credential);
         setSecurityMessage("وشەی تێپەڕ زیادکرا. ئێستا دەتوانیت بە ئیمەیڵ/وشەی تێپەڕ بچیتە ژوورەوە.");
       }
       setSecurityForm({ currentPassword: "", newPassword: "", confirmPassword: "" });
@@ -622,7 +591,7 @@ export const AccountCenter: React.FC<AccountCenterProps> = ({
       } else if (code.includes("wrong-password") || code.includes("invalid-credential")) {
         setSecurityError("وشەی تێپەڕی ئێستا نادروستە.");
       } else if (code.includes("requires-recent-login")) {
-        setSecurityError("بۆ ئەم کردارە پێویستە جارێکی تر بە گووگڵ یان وشەی تێپەڕ خۆت بسەلمێنیت.");
+        setSecurityError("بۆ ئەم کردارە پێویستە جارێکی تر بە وشەی تێپەڕ خۆت بسەلمێنیت.");
       } else {
         setSecurityError(error?.message || "کرداری وشەی تێپەڕ سەرکەوتوو نەبوو.");
       }
@@ -742,7 +711,7 @@ export const AccountCenter: React.FC<AccountCenterProps> = ({
                     className="mt-2 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-[11px] font-black text-zinc-300 transition hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-brand-primary/30"
                   >
                     <Globe className="h-4 w-4" />
-                    Continue with Google / Email / Mobile
+                    چوونەژوورەوە بۆ ئەکاونتی خۆت
                   </button>
                 </div>
               ) : (
@@ -933,15 +902,6 @@ export const AccountCenter: React.FC<AccountCenterProps> = ({
                             >
                               <Camera className="h-4 w-4" />
                               Take Selfie
-                            </button>
-                            <button
-                              type="button"
-                              onClick={useGooglePhoto}
-                              disabled={photoBusy || !googlePhotoUrl}
-                              className="flex min-h-10 items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 text-[10px] font-black text-zinc-200 transition hover:bg-white/10 disabled:opacity-50"
-                            >
-                              <Globe className="h-4 w-4" />
-                              Use Google Photo
                             </button>
                             <button
                               type="button"
@@ -1141,7 +1101,7 @@ export const AccountCenter: React.FC<AccountCenterProps> = ({
                             {securityMode === "add" ? "ADD PASSWORD" : "CHANGE PASSWORD"}
                           </span>
                           <span className="text-[10px] font-bold text-zinc-500">
-                            {hasGoogleProvider ? "Google linked" : "Password account"}
+                            Password account
                           </span>
                         </div>
                         <div className="grid grid-cols-1 gap-2">

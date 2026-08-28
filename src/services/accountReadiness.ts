@@ -49,20 +49,7 @@ type UserLike = {
   displayName?: string | null;
   name?: string | null;
   email?: string | null;
-  emailVerified?: boolean;
   phoneNumber?: string | null;
-  providerData?: Array<{ providerId?: string | null }>;
-};
-
-const providerIdsOf = (user?: UserLike | null): Set<string> =>
-  new Set((user?.providerData || []).map((p) => p?.providerId).filter(Boolean) as string[]);
-
-/** Google accounts verify identity through their verified Google email; the
- *  profile still needs a display name + unique code, but no password/phone. */
-const hasVerifiedGoogleIdentity = (user?: UserLike | null, profile?: SocialUser | null): boolean => {
-  const providers = providerIdsOf(user);
-  const email = normalizeProfileEmail(profile?.email || user?.email);
-  return !!email && (user?.emailVerified !== false || providers.has("google.com"));
 };
 
 /**
@@ -118,7 +105,7 @@ export const getAccountReadiness = (
 
   const phone = normalizeProfilePhone(profile.phoneNumber || profile.phone);
   const email = normalizeProfileEmail(profile.email || user.email);
-  const hasIdentity = hasVerifiedGoogleIdentity(user, profile) || !!phone;
+  const hasIdentity = !!email || !!phone;
   if (!hasIdentity) missingFields.push("identity");
 
   // Optional (recommended, non-blocking) fields — Name/Age/Address/Movie that

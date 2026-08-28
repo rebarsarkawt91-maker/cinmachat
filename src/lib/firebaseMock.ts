@@ -130,13 +130,6 @@ export const signInAnonymously = async (authObj: any) => {
   return { user: mockU };
 };
 
-export const signInWithPopup = async (authObj: any, provider: any) => {
-  const mockU = new MockUser({ email: "google@cinema.mock", displayName: "بەکارهێنەری گووگڵ", isAnonymous: false });
-  localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(mockU));
-  authStateListeners.forEach(cb => cb(mockU));
-  return { user: mockU };
-};
-
 export const signOut = async (authObj: any) => {
   localStorage.removeItem(AUTH_STORAGE_KEY);
   authStateListeners.forEach(cb => cb(null));
@@ -150,10 +143,6 @@ export const updateProfile = async (user: any, profileData: any) => {
     authStateListeners.forEach(cb => cb(updated));
   }
 };
-
-export class GoogleAuthProvider {
-  static credential() { return {}; }
-}
 
 // --- FIREBASE FIRESTORE MOCKS ---
 export const initializeFirestore = () => ({ name: "[MockFirestore]" });

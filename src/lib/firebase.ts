@@ -27,16 +27,10 @@ import {
   getAuth,
   onAuthStateChanged,
   signInAnonymously,
-  signInWithPopup,
-  signInWithRedirect,
-  getRedirectResult,
-  GoogleAuthProvider,
   EmailAuthProvider,
   linkWithCredential,
   updatePassword,
   reauthenticateWithCredential,
-  reauthenticateWithPopup,
-  reauthenticateWithRedirect,
   browserLocalPersistence,
   setPersistence,
   signOut,
@@ -89,8 +83,8 @@ export const authPersistenceReady = setPersistence(auth, browserLocalPersistence
 // (which the join-room flow relies on) produces tokens the Firestore emulator
 // accepts — anonymous auth is DISABLED on the real Firebase project
 // (ADMIN_ONLY_OPERATION), so it would fail in a plain `npm run dev`. Gated
-// behind VITE_USE_AUTH_EMULATOR === "true" so normal dev (real Google sign-in)
-// and production are completely unchanged.
+// behind VITE_USE_AUTH_EMULATOR === "true" so normal dev flow (real Firebase
+// project) and production are completely unchanged.
 if (import.meta.env.DEV && import.meta.env.VITE_USE_AUTH_EMULATOR === "true") {
   connectAuthEmulator(auth, "http://127.0.0.1:9099");
 }
@@ -120,16 +114,10 @@ export {
   getDocFromServer,
   onAuthStateChanged,
   signInAnonymously,
-  signInWithPopup,
-  signInWithRedirect,
-  getRedirectResult,
-  GoogleAuthProvider,
   EmailAuthProvider,
   linkWithCredential,
   updatePassword,
   reauthenticateWithCredential,
-  reauthenticateWithPopup,
-  reauthenticateWithRedirect,
   browserLocalPersistence,
   setPersistence,
   signOut,

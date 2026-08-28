@@ -6,6 +6,7 @@ import {
   subscribeBroadcastMessages,
   sendBroadcastMessage,
 } from "../../services/mainBroadcast";
+import { censorOutgoingMessage } from "../../services/bannedWords";
 import {
   Tv,
   Send,
@@ -247,10 +248,11 @@ export const BroadcastRoom: React.FC<BroadcastRoomProps> = ({
 
     setIsSending(true);
     try {
+      const censored = await censorOutgoingMessage(newMsgText.trim());
       await sendBroadcastMessage({
         sender: localUsernameRef.current,
         senderCode: localUserCodeRef.current,
-        text: newMsgText.trim()
+        text: censored
       });
       setNewMsgText("");
     } catch (err) {

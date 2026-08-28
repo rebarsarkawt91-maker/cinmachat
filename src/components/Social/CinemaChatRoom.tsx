@@ -92,6 +92,7 @@ import {
   PRESENCE_STALE_MS,
   PRESENCE_HEARTBEAT_MS,
 } from "../../services/cinemaChat";
+import { censorOutgoingMessage } from "../../services/bannedWords";
 import {
   createFriendConnection,
   searchAccountByCCIdOrContact,
@@ -997,15 +998,16 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
     ).catch(() => {});
   };
 
-  const sendMessage = (e: React.FormEvent) => {
+  const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    const text = newMsg.trim();
-    if (!text || !isParticipant) return;
+    const rawText = newMsg.trim();
+    if (!rawText || !isParticipant) return;
+    const censored = await censorOutgoingMessage(rawText.slice(0, 2000));
     sendCinemaChatMessage({
       senderId: myId,
       senderName: identity.name,
       senderCode: identity.code,
-      text: text.slice(0, 2000),
+      text: censored,
     }).catch((err) => console.warn("sendCinemaChatMessage failed:", err));
     setNewMsg("");
   };

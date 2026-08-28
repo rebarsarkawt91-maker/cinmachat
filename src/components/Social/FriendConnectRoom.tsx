@@ -4,7 +4,6 @@ import {
   X,
   Search,
   Phone,
-  Mail,
   Loader2,
   Send,
   PhoneCall,
@@ -21,15 +20,15 @@ import {
   respondToFriendConnection,
   cancelFriendConnection,
   getFriendConnectionBetween,
-  searchAccountByContact,
+  searchAccountByCCIdOrContact,
   subscribeConnectionsForUser,
   maskInvitePhone,
-  normalizeEmailInput,
 } from "../../services/friendConnect";
 import type {
   ContactSearchResult,
   FriendConnection,
 } from "../../services/friendConnect";
+import { censorOutgoingMessage } from "../../services/bannedWords";
 import { PrivateChatClient, fetchPrivateSessionId } from "../../services/privateChatClient";
 import type { PrivateChatMessage } from "../../services/privateChatClient";
 import type { AccountReadiness } from "../../services/accountReadiness";
@@ -37,7 +36,7 @@ import type { AccountReadiness } from "../../services/accountReadiness";
 // ---------------------------------------------------------------------------
 // Friend → Connect private 1-to-1 flow (replaces the old general chat flow).
 //
-//   FRIEND 1   search by phone or email → found card → پێشەوە (NEXT)
+//   FRIEND 1   search by phone number or CC-ID → found card → پێشەوە (NEXT)
 //   CONNECT 2  invitation sent → waiting for acceptance → auto-open on accept
 //   CHAT       3  private ephemeral chat (server in-memory session only)
 //   MOVIE      4  movie / watch-party selection within the active chat
@@ -105,7 +104,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
   onRetryAuth,
   onCompleteAccount,
 }) => {
-  const [tab, setTab] = useState<"phone" | "email">("phone");
+  const [tab, setTab] = useState<"phone">("phone");
   const [input, setInput] = useState("");
   const [searchStatus, setSearchStatus] = useState<SearchStatus>("idle");
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -322,15 +321,15 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
     setSearchError(null);
     setSearchStatus("searching");
     try {
-      const result = await searchAccountByContact(raw);
+      const result = await searchAccountByCCIdOrContact(raw);
       if (!result) {
         setSearchStatus("error");
-        setSearchError("هیچ ئەکاونتێک بەم ژمارەیە/ئیمەیڵە نەدۆزرایەوە");
+        setSearchError("هیچ ئەکاونتێک بەم ژمارەیە/CC-ID نەدۆزرایەوە");
         return;
       }
       if (result.uid === myUid) {
         setSearchStatus("error");
-        setSearchError("ئەمە هەژمارەی خۆتە؛ ژمارە/ئیمەیڵی هاوڕێکەت بنووسە");
+        setSearchError("ئەمە هەژمارەی خۆتە؛ ژمارە/CC-ID ی هاوڕێکەت بنووسە");
         return;
       }
       setFound(result);
@@ -415,9 +414,11 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
     }
   }, [activeConn]);
 
-  const handleSend = useCallback(() => {
-    const text = newMessage.trim();
-    if (!text || !clientRef.current) return;
+  const handleSend = useCallback(async () => {
+    const raw = newMessage.trim();
+    if (!raw || !clientRef.current) return;
+    const censored = await censorOutgoingMessage(raw);
+    const text = censored;
     const clientId = generateClientId();
     setMessages((prev) => [
       ...prev,
@@ -442,9 +443,8 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
 
   const maskedContact = useMemo(() => {
     if (!found) return "";
-    if (tab === "email") return found.email ? normalizeEmailInput(found.email) : "";
     return maskInvitePhone(found.phone || found.email);
-  }, [found, tab]);
+  }, [found]);
 
   // ---- render --------------------------------------------------------------
   if (!open) return null;
@@ -664,17 +664,16 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
         <div>
           <h3 className="text-base font-black text-white kurdish-text">هاوڕێیەک بدۆزەوە</h3>
           <p className="text-[11px] text-gray-500 kurdish-text mt-1">
-            بە ژمارەی مۆبایل یان ئیمەیڵ، هەژماری هاوڕێکەت بدۆزەرەوە.
+            بە ژمارەی مۆبایل یان کۆدی CC-ID، هەژماری هاوڕێکەت بدۆزەرەوە.
           </p>
         </div>
         <Users className="w-5 h-5 text-brand-primary flex-shrink-0" />
       </div>
 
-      <div className="grid grid-cols-2 gap-2 mb-3">
+      <div className="grid grid-cols-1 gap-2 mb-3">
         {(
           [
-            { id: "phone" as const, label: "ژمارەی مۆبایل", icon: Phone },
-            { id: "email" as const, label: "ئیمەیڵ", icon: Mail },
+            { id: "phone" as const, label: "ژمارەی مۆبایل یان کۆدی CC-ID", icon: Phone },
           ]
         ).map((item) => {
           const Icon = item.icon;
@@ -717,11 +716,9 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
           onKeyDown={(e) => {
             if (e.key === "Enter") void handleSearch();
           }}
-          type={tab === "email" ? "email" : "tel"}
-          inputMode={tab === "email" ? "email" : "tel"}
-          placeholder={
-            tab === "phone" ? "بۆ نموونە: 0750 123 4567" : "بۆ نموونە: hesar@example.com"
-          }
+          type="tel"
+          inputMode="tel"
+          placeholder="بۆ نموونە: 0750 123 4567 یان CC-8291"
           className="flex-1 min-w-0 px-4 py-3 rounded-2xl bg-black/40 border border-white/10 focus:border-brand-primary/60 outline-none text-sm text-white placeholder:text-gray-600"
         />
         <button

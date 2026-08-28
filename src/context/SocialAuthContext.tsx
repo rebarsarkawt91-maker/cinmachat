@@ -15,7 +15,6 @@ import {
 import { SocialUser } from '../types';
 import {
   getPublicMemberCode,
-  hydrateGoogleCinemaChatProfile,
   normalizeProfilePhone,
 } from '../services/socialProfileProvisioning';
 import { getAccountReadiness, AccountReadiness } from '../services/accountReadiness';
@@ -60,9 +59,6 @@ interface SocialAuthContextType {
 
 const SocialAuthContext = createContext<SocialAuthContextType | undefined>(undefined);
 
-const GOOGLE_AUTH_FLAG_KEY = "cinemachat_google_redirect_pending";
-const EMAIL_PASSWORD_AUTH_FLAG_KEY = "cinemachat_email_password_signin";
-
 const navigateToHome = () => {
   if (typeof window === 'undefined') return;
   window.location.replace('/');
@@ -74,41 +70,6 @@ const cleanProfileText = (value?: string, maxLength = 160) =>
     .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
     .trim()
     .slice(0, maxLength);
-
-const PROFILE_HYDRATION_TIMEOUT_MS = 30000;
-
-const withProfileTimeout = async <T,>(
-  promise: Promise<T>,
-  message = 'Profile loading is taking longer than expected.',
-): Promise<T> => {
-  let timeoutId: number | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timeoutId = window.setTimeout(() => reject(new Error(message)), PROFILE_HYDRATION_TIMEOUT_MS);
-  });
-
-  try {
-    return await Promise.race([promise, timeout]);
-  } finally {
-    if (timeoutId) window.clearTimeout(timeoutId);
-  }
-};
-
-const makeRecoverableGoogleProfile = (user: FirebaseUser): SocialUser => ({
-  uid: user.uid,
-  name: user.displayName || 'Google User',
-  displayName: user.displayName || 'Google User',
-  phone: '',
-  phoneNumber: '',
-  email: user.email || '',
-  uniqueCode: '',
-  googlePhotoUrl: user.photoURL || '',
-  isOnline: true,
-  role: 'user',
-  userRole: 'user',
-  provider: 'google',
-  authProvider: 'google',
-  profileStatus: 'recoverable-error',
-} as SocialUser);
 
 export const SocialAuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
@@ -149,70 +110,46 @@ export const SocialAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const hydrateProfile = useCallback(
     async (user: FirebaseUser, authEventVersion: number) => {
       setLoading(true);
-      const isGoogleUser = user.providerData?.some(
-        (provider: { providerId?: string }) => provider.providerId === 'google.com',
-      );
-      const isEmailPasswordSignIn = sessionStorage.getItem(EMAIL_PASSWORD_AUTH_FLAG_KEY) === '1';
-      const shouldHydrateGoogleProfile = isGoogleUser && !isEmailPasswordSignIn;
       try {
-        if (shouldHydrateGoogleProfile) {
-          const profile = await withProfileTimeout(
-            hydrateGoogleCinemaChatProfile(user),
-            'Profile loading is taking longer than expected.',
-          );
-          const canonicalProfile = await loadServerCanonicalProfile(user, profile);
+        // Read this account's existing profile, then overlay the canonical
+        // server record (server wins on reload).
+        const userDocRef = doc(db, 'users', user.uid);
+        const profileSnap = await getDoc(userDocRef);
+        if (authEventVersion !== authEventVersionRef.current) return;
+
+        const baseProfile = profileSnap.exists()
+          ? (profileSnap.data() as SocialUser)
+          : null;
+        if (baseProfile) baseProfile.userRole = baseProfile.userRole || baseProfile.role;
+
+        const canonicalProfile = await loadServerCanonicalProfile(user, baseProfile);
+        if (authEventVersion !== authEventVersionRef.current) return;
+
+        if (canonicalProfile) {
+          // Only mint a member code when NO canonical source (server or
+          // Firestore) already has one; never regenerate existing codes.
+          if (!getPublicMemberCode(canonicalProfile, user.uid) && profileSnap.exists()) {
+            const baseNum = baseProfile?.uniqueCode
+              ? baseProfile.uniqueCode.replace('CC-', '')
+              : Math.floor(1000 + Math.random() * 9000);
+            const uniqueCode = `CC-CC-${baseNum}`;
+            await updateDoc(userDocRef, { uniqueCode }).catch(() => {});
+            canonicalProfile.uniqueCode = uniqueCode;
+          }
+
           if (authEventVersion === authEventVersionRef.current) {
             setSocialProfile(canonicalProfile);
           }
-        } else {
-          // Email/password path: read this account's existing profile, then
-          // overlay the canonical server record (server wins on reload).
-          const userDocRef = doc(db, 'users', user.uid);
-          const profileSnap = await getDoc(userDocRef);
-          if (authEventVersion !== authEventVersionRef.current) return;
-
-          const baseProfile = profileSnap.exists()
-            ? (profileSnap.data() as SocialUser)
-            : null;
-          if (baseProfile) baseProfile.userRole = baseProfile.userRole || baseProfile.role;
-
-          const canonicalProfile = await loadServerCanonicalProfile(user, baseProfile);
-          if (authEventVersion !== authEventVersionRef.current) return;
-
-          if (canonicalProfile) {
-            // Only mint a member code when NO canonical source (server or
-            // Firestore) already has one; never regenerate existing codes.
-            if (!getPublicMemberCode(canonicalProfile, user.uid) && profileSnap.exists()) {
-              const baseNum = baseProfile?.uniqueCode
-                ? baseProfile.uniqueCode.replace('CC-', '')
-                : Math.floor(1000 + Math.random() * 9000);
-              const uniqueCode = `CC-CC-${baseNum}`;
-              await updateDoc(userDocRef, { uniqueCode }).catch(() => {});
-              canonicalProfile.uniqueCode = uniqueCode;
-            }
-
-            if (authEventVersion === authEventVersionRef.current) {
-              setSocialProfile(canonicalProfile);
-            }
-            if (!canonicalProfile.isOnline) {
-              await updateDoc(userDocRef, { isOnline: true }).catch(() => {});
-            }
-          } else if (authEventVersion === authEventVersionRef.current) {
-            setSocialProfile(null);
+          if (!canonicalProfile.isOnline) {
+            await updateDoc(userDocRef, { isOnline: true }).catch(() => {});
           }
+        } else if (authEventVersion === authEventVersionRef.current) {
+          setSocialProfile(null);
         }
       } catch (error) {
         if (authEventVersion !== authEventVersionRef.current) return;
-        if (shouldHydrateGoogleProfile) {
-          console.error("Profile hydration error:", error);
-          setSocialProfile((previous) => previous ?? makeRecoverableGoogleProfile(user));
-        } else {
-          console.error("Profile Fetch Error:", error);
-        }
+        console.error("Profile Fetch Error:", error);
       } finally {
-        if (isEmailPasswordSignIn) {
-          sessionStorage.removeItem(EMAIL_PASSWORD_AUTH_FLAG_KEY);
-        }
         if (authEventVersion === authEventVersionRef.current) {
           setLoading(false);
         }
@@ -292,10 +229,6 @@ export const SocialAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     try {
       localStorage.removeItem("cinemachat_local_admin_profile");
       localStorage.removeItem("cinemachat_admin");
-    } catch (e) {}
-    try {
-      sessionStorage.removeItem(GOOGLE_AUTH_FLAG_KEY);
-      sessionStorage.removeItem(EMAIL_PASSWORD_AUTH_FLAG_KEY);
     } catch (e) {}
 
     if (currentUser && currentUser.uid !== "admin_local_bypass") {

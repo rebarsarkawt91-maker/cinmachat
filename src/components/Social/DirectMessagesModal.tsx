@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { MessageSquare, Send, X, Plus, User, Lock, Loader2, ArrowRight } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { censorOutgoingMessage } from "../../services/bannedWords";
 
 interface DirectMessagesModalProps {
   isOpen: boolean;
@@ -144,6 +145,7 @@ export const DirectMessagesModal: React.FC<DirectMessagesModalProps> = ({
     setIsSending(true);
     setErrorText("");
     try {
+      const censored = await censorOutgoingMessage(newMessageText.trim());
       const res = await fetch("/api/dms/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -151,7 +153,7 @@ export const DirectMessagesModal: React.FC<DirectMessagesModalProps> = ({
           senderCode: uniqueCode,
           senderName: userName,
           targetCodeOrName: selectedPartnerCode,
-          message: newMessageText.trim(),
+          message: censored,
         }),
       });
 

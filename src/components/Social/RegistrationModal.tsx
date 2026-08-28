@@ -1,22 +1,13 @@
 import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
-import { 
-  auth, 
-  authPersistenceReady,
-  createUserWithEmailAndPassword, 
-  signInWithEmailAndPassword,
-  updateProfile,
+import {
+  auth,
   signInWithCustomToken,
-  GoogleAuthProvider,
-  signInWithPopup,
-  signInWithRedirect,
-  getRedirectResult,
 } from '../../lib/firebase';
-import { X, User, Phone, Lock, Sparkles, LogIn, Calendar, Users, MapPin, Globe, Mail, QrCode, Eye, EyeOff, ArrowLeft, KeyRound, AlertTriangle } from 'lucide-react';
+import { X, User, Phone, Lock, Sparkles, LogIn, Calendar, Users, MapPin, Mail, QrCode, Eye, EyeOff, ArrowLeft, KeyRound } from 'lucide-react';
 import { handleFirestoreError, OperationType } from '../../lib/firestoreUtils';
 import { motion, AnimatePresence } from 'motion/react';
 import jsQR from 'jsqr';
-import { hydrateGoogleCinemaChatProfile } from '../../services/socialProfileProvisioning';
 
 interface RegistrationModalProps {
   isOpen: boolean;
@@ -124,192 +115,14 @@ const AuthChoiceButton = ({
   </button>
 );
 
-const isMobileAuthBrowser = () =>
-  typeof window !== "undefined" &&
-  (window.matchMedia("(max-width: 767px)").matches ||
-    /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent));
-
-const GOOGLE_AUTH_TIMEOUT_MS = 10000;
-const GOOGLE_AUTH_FLAG_KEY = "cinemachat_google_redirect_pending";
-const EMAIL_PASSWORD_AUTH_FLAG_KEY = "cinemachat_email_password_signin";
-
-/**
- * Google sign-in state machine.
- *
- *   idle                nothing in flight
- *   opening-popup       popup/redirect request sent, waiting for provider
- *   waiting-provider    provider dialog/redirect open
- *   callback-received   sign-in credential resolved, profile not yet saved
- *   hydrating-profile   canonical CinemaChat profile being created/merged
- *   complete            account + profile ready, flow continues
- *   error               failed (message surfaced, user may retry/cancel)
- *   timeout             exceeded the 10s cap (Retry/Cancel shown)
- */
-type GoogleAuthState =
-  | "idle"
-  | "opening-popup"
-  | "waiting-provider"
-  | "callback-received"
-  | "hydrating-profile"
-  | "complete"
-  | "error"
-  | "timeout";
-
-const withTimeout = async <T,>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  message: string,
-): Promise<T> => {
-  let timeoutId: number | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timeoutId = window.setTimeout(() => {
-      const error = new Error(message);
-      (error as any).code = "cinemachat/auth-timeout";
-      reject(error);
-    }, timeoutMs);
-  });
-
-  try {
-    return await Promise.race([promise, timeout]);
-  } finally {
-    if (timeoutId) window.clearTimeout(timeoutId);
-  }
-};
-
-const cleanupAuthCallbackUrl = () => {
-  if (typeof window === "undefined") return;
-  const url = new URL(window.location.href);
-  const sensitiveKeys = [
-    "code",
-    "state",
-    "oauth_token",
-    "oauth_verifier",
-    "access_token",
-    "id_token",
-    "authuser",
-    "prompt",
-  ];
-  let changed = false;
-  for (const key of sensitiveKeys) {
-    if (url.searchParams.has(key)) {
-      url.searchParams.delete(key);
-      changed = true;
-    }
-  }
-  if (changed) {
-    window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
-  }
-};
-
 const navigateToHome = () => {
   if (typeof window === "undefined") return;
   window.location.replace("/");
 };
 
-const GoogleAuthLoadingScreen = ({
-  timedOut = false,
-  onRetry,
-  onCancel,
-}: {
-  timedOut?: boolean;
-  onRetry?: () => void;
-  onCancel?: () => void;
-}) => {
-  const content = (
-    <div
-      className="fixed inset-0 z-[300] flex items-center justify-center bg-black px-6 text-center text-white"
-      role="status"
-      aria-live="polite"
-    >
-      <div className="flex flex-col items-center">
-        <div className="text-3xl font-black italic tracking-tight text-white sm:text-5xl">
-          CINAMACHAT
-        </div>
-        <p className="mt-3 text-sm font-black uppercase tracking-[0.22em] text-red-400">
-          Signing in...
-        </p>
-        {timedOut ? (
-          <>
-            <div className="mt-8 flex h-10 w-10 items-center justify-center rounded-full border border-amber-400/40 bg-amber-400/10">
-              <AlertTriangle className="h-5 w-5 text-amber-400" />
-            </div>
-            <p className="mt-8 text-xl font-black leading-8 text-white kurdish-text" dir="rtl">
-              چوونەژوورەوە بە گووگڵ ماوەی تێپەڕاند.
-            </p>
-            <p className="mt-2 text-sm font-bold text-zinc-400">
-              Google sign-in timed out. Try again or cancel.
-            </p>
-            <div className="mt-8 grid w-full max-w-[280px] grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={onCancel}
-                className="h-11 rounded-xl border border-white/15 bg-white/[0.04] px-4 text-xs font-black text-white transition hover:bg-white/[0.08]"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={onRetry}
-                className="h-11 rounded-xl bg-red-600 px-4 text-xs font-black text-white transition hover:bg-red-700"
-              >
-                Try again
-              </button>
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="mt-8 h-10 w-10 animate-spin rounded-full border-2 border-white/20 border-t-red-500" />
-            <p className="mt-8 text-xl font-black leading-8 text-white kurdish-text" dir="rtl">
-              چاوەڕێ بکە... بە هەژمارەکەت دەچیتە ژورەوە.
-            </p>
-            <p className="mt-2 text-sm font-bold text-zinc-400">
-              Please wait... Signing you in.
-            </p>
-          </>
-        )}
-      </div>
-    </div>
-  );
-  if (typeof document === "undefined") return content;
-  return createPortal(content, document.body);
-};
-
-const GoogleAuthRecoveryPanel = ({
-  message,
-  onRetry,
-  onCancel,
-}: {
-  message: string;
-  onRetry: () => void;
-  onCancel: () => void;
-}) => (
-  <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-center sm:rounded-2xl">
-    <p className="text-xs font-black leading-5 text-amber-200">
-      {message}
-    </p>
-    <div className="mt-3 grid grid-cols-2 gap-2">
-      <button
-        type="button"
-        onClick={onCancel}
-        className="h-10 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs font-black text-white transition hover:bg-white/[0.08] focus:outline-none focus:ring-2 focus:ring-red-500/30"
-      >
-        Cancel
-      </button>
-      <button
-        type="button"
-        onClick={onRetry}
-        className="h-10 rounded-xl bg-red-600 px-3 text-xs font-black text-white transition hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500/30"
-      >
-        Try again
-      </button>
-    </div>
-  </div>
-);
-
 export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, onClose, initialMode, onAuthSuccess }) => {
   const [isLogin, setIsLogin] = useState(initialMode !== "signup");
   const [authStep, setAuthStep] = useState<"landing" | "form">(initialMode && initialMode !== "landing" ? "form" : "landing");
-  const [authMethod, setAuthMethod] = useState<"email" | "phone">("email");
   const [showPasswordRecovery, setShowPasswordRecovery] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [formData, setFormData] = useState({
@@ -329,7 +142,6 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
     if (isOpen && initialMode) {
       setIsLogin(initialMode !== "signup");
       setAuthStep(initialMode === "landing" ? "landing" : "form");
-      setAuthMethod("email");
       setShowPasswordRecovery(false);
       setShowPassword(false);
       setError(null);
@@ -341,13 +153,8 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [showAdminBypass, setShowAdminBypass] = useState(false);
-  const [googleState, setGoogleState] = useState<GoogleAuthState>("idle");
-  const [googleRedirectError, setGoogleRedirectError] = useState("");
-  const [googleError, setGoogleError] = useState<string | null>(null);
 
   const qrInputRef = React.useRef<HTMLInputElement>(null);
-  const googleAttemptRef = React.useRef(0);
-  const redirectResultHandledRef = React.useRef(false);
   const submittingRef = React.useRef(false);
   const focusFieldRef = React.useRef<string | null>(null);
 
@@ -369,16 +176,6 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
     [error],
   );
 
-  const clearGoogleAuthState = React.useCallback(() => {
-    googleAttemptRef.current += 1;
-    sessionStorage.removeItem(GOOGLE_AUTH_FLAG_KEY);
-    cleanupAuthCallbackUrl();
-    setGoogleState("idle");
-    setGoogleRedirectError("");
-    setGoogleError(null);
-    setIsLoading(false);
-  }, []);
-
   // After a SUCCESSFUL sign-in/registration the flow either returns to the
   // caller (CinemaChat) via onAuthSuccess or reloads to "/" (default, keeps the
   // auth state re-established on the current page). Never do both.
@@ -387,45 +184,6 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
     if (onAuthSuccess) onAuthSuccess();
     else navigateToHome();
   }, [onClose, onAuthSuccess]);
-
-  const finalizeGoogleCinemaChatAccount = React.useCallback(async (user: any) => {
-    if (!user?.uid) {
-      throw new Error("Google sign-in returned no user");
-    }
-
-    await withTimeout(
-      hydrateGoogleCinemaChatProfile(user),
-      GOOGLE_AUTH_TIMEOUT_MS,
-      "Google profile setup is taking longer than expected.",
-    );
-  }, []);
-
-  const googleAuthMessage = (err: any) => {
-    const code = String(err?.code || "");
-    if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
-      return "Google sign-in was canceled. You can try again when you are ready.";
-    }
-    if (code === "auth/popup-blocked") {
-      return "The browser blocked the Google sign-in popup. Please allow popups for CinemaChat and try again.";
-    }
-    if (code === "auth/unauthorized-domain") {
-      const host = typeof window !== "undefined" ? window.location.hostname : "this domain";
-      return `Google sign-in is not authorized for ${host}. Add this domain in Firebase Authentication Authorized domains.`;
-    }
-    if (code === "auth/operation-not-supported-in-this-environment") {
-      return "Google sign-in is not supported in this browser environment. Please try another browser.";
-    }
-    if (code === "auth/network-request-failed") {
-      return "Network error during Google sign-in. Please check the connection and try again.";
-    }
-    if (code === "auth/account-exists-with-different-credential") {
-      return "An account already exists with this email using another sign-in method.";
-    }
-    if (code === "cinemachat/auth-timeout") {
-      return "Google sign-in is taking longer than expected.";
-    }
-    return "چوونەژوورەوە بە گووگڵ سەرکەوتوو نەبوو. تکایە دووبارە هەوڵبدەرەوە.";
-  };
 
   const handleDirectIdLogin = async (codeToSubmit: string) => {
     setIsLoading(true);
@@ -454,7 +212,6 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
       setError('ئەم کۆدەی ID-یە هەڵەیە، تکایە جارێکی تر هەوڵ بدە');
     } finally {
       setIsLoading(false);
-      setGoogleState("idle");
     }
   };
 
@@ -532,44 +289,17 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
       setSuccessMessage(recoveryMessage);
     } finally {
       setIsLoading(false);
-      setGoogleState("idle");
     }
   };
 
-  const resetAuthView = (nextLogin: boolean, method: "email" | "phone" = "email") => {
+  const resetAuthView = (nextLogin: boolean) => {
     setIsLogin(nextLogin);
-    setAuthMethod(method);
     setAuthStep("form");
     setShowPasswordRecovery(false);
     setShowAdminBypass(false);
     setShowPassword(false);
     setError(null);
-    setGoogleRedirectError("");
-    setGoogleState("idle");
     setSuccessMessage(null);
-  };
-
-  const completeEmailPasswordLogin = () => {
-    // Email/password sign-in resolves only after Firebase has persisted the
-    // credential. Navigate to "/" for a real reload so the auth state is
-    // re-established and the current page never keeps stale content.
-    setIsLoading(false);
-    completeAuth();
-  };
-
-  const signInWithEmailPassword = async (email: string) => {
-    sessionStorage.setItem(EMAIL_PASSWORD_AUTH_FLAG_KEY, "1");
-    try {
-      await authPersistenceReady;
-      const credential = await signInWithEmailAndPassword(auth, email, formData.password);
-      if (!credential?.user) {
-        throw new Error("Email sign-in did not return a user.");
-      }
-      return credential;
-    } catch (error) {
-      sessionStorage.removeItem(EMAIL_PASSWORD_AUTH_FLAG_KEY);
-      throw error;
-    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -637,13 +367,6 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
       if (isLogin) {
         const loginIdentifier = formData.phone.trim();
 
-        if (loginIdentifier.includes("@")) {
-          // Normal email/password login
-          await signInWithEmailPassword(loginIdentifier);
-          completeEmailPasswordLogin();
-          return;
-        }
-
         // Try CC-ID login first (covers "CC-CC-####", "CC-####", bare "####")
         const res = await fetch("/api/auth/login-by-id", {
           method: "POST",
@@ -660,13 +383,20 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
           }
         }
 
-        // Mobile + password login (no email required, no fake-email fallback).
-        // The server validates the phone, compares the bcrypt hash of the
-        // stored password and mints a custom token for the SAME account UID.
+        // Password login with the user's Phone Number OR Username. The server
+        // validates the identifier, compares the bcrypt hash of the stored
+        // password and mints a custom token for the SAME account UID. Sending
+        // both fields keeps it a single round-trip (phone is checked first,
+        // username second); there is no fake-email fallback and no conflicting
+        // auth loop.
         const mobileRes = await fetch("/api/auth/login-mobile", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ phone: loginIdentifier, password: formData.password })
+          body: JSON.stringify({
+            phone: loginIdentifier,
+            username: loginIdentifier,
+            password: formData.password
+          })
         });
         const mobileData = await mobileRes.json().catch(() => ({}));
         if (!mobileRes.ok || !mobileData.success || !mobileData.customToken) {
@@ -684,7 +414,6 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
         // canonical checks (uniqueness of username/email/phone, CC-ID generation).
         const trimmedName = sanitizedName;
         const trimmedUsername = (formData.username || "").trim().toLowerCase();
-        const trimmedEmail = formData.email?.trim().toLowerCase() || "";
         const trimmedPhone = formData.phone?.trim() || "";
         const rawPassword = formData.password || "";
 
@@ -705,22 +434,15 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
           failValidation("ناوی بەکارهێنەرەکە نادروستە؛ دەبێت لە ٣ بۆ ٣٢ پیتی ئینگلیزی، ژمارە، یان (. _ -) پێکهاتبێت.", "register-username");
           return;
         }
-        if (authMethod === "email") {
-          if (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
-            failValidation("تکایە ئیمەیڵێکی دروست بنووسە.", "register-email");
-            return;
-          }
-        } else {
-          // Accept Kurdish/Arabic digits (٠-٩ / ۰-۹) and normalize separators
-          // before validating; the server performs the authoritative check.
-          const convertedPhone = (trimmedPhone || "")
-            .replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)))
-            .replace(/[۰-۹]/g, (d) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(d)));
-          const cleanPhoneCheck = convertedPhone.replace(/[\s\-()]/g, "").replace(/^00/, "+");
-          if (!/^\+?\d{8,15}$/.test(cleanPhoneCheck)) {
-            failValidation("تکایە ژمارە مۆبایلەکە بە دروستی بنووسە.", "register-phone");
-            return;
-          }
+        // Accept Kurdish/Arabic digits (٠-٩ / ۰-۹) and normalize separators
+        // before validating; the server performs the authoritative check.
+        const convertedPhone = (trimmedPhone || "")
+          .replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)))
+          .replace(/[۰-۹]/g, (d) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(d)));
+        const cleanPhoneCheck = convertedPhone.replace(/[\s\-()]/g, "").replace(/^00/, "+");
+        if (!/^\+?\d{8,15}$/.test(cleanPhoneCheck)) {
+          failValidation("تکایە ژمارە مۆبایلەکە بە دروستی بنووسە.", "register-phone");
+          return;
         }
         if (rawPassword.length < 6) {
           failValidation("پاسۆردەکە زۆر لاوازە؛ پاسۆردێکی بەهێزتر بەکاربهێنە.", "register-password");
@@ -732,38 +454,20 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
         sessionStorage.setItem(rateLimitKey, JSON.stringify(attempts));
 
         try {
-          const isMobileRegistration = authMethod === "phone";
-          const res = await fetch(
-            isMobileRegistration ? "/api/auth/register-mobile" : "/api/auth/register-by-id",
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(
-                isMobileRegistration
-                  ? {
-                      name: trimmedName,
-                      username: trimmedUsername,
-                      phone: trimmedPhone,
-                      password: rawPassword,
-                      age: formData.age,
-                      gender: formData.gender,
-                      residence: formData.residence,
-                      country: formData.country,
-                    }
-                  : {
-                      name: trimmedName,
-                      username: trimmedUsername,
-                      email: trimmedEmail,
-                      phone: "",
-                      password: rawPassword,
-                      age: formData.age,
-                      gender: formData.gender,
-                      residence: formData.residence,
-                      country: formData.country,
-                    },
-              ),
-            },
-          );
+          const res = await fetch("/api/auth/register-mobile", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: trimmedName,
+              username: trimmedUsername,
+              phone: trimmedPhone,
+              password: rawPassword,
+              age: formData.age,
+              gender: formData.gender,
+              residence: formData.residence,
+              country: formData.country,
+            }),
+          });
 
           const data = await res.json().catch(() => ({}));
           if (!res.ok || !data.success) {
@@ -812,177 +516,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
     }
   };
 
-  // Resume a Google redirect that was in flight when the page (re)loaded.
-  // Uses a single attempt-guarded promise chain (bounded by the 10s cap); the
-  // only authoritative auth listener lives in SocialAuthContext.
-  React.useEffect(() => {
-    let cancelled = false;
-    if (
-      redirectResultHandledRef.current ||
-      sessionStorage.getItem(GOOGLE_AUTH_FLAG_KEY) !== "1"
-    ) {
-      return;
-    }
-    redirectResultHandledRef.current = true;
-    const attemptId = ++googleAttemptRef.current;
-
-    setGoogleState("callback-received");
-    setGoogleRedirectError("");
-    setError(null);
-    withTimeout(
-      getRedirectResult(auth),
-      GOOGLE_AUTH_TIMEOUT_MS,
-      "Google sign-in is taking longer than expected.",
-    )
-      .then(async (result) => {
-        if (cancelled || googleAttemptRef.current !== attemptId) return;
-        if (!result?.user) {
-          sessionStorage.removeItem(GOOGLE_AUTH_FLAG_KEY);
-          cleanupAuthCallbackUrl();
-          setGoogleState("idle");
-          return;
-        }
-        sessionStorage.removeItem(GOOGLE_AUTH_FLAG_KEY);
-        cleanupAuthCallbackUrl();
-        setGoogleState("hydrating-profile");
-        await withTimeout(
-          finalizeGoogleCinemaChatAccount(result.user),
-          GOOGLE_AUTH_TIMEOUT_MS,
-          "Google profile setup is taking longer than expected.",
-        );
-        if (cancelled || googleAttemptRef.current !== attemptId) return;
-        setGoogleState("complete");
-        completeAuth();
-      })
-      .catch((err: any) => {
-        if (cancelled || googleAttemptRef.current !== attemptId) return;
-        sessionStorage.removeItem(GOOGLE_AUTH_FLAG_KEY);
-        cleanupAuthCallbackUrl();
-        console.error("Google redirect auth error:", err?.code || err?.message || err);
-        const message = googleAuthMessage(err);
-        const timedOut = err?.code === "cinemachat/auth-timeout";
-        setIsLogin(true);
-        setAuthStep("landing");
-        setGoogleRedirectError(message);
-        setGoogleError(message);
-        setGoogleState(timedOut ? "timeout" : "error");
-        setError(message);
-      })
-      .finally(() => {
-        if (!cancelled && googleAttemptRef.current === attemptId) {
-          setIsLoading(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [finalizeGoogleCinemaChatAccount, completeAuth]);
-
-  const handleGoogleSignIn = async () => {
-    // No second popup while a Google attempt is in flight.
-    const inFlight = googleState === "opening-popup" ||
-      googleState === "waiting-provider" ||
-      googleState === "callback-received" ||
-      googleState === "hydrating-profile";
-    if (inFlight || isLoading) return;
-    const attemptId = ++googleAttemptRef.current;
-    setGoogleState("opening-popup");
-    setGoogleRedirectError("");
-    setGoogleError(null);
-    setIsLoading(true);
-    setError(null);
-    const provider = new GoogleAuthProvider();
-    provider.setCustomParameters({ prompt: "select_account" });
-    try {
-      await authPersistenceReady;
-      setGoogleState("waiting-provider");
-      if (isMobileAuthBrowser()) {
-        sessionStorage.setItem(GOOGLE_AUTH_FLAG_KEY, "1");
-        await withTimeout(
-          signInWithRedirect(auth, provider),
-          GOOGLE_AUTH_TIMEOUT_MS,
-          "Google sign-in is taking longer than expected.",
-        );
-        const redirectError = new Error("Google sign-in redirect did not complete.");
-        (redirectError as any).code = "cinemachat/auth-timeout";
-        throw redirectError;
-      }
-      sessionStorage.removeItem(GOOGLE_AUTH_FLAG_KEY);
-      setGoogleState("callback-received");
-      const result = await withTimeout(
-        signInWithPopup(auth, provider),
-        GOOGLE_AUTH_TIMEOUT_MS,
-        "Google sign-in is taking longer than expected.",
-      );
-      if (googleAttemptRef.current !== attemptId) return;
-      if (!result?.user) {
-        throw new Error("Google sign-in returned no user");
-      }
-      setGoogleState("hydrating-profile");
-      await withTimeout(
-        finalizeGoogleCinemaChatAccount(result.user),
-        GOOGLE_AUTH_TIMEOUT_MS,
-        "Google profile setup is taking longer than expected.",
-      );
-      if (googleAttemptRef.current !== attemptId) return;
-      setGoogleState("complete");
-      completeAuth();
-    } catch (err: any) {
-      sessionStorage.removeItem(GOOGLE_AUTH_FLAG_KEY);
-      cleanupAuthCallbackUrl();
-      console.error("Google auth error:", err);
-      const message = googleAuthMessage(err);
-      const timedOut = err?.code === "cinemachat/auth-timeout";
-      setIsLogin(true);
-      setAuthStep("landing");
-      setGoogleRedirectError(message);
-      setGoogleError(message);
-      setGoogleState(timedOut ? "timeout" : "error");
-      setError(message);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const googleInFlight =
-    googleState === "opening-popup" ||
-    googleState === "waiting-provider" ||
-    googleState === "callback-received" ||
-    googleState === "hydrating-profile";
-  const isGoogleAuthLoading = googleInFlight && !googleRedirectError && !googleError;
-  const googleTimedOut = googleState === "timeout";
-  const shouldShowAuthDialog = isOpen || !!googleRedirectError || googleTimedOut;
-
-  if (isGoogleAuthLoading) {
-    return (
-      <GoogleAuthLoadingScreen
-        timedOut={false}
-        onRetry={() => void handleGoogleSignIn()}
-        onCancel={() => {
-          clearGoogleAuthState();
-          setError(null);
-          onClose();
-        }}
-      />
-    );
-  }
-
-  if (googleTimedOut) {
-    return (
-      <GoogleAuthLoadingScreen
-        timedOut
-        onRetry={() => void handleGoogleSignIn()}
-        onCancel={() => {
-          clearGoogleAuthState();
-          setError(null);
-          onClose();
-        }}
-      />
-    );
-  }
-
-  if (!shouldShowAuthDialog) return null;
+  if (!isOpen) return null;
 
   const modalContent = (
     <div className="fixed inset-0 z-[200] flex items-center justify-center overflow-hidden bg-black/95 px-2 py-[calc(0.5rem+env(safe-area-inset-top))] pb-[calc(0.5rem+env(safe-area-inset-bottom))] backdrop-blur-md sm:p-5">
@@ -1000,7 +534,6 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
           <button
             type="button"
             onClick={() => {
-              clearGoogleAuthState();
               onClose();
             }}
             aria-label="Close authentication"
@@ -1044,8 +577,8 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
               : authStep === "landing"
                 ? "ڕێگای گونجاو هەڵبژێرە و بە ئارامی بەردەوام بە."
                 : isLogin
-                  ? authMethod === "email" ? "بە ئیمەیڵ و وشەی تێپەڕ بچۆ ژوورەوە." : "بە ژمارەی مۆبایل یان CC-ID و وشەی تێپەڕ بچۆ ژوورەوە."
-                  : authMethod === "email" ? "ئەکاونت بە ئیمەیڵ دروست بکە." : "ئەکاونت بە ژمارەی مۆبایل دروست بکە."}
+                  ? "بە ژمارەی مۆبایل یان ناوی بەکارهێنەر و وشەی تێپەڕ بچۆ ژوورەوە."
+                  : "ئەکاونت بە ژمارەی مۆبایل دروست بکە."}
           </p>
         </div>
 
@@ -1058,35 +591,16 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                   label="چوونەژوورەوە"
                   helper="ئەکاونتت هەیە"
                   tone="primary"
-                  onClick={() => resetAuthView(true, "email")}
+                  onClick={() => resetAuthView(true)}
                 />
                 <AuthChoiceButton
                   icon={<User className="h-5 w-5" />}
                   label="خۆتۆمارکردن"
                   helper="ئەکاونتی نوێ"
-                  onClick={() => resetAuthView(false, "email")}
+                  onClick={() => resetAuthView(false)}
                 />
               </div>
-              <button
-                type="button"
-                onClick={handleGoogleSignIn}
-                disabled={isLoading || googleInFlight}
-                className="flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 text-sm font-black text-white transition hover:bg-white/[0.08] active:scale-[0.98] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-500/30 sm:h-12 sm:rounded-2xl"
-              >
-                <Globe className="h-4 w-4" />
-                {googleInFlight ? "Connecting..." : "Continue with Google"}
-              </button>
-              {(googleRedirectError || googleError) ? (
-                <GoogleAuthRecoveryPanel
-                  message={googleRedirectError || "Google sign-in is taking longer than expected."}
-                  onRetry={handleGoogleSignIn}
-                  onCancel={() => {
-                    clearGoogleAuthState();
-                    setError(null);
-                    onClose();
-                  }}
-                />
-              ) : error ? (
+              {error ? (
                 <p className="rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-center text-[11px] font-bold leading-5 text-red-300 sm:rounded-2xl">
                   {error}
                 </p>
@@ -1129,7 +643,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
               )}
               <button
                 type="submit"
-                disabled={isLoading || googleInFlight}
+                disabled={isLoading}
                 className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-red-600 px-4 text-sm font-black text-white shadow-lg shadow-red-950/30 transition hover:bg-red-700 active:scale-[0.98] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-500/30 kurdish-text sm:h-12 sm:rounded-2xl"
               >
                 {isLoading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/20 border-t-white" /> : "ناردنی ئیمەیڵی گەڕاندنەوە"}
@@ -1137,25 +651,6 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
             </form>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-2.5 sm:space-y-3">
-              {!showAdminBypass && (
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <button
-                    type="button"
-                    onClick={() => resetAuthView(isLogin, "email")}
-                    className={`h-10 rounded-xl border px-3 text-xs font-black transition focus:outline-none focus:ring-2 focus:ring-red-500/30 kurdish-text sm:h-11 sm:rounded-2xl ${authMethod === "email" ? "border-red-500/50 bg-red-600 text-white" : "border-white/10 bg-white/[0.04] text-zinc-400 hover:text-white"}`}
-                  >
-                    {isLogin ? "Login with Email" : "Register using Email"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => resetAuthView(isLogin, "phone")}
-                    className={`h-10 rounded-xl border px-3 text-xs font-black transition focus:outline-none focus:ring-2 focus:ring-red-500/30 kurdish-text sm:h-11 sm:rounded-2xl ${authMethod === "phone" ? "border-red-500/50 bg-red-600 text-white" : "border-white/10 bg-white/[0.04] text-zinc-400 hover:text-white"}`}
-                  >
-                    {isLogin ? "Login with Mobile" : "Register using Mobile"}
-                  </button>
-                </div>
-              )}
-
               {isLogin && showAdminBypass ? (
                 <>
                   <FloatingInput
@@ -1214,22 +709,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                     </>
                   )}
 
-                  {authMethod === "email" ? (
-                    <FloatingInput
-                      id={isLogin ? "login-email" : "register-email"}
-                      label="ئیمەیڵ"
-                      icon={<Mail className="h-4 w-4" />}
-                      type="email"
-                      value={isLogin ? formData.phone : formData.email}
-                      onChange={(value) => updateForm(isLogin ? "phone" : "email", value)}
-                      placeholder="name@example.com"
-                      autoComplete="email"
-                      required
-                      dir="ltr"
-                    />
-                  ) : (
-                    <>
-                      {isLogin && (
+                  {isLogin && (
                         <input
                           type="file"
                           ref={qrInputRef}
@@ -1240,15 +720,15 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                       )}
                       <FloatingInput
                         id={isLogin ? "login-phone" : "register-phone"}
-                        label={isLogin ? "مۆبایل یان CC-ID" : "ژمارەی مۆبایل"}
+                        label={isLogin ? "مۆبایل یان ناوی بەکارهێنەر" : "ژمارەی مۆبایل"}
                         icon={<Phone className="h-4 w-4" />}
                         type="tel"
                         value={formData.phone}
                         onChange={(value) => updateForm("phone", value)}
-                        placeholder={isLogin ? "CC-ADM-001 / 07700000000" : "07700000000"}
+                        placeholder={isLogin ? "07700000000 / my_username" : "07700000000"}
                         autoComplete="tel"
                         inputMode="tel"
-                        required={isLogin || authMethod === "phone"}
+                        required
                         dir="ltr"
                         trailing={isLogin ? (
                           <button
@@ -1261,8 +741,6 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                           </button>
                         ) : undefined}
                       />
-                    </>
-                  )}
 
                   <FloatingInput
                     id={isLogin ? "login-password" : "register-password"}
@@ -1315,17 +793,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
                 </div>
               )}
 
-              {(googleRedirectError || googleError) ? (
-                <GoogleAuthRecoveryPanel
-                  message={googleRedirectError || googleError || "Google sign-in is taking longer than expected."}
-                  onRetry={handleGoogleSignIn}
-                  onCancel={() => {
-                    clearGoogleAuthState();
-                    setError(null);
-                    onClose();
-                  }}
-                />
-              ) : error && (
+              {error && (
                 <p className="rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-center text-[11px] font-bold leading-5 text-red-300 kurdish-text sm:rounded-2xl">
                   {error}
                 </p>
@@ -1333,26 +801,10 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
 
               <button
                 type="submit"
-                disabled={isLoading || googleInFlight}
+                disabled={isLoading}
                 className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-red-600 px-4 text-sm font-black text-white shadow-lg shadow-red-950/30 transition hover:bg-red-700 active:scale-[0.98] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-500/30 kurdish-text sm:h-12 sm:rounded-2xl"
               >
                 {isLoading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/20 border-t-white" /> : isLogin ? "چوونەژوورەوە" : "دروستکردنی ئەکاونت"}
-              </button>
-
-              <div className="flex items-center gap-3 py-1">
-                <div className="h-px flex-1 bg-white/10" />
-                <span className="text-[10px] font-black text-zinc-600">OR</span>
-                <div className="h-px flex-1 bg-white/10" />
-              </div>
-
-              <button
-                type="button"
-                onClick={handleGoogleSignIn}
-                disabled={isLoading || googleInFlight}
-                className="flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 text-sm font-black text-white transition hover:bg-white/[0.08] active:scale-[0.98] disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-500/30 sm:h-12 sm:rounded-2xl"
-              >
-                <Globe className="h-4 w-4" />
-                {googleInFlight ? "Connecting..." : "Continue with Google"}
               </button>
 
               {isLogin && !showAdminBypass && (
@@ -1377,7 +829,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
             <div className="mt-4 border-t border-white/10 pt-4 text-center">
               <button
                 type="button"
-                onClick={() => resetAuthView(!isLogin, "email")}
+                onClick={() => resetAuthView(!isLogin)}
                 className="rounded-xl px-3 py-2 text-[11px] font-bold text-zinc-400 transition hover:bg-white/5 hover:text-white focus:outline-none focus:ring-2 focus:ring-red-500/30 kurdish-text"
               >
                 {isLogin ? "ئەکاونتت نییە؟ خۆتۆمارکردن" : "پێشتر ئەکاونتت هەیە؟ چوونەژوورەوە"}

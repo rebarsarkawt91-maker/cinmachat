@@ -19,6 +19,7 @@ import {
 import { useSocialAuth } from '../../context/SocialAuthContext';
 import { SyncGroup, ChatMessage, EmojiReaction, Movie, SocialUser } from '../../types';
 import { handleFirestoreError, OperationType } from '../../lib/firestoreUtils';
+import { censorOutgoingMessage } from '../../services/bannedWords';
 import { 
   Send, 
   Smile, 
@@ -97,7 +98,6 @@ export const SyncRoom: React.FC<SyncRoomProps> = ({ room, currentMovie, onClose,
 
   const [isMutedByAdmin, setIsMutedByAdmin] = useState(false);
   const [isKickedByAdmin, setIsKickedByAdmin] = useState(false);
-  const [bannedKeywords, setBannedKeywords] = useState<string[]>([]);
 
   // VIP video catalog for the in-room VIP strip (dedicated vip_videos collection).
   const [vipVideos, setVipVideos] = useState<{ id: string; title?: string; videoUrl?: string; trailerUrl?: string; sortOrder?: number }[]>([]);
@@ -115,23 +115,6 @@ export const SyncRoom: React.FC<SyncRoomProps> = ({ room, currentMovie, onClose,
     );
     return () => unsub();
   }, [room.isVIP]);
-
-  useEffect(() => {
-    const fetchKeywords = async () => {
-      try {
-        const res = await fetch("/api/admin/banned-keywords");
-        if (res.ok) {
-          const data = await res.json();
-          if (Array.isArray(data)) {
-            setBannedKeywords(data);
-          }
-        }
-      } catch (err) {
-        console.warn("Error fetching banned keywords:", err);
-      }
-    };
-    fetchKeywords();
-  }, []);
 
   // Real-time listener for Admin Security controls (Mute & Kick)
   useEffect(() => {
@@ -616,15 +599,7 @@ export const SyncRoom: React.FC<SyncRoomProps> = ({ room, currentMovie, onClose,
        }
     }
 
-    let censoredMsg = newMsg;
-    if (Array.isArray(bannedKeywords) && bannedKeywords.length > 0) {
-      bannedKeywords.forEach((keyword) => {
-        if (keyword.trim()) {
-          const regex = new RegExp(keyword.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'gi');
-          censoredMsg = censoredMsg.replace(regex, '*'.repeat(keyword.length));
-        }
-      });
-    }
+    const censoredMsg = await censorOutgoingMessage(newMsg);
 
     await addDoc(collection(db, ROOT, room.id, 'messages'), {
       senderId: socialProfile.uid,

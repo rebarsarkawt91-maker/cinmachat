@@ -2003,6 +2003,50 @@ async function deleteAuthRecord(adminApp: admin.app.App, uid: string): Promise<v
   }
 }
 
+// --- Durable admin-account backup (Firestore) ---
+// Render's ephemeral filesystem resets db.json on every deploy/restart, which
+// would silently wipe every sub-admin / assistant account and revert the main
+// admin's password to the env/random seed. These helpers mirror the full
+// `db.admins` array into a Firestore `_adminAccounts` document so account
+// creation, deletion and password changes survive redeploys and stay the
+// authoritative cross-deploy copy. Mirrors the saveAuthRecord pattern.
+const ADMIN_ACCOUNTS_COLLECTION = '_adminAccounts';
+const ADMIN_ACCOUNTS_DOC = 'current';
+
+async function persistAdminsToFirestore(adminApp: admin.app.App | null, admins: any[]): Promise<void> {
+  if (!adminApp) return;
+  try {
+    await admin
+      .firestore(adminApp)
+      .collection(ADMIN_ACCOUNTS_COLLECTION)
+      .doc(ADMIN_ACCOUNTS_DOC)
+      .set({ admins, updatedAt: new Date().toISOString() });
+  } catch (err: any) {
+    console.warn('[admin-backup] Firestore write failed:', err?.message || err);
+  }
+}
+
+// Read the durable admin-account snapshot back from Firestore. Returns null
+// when it has never been written (e.g. first deploy) so boot can keep the
+// local seed / db.json copy.
+async function restoreAdminsFromFirestore(adminApp: admin.app.App | null): Promise<any[] | null> {
+  if (!adminApp) return null;
+  try {
+    const snap = await admin
+      .firestore(adminApp)
+      .collection(ADMIN_ACCOUNTS_COLLECTION)
+      .doc(ADMIN_ACCOUNTS_DOC)
+      .get();
+    if (!snap.exists) return null;
+    const data = snap.data() as any;
+    if (Array.isArray(data?.admins) && data.admins.length > 0) return data.admins;
+    return null;
+  } catch (err: any) {
+    console.warn('[admin-backup] Firestore read failed:', err?.message || err);
+    return null;
+  }
+}
+
 // Helper for fetch with timeout
 async function fetchWithTimeout(url: string, options: any = {}, timeout = 5000) {
   const controller = new AbortController();
@@ -2740,6 +2784,25 @@ setInterval(() => {
   }
 }, PRIVATE_SESSION_SWEEP_MS);
 
+// Censorship used by the server-mediated chat paths (e.g. /api/dms/send).
+// Mirrors the client-side standard (banned keyword → "*" of the same length)
+// and reads the live db.bannedKeywords list on every call, so admin add/delete
+// takes effect immediately with no stale cache.
+const KEYWORD_ESCAPE_REGEX = /[-\/\\^$*+?.()|[\]{}]/g;
+function censorKeywords(text: unknown, keywords: Array<string | unknown>): string {
+  let out = String(text == null ? '' : text);
+  for (const kwRaw of Array.isArray(keywords) ? keywords : []) {
+    const kw = String(kwRaw || '').trim();
+    if (!kw) continue;
+    try {
+      out = out.replace(new RegExp(kw.replace(KEYWORD_ESCAPE_REGEX, '\\$&'), 'gi'), '*'.repeat(kw.length));
+    } catch (err) {
+      // Skip keywords that produce an invalid regular expression.
+    }
+  }
+  return out;
+}
+
 async function startServer() {
   console.log('==================================================');
   console.log(`[${new Date().toISOString()}] CinemaChat Server Starting...`);
@@ -3100,6 +3163,30 @@ async function startServer() {
   // (Previously this list was normalised down to 'admin' on every restart,
   // which silently wiped newly created sub-admin accounts such as "nazyar".)
   console.log(`[Module 17] Multi-level admin model active. ${db.admins.length} admin account(s) registered.`);
+
+  // Durable admin-account restore: re-hydrate `db.admins` from the Firestore
+  // backup (the authoritative cross-deploy copy) so sub-admin accounts and the
+  // main admin's current password survive Render redeploys that wipe db.json.
+  // The local seed above still guarantees an 'admin' owner record exists, so a
+  // restore that yields no snapshot simply keeps the local copy.
+  (async () => {
+    // Initialize Firebase Admin if it hasn't been yet at this early boot point,
+    // so the durable restore/persist below can talk to Firestore.
+    const adminApp = initializeFirebaseAdmin();
+    if (!adminApp) return;
+    const restored = await restoreAdminsFromFirestore(adminApp);
+    if (restored && restored.length > 0) {
+      db.admins = restored;
+      // Re-assert the mandatory owner record in case the snapshot predates it.
+      if (!db.admins.some((a: any) => String(a?.username || '').trim().toLowerCase() === 'admin')) {
+        db.admins.push({ username: 'admin', password: ownerUserSeedPassHash, isSuper: true, isOwner: true, role: 'owner' });
+      }
+      console.log(`[Module 17] Restored ${db.admins.length} admin account(s) from durable Firestore backup.`);
+    }
+    // Ensure the restored/re-seeded set is mirrored back and persisted locally.
+    await persistAdminsToFirestore(adminApp, db.admins);
+    fs.writeFile(DB_PATH, JSON.stringify(db, null, 2)).catch(console.error);
+  })();
 
   fs.writeFile(DB_PATH, JSON.stringify(db, null, 2)).catch(console.error);
   if (!db.ownerNotifications) db.ownerNotifications = [];
@@ -4333,6 +4420,7 @@ async function startServer() {
 
       await addAuditLog(db, adminName || "Admin", "Restore Database", "بنکەدراوەی گشتی بە سەرکەوتوویی لە دروستکراوەیەکی کۆن گەڕێندرایەوە");
       await saveDB(db);
+      await persistAdminsToFirestore(initializeFirebaseAdmin(), db.admins);
 
       if (db.manualMovies) {
         setMoviesCache(() => [...db.manualMovies]);
@@ -6049,13 +6137,19 @@ async function startServer() {
         db.directMessages = [];
       }
 
+      // Censor banned keywords on the server too. The server always reads
+      // db.bannedKeywords live on every request, so an admin add/delete via the
+      // Security Shield panel takes effect on the very next message with no
+      // stale cache — even if a client bypasses its own client-side filter.
+      const censoredMessage = censorKeywords(message, db.bannedKeywords || []);
+
       const newDm = {
         id: crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 9),
         senderCode: cleanSenderCode,
         senderName: senderName || 'هاوڕێیەک',
         receiverCode: receiverCode,
         receiverName: receiverName,
-        message: message.trim(),
+        message: censoredMessage,
         timestamp: new Date().toISOString()
       };
 
@@ -8045,7 +8139,10 @@ async function startServer() {
   });
 
   app.post('/api/auth/login-mobile', async (req, res) => {
-    const { phone, password } = req.body || {};
+    // A single endpoint backs both the phone AND the username login path so a
+    // user can sign in with either their Phone Number or their Username plus
+    // their Password, with no redundant or conflicting authentication loops.
+    const { phone, username, password } = req.body || {};
     const clientIp = getClientIp(req);
     try {
       if (isMobileRateLimited(mobileLoginRateLimits, clientIp, 10)) {
@@ -8056,12 +8153,15 @@ async function startServer() {
         return res.status(401).json({ success: false, error: LOGIN_MOBILE_ERR_CREDENTIALS });
       }
       const cleanPhone = phone ? canonicalizeMobilePhone(phone) : '';
-      if (!cleanPhone) {
+      const cleanUsername = username ? normalizeUsernameText(username) : '';
+      // An identifier is required, but the SAME input field may hold a phone OR a
+      // username, so phone is preferred first and username is the fallback.
+      if (!cleanPhone && !cleanUsername) {
         return res.status(401).json({ success: false, error: LOGIN_MOBILE_ERR_CREDENTIALS });
       }
       // Login to a hard-deleted account's phone is refused (same generic
       // credentials error, so the blocklist is never disclosed to clients).
-      if (isDeletedCredential(db, cleanPhone)) {
+      if (cleanPhone && isDeletedCredential(db, cleanPhone)) {
         return res.status(401).json({ success: false, error: LOGIN_MOBILE_ERR_CREDENTIALS });
       }
 
@@ -8072,7 +8172,29 @@ async function startServer() {
 
       // Bounded Firestore lookup (limit 1) — no full-collection scan, no local
       // file, no cache that could serve stale or forged records.
-      const record = await findAuthRecordByPhone(adminApp, cleanPhone);
+      let record: any = null;
+      if (cleanPhone) {
+        // Phone identifier: match the protected `_authRecords` doc directly.
+        record = await findAuthRecordByPhone(adminApp, cleanPhone);
+      } else {
+        // Username identifier: resolve username -> uid from the public `users`
+        // profile, then read the password hash from `_authRecords/{uid}`.
+        try {
+          const usersFs = admin.firestore(adminApp).collection('users');
+          const snap = await usersFs.where('username', '==', cleanUsername).limit(1).get();
+          const doc = snap.docs[0];
+          if (doc) {
+            const recSnap = await admin
+              .firestore(adminApp)
+              .collection(AUTH_RECORDS_COLLECTION)
+              .doc(doc.id)
+              .get();
+            if (recSnap.exists) record = { uid: doc.id, ...recSnap.data() };
+          }
+        } catch (err: any) {
+          console.warn('[login-mobile] Username resolution failed:', err?.message || err);
+        }
+      }
       if (!record || !record.uid || !record.passwordHash) {
         return res.status(401).json({ success: false, error: LOGIN_MOBILE_ERR_CREDENTIALS });
       }
@@ -8313,20 +8435,6 @@ async function startServer() {
         return genericOk();
       }
 
-      const provider = String(matchedUser.provider || matchedUser.authProvider || '').toLowerCase();
-      const hasPasswordProvider =
-        !provider ||
-        provider === 'password' ||
-        provider === 'email' ||
-        Boolean(matchedUser.password);
-
-      if (!hasPasswordProvider && provider.includes('google')) {
-        return res.json({
-          success: true,
-          message: 'If this account uses Google sign-in, please continue with Google.',
-        });
-      }
-
       const firebaseApiKey = process.env.FIREBASE_API_KEY || process.env.VITE_FIREBASE_API_KEY || FIREBASE_API_KEY;
       const resetResponse = await fetchWithTimeout(
         `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${encodeURIComponent(firebaseApiKey)}`,
@@ -8447,6 +8555,7 @@ async function startServer() {
 
       await addAuditLog(db, displayName, "Role Promotion via Key", `سەرکەوتووانە ڕۆڵی یوزەر گۆڕدرا بۆ ئەدمینی گشتی (Super Admin) لە ڕێگەی کۆدی نهێنی.`);
       await saveDB(db);
+      await persistAdminsToFirestore(initializeFirebaseAdmin(), db.admins);
 
       res.json({
         success: true,
@@ -8737,6 +8846,7 @@ async function startServer() {
 
     await addAuditLog(db, requester.name || 'system', "Create Admin", `ئەدمینی نوێ دروستکرا: "${safeUsername}" وەک "${requestedRole}"`);
     await saveDB(db);
+    await persistAdminsToFirestore(initializeFirebaseAdmin(), db.admins);
     res.json({ success: true });
   });
 
@@ -8762,6 +8872,7 @@ async function startServer() {
     db.admins = db.admins.filter((a: any) => a.username?.toLowerCase() !== targetName);
     await addAuditLog(db, requester.name || 'system', "Delete Admin", `ئەدمینی سڕایەوە: "${target.username}"`);
     await saveDB(db);
+    await persistAdminsToFirestore(initializeFirebaseAdmin(), db.admins);
     res.json({ success: true });
   });
 
@@ -8836,6 +8947,7 @@ async function startServer() {
 
     await addAuditLog(db, requester.name || 'system', "Modify Admin Credentials", `دەسەڵات یان پاسوۆرد گۆڕدرا بۆ ئەدمینی "${target.username}"`);
     await saveDB(db);
+    await persistAdminsToFirestore(initializeFirebaseAdmin(), db.admins);
     res.json({ success: true, message: 'ڕێکخستنەکان بە سەرکەوتوویی نوێکرانەوە ✓' });
   });
 
@@ -8855,7 +8967,6 @@ async function startServer() {
   const syncProfilePlaceholders = new Set([
     '',
     '---',
-    'google account',
     'not added',
     'n/a',
     'na',
@@ -9504,6 +9615,7 @@ async function startServer() {
       'isAdmin', 'isOwner', 'isDeputyManager', 'isBlocked',
       'blockedUntil', 'blockReason', 'reasonOfBlocking',
       'email', 'username', 'role',
+      'name', 'displayName', 'phone', 'phoneNumber', 'uniqueCode',
     ];
     const incoming = req.body || {};
     for (const key of allowedFields) {

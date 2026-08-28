@@ -174,8 +174,11 @@ export const UserAnalyticsModule: React.FC<AdminUserAnalyticsProps> = ({
   // Edit User Modal state
   const [editUser, setEditUser] = useState<any | null>(null);
   const [editForm, setEditForm] = useState({
-    email: "",
+    name: "",
     username: "",
+    email: "",
+    phone: "",
+    uniqueCode: "",
     isAdmin: false,
     isOwner: false,
     isDeputyManager: false,
@@ -234,11 +237,24 @@ export const UserAnalyticsModule: React.FC<AdminUserAnalyticsProps> = ({
   }, [users, search]);
 
   // ─── Edit User handlers ───
+  const canViewPassword =
+    !!currentUser?.isOwner ||
+    !!currentUser?.isSuper ||
+    String(currentUser?.role || "").toLowerCase() === "owner" ||
+    String(currentUser?.role || "").toLowerCase() === "super_admin";
+  const [viewPassword, setViewPassword] = useState(false);
+  const [userPassword, setUserPassword] = useState("");
+
   const openEditUser = (user: any) => {
     setEditUser(user);
+    setViewPassword(false);
+    setUserPassword("");
     setEditForm({
-      email: user?.email || "",
+      name: user?.name || user?.displayName || "",
       username: user?.username || "",
+      email: user?.email || "",
+      phone: user?.phoneNumber || user?.phone || "",
+      uniqueCode: user?.uniqueCode || "",
       isAdmin: !!user?.isAdmin || String(user?.role || "").toLowerCase() === "admin",
       isOwner: !!user?.isOwner || String(user?.role || "").toLowerCase() === "owner",
       isDeputyManager:
@@ -251,6 +267,34 @@ export const UserAnalyticsModule: React.FC<AdminUserAnalyticsProps> = ({
       blockReason: user?.blockReason || "",
       reasonOfBlocking: user?.reasonOfBlocking || "",
     });
+    if (canViewPassword) {
+      void loadUserPassword(user);
+    }
+  };
+
+  // Reuse the existing password field returned by /api/admin/monitored-users
+  // (role-hierarchy enforced server-side) so Owner / Super Admin can view a
+  // user's login password inside the same edit panel.
+  const loadUserPassword = async (user: any) => {
+    try {
+      const res = await fetch(
+        `/api/admin/monitored-users?adminName=${encodeURIComponent(adminName)}`,
+        { headers: { "x-admin-username": adminName } },
+      );
+      if (!res.ok) return;
+      const list = (await res.json()) as any[];
+      if (!Array.isArray(list)) return;
+      const target = list.find(
+        (u: any) =>
+          u?.uid === user?.uid ||
+          (user?.uniqueCode && String(u?.uniqueCode || "").toUpperCase() === String(user.uniqueCode).toUpperCase()),
+      );
+      if (target && typeof target?.password === "string") {
+        setUserPassword(target.password);
+      }
+    } catch (err) {
+      /* silent — password stays hidden on fetch failure */
+    }
   };
 
   const saveEditUser = async () => {
@@ -267,8 +311,12 @@ export const UserAnalyticsModule: React.FC<AdminUserAnalyticsProps> = ({
             "x-admin-username": adminName,
           },
           body: JSON.stringify({
-            email: editForm.email,
+            name: editForm.name,
             username: editForm.username,
+            email: editForm.email,
+            phone: editForm.phone,
+            phoneNumber: editForm.phone,
+            uniqueCode: editForm.uniqueCode,
             isAdmin: editForm.isAdmin,
             isOwner: editForm.isOwner,
             isDeputyManager: editForm.isDeputyManager,
@@ -894,9 +942,18 @@ export const UserAnalyticsModule: React.FC<AdminUserAnalyticsProps> = ({
                 </div>
                 <div className="p-3 rounded-2xl border border-white/5 bg-white/[0.02]">
                   <p className="text-[10px] text-gray-500 kurdish-text mb-1">CC-ID</p>
-                  <p className="text-[11px] font-mono text-brand-primary truncate font-black">
-                    {editUser?.uniqueCode || "—"}
-                  </p>
+                  <input
+                    type="text"
+                    value={editForm.uniqueCode}
+                    onChange={(e) =>
+                      setEditForm((p) => ({
+                        ...p,
+                        uniqueCode: e.target.value.toUpperCase(),
+                      }))
+                    }
+                    className="w-full rounded-lg border border-white/10 bg-black/30 px-2 py-1.5 text-[11px] font-mono text-brand-primary font-black outline-none transition focus:border-brand-primary/60"
+                    dir="ltr"
+                  />
                 </div>
               </div>
 
@@ -904,33 +961,100 @@ export const UserAnalyticsModule: React.FC<AdminUserAnalyticsProps> = ({
               <div className="space-y-2">
                 <div>
                   <label className="text-[10px] text-gray-500 kurdish-text block mb-1">
-                    ئیمەیڵ
-                  </label>
-                  <input
-                    type="email"
-                    value={editForm.email}
-                    onChange={(e) =>
-                      setEditForm((p) => ({ ...p, email: e.target.value }))
-                    }
-                    className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-xs font-bold text-white outline-none transition focus:border-brand-primary/60 font-mono"
-                    dir="ltr"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] text-gray-500 kurdish-text block mb-1">
-                    ناوی بەکارهێنەر
+                    ناوی تەواو (Full Name)
                   </label>
                   <input
                     type="text"
-                    value={editForm.username}
+                    value={editForm.name}
                     onChange={(e) =>
-                      setEditForm((p) => ({ ...p, username: e.target.value }))
+                      setEditForm((p) => ({ ...p, name: e.target.value }))
                     }
-                    className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-xs font-bold text-white outline-none transition focus:border-brand-primary/60 font-mono"
-                    dir="ltr"
+                    className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-xs font-bold text-white outline-none transition focus:border-brand-primary/60"
                   />
                 </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] text-gray-500 kurdish-text block mb-1">
+                      ژمارەی مۆبایل (Phone)
+                    </label>
+                    <input
+                      type="tel"
+                      value={editForm.phone}
+                      onChange={(e) =>
+                        setEditForm((p) => ({ ...p, phone: e.target.value }))
+                      }
+                      className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-xs font-bold text-white outline-none transition focus:border-brand-primary/60 font-mono"
+                      dir="ltr"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] text-gray-500 kurdish-text block mb-1">
+                      ناوی بەکارهێنەر (Username)
+                    </label>
+                    <input
+                      type="text"
+                      value={editForm.username}
+                      onChange={(e) =>
+                        setEditForm((p) => ({ ...p, username: e.target.value }))
+                      }
+                      className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-xs font-bold text-white outline-none transition focus:border-brand-primary/60 font-mono"
+                      dir="ltr"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-gray-500 kurdish-text block mb-1">
+                      ئیمەیڵ (Email)
+                    </label>
+                    <input
+                      type="email"
+                      value={editForm.email}
+                      onChange={(e) =>
+                        setEditForm((p) => ({ ...p, email: e.target.value }))
+                      }
+                      className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-xs font-bold text-white outline-none transition focus:border-brand-primary/60 font-mono"
+                      dir="ltr"
+                    />
+                  </div>
+                </div>
               </div>
+
+              {/* Login password view (Owner / Super Admin only) */}
+              {canViewPassword && (
+                <div className="space-y-2 pt-2 border-t border-white/5">
+                  <p className="text-[10px] text-gray-500 kurdish-text font-black flex items-center gap-1.5">
+                    <Eye className="h-3 w-3" />
+                    وشەی نهێنی چوونەژوورەوە (Login Password)
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type={viewPassword ? "text" : "password"}
+                      readOnly
+                      value={userPassword}
+                      placeholder={userPassword ? "" : "بارکردن..."}
+                      className="flex-1 min-w-0 rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-xs font-mono font-bold text-amber-300 outline-none"
+                      dir="ltr"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setViewPassword((v) => !v)}
+                      disabled={!userPassword}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-[10px] font-black text-gray-300 transition hover:bg-white/10 hover:text-white disabled:opacity-40 kurdish-text"
+                    >
+                      {viewPassword ? (
+                        <Eye className="h-3.5 w-3.5" />
+                      ) : (
+                        <Lock className="h-3.5 w-3.5" />
+                      )}
+                      {viewPassword ? "شاردنەوە" : "پیشاندان"}
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-gray-600 kurdish-text">
+                    تەنها خاوەن / سوپەر ئەدمین دەتوانێت وشەی نهێنی ببینێت.
+                  </p>
+                </div>
+              )}
 
               {/* Role toggles */}
               <div className="space-y-2">
