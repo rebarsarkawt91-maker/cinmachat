@@ -359,7 +359,11 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
   // ---- handlers ------------------------------------------------------------
   const handleSearch = useCallback(async () => {
     const raw = input.trim();
-    if (!raw || searchStatus === "searching") return;
+    // STRICT CARD LOCK: once a match is on screen ("found") the search is
+    // considered dismissed — pressing Enter / گەڕان again must NOT re-run or
+    // reset the state (that used to wipe the card on key-replay / accidental
+    // re-submit). The found card persists until Cancel or full text deletion.
+    if (!raw || searchStatus === "searching" || searchStatus === "found") return;
     // A ring still active while searching another peer must not linger.
     if (activeCall?.status === "calling") void cancelWatchCall(activeCall.id).catch(() => {});
     setActiveCall(null);
@@ -379,12 +383,21 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
         setSearchError("ئەمە هەژمارەی خۆتە؛ ژمارە/CC-ID ی هاوڕێکەت بنووسە");
         return;
       }
+      // Commit the matched card FIRST and irrevocably. Everything below is only
+      // enrichment and can NEVER revert `searchStatus` back to error/idle.
       setFound(result);
       setSearchStatus("found");
-      // Existing relationship with this peer (label the primary button).
-      const existing = await getFriendConnectionBetween(myUid, result.uid);
-      setFoundConn(existing);
+      try {
+        // Existing relationship with this peer (labels the primary button).
+        const existing = await getFriendConnectionBetween(myUid, result.uid);
+        if (existing) setFoundConn(existing);
+      } catch (err) {
+        // A background relationship lookup failing (e.g. transient live rules /
+        // network) must NOT remove or hide the already-found card.
+        console.warn("friend connection lookup failed after search:", err);
+      }
     } catch {
+      // Only a FAILED search itself lands in "error" — never a post-found step.
       setSearchStatus("error");
       setSearchError("دۆزینەوە سەرکەوتوو نەبوو؛ دووبارە هەوڵبدە");
     }
@@ -810,13 +823,33 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
           value={input}
           onChange={(e) => {
             setInput(e.target.value);
-            if (searchStatus === "error" || searchStatus === "found") {
-              setSearchStatus("idle");
+            // STRICT persistence: an onChange/typing event NEVER hides a found
+            // card. The only dismissal paths are the explicit "پاشگەزبوونەوە"
+            // Cancel, "هاوڕێیەکی تر" (choose another), گەڕان advancing, or the
+            // user deleting the entire search text (back to the idle box).
+            if (e.target.value.trim() === "") {
+              if (searchStatus !== "idle") {
+                setSearchStatus("idle");
+                setSearchError(null);
+              }
+            } else if (searchStatus === "error") {
+              // Errors may clear as soon as the user edits the input; the found
+              // CARD does not — it persists until Cancel or full deletion.
               setSearchError(null);
+              setSearchStatus("idle");
             }
           }}
           onKeyDown={(e) => {
-            if (e.key === "Enter") void handleSearch();
+            if (e.key === "Enter") {
+              // There is no form here, but guard the Enter replay explicitly so
+              // a submit-style key stroke can never default + reset the locked
+              // found card.
+              if (searchStatus === "found") {
+                e.preventDefault();
+                return;
+              }
+              void handleSearch();
+            }
           }}
           type="tel"
           inputMode="tel"
@@ -826,7 +859,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
         <button
           type="button"
           onClick={() => void handleSearch()}
-          disabled={!input.trim() || searchStatus === "searching"}
+          disabled={!input.trim() || searchStatus === "searching" || searchStatus === "found"}
           className="px-5 py-3 rounded-2xl bg-brand-primary hover:bg-red-700 text-white text-xs font-black kurdish-text flex items-center justify-center gap-2 transition-all disabled:opacity-50 flex-shrink-0"
         >
           {searchStatus === "searching" ? (
@@ -952,6 +985,17 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
               هاوڕێیەکی تر هەڵبژێرە
             </button>
           </div>
+
+          {/* Explicit Cancel — the ONLY dismissal alongside full text deletion.
+              Clears the found card (and any active ring) and returns to the
+              idle search box. */}
+          <button
+            type="button"
+            onClick={chooseAnother}
+            className="mt-2 w-full px-5 py-3 rounded-2xl bg-white/5 hover:bg-red-500/20 border border-red-500/20 text-red-300 text-xs font-black kurdish-text transition-all"
+          >
+            پاشگەزبوونەوە
+          </button>
         </div>
       )}
     </div>
