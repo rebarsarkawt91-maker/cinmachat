@@ -12,3 +12,13 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # REQUIRED for the durable admin-account backup (used by sub-admin account
+      # creation/deletion and admin password changes). Render's filesystem is
+      # ephemeral and wipes db.json on every deploy, so without Firebase Admin
+      # credentials the admin accounts + main admin password are NOT persisted
+      # and silently reset after each redeploy.
+      # Set the actual value (service-account JSON as a single-line string) in
+      # Render's Dashboard -> Environment, or in a shared Environment Group.
+      # Do NOT commit the secret here.
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false

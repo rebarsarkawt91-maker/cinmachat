@@ -80,11 +80,32 @@ function buildFirebaseAdminCredentialConfig() {
   );
 
   if (serviceAccountJson) {
-    const serviceAccount = JSON.parse(serviceAccountJson);
-    return {
-      projectId: serviceAccount.project_id || FIREBASE_ADMIN_PROJECT_ID,
-      credential: admin.credential.cert(serviceAccount),
-    };
+    try {
+      const serviceAccount = JSON.parse(serviceAccountJson);
+      if (!serviceAccount || typeof serviceAccount !== 'object') {
+        throw new Error('Parsed FIREBASE_SERVICE_ACCOUNT is not a valid JSON object');
+      }
+      // Normalize double-encoded newlines so a single-line env var (common on
+      // Render/CI) still yields a usable PEM private key: replace literal "\\n"
+      // sequences with real newlines, exactly as the split-credentials branch
+      // below does. This must never crash the surrounding admin POST routes.
+      if (typeof serviceAccount.private_key === 'string') {
+        serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+      }
+      return {
+        projectId: serviceAccount.project_id || FIREBASE_ADMIN_PROJECT_ID,
+        credential: admin.credential.cert(serviceAccount),
+      };
+    } catch (err: any) {
+      console.error(
+        `[Firebase Admin] FIREBASE_SERVICE_ACCOUNT could not be parsed/used: ${err?.message || err}`,
+      );
+      console.error(
+        '[Firebase Admin] Falling back to no Firebase Admin credentials. ' +
+          'Admin routes keep working; only the durable Firestore admin backup is disabled.',
+      );
+      return null;
+    }
   }
   if (googleApplicationCredentials) {
     try {
@@ -3173,7 +3194,14 @@ async function startServer() {
     // Initialize Firebase Admin if it hasn't been yet at this early boot point,
     // so the durable restore/persist below can talk to Firestore.
     const adminApp = initializeFirebaseAdmin();
-    if (!adminApp) return;
+    if (!adminApp) {
+      console.warn(
+        '[Module 17] Durable admin backup DISABLED: Firebase Admin could not be initialized ' +
+        '(missing FIREBASE_SERVICE_ACCOUNT / GOOGLE_APPLICATION_CREDENTIALS). ' +
+        'On Render, admin accounts + the main admin password will reset after every redeploy.',
+      );
+      return;
+    }
     const restored = await restoreAdminsFromFirestore(adminApp);
     if (restored && restored.length > 0) {
       db.admins = restored;
