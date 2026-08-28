@@ -139,6 +139,7 @@ import { CompleteAccountModal } from "./components/Social/CompleteAccountModal";
 import { CinemaChatRoom } from "./components/Social/CinemaChatRoom";
 import { FriendConnectRoom } from "./components/Social/FriendConnectRoom";
 import { CinemaChatInviteNotification } from "./components/Social/CinemaChatInviteNotification";
+import WatchCallNotification from "./components/Social/WatchCallNotification";
 import { RoomInviteNotification } from "./components/Social/RoomInviteNotification";
 import type { CinemaChatParticipant } from "./services/cinemaChat";
 const SecurityShieldModule = React.lazy(() =>
@@ -13506,6 +13507,11 @@ export default function App() {
       {/* Global friend presence (online/offline) notifications — accepted friends
           only, mounted OUTSIDE the room so users see toasts anywhere in the app */}
       <FriendPresenceNotification />
+
+      {/* Global "Call Invitation" ring — pressed on a found friend's card in the
+          Friend → Connect modal, this rings the receiver anywhere in the app;
+          answering opens the private 1-to-1 chat. */}
+      <WatchCallNotification onOpenRoom={() => setShowFriendConnect(true)} />
 
       {/* Point 14/15/16: Detailed Movie View (Selection) */}
       <AnimatePresence>

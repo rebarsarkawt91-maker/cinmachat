@@ -22,11 +22,16 @@ import {
   getFriendConnectionBetween,
   searchAccountByCCIdOrContact,
   subscribeConnectionsForUser,
+  subscribeWatchCall,
+  sendWatchCallInvitation,
+  cancelWatchCall,
+  friendPairKey,
   maskInvitePhone,
 } from "../../services/friendConnect";
 import type {
   ContactSearchResult,
   FriendConnection,
+  WatchCall,
 } from "../../services/friendConnect";
 import { censorOutgoingMessage } from "../../services/bannedWords";
 import { PrivateChatClient, fetchPrivateSessionId } from "../../services/privateChatClient";
@@ -112,6 +117,12 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
   const [foundConn, setFoundConn] = useState<FriendConnection | null>(null);
   const [nextBusy, setNextBusy] = useState(false);
 
+  // "Call Invitation" (watch-together ring) state for the found peer. The ring
+  // signal lives in the invitations collection (kind: "watchcall"); we keep the
+  // caller's own doc id + live status here so the card can show Ringing → done.
+  const [activeCall, setActiveCall] = useState<WatchCall | null>(null);
+  const [callBusy, setCallBusy] = useState(false);
+
   // Auth-gate cap: "checking" may only spin for a short window. After 3s the
   // room surfaces Retry/Close so the user is never stuck on an indefinite
   // spinner when auth/profile resolution hangs.
@@ -147,6 +158,19 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
     () => connections.find((c) => c.id === activeId) ?? null,
     [connections, activeId],
   );
+
+  // Live connection for the peer that is CURRENTLY on the found friend card,
+  // so status transitions (pending ask / call accepted → chat) reflect in real
+  // time instead of the snapshot taken at search time.
+  const liveFoundConn = useMemo(
+    () => {
+      if (!found) return foundConn;
+      const key = friendPairKey(myUid, found.uid);
+      return connections.find((c) => c.id === key) ?? foundConn;
+    },
+    [connections, found, foundConn, myUid],
+  );
+  const foundPeerAccepted = !!liveFoundConn && liveFoundConn.status === "accepted";
   const incomingPending = useMemo(
     () =>
       connections.filter(
@@ -191,17 +215,38 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
     return unsub;
   }, [open, accountReady, myUid]);
 
+  // Live status of OUR outgoing "Call Invitation" ring (doc-level listener —
+  // no composite index needed, and answers/declines update in real time).
+  const activeCallId = activeCall?.id ?? null;
+  useEffect(() => {
+    if (!open || !activeCallId) return;
+    const unsub = subscribeWatchCall(
+      activeCallId,
+      (call) => setActiveCall((current) => (current?.id === call?.id ? call : current)),
+      () => {},
+    );
+    return unsub;
+  }, [open, activeCallId]);
+
   // Auto-open the most recent accepted connection (e.g. right after the other
   // side accepts while the room is open on the target's device).
+  //
+  // Guard: while the user is actively searching / has a found friend card on
+  // screen we do NOT auto-jump into an existing chat — that previously stole the
+  // found card away ~1s after the search finished (background snapshot landed
+  // and switched the step). The ONLY accepted auto-open during a found card is
+  // when the FOUND peer's own call/ask just got accepted (foundPeerAccepted).
   useEffect(() => {
     if (!open || activeId) return;
+    if (searchStatus === "searching") return;
+    if (searchStatus === "found" && !foundPeerAccepted) return;
     const accepted = connections.filter((c) => c.status === "accepted");
     if (accepted.length === 0) return;
     const latest = [...accepted].sort((a, b) =>
       (b.acceptedAt || b.updatedAt || "").localeCompare(a.acceptedAt || a.updatedAt || ""),
     )[0];
     setActiveId(latest.id);
-  }, [open, activeId, connections]);
+  }, [open, activeId, connections, searchStatus, foundPeerAccepted]);
 
   // If the active connection is closed (rejected/cancelled), drop it back to
   // the friend search step.
@@ -316,6 +361,9 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
   const handleSearch = useCallback(async () => {
     const raw = input.trim();
     if (!raw || searchStatus === "searching") return;
+    // A ring still active while searching another peer must not linger.
+    if (activeCall?.status === "calling") void cancelWatchCall(activeCall.id).catch(() => {});
+    setActiveCall(null);
     setFound(null);
     setFoundConn(null);
     setSearchError(null);
@@ -341,15 +389,17 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
       setSearchStatus("error");
       setSearchError("دۆزینەوە سەرکەوتوو نەبوو؛ دووبارە هەوڵبدە");
     }
-  }, [input, myUid, searchStatus]);
+  }, [input, myUid, searchStatus, activeCall]);
 
   const chooseAnother = useCallback(() => {
+    if (activeCall?.status === "calling") void cancelWatchCall(activeCall.id).catch(() => {});
+    setActiveCall(null);
     setFound(null);
     setFoundConn(null);
     setSearchStatus("idle");
     setSearchError(null);
     setInput("");
-  }, []);
+  }, [activeCall]);
 
   const handleNext = useCallback(async () => {
     if (!found || nextBusy) return;
@@ -362,6 +412,9 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
         requesterAvatar: myAvatar || null,
         target: found,
       });
+      // Stop any ringing call so the recipient is not left ringing forever.
+      if (activeCall?.status === "calling") void cancelWatchCall(activeCall.id).catch(() => {});
+      setActiveCall(null);
       setActiveId(id);
       setSearchStatus("idle");
     } catch {
@@ -369,7 +422,61 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
     } finally {
       setNextBusy(false);
     }
-  }, [found, myUid, myName, myCode, myAvatar, nextBusy]);
+  }, [found, myUid, myName, myCode, myAvatar, nextBusy, activeCall]);
+
+  // "Call Invitation" — an immediate real-time watch-together ring to the found
+  // friend. It (re)uses the peer's friend_connections pair as the chat that is
+  // opened once the receiver answers, and plants the "calling" ring doc that
+  // the global WatchCallNotification surfaces anywhere in the app.
+  const handleCallInvitation = useCallback(async () => {
+    if (!found || callBusy) return;
+    if (activeCall?.status === "calling") return;
+    setCallBusy(true);
+    setSearchError(null);
+    try {
+      const { callId, connection } = await sendWatchCallInvitation({
+        requesterUid: myUid,
+        requesterName: myName,
+        requesterCode: myCode,
+        requesterAvatar: myAvatar || null,
+        target: found,
+      });
+      // Provisional "calling" state — the doc-level listener streams the real
+      // invitation doc (answered/declined) right after creation.
+      setActiveCall({
+        id: callId,
+        kind: "watchcall",
+        status: "calling",
+        fromId: myUid,
+        fromName: myName,
+        fromCode: myCode,
+        fromAvatar: myAvatar || null,
+        toId: found.uid,
+        toName: found.name,
+        toCode: found.uniqueCode,
+        connectionId: connection.id,
+        startedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+      });
+    } catch {
+      setSearchError("ناردنی بانگهێشتی پەیوەندی سەرکەوتوو نەبوو؛ دووبارە هەوڵ بدە");
+    } finally {
+      setCallBusy(false);
+    }
+  }, [found, callBusy, activeCall, myUid, myName, myCode, myAvatar]);
+
+  const handleCancelCall = useCallback(async () => {
+    if (!activeCall || activeCall.status !== "calling") return;
+    setCallBusy(true);
+    try {
+      await cancelWatchCall(activeCall.id);
+      setActiveCall((c) => (c ? { ...c, status: "ended" } : c));
+    } catch {
+      setSearchError("ڕاگرتنی بانگهێشتی پەیوەندی سەرکەوتوو نەبوو؛ دووبارە هەوڵ بدە");
+    } finally {
+      setCallBusy(false);
+    }
+  }, [activeCall, callBusy]);
 
   const handleAccept = useCallback(
     async (conn: FriendConnection) => {
@@ -684,11 +791,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
               type="button"
               onClick={() => {
                 setTab(item.id);
-                setInput("");
-                setFound(null);
-                setFoundConn(null);
-                setSearchStatus("idle");
-                setSearchError(null);
+                chooseAnother();
               }}
               className={`min-h-[52px] rounded-2xl border flex items-center justify-center gap-2 text-[11px] font-black transition-all ${
                 active
@@ -772,6 +875,58 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
             </p>
           )}
 
+          {/* Call Invitation — instant real-time watch-together ring to this
+              friend (surfaced globally by WatchCallNotification on their side) */}
+          <div className="mb-3">
+            {activeCall?.status === "calling" ? (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled
+                  className="flex-1 px-5 py-3 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs font-black kurdish-text flex items-center justify-center gap-2 cursor-default"
+                >
+                  <span className="relative flex h-3 w-3">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-400" />
+                  </span>
+                  دەڕۆێت... (Ringing)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleCancelCall()}
+                  disabled={callBusy}
+                  title="ڕاگرتنی بانگهێشتی پەیوەندی"
+                  className="px-4 py-3 rounded-2xl bg-white/5 hover:bg-red-500/20 border border-white/10 text-gray-300 transition-all disabled:opacity-50"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void handleCallInvitation()}
+                disabled={callBusy}
+                title="بانگهێشتی پەیوەندی — سەیرکردنی فیلم پێکەوە (Watch Together)"
+                className="w-full px-5 py-3 rounded-2xl bg-sky-500/15 hover:bg-sky-500/30 border border-sky-500/30 text-sky-300 text-xs font-black kurdish-text flex items-center justify-center gap-2 transition-all disabled:opacity-50"
+              >
+                {callBusy ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <PhoneCall className="w-4 h-4" />
+                )}
+                Call Invitation
+              </button>
+            )}
+            {(activeCall?.status === "declined" || activeCall?.status === "ended") && (
+              <p className="mt-2 flex items-center gap-1.5 text-[10px] font-bold text-amber-400 kurdish-text">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                {activeCall.status === "declined"
+                  ? "بانگهێشتی پەیوەندی ڕەتکرایەوە — دووبارە هەوڵ بدە"
+                  : "بانگهێشتی پەیوەندی ڕاگیرا"}
+              </p>
+            )}
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2">
             <button
               type="button"
@@ -784,9 +939,9 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
               ) : (
                 <ArrowRight className="w-4 h-4" />
               )}
-              {foundConn?.status === "accepted"
+              {liveFoundConn?.status === "accepted"
                 ? "کردنەوەی چات"
-                : foundConn?.status === "pending"
+                : liveFoundConn?.status === "pending"
                   ? "سەیرکردنی بانگهێشت"
                   : "پێشەوە"}
             </button>

@@ -20,10 +20,12 @@ import {
   getDocs,
   setDoc,
   updateDoc,
+  addDoc,
   onSnapshot,
   collection,
   query,
   where,
+  orderBy,
   limit,
 } from "../lib/firebase";
 import {
@@ -369,6 +371,167 @@ export const subscribeFriendConnection = (
     },
     (err) => {
       console.warn("friend connection listener failed:", err);
+      onError?.(err);
+    },
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Watch Together "call invitation" (CinemaChat)
+//
+// A REAL-TIME ring signal: when A finds B by phone/CC-ID in the Friend → Connect
+// modal and presses the "Call Invitation" button, a lightweight invitation doc
+// (kind: "watchcall") is created in the `invitations` collection (rules:
+// allow read/write — no firestore.rules change needed). B's app listens on that
+// collection ANYWHERE in the app and pops a ring toast ("watch together").
+// Answering mirrors the friend-connection accept, so the caller + receiver land
+// in the private 1-to-1 chat + movie step exactly like a normal accepted ask.
+// ---------------------------------------------------------------------------
+
+/** Persist + list channel shared with the CinemaChat room invitations, which
+ *  already ships permissive rules (allow read/write: if true). */
+const WATCH_CALLS_COL = "invitations";
+
+export type WatchCallStatus = "calling" | "accepted" | "declined" | "ended";
+
+export interface WatchCall {
+  id: string;
+  kind: "watchcall";
+  status: WatchCallStatus;
+  fromId: string;
+  fromName: string;
+  fromCode: string;
+  fromAvatar?: string | null;
+  toId: string;
+  toName: string;
+  toCode: string;
+  /** friend_connections doc id (pair key) opened when the receiver answers. */
+  connectionId: string;
+  startedAt: string;
+  createdAt: string;
+  updatedAt?: string;
+  readAt?: string | null;
+}
+
+/** A ring that is not answered within this window is treated as stale/ignored
+ *  (caller went offline, closed the app, ...) and is auto-expired client-side. */
+export const WATCH_CALL_TTL_MS = 90_000;
+
+const toWatchCall = (snap: any): WatchCall =>
+  ({ id: snap.id, ...(snap.data() as object) }) as WatchCall;
+
+/** Ring B's device: ensures the friend_connections pair exists (pending ask),
+ *  then writes a "calling" watchcall doc the receiver listens to. */
+export const sendWatchCallInvitation = async (params: {
+  requesterUid: string;
+  requesterName: string;
+  requesterCode: string;
+  requesterAvatar?: string | null;
+  target: ContactSearchResult;
+}): Promise<{ callId: string; connection: { id: string; duplicate: boolean } }> => {
+  const { requesterUid, requesterName, requesterCode, requesterAvatar, target } = params;
+  if (requesterUid === target.uid) throw new Error("cannot-call-self");
+  if (!target.uid) throw new Error("invalid-target");
+
+  // The pair connection is the private chat they land in after answering.
+  const connection = await createFriendConnection(params);
+
+  const ref = await addDoc(collection(db, WATCH_CALLS_COL), {
+    kind: "watchcall",
+    status: "calling",
+    fromId: requesterUid,
+    fromName: requesterName,
+    fromCode: requesterCode,
+    fromAvatar: requesterAvatar || null,
+    toId: target.uid,
+    toName: target.name,
+    toCode: target.uniqueCode,
+    connectionId: connection.id,
+    startedAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    readAt: null,
+  });
+  return { callId: ref.id, connection };
+};
+
+/** Receiver answers (accept → also accepts the underlying friend connection so
+ *  the Chat step opens automatically) or ignores the ring. */
+export const respondToWatchCall = async (
+  callId: string,
+  connectionId: string,
+  status: "accepted" | "declined",
+): Promise<void> => {
+  await updateDoc(doc(db, WATCH_CALLS_COL, callId), {
+    status,
+    updatedAt: new Date().toISOString(),
+  });
+  if (status !== "accepted") return;
+  // Only accept a still-pending ask — an already-accepted friend just stays
+  // accepted (firestore.rules forbids re-accepting a non-pending connection).
+  const snap = await getDoc(doc(db, FRIEND_CONNECTIONS_COLLECTION, connectionId));
+  if (snap.exists() && snap.data()?.status === "pending") {
+    await respondToFriendConnection(connectionId, "accepted");
+  }
+};
+
+/** Caller withdraws an outgoing ring. */
+export const cancelWatchCall = async (callId: string): Promise<void> => {
+  await updateDoc(doc(db, WATCH_CALLS_COL, callId), {
+    status: "ended",
+    updatedAt: new Date().toISOString(),
+  });
+};
+
+/** Passive cleanup: a calling doc left ringing past its TTL becomes "ended". */
+export const expireWatchCallIfStale = async (call: WatchCall): Promise<void> => {
+  const age = Date.now() - new Date(call.startedAt).getTime();
+  if (call.status !== "calling" || age < WATCH_CALL_TTL_MS) return;
+  await cancelWatchCall(call.id);
+};
+
+/** Global listener for incoming "calling" rings (the receiver's device). */
+export const subscribeWatchCalls = (
+  toId: string,
+  onChange: (calls: WatchCall[]) => void,
+  onError?: (err: unknown) => void,
+): (() => void) => {
+  if (!toId) return () => {};
+  // Mirror of the existing cinemachat query shape → the composite index that
+  // query already established is reused (no new index required).
+  const q = query(
+    collection(db, WATCH_CALLS_COL),
+    where("kind", "==", "watchcall"),
+    where("toId", "==", toId),
+    where("status", "==", "calling"),
+    orderBy("createdAt", "desc"),
+    limit(20),
+  );
+  return onSnapshot(
+    q,
+    (snap) => {
+      onChange(snap.docs.map((d) => toWatchCall(d as any)));
+    },
+    (err) => {
+      console.warn("watch calls listener failed:", err);
+      onError?.(err);
+    },
+  );
+};
+
+/** Single-doc listener for the CALLER's own ring (knows the callId it created). */
+export const subscribeWatchCall = (
+  callId: string,
+  onChange: (call: WatchCall | null) => void,
+  onError?: (err: unknown) => void,
+): (() => void) => {
+  if (!callId) return () => {};
+  return onSnapshot(
+    doc(db, WATCH_CALLS_COL, callId),
+    (snap) => {
+      onChange(snap.exists() ? toWatchCall(snap) : null);
+    },
+    (err) => {
+      console.warn("watch call listener failed:", err);
       onError?.(err);
     },
   );
