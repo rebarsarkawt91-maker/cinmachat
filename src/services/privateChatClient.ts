@@ -19,11 +19,22 @@ export interface PrivateChatMessage {
   ts: number;
 }
 
+/** Full watch-together playback state exchanged between the two participants
+ *  (movie selection, play/pause and the current playhead position). */
+export interface MovieSyncPayload {
+  movie: { id: string; title: string; image?: string; url: string } | null;
+  playing: boolean;
+  time: number;
+  seq: number;
+  updatedAt: number;
+}
+
 export type PrivateChatEvent =
   | { type: "joined"; sessionId: string; participants: string[]; peerUid: string }
   | { type: "message"; clientId: string; senderId: string; text: string; ts: number; ack?: boolean }
   | { type: "presence"; uid: string; online: boolean }
   | { type: "typing"; uid: string; typing: boolean }
+  | { type: "movie"; uid: string; payload: MovieSyncPayload }
   | { type: "heartbeat_ack"; t: number }
   | { type: "session_closed"; reason: string }
   | { type: "error"; message: string };
@@ -180,6 +191,11 @@ export class PrivateChatClient {
 
   sendTyping(typing: boolean): void {
     this.sendJson({ type: "typing", typing });
+  }
+
+  /** Broadcast a watch-together playback state change to the peer participant. */
+  sendMovie(payload: MovieSyncPayload): void {
+    this.sendJson({ type: "movie", payload });
   }
 
   /** Graceful leave — the server destroys the session and drops the other side. */

@@ -14,6 +14,12 @@ import {
   MessageCircle,
   Users,
   Trash2,
+  Play,
+  Pause,
+  Film,
+  Plus,
+  ChevronsLeft,
+  ChevronsRight,
 } from "lucide-react";
 import {
   createFriendConnection,
@@ -35,7 +41,9 @@ import type {
 } from "../../services/friendConnect";
 import { censorOutgoingMessage } from "../../services/bannedWords";
 import { PrivateChatClient, fetchPrivateSessionId } from "../../services/privateChatClient";
-import type { PrivateChatMessage } from "../../services/privateChatClient";
+import type { PrivateChatMessage, MovieSyncPayload } from "../../services/privateChatClient";
+import { resolveMovieSourceUrl } from "../../services/cinemaChat";
+import { db, collection, getDocs } from "../../lib/firebase";
 import type { AccountReadiness } from "../../services/accountReadiness";
 
 // ---------------------------------------------------------------------------
@@ -74,6 +82,20 @@ interface DisplayMessage extends PrivateChatMessage {
   mine: boolean;
   confirmed: boolean;
 }
+
+/** Compact movie descriptor exchanged between the two watch-together peers. */
+interface SyncedMovie {
+  id: string;
+  title: string;
+  image?: string;
+  url: string;
+}
+
+const formatPlayTime = (s: number): string => {
+  const secs = Number.isFinite(s) && s > 0 ? Math.floor(s) : 0;
+  const m = Math.floor(secs / 60);
+  return `${String(m).padStart(2, "0")}:${String(secs % 60).padStart(2, "0")}`;
+};
 
 type SearchStatus = "idle" | "searching" | "found" | "error";
 
@@ -116,6 +138,21 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
   const [found, setFound] = useState<ContactSearchResult | null>(null);
   const [foundConn, setFoundConn] = useState<FriendConnection | null>(null);
   const [nextBusy, setNextBusy] = useState(false);
+
+  // --- Watch-together movie sync (real-time relay over the private-chat socket) ---
+  const [roomMovie, setRoomMovie] = useState<SyncedMovie | null>(null);
+  const [moviePlaying, setMoviePlaying] = useState(false);
+  const [movieTime, setMovieTime] = useState(0);
+  const [movieDuration, setMovieDuration] = useState(0);
+  const [moviePickerOpen, setMoviePickerOpen] = useState(false);
+  const [movieQuery, setMovieQuery] = useState("");
+  const [movieCatalog, setMovieCatalog] = useState<any[] | null>(null);
+  const [movieCatLoading, setMovieCatLoading] = useState(false);
+  const movieVideoRef = useRef<HTMLVideoElement | null>(null);
+  const movieSeqRef = useRef(0);
+  const lastRemoteSeqRef = useRef(0);
+  const pendingSeekRef = useRef<number | null>(null);
+  const movieCatFetchedRef = useRef(false);
 
   // "Call Invitation" (watch-together ring) state for the found peer. The ring
   // signal lives in the invitations collection (kind: "watchcall"); we keep the
@@ -247,6 +284,42 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
     setActiveId(latest.id);
   }, [open, activeId, connections, searchStatus]);
 
+  // A "Call Invitation" the peer accepted streams its invitation doc to
+  // status === "accepted". THAT explicit answer is the only auto-advance off
+  // the found friend card (a background accepted pair still never jumps the
+  // card): the caller transitions straight into the shared private chat so both
+  // sides land in the same room together. We wait for the accepted pair to show
+  // up in the local snapshot so the chat step never renders without a peer.
+  useEffect(() => {
+    if (!open || activeId || !activeCall || activeCall.status !== "accepted") return;
+    const target = activeCall.connectionId;
+    if (!target) return;
+    const conn = connections.find((c) => c.id === target);
+    if (!conn || conn.status !== "accepted") return;
+    setActiveId(target);
+    setSearchStatus("idle");
+    setActiveCall(null);
+  }, [open, activeId, activeCall, connections]);
+
+  // Fresh 1-to-1 chat → start watch-together state clean (preserved across
+  // close/re-open of the SAME connection so a paused pair resumes where it was).
+  const lastConnIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const cid = activeConn?.id ?? null;
+    if (lastConnIdRef.current === cid) return;
+    lastConnIdRef.current = cid;
+    if (!cid) return;
+    setRoomMovie(null);
+    setMoviePlaying(false);
+    setMovieTime(0);
+    setMovieDuration(0);
+    setMoviePickerOpen(false);
+    setMovieQuery("");
+    movieSeqRef.current = 0;
+    lastRemoteSeqRef.current = 0;
+    pendingSeekRef.current = null;
+  }, [activeConn?.id]);
+
   // If the active connection is closed (rejected/cancelled), drop it back to
   // the friend search step.
   useEffect(() => {
@@ -307,6 +380,8 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
         setPeerOnline(event.online);
       } else if (event.type === "typing") {
         setPeerTyping(event.typing);
+      } else if (event.type === "movie") {
+        handleRemoteMovieRef.current(event.payload);
       } else if (event.type === "session_closed") {
         setSessionEnded(true);
         setPeerOnline(false);
@@ -1080,6 +1155,143 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
     );
   };
 
+  // ---- watch-together movie sync -------------------------------------------
+
+  const filteredMovies = useMemo(() => {
+    const q = movieQuery.trim().toLowerCase();
+    const list = movieCatalog || [];
+    if (!q) return list;
+    return list.filter((m: any) => String(m.title || "").toLowerCase().includes(q));
+  }, [movieCatalog, movieQuery]);
+
+  const emitMovieSync = (patch: {
+    movie?: SyncedMovie | null;
+    playing: boolean;
+    time: number;
+  }) => {
+    movieSeqRef.current += 1;
+    const payload: MovieSyncPayload = {
+      movie: patch.movie !== undefined ? patch.movie : roomMovie,
+      playing: patch.playing,
+      time: patch.time,
+      seq: movieSeqRef.current,
+      updatedAt: Date.now(),
+    };
+    setMovieTime(patch.time);
+    clientRef.current?.sendMovie(payload);
+  };
+
+  const selectMovie = (m: any) => {
+    const url = resolveMovieSourceUrl(m);
+    if (!url) return;
+    const synced: SyncedMovie = {
+      id: String(m.id || url),
+      title: m.title || "بێ ناونیشان",
+      image: m.image || undefined,
+      url,
+    };
+    setRoomMovie(synced);
+    setMoviePickerOpen(false);
+    pendingSeekRef.current = 0;
+    setMoviePlaying(true);
+    emitMovieSync({ movie: synced, playing: true, time: 0 });
+  };
+
+  const handleTogglePlay = () => {
+    if (!roomMovie) return;
+    const v = movieVideoRef.current;
+    const next = !moviePlaying;
+    setMoviePlaying(next);
+    emitMovieSync({ movie: undefined, playing: next, time: v?.currentTime || 0 });
+  };
+
+  const handleSeek = (time: number) => {
+    const v = movieVideoRef.current;
+    if (!v || !roomMovie) return;
+    const max = v.duration && isFinite(v.duration) ? v.duration : 0;
+    const next = Math.max(0, max ? Math.min(time, max) : time);
+    v.currentTime = next;
+    setMovieTime(next);
+    emitMovieSync({ movie: undefined, playing: moviePlaying, time: next });
+  };
+
+  const handleSeekBy = (delta: number) => {
+    const v = movieVideoRef.current;
+    if (!v || !roomMovie) return;
+    handleSeek(v.currentTime + delta);
+  };
+
+  const openMoviePicker = () => {
+    setMoviePickerOpen((o) => !o);
+    if (movieCatFetchedRef.current || movieCatLoading) return;
+    setMovieCatLoading(true);
+    getDocs(collection(db, "movies"))
+      .then((snap) => {
+        const list = snap.docs
+          .map((d) => ({ id: d.id, ...(d.data() as any) }))
+          .filter((m: any) => !!resolveMovieSourceUrl(m));
+        setMovieCatalog(list);
+        movieCatFetchedRef.current = true;
+      })
+      .catch(() => setMovieCatalog([]))
+      .finally(() => setMovieCatLoading(false));
+  };
+
+  // Peer relay: apply their movie selection / play / pause / seek. Sequence
+  // numbers guard against out-of-order arrival; the playhead only snaps when a
+  // meaningful gap exists so pulses never fight a local in-progress seek.
+  const handleRemoteMovie = (payload: MovieSyncPayload) => {
+    if (!payload || !payload.movie) return;
+    if (typeof payload.seq === "number" && payload.seq <= lastRemoteSeqRef.current) return;
+    lastRemoteSeqRef.current = payload.seq ?? lastRemoteSeqRef.current;
+    const v = movieVideoRef.current;
+    const target = Number(payload.time) || 0;
+    if (!roomMovie || roomMovie.id !== payload.movie.id || roomMovie.url !== payload.movie.url) {
+      pendingSeekRef.current = target;
+      setRoomMovie(payload.movie);
+      setMoviePlaying(payload.playing);
+      if (v) v.currentTime = Math.max(0, target);
+      return;
+    }
+    setMoviePlaying(payload.playing);
+    if (v && (!v.duration || !isFinite(v.duration) || Math.abs(v.currentTime - target) > 4)) {
+      v.currentTime = Math.max(0, Math.min(target, v.duration || target));
+    }
+  };
+  // Latest-version handler so the socket onEvent closure never goes stale.
+  const handleRemoteMovieRef = useRef<(p: MovieSyncPayload) => void>(() => {});
+  handleRemoteMovieRef.current = handleRemoteMovie;
+
+  // Drive the <video> element from the synced playback state. Autoplay may be
+  // blocked without a user gesture — then the peer keeps playing and the user
+  // just taps Play locally.
+  useEffect(() => {
+    const v = movieVideoRef.current;
+    if (!v || !roomMovie) return;
+    if (moviePlaying) {
+      void v.play().catch(() => setMoviePlaying(false));
+    } else {
+      v.pause();
+    }
+  }, [moviePlaying, roomMovie?.url]);
+
+  // Mirror the playhead into UI state and, while playing, push a periodic
+  // position pulse to the peer so both sides stay converged without spamming
+  // the socket on every timeupdate.
+  useEffect(() => {
+    let tick = 0;
+    const iv = window.setInterval(() => {
+      const v = movieVideoRef.current;
+      if (!v) return;
+      setMovieTime((prev) => (Math.abs(prev - v.currentTime) > 0.5 ? v.currentTime : prev));
+      tick += 1;
+      if (tick % 16 === 0 && roomMovie && moviePlaying) {
+        emitMovieSync({ movie: undefined, playing: true, time: v.currentTime });
+      }
+    }, 500);
+    return () => window.clearInterval(iv);
+  }, [roomMovie, moviePlaying]);
+
   const renderChatStep = () => {
     if (!activeConn) return null;
     return (
@@ -1125,6 +1337,185 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
               <Trash2 className="w-3.5 h-3.5" />
               بەجێهێشتن
             </button>
+          </div>
+        </div>
+
+        {/* Watch together — synced movie player for both participants */}
+        <div className="pt-3">
+          <div className="rounded-2xl bg-black/40 border border-white/10 overflow-hidden">
+            {roomMovie ? (
+              <>
+                <div className="relative aspect-video bg-black/70">
+                  <video
+                    key={`${roomMovie.id}__${roomMovie.url}`}
+                    ref={movieVideoRef}
+                    src={roomMovie.url}
+                    poster={roomMovie.image}
+                    playsInline
+                    preload="metadata"
+                    className="w-full h-full object-contain"
+                    onLoadedMetadata={(e) => {
+                      const d = e.currentTarget.duration;
+                      if (d && isFinite(d)) setMovieDuration(d);
+                      const t = pendingSeekRef.current;
+                      if (t != null) {
+                        e.currentTarget.currentTime = Math.max(0, Math.min(t, d || t));
+                        pendingSeekRef.current = null;
+                      }
+                    }}
+                    onDurationChange={(e) => {
+                      const d = e.currentTarget.duration;
+                      if (d && isFinite(d)) setMovieDuration(d);
+                    }}
+                  />
+                  {!moviePlaying && (
+                    <button
+                      type="button"
+                      onClick={handleTogglePlay}
+                      title="کردنەوە"
+                      className="absolute inset-0 m-auto w-14 h-14 rounded-full bg-brand-primary hover:bg-red-700 text-white flex items-center justify-center transition-all"
+                    >
+                      <Play className="w-6 h-6 ml-0.5" />
+                    </button>
+                  )}
+                </div>
+                <div className="px-3 pt-2.5 flex items-center gap-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[11px] font-black text-white kurdish-text truncate">
+                      {roomMovie.title}
+                    </p>
+                    <p className="text-[9px] font-mono text-gray-500 mt-0.5 flex items-center gap-1.5">
+                      <span>{formatPlayTime(movieTime)}</span>
+                      {moviePlaying && (
+                        <span className="inline-flex items-center gap-1 text-emerald-400">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                          پێکەوە دەبینین
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => handleSeekBy(-10)}
+                      title="-10 چرکە"
+                      className="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 flex items-center justify-center transition-all"
+                    >
+                      <ChevronsRight className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleTogglePlay}
+                      title={moviePlaying ? "ڕاگرتن" : "کردنەوە"}
+                      className="w-11 h-11 rounded-xl bg-brand-primary hover:bg-red-700 text-white flex items-center justify-center transition-all"
+                    >
+                      {moviePlaying ? (
+                        <Pause className="w-5 h-5" />
+                      ) : (
+                        <Play className="w-5 h-5 ml-0.5" />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSeekBy(10)}
+                      title="+10 چرکە"
+                      className="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 flex items-center justify-center transition-all"
+                    >
+                      <ChevronsLeft className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={openMoviePicker}
+                      title="فیلمێکی تر"
+                      className="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 flex items-center justify-center transition-all"
+                    >
+                      <Film className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={movieDuration || 1}
+                  step={1}
+                  value={Math.min(movieTime, movieDuration || 1)}
+                  onChange={(e) => handleSeek(Number(e.target.value))}
+                  className="w-full mt-0.5 mb-2 accent-brand-primary cursor-pointer"
+                />
+              </>
+            ) : (
+              <div className="p-3 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-9 h-9 rounded-xl bg-brand-primary/15 border border-brand-primary/30 flex items-center justify-center flex-shrink-0">
+                    <Film className="w-4 h-4 text-brand-primary" />
+                  </div>
+                  <p className="text-[11px] text-gray-300 kurdish-text leading-snug">
+                    واچ تۆگەدەر — فیلمێک هەڵبژێرە و بەیەکەوە سەیری بکەن
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={openMoviePicker}
+                  className="flex-shrink-0 px-3 py-2 rounded-xl bg-brand-primary hover:bg-red-700 text-white text-[11px] font-black kurdish-text flex items-center gap-1.5 transition-all"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  فیلمێک هەڵبژێرە
+                </button>
+              </div>
+            )}
+
+            {moviePickerOpen && (
+              <div className="border-t border-white/10 bg-zinc-950/70">
+                <div className="p-2.5 flex items-center gap-2">
+                  <Search className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" />
+                  <input
+                    value={movieQuery}
+                    onChange={(e) => setMovieQuery(e.target.value)}
+                    placeholder="گەڕان بۆ فیلم..."
+                    className="flex-1 min-w-0 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:border-brand-primary/60 outline-none text-xs text-white placeholder:text-gray-600"
+                  />
+                </div>
+                <div className="px-2.5 pb-2.5 max-h-44 overflow-y-auto custom-scrollbar">
+                  {movieCatLoading ? (
+                    <div className="flex items-center justify-center gap-2 py-6">
+                      <Loader2 className="w-4 h-4 animate-spin text-brand-primary" />
+                      <span className="text-[10px] text-gray-500 kurdish-text">
+                        فیلمەکان بار دەکرێن...
+                      </span>
+                    </div>
+                  ) : filteredMovies.length === 0 ? (
+                    <p className="text-center text-[11px] text-gray-500 kurdish-text py-6">
+                      هیچ فیلمێک نەدۆزرایەوە
+                    </p>
+                  ) : (
+                    <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                      {filteredMovies.map((m: any) => (
+                        <button key={m.id} type="button" onClick={() => selectMovie(m)} className="text-right group">
+                          <div className="aspect-video rounded-lg overflow-hidden border border-white/10 bg-white/5 group-hover:border-brand-primary/60 transition-all">
+                            {m.image ? (
+                              <img
+                                src={m.image}
+                                alt={m.title}
+                                loading="lazy"
+                                referrerPolicy="no-referrer"
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center bg-white/5">
+                                <Film className="w-4 h-4 text-white/20" />
+                              </div>
+                            )}
+                          </div>
+                          <p className="text-[9px] font-bold text-gray-400 group-hover:text-white truncate mt-1 kurdish-text">
+                            {m.title}
+                          </p>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1275,7 +1666,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
               { n: 4, label: "Movie" },
             ].map((step) => {
               const ready = readiness.state === "ready";
-              const stepNum = !ready || !myUid ? 0 : inChat ? 3 : activeConn ? 2 : 1;
+              const stepNum = !ready || !myUid ? 0 : inChat && roomMovie ? 4 : inChat ? 3 : activeConn ? 2 : 1;
               const active = step.n === stepNum;
               const done = step.n < stepNum;
               return (

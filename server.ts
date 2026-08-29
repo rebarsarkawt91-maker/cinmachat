@@ -2763,6 +2763,25 @@ function handlePrivateChatSocket(ws: WebSocket) {
       return;
     }
 
+    if (type === 'movie') {
+      // Real-time watch-together relay: select / play / pause / seek payloads
+      // are tiny (movie title + url + playhead) and forwarded to the ONE peer
+      // participant only — never stored, never public.
+      const payload: unknown = msg?.payload;
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        ws.send(JSON.stringify({ type: 'error', message: 'bad_movie_payload' }));
+        return;
+      }
+      let serialized = '';
+      try { serialized = JSON.stringify(payload); } catch { serialized = ''; }
+      if (!serialized || serialized.length > 4096) {
+        ws.send(JSON.stringify({ type: 'error', message: 'movie_payload_too_large' }));
+        return;
+      }
+      privateSessionBroadcast(session, { type: 'movie', uid, payload }, uid);
+      return;
+    }
+
     if (type === 'leave') {
       destroyPrivateSession(session.connectionId, 'participant left');
       return;
