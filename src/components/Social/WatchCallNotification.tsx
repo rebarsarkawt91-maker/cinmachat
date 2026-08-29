@@ -43,11 +43,15 @@ const WatchCallNotification: React.FC<{
   // Only real accounts have a stable Firebase UID to receive call invitations
   // (guests and the local-admin shell never qualify).
   const ready = uid.length >= 20 && uid !== "admin_local_bypass" && !!socialProfile;
+  // Normalized phone from the signed-in profile — matched (via canonical key)
+  // against the sender's typed/search phone, so address + identity always agree.
+  const myPhone =
+    (socialProfile as any)?.phoneNumber || socialProfile?.phone || "";
 
   useEffect(() => {
     if (!ready) return;
     return subscribeWatchCalls(
-      uid,
+      { uid, phone: myPhone },
       (calls) => {
         const now = Date.now();
         const live = calls.filter((call) => {
@@ -73,7 +77,7 @@ const WatchCallNotification: React.FC<{
       },
       () => {},
     );
-  }, [ready, uid]);
+  }, [ready, uid, myPhone]);
 
   // Safety net: rings still on screen that outlive the TTL are dismissed.
   useEffect(() => {
@@ -90,7 +94,18 @@ const WatchCallNotification: React.FC<{
     setBusyId(call.id);
     setActionError(null);
     try {
-      await respondToWatchCall(call.id, call.connectionId, "accepted");
+      await respondToWatchCall(
+        call.id,
+        call.connectionId,
+        "accepted",
+        {
+          uid,
+          name: socialProfile?.name || "",
+          code: socialProfile?.uniqueCode || "",
+          avatar:
+            (socialProfile as any)?.avatarUrl || socialProfile?.avatar || null,
+        },
+      );
       // The underlying friend connection is now accepted — open the private
       // chat (auto-opens the accepted pair inside FriendConnectRoom).
       onOpenRoom?.();

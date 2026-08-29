@@ -446,7 +446,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
     setCallBusy(true);
     setSearchError(null);
     try {
-      const { callId, connection } = await sendWatchCallInvitation({
+      const { callId, connectionId } = await sendWatchCallInvitation({
         requesterUid: myUid,
         requesterName: myName,
         requesterCode: myCode,
@@ -466,7 +466,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
         toId: found.uid,
         toName: found.name,
         toCode: found.uniqueCode,
-        connectionId: connection.id,
+        connectionId,
         startedAt: new Date().toISOString(),
         createdAt: new Date().toISOString(),
       });

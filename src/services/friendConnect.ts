@@ -25,7 +25,6 @@ import {
   collection,
   query,
   where,
-  orderBy,
   limit,
 } from "../lib/firebase";
 import {
@@ -87,6 +86,19 @@ export const normalizeEmailInput = (raw: string): string =>
  *  unordered pair — duplicate invitations are impossible at the data layer. */
 export const friendPairKey = (uidA: string, uidB: string): string =>
   [String(uidA), String(uidB)].sort().join("__");
+
+/** Canonical phone identity key: pure digits with the local "0"/"964" prefixes
+ *  stripped, so "+964 750 123 4567", "0750 123 4567" and "9647501234567" all
+ *  resolve to the SAME contact key. Used to address and look up watch-call
+ *  rings so the receiver's stored number and the sender's typed number always
+ *  agree regardless of formatting. */
+export const canonicalPhoneKey = (phone?: string | null): string => {
+  if (!phone) return "";
+  let digits = String(phone).replace(/\D/g, "");
+  if (digits.startsWith("964")) digits = digits.slice(3);
+  while (digits.startsWith("0")) digits = digits.slice(1);
+  return digits;
+};
 
 /** Re-exported so the UI keeps one phone-masking implementation. */
 export { maskInvitePhone, normalizeInvitePhoneInput };
@@ -405,6 +417,11 @@ export interface WatchCall {
   toId: string;
   toName: string;
   toCode: string;
+  /** Canonical receiver identity keys — [uid, uniqueCode, phone-digits] — used
+   *  for the receiver's single-field array-contains listener (no composite
+   *  index needed, and phone/uid spellings always agree on both sides). */
+  toKeys?: string[];
+  toPhone?: string | null;
   /** friend_connections doc id (pair key) opened when the receiver answers. */
   connectionId: string;
   startedAt: string;
@@ -420,22 +437,37 @@ export const WATCH_CALL_TTL_MS = 90_000;
 const toWatchCall = (snap: any): WatchCall =>
   ({ id: snap.id, ...(snap.data() as object) }) as WatchCall;
 
-/** Ring B's device: ensures the friend_connections pair exists (pending ask),
- *  then writes a "calling" watchcall doc the receiver listens to. */
+/** Ring B's device. ORDER MATTERS: the ring document is written FIRST (the
+ *  `invitations` collection is `allow read, write: if true`, so delivery can
+ *  never be blocked by connection rules / auth identity). The private friend
+ *  connection is then ensured best-effort — a failure there must NOT suppress
+ *  the ring. The connectionId is always the deterministic pair key, so the
+ *  receiver's Accept can still resolve the pair doc when it exists. */
 export const sendWatchCallInvitation = async (params: {
   requesterUid: string;
   requesterName: string;
   requesterCode: string;
   requesterAvatar?: string | null;
   target: ContactSearchResult;
-}): Promise<{ callId: string; connection: { id: string; duplicate: boolean } }> => {
+}): Promise<{ callId: string; connectionId: string }> => {
   const { requesterUid, requesterName, requesterCode, requesterAvatar, target } = params;
   if (requesterUid === target.uid) throw new Error("cannot-call-self");
   if (!target.uid) throw new Error("invalid-target");
 
-  // The pair connection is the private chat they land in after answering.
-  const connection = await createFriendConnection(params);
+  // Deterministic pair doc id — surfaced on the ring so the receiver's Accept
+  // knows exactly where the private chat pair lives (exists or not yet).
+  const connectionId = friendPairKey(requesterUid, target.uid);
 
+  // Canonical receiver keys: uid always; plus CC-ID and normalized phone when
+  // the search exposed them. The receiver listens with array-contains on its
+  // OWN uid/phone keys, so both sides always agree on identity.
+  const toKeys = [
+    target.uid,
+    target.uniqueCode || "",
+    canonicalPhoneKey(target.phone),
+  ].filter(Boolean) as string[];
+
+  // 1) Deliver the ring FIRST — single open-rules write, unconditionally.
   const ref = await addDoc(collection(db, WATCH_CALLS_COL), {
     kind: "watchcall",
     status: "calling",
@@ -446,20 +478,37 @@ export const sendWatchCallInvitation = async (params: {
     toId: target.uid,
     toName: target.name,
     toCode: target.uniqueCode,
-    connectionId: connection.id,
+    toKeys,
+    toPhone: target.phone || null,
+    connectionId,
     startedAt: new Date().toISOString(),
     createdAt: new Date().toISOString(),
     readAt: null,
   });
-  return { callId: ref.id, connection };
+
+  // 2) Best-effort ensure the private-chat pair exists (chat landable on
+  //    Accept). Never allowed to block or abort the already-delivered ring.
+  try {
+    await createFriendConnection(params);
+  } catch (err) {
+    console.warn("watch call: ring delivered but friend connection ensure failed:", err);
+  }
+
+  return { callId: ref.id, connectionId };
 };
 
-/** Receiver answers (accept → also accepts the underlying friend connection so
- *  the Chat step opens automatically) or ignores the ring. */
+/** Receiver answers (accept → also accepts/ensures the underlying friend
+ *  connection so the Chat step opens automatically) or ignores the ring. */
 export const respondToWatchCall = async (
   callId: string,
   connectionId: string,
   status: "accepted" | "declined",
+  recipient?: {
+    uid: string;
+    name: string;
+    code: string;
+    avatar?: string | null;
+  },
 ): Promise<void> => {
   await updateDoc(doc(db, WATCH_CALLS_COL, callId), {
     status,
@@ -471,6 +520,30 @@ export const respondToWatchCall = async (
   const snap = await getDoc(doc(db, FRIEND_CONNECTIONS_COLLECTION, connectionId));
   if (snap.exists() && snap.data()?.status === "pending") {
     await respondToFriendConnection(connectionId, "accepted");
+  } else if (!snap.exists() && recipient?.uid) {
+    // The caller's best-effort ensure failed (e.g. denied on their side). The
+    // RECEIVER creates the pair instead so the private chat still exists — the
+    // caller sees it as a normal incoming ask and the flow completes.
+    try {
+      const callSnapRaw = await getDoc(doc(db, WATCH_CALLS_COL, callId));
+      const callDataRaw = callSnapRaw.data() as
+        | { fromId: string; fromName?: string; fromCode?: string }
+        | undefined;
+      if (!callDataRaw?.fromId) return;
+      await createFriendConnection({
+        requesterUid: recipient.uid,
+        requesterName: recipient.name,
+        requesterCode: recipient.code,
+        requesterAvatar: recipient.avatar || null,
+        target: {
+          uid: callDataRaw.fromId,
+          name: callDataRaw.fromName || "بەکارهێنەر",
+          uniqueCode: callDataRaw.fromCode || "",
+        },
+      });
+    } catch (err) {
+      console.warn("watch call: receiver-side connection ensure failed:", err);
+    }
   }
 };
 
@@ -489,33 +562,55 @@ export const expireWatchCallIfStale = async (call: WatchCall): Promise<void> => 
   await cancelWatchCall(call.id);
 };
 
-/** Global listener for incoming "calling" rings (the receiver's device). */
+/** Global listener for incoming "calling" rings (the receiver's device).
+ *
+ *  Identity: the receiver subscribes with its OWN keys (uid + normalized phone)
+ *  using SINGLE-FIELD `array-contains` queries — these need only Firestore's
+ *  automatic single-field indexes, so delivery works on a production project
+ *  that may be missing the (kind, toId, status, createdAt) composite index the
+ *  old query relied on. Results are filtered client-side. */
 export const subscribeWatchCalls = (
-  toId: string,
+  identity: { uid: string; phone?: string | null },
   onChange: (calls: WatchCall[]) => void,
   onError?: (err: unknown) => void,
 ): (() => void) => {
-  if (!toId) return () => {};
-  // Mirror of the existing cinemachat query shape → the composite index that
-  // query already established is reused (no new index required).
-  const q = query(
-    collection(db, WATCH_CALLS_COL),
-    where("kind", "==", "watchcall"),
-    where("toId", "==", toId),
-    where("status", "==", "calling"),
-    orderBy("createdAt", "desc"),
-    limit(20),
+  const keys = [identity.uid, canonicalPhoneKey(identity.phone)].filter(
+    Boolean,
+  ) as string[];
+  if (keys.length === 0) return () => {};
+
+  const known = new Map<string, WatchCall>();
+  const push = () => {
+    const live = [...known.values()]
+      .filter((c) => c.kind === "watchcall" && c.status === "calling")
+      .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+    onChange(live.slice(0, 20));
+  };
+
+  const unsubs = keys.map((key) =>
+    onSnapshot(
+      query(
+        collection(db, WATCH_CALLS_COL),
+        where("toKeys", "array-contains", key),
+        limit(50),
+      ),
+      (snap) => {
+        for (const d of snap.docs) known.set(d.id, toWatchCall(d as any));
+        // Bound memory: drop anything way past the 90s ring TTL immediately.
+        const cutoff = Date.now() - WATCH_CALL_TTL_MS * 15;
+        for (const [id, call] of known) {
+          if (new Date(call.startedAt).getTime() < cutoff) known.delete(id);
+        }
+        push();
+      },
+      (err) => {
+        console.warn("watch calls listener failed:", err);
+        onError?.(err);
+      },
+    ),
   );
-  return onSnapshot(
-    q,
-    (snap) => {
-      onChange(snap.docs.map((d) => toWatchCall(d as any)));
-    },
-    (err) => {
-      console.warn("watch calls listener failed:", err);
-      onError?.(err);
-    },
-  );
+
+  return () => unsubs.forEach((unsub) => unsub());
 };
 
 /** Single-doc listener for the CALLER's own ring (knows the callId it created). */
