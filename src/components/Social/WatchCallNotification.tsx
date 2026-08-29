@@ -28,8 +28,10 @@ import {
 
 const WatchCallNotification: React.FC<{
   /** Called after a successful Accept so the app opens the FriendConnectRoom
-   *  (the private 1-to-1 chat the call was placed through). */
-  onOpenRoom?: () => void;
+   *  (the private 1-to-1 chat the call was placed through). The accepted call
+   *  is passed up so the room can join THAT connection deterministically —
+   *  never a guessed "latest accepted" pair. */
+  onOpenRoom?: (call: WatchCall) => void;
 }> = ({ onOpenRoom }) => {
   const { currentUser, socialProfile } = useSocialAuth();
   const [rings, setRings] = useState<WatchCall[]>([]);
@@ -107,8 +109,8 @@ const WatchCallNotification: React.FC<{
         },
       );
       // The underlying friend connection is now accepted — open the private
-      // chat (auto-opens the accepted pair inside FriendConnectRoom).
-      onOpenRoom?.();
+      // chat (the room joins the accepted call's own pair deterministically).
+      onOpenRoom?.(call);
     } catch {
       setActionError("پەسەندکردنی بانگهێشتی پەیوەندی سەرکەوتوو نەبوو — دووبارە هەوڵبەرەوە");
     } finally {

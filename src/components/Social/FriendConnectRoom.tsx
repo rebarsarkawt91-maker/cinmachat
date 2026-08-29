@@ -54,6 +54,13 @@ import type { AccountReadiness } from "../../services/accountReadiness";
 //   CHAT       3  private ephemeral chat (server in-memory session only)
 //   MOVIE      4  movie / watch-party selection within the active chat
 //
+// Watching-together calls: answering a "Call Invitation" ring anywhere in the
+// app opens this room with autoConnect (callId + connectionId). The room then
+// subscribes to the accepted call's doc in real time and joins THAT connection
+// deterministically (Step 3) the moment its pair flips "accepted" — on both
+// sides the CALLER drives it from its own activeCall, the RECEIVER from the
+// autoConnect identity. No fuzzy "latest accepted" guess is ever involved.
+//
 // NO general/global chat lives here: every message is scoped to the accepted
 // connection's private session, and messages are held ONLY in React state —
 // cleared on leave/close/re-open, never persisted anywhere.
@@ -80,6 +87,16 @@ interface FriendConnectRoomProps {
    *  when this prop is null/undefined on initial load. Kept optional only for
    *  parent-signal compatibility; the room never gates rendering on it. */
   readiness?: AccountReadiness;
+  /** When a "Call Invitation" ring was answered, the accepted call's identity.
+   *  The room then joins THAT connection's private chat deterministically —
+   *  never a guessed "latest accepted" pair — even mid-search. Empty when the
+   *  room was opened manually. */
+  autoConnectCallId?: string;
+  autoConnectConnectionId?: string;
+  /** Parent notification that the deterministic join was consumed, so the
+   *  pending call identity can be cleared (a later manual open must not be
+   *  re-routed into the same chat). */
+  onAutoConnectConsumed?: () => void;
   onRequestAccount?: () => void;
   onRetryAuth?: () => void;
   onCompleteAccount?: () => void;
@@ -119,6 +136,9 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     myName: myNameProp,
     myCode: myCodeProp,
     myAvatar: myAvatarProp,
+    autoConnectCallId: autoConnectCallIdProp,
+    autoConnectConnectionId: autoConnectConnectionIdProp,
+    onAutoConnectConsumed,
     onRequestAccount,
   } = props;
 
@@ -159,6 +179,14 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   // caller's own doc id + live status here so the card can show Ringing → done.
   const [activeCall, setActiveCall] = useState<WatchCall | null>(null);
   const [callBusy, setCallBusy] = useState(false);
+
+  // Deterministic join state (receiver side after answering a "Call
+  // Invitation" ring): the accepted call's live doc + whether the join has
+  // already been performed (so a later manual open is never re-routed).
+  const [joinCall, setJoinCall] = useState<WatchCall | null>(null);
+  const [joinConsumed, setJoinConsumed] = useState(false);
+  const onAutoConnectConsumedRef = useRef(onAutoConnectConsumed);
+  onAutoConnectConsumedRef.current = onAutoConnectConsumed;
 
   // All connections involving me (both directions) — the real-time source of
   // truth for incoming asks + status transitions.
@@ -262,6 +290,9 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   // "هاوڕێیەکی تر هەڵبژێرە" or clearing the input (which sets idle).
   useEffect(() => {
     if (!open || activeId) return;
+    // A call-accept join is pending — never fall back to the fuzzy "latest
+    // accepted" pick (it could open a DIFFERENT chat). Wait for the join.
+    if (autoConnectConnectionIdProp && !joinConsumed) return;
     if (searchStatus === "searching" || searchStatus === "found") return;
     const accepted = connections.filter((c) => c.status === "accepted");
     if (accepted.length === 0) return;
@@ -269,7 +300,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
       (b.acceptedAt || b.updatedAt || "").localeCompare(a.acceptedAt || a.updatedAt || ""),
     )[0];
     setActiveId(latest.id);
-  }, [open, activeId, connections, searchStatus]);
+  }, [open, activeId, connections, searchStatus, autoConnectConnectionIdProp, joinConsumed]);
 
   // A "Call Invitation" the peer accepted streams its invitation doc to
   // status === "accepted". THAT explicit answer is the only auto-advance off
@@ -282,11 +313,56 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     const target = activeCall.connectionId;
     if (!target) return;
     const conn = connections.find((c) => c.id === target);
+    // Edge case: the receiver's best-effort ensure created the pair UNDER THEM
+    // as requester (the caller's own send-side ensure failed / pair was
+    // deleted), so it arrives here as a PENDING incoming ask. Only the TARGET
+    // may accept it — that is the caller — so mirror-accept it to unlock the
+    // shared private session (the server refuses non-accepted pairs), then the
+    // next snapshot lets the advance below proceed.
+    if (conn && conn.status === "pending" && conn.targetUid === myUid) {
+      void respondToFriendConnection(target, "accepted").catch(() => {});
+      return;
+    }
     if (!conn || conn.status !== "accepted") return;
     setActiveId(target);
     setSearchStatus("idle");
     setActiveCall(null);
-  }, [open, activeId, activeCall, connections]);
+  }, [open, activeId, activeCall, connections, myUid]);
+
+  // Deterministic join after answering a "Call Invitation" ring (RECEIVER
+  // side). WatchCallNotification → App pass autoConnect (callId + connectionId);
+  // this room subscribes to the accepted call's own doc in real time and, once
+  // BOTH the call is "accepted" AND its pair shows "accepted" in the local
+  // connections snapshot, jumps straight into that connection's Step-3 chat —
+  // clearing any leftover found-friend card without ever guessing a connection.
+  const joinCallId = autoConnectCallIdProp ?? null;
+  const joinConnId = autoConnectConnectionIdProp ?? null;
+  useEffect(() => {
+    if (!open || !joinCallId) return;
+    setJoinCall(null);
+    const unsub = subscribeWatchCall(joinCallId, (call) => setJoinCall(call), () => {});
+    return unsub;
+  }, [open, joinCallId]);
+
+  // Reset the consumed flag whenever a (new) call is queued, so a fresh accept
+  // on a later ring joins again instead of being blocked by an old join.
+  useEffect(() => {
+    setJoinConsumed(false);
+  }, [autoConnectCallIdProp]);
+
+  useEffect(() => {
+    if (!open || joinConsumed) return;
+    if (!joinCallId || !joinConnId) return;
+    if (!joinCall || joinCall.status !== "accepted") return;
+    const conn = connections.find((c) => c.id === joinConnId);
+    if (!conn || conn.status !== "accepted") return;
+    setActiveId(joinConnId);
+    setSearchStatus("idle");
+    setFound(null);
+    setFoundConn(null);
+    setJoinConsumed(true);
+    onAutoConnectConsumedRef.current?.();
+  }, [open, joinCallId, joinConnId, joinCall, connections, joinConsumed]);
 
   // Fresh 1-to-1 chat → start watch-together state clean (preserved across
   // close/re-open of the SAME connection so a paused pair resumes where it was).
@@ -1121,8 +1197,9 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     handleSeek(v.currentTime + delta);
   };
 
-  const openMoviePicker = () => {
-    setMoviePickerOpen((o) => !o);
+  // Fetch the shared movie catalog once (shared by the picker AND the prefetch
+  // below) so the Step-4 picker is instant the first time either peer taps it.
+  const ensureMovieCatalog = useCallback(() => {
     if (movieCatFetchedRef.current || movieCatLoading) return;
     setMovieCatLoading(true);
     getDocs(collection(db, "movies"))
@@ -1135,6 +1212,19 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
       })
       .catch(() => setMovieCatalog([]))
       .finally(() => setMovieCatLoading(false));
+  }, [movieCatLoading]);
+
+  // Step-4 readiness: prefetch the movie catalog the moment the CHAT step opens
+  // so "فیلمێک هەڵبژێرە" is instant on first tap for BOTH peers — and whichever
+  // side picks first syncs the player to the other via the private-chat socket.
+  useEffect(() => {
+    if (!open || !inChat) return;
+    ensureMovieCatalog();
+  }, [open, inChat, ensureMovieCatalog]);
+
+  const openMoviePicker = () => {
+    setMoviePickerOpen((o) => !o);
+    ensureMovieCatalog();
   };
 
   // Peer relay: apply their movie selection / play / pause / seek. Sequence
