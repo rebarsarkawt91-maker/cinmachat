@@ -632,6 +632,70 @@ const SafeRender = ({
   </ErrorBoundary>
 );
 
+// Scoped safety net for the CinemaChat modals (CinemaChatRoom / FriendConnectRoom).
+// A missing/undefined state deep inside a room used to escape up the React tree
+// and unmount the whole app into a black screen. This boundary contains any such
+// render error INSIDE the modal and offers Retry (re-renders in place) or Close
+// (returns to the app) — the rest of the page keeps working either way.
+class RoomErrorBoundary extends React.Component<any, any> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error(
+      `Self-Healing [${this.props.fallbackName || "Room"}] Caught Modal Crash:`,
+      error,
+      errorInfo,
+    );
+  }
+
+  retry = () => this.setState({ hasError: false });
+
+  render() {
+    if (!this.state.hasError) return this.props.children;
+    return (
+      <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+        <div className="w-full max-w-md rounded-[1.5rem] border border-red-500/30 bg-zinc-900 p-6 text-center shadow-2xl shadow-black/60">
+          <div className="w-12 h-12 rounded-full bg-red-500/15 border border-red-500/40 flex items-center justify-center mx-auto mb-4">
+            <span className="text-xl font-black text-red-400">!</span>
+          </div>
+          <h2 className="text-base font-black text-white kurdish-text">
+            کێشەیەک ڕوویدا لە بارکردنی ژوور
+          </h2>
+          <p className="mt-2 text-[12px] text-gray-400 kurdish-text leading-relaxed">
+            دۆخێکی ناتەواو ڕوویدا لە ژوورەکە. دەتوانیت هەوڵ بدەیتەوە یان
+            ژوورەکە دابخەیت — بەشەکانی تری ئەپەکە بەردەوام دەبن.
+          </p>
+          <div className="mt-5 flex items-center justify-center gap-2">
+            <button
+              type="button"
+              onClick={this.retry}
+              className="px-4 py-2.5 rounded-xl bg-brand-primary hover:bg-red-700 text-white text-xs font-black kurdish-text transition-all"
+            >
+              دووبارە هەوڵدانەوە
+            </button>
+            {this.props.onClose && (
+              <button
+                type="button"
+                onClick={this.props.onClose}
+                className="px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-gray-200 text-xs font-black kurdish-text transition-all"
+              >
+                داخستن
+              </button>
+            )}
+          </div>
+          <p className="mt-4 text-[10px] text-gray-600 font-mono">
+            {this.props.fallbackName || "Room"}
+          </p>
+        </div>
+      </div>
+    );
+  }
+}
+
 const getAI = () => {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return null;
@@ -13427,60 +13491,75 @@ export default function App() {
             />
           )}
           {/* Permanent CinemaChat two-person watch room (main_broadcast_room). */}
-          <CinemaChatRoom
-            open={showCinemaChatRoom}
+          <RoomErrorBoundary
+            fallbackName="CinemaChatRoom"
             onClose={() => setShowCinemaChatRoom(false)}
-            identity={cinemaChatIdentity}
-            movies={publicMovies}
-            hasAccount={hasCinemaChatAccount}
-            accountLoading={socialAuthLoading}
-            accountName={cinemaChatAccountName}
-            accountCode={cinemaChatAccountCode}
-            onRequestAccount={() => {
-              setAuthFlowReturn(true);
-              setModalMode("signup");
-              setShowSocialModal(true);
-            }}
-            subtitleCues={showCinemaChatRoom ? cinemaWindowSubtitleCues : []}
-            subtitleLang={cinemaWindowSubtitleLang}
-            subtitleStatus={showCinemaChatRoom ? cinemaWindowSubtitleStatus : "idle"}
-            subtitleMessage={showCinemaChatRoom ? cinemaWindowSubtitleMessage : ""}
-            subtitleLanguages={CINEMA_WINDOW_SUBTITLE_LANGUAGES}
-            onSubtitleLangChange={(lang: string) => {
-              setCinemaWindowSubtitleLang(lang);
-              setCinemaWindowSubtitleRetryKey((k) => k + 1);
-            }}
-            onSubtitleRetry={() => setCinemaWindowSubtitleRetryKey((k) => k + 1)}
-            onSourceUrl={(url: string) => setCinemaChatSourceUrl(url)}
-            originalSubtitleCues={showCinemaChatRoom ? originalCinemaWindowSubtitleCues : []}
-            ccSettings={ccSettings}
-            ccFontSizeEntry={ccFontSizeEntry}
-            ccSubtitleStyle={ccSubtitleStyle}
-            onToggleCcPanel={() => setShowCcPanel((v) => !v)}
-            showCcPanel={showCcPanel}
-            onUpdateCcSettings={(fn) => setCcSettings((prev) => ({ ...prev, ...fn(prev) }))}
-          />
+          >
+            <CinemaChatRoom
+              open={showCinemaChatRoom}
+              onClose={() => setShowCinemaChatRoom(false)}
+              identity={cinemaChatIdentity}
+              movies={publicMovies}
+              hasAccount={hasCinemaChatAccount}
+              accountLoading={socialAuthLoading}
+              accountName={cinemaChatAccountName}
+              accountCode={cinemaChatAccountCode}
+              onRequestAccount={() => {
+                setAuthFlowReturn(true);
+                setModalMode("signup");
+                setShowSocialModal(true);
+              }}
+              subtitleCues={showCinemaChatRoom ? cinemaWindowSubtitleCues : []}
+              subtitleLang={cinemaWindowSubtitleLang}
+              subtitleStatus={showCinemaChatRoom ? cinemaWindowSubtitleStatus : "idle"}
+              subtitleMessage={showCinemaChatRoom ? cinemaWindowSubtitleMessage : ""}
+              subtitleLanguages={CINEMA_WINDOW_SUBTITLE_LANGUAGES}
+              onSubtitleLangChange={(lang: string) => {
+                setCinemaWindowSubtitleLang(lang);
+                setCinemaWindowSubtitleRetryKey((k) => k + 1);
+              }}
+              onSubtitleRetry={() => setCinemaWindowSubtitleRetryKey((k) => k + 1)}
+              onSourceUrl={(url: string) => setCinemaChatSourceUrl(url)}
+              originalSubtitleCues={showCinemaChatRoom ? originalCinemaWindowSubtitleCues : []}
+              ccSettings={ccSettings}
+              ccFontSizeEntry={ccFontSizeEntry}
+              ccSubtitleStyle={ccSubtitleStyle}
+              onToggleCcPanel={() => setShowCcPanel((v) => !v)}
+              showCcPanel={showCcPanel}
+              onUpdateCcSettings={(fn) => setCcSettings((prev) => ({ ...prev, ...fn(prev) }))}
+            />
+          </RoomErrorBoundary>
           {/* CinemaChat private Friend → Connect (ephemeral 1-to-1 chat). The
               CinemaChat card opens THIS modal; the watch room above stays
               reachable through the "watch together" notifications only. */}
-          <FriendConnectRoom
-            open={showFriendConnect}
+          <RoomErrorBoundary
+            fallbackName="FriendConnectRoom"
             onClose={() => setShowFriendConnect(false)}
-            myUid={fbUser?.uid || ""}
-            myName={socialProfile?.name || "بەکارهێنەر"}
-            myCode={cinemaChatAccountCode || ""}
-            myAvatar={socialProfile?.avatarUrl || socialProfile?.avatar}
-            readiness={accountReadiness}
-            onRequestAccount={() => {
-              setAuthFlowReturn(true);
-              setModalMode("signup");
-              setShowSocialModal(true);
-            }}
-            onRetryAuth={() => void refreshProfile()}
-            onCompleteAccount={() => {
-              setShowCompleteAccount(true);
-            }}
-          />
+          >
+            <FriendConnectRoom
+              open={showFriendConnect}
+              onClose={() => setShowFriendConnect(false)}
+              myUid={fbUser?.uid || ""}
+              myName={socialProfile?.name || "بەکارهێنەر"}
+              myCode={
+                cinemaChatAccountCode ||
+                socialProfile?.uniqueCode ||
+                cinemaChatIdentity.code ||
+                ""
+              }
+              myAvatar={socialProfile?.avatarUrl || socialProfile?.avatar}
+              readiness={accountReadiness}
+              onRequestAccount={() => {
+                setAuthFlowReturn(true);
+                setModalMode("signup");
+                setShowSocialModal(true);
+              }}
+              onRetryAuth={() => void refreshProfile()}
+              onCompleteAccount={() => {
+                setShowCompleteAccount(true);
+              }}
+            />
+          </RoomErrorBoundary>
           </>
         )}
       </main>

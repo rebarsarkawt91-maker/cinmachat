@@ -58,10 +58,13 @@ import type { AccountReadiness } from "../../services/accountReadiness";
 // connection's private session, and messages are held ONLY in React state —
 // cleared on leave/close/re-open, never persisted anywhere.
 //
-// ACCOUNT GATE: nothing below FRIEND 1 runs until the account readiness state
-// machine reports "ready". Guests see the login/create prompt, incomplete
-// accounts see the Complete-Account prompt, and no Firestore listener or
-// WebSocket is ever opened before READY.
+// NO ACCOUNT GATE: "OPEN WATCH TOGETHER" must land straight on FRIEND 1
+// (friend search / هاوڕێیەک بدۆزەوە) for guests, while auth/profile is still
+// resolving, and even when the profile is missing required fields. Safe default
+// metadata (myName/myCode/myAvatar) keeps every downstream write null-safe, and
+// guest searches can BROWSE freely — only actually sending a connection or a
+// watch-call ring prompts classic sign-in (requireAccount). Firestore listeners
+// open as soon as a real uid exists; nothing waits on readiness.
 // ---------------------------------------------------------------------------
 
 interface FriendConnectRoomProps {
@@ -71,8 +74,12 @@ interface FriendConnectRoomProps {
   myName: string;
   myCode: string;
   myAvatar?: string;
-  /** Shared account-readiness result (checking|guest|authenticated-incomplete|ready|error). */
-  readiness: AccountReadiness;
+  /** Shared account-readiness result (checking|guest|authenticated-incomplete|ready|error).
+   *  Readiness/profile checks are BYPASSED in this room — "OPEN WATCH TOGETHER"
+   *  must open Step 1 (friend search) directly with safe default metadata even
+   *  when this prop is null/undefined on initial load. Kept optional only for
+   *  parent-signal compatibility; the room never gates rendering on it. */
+  readiness?: AccountReadiness;
   onRequestAccount?: () => void;
   onRetryAuth?: () => void;
   onCompleteAccount?: () => void;
@@ -104,33 +111,26 @@ const generateClientId = (): string =>
     ? crypto.randomUUID()
     : `m_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
-const missingFieldLabel = (field: string): string => {
-  switch (field) {
-    case "displayName":
-      return "ناو";
-    case "username":
-      return "ناوی بەکارهێنەر";
-    case "memberCode":
-      return "CC-ID";
-    case "identity":
-      return "ئیمەیڵ یان ژمارەی مۆبایل";
-    default:
-      return field;
-  }
-};
+export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
+  const {
+    open,
+    onClose,
+    myUid: myUidProp,
+    myName: myNameProp,
+    myCode: myCodeProp,
+    myAvatar: myAvatarProp,
+    onRequestAccount,
+  } = props;
 
-export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
-  open,
-  onClose,
-  myUid,
-  myName,
-  myCode,
-  myAvatar,
-  readiness,
-  onRequestAccount,
-  onRetryAuth,
-  onCompleteAccount,
-}) => {
+  // Safe metadata fallbacks: the parent always passes strings, but a
+  // missing/empty/guest account must never crash Step 1 (friend search) or
+  // leak raw "undefined" into Firestore writes. Resolve safe values ONCE here
+  // and let every downstream read (search, invitations, chat) use them.
+  const myUid = String(myUidProp || "").trim();
+  const myName = String(myNameProp || "").trim() || "بەکارهێنەر";
+  const myCode = String(myCodeProp || "").trim();
+  const myAvatar = myAvatarProp || null;
+
   const [tab, setTab] = useState<"phone">("phone");
   const [input, setInput] = useState("");
   const [searchStatus, setSearchStatus] = useState<SearchStatus>("idle");
@@ -159,19 +159,6 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
   // caller's own doc id + live status here so the card can show Ringing → done.
   const [activeCall, setActiveCall] = useState<WatchCall | null>(null);
   const [callBusy, setCallBusy] = useState(false);
-
-  // Auth-gate cap: "checking" may only spin for a short window. After 3s the
-  // room surfaces Retry/Close so the user is never stuck on an indefinite
-  // spinner when auth/profile resolution hangs.
-  const [gateTimedOut, setGateTimedOut] = useState(false);
-  useEffect(() => {
-    if (!open || readiness.state !== "checking") {
-      setGateTimedOut(false);
-      return;
-    }
-    const timer = window.setTimeout(() => setGateTimedOut(true), 3000);
-    return () => window.clearTimeout(timer);
-  }, [open, readiness.state]);
 
   // All connections involving me (both directions) — the real-time source of
   // truth for incoming asks + status transitions.
@@ -237,19 +224,19 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
   const activePeer = peerOf(activeConn);
 
   // ---- subscriptions -------------------------------------------------------
-  // Firestore listeners NEVER start until the readiness gate reports "ready".
-  // A guest/incomplete/error account must resolve before any connection data is
-  // observed — otherwise stale or half-owned state could render a fake flow.
-  const accountReady = readiness.state === "ready";
+  // Firestore listeners start as soon as the room is open with a real uid — NO
+  // readiness/profile gate. "OPEN WATCH TOGETHER" must land on Step 1 (friend
+  // search) immediately; an incomplete or still-resolving profile cannot block
+  // the live connection stream.
   useEffect(() => {
-    if (!open || !accountReady || !myUid) return;
+    if (!open || !myUid) return;
     const unsub = subscribeConnectionsForUser(
       myUid,
       (list) => setConnections(list),
       () => {},
     );
     return unsub;
-  }, [open, accountReady, myUid]);
+  }, [open, myUid]);
 
   // Live status of OUR outgoing "Call Invitation" ring (doc-level listener —
   // no composite index needed, and answers/declines update in real time).
@@ -432,6 +419,21 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
   }, [open, tearDownClient]);
 
   // ---- handlers ------------------------------------------------------------
+
+  /** A guest (no Firebase uid) may BROWSE the friend-search step — clicking
+   *  "OPEN WATCH TOGETHER" always lands there — but writing a real connection
+   *  or watch-call ring still needs a real account. Prompt classic sign-in
+   *  instead of creating an invalid document under an empty requesterUid. */
+  const requireAccount = useCallback(
+    (message: string): boolean => {
+      if (myUid) return true;
+      setSearchError(message);
+      onRequestAccount?.();
+      return false;
+    },
+    [myUid, onRequestAccount],
+  );
+
   const handleSearch = useCallback(async () => {
     const raw = input.trim();
     // STRICT CARD LOCK: once a match is on screen ("found") the search is
@@ -490,6 +492,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
 
   const handleNext = useCallback(async () => {
     if (!found || nextBusy) return;
+    if (!requireAccount("بۆ بانگهێشتکردنی هاوڕێ پێویستە ئەکاونتێکی هەبێت")) return;
     setNextBusy(true);
     try {
       const { id } = await createFriendConnection({
@@ -509,7 +512,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
     } finally {
       setNextBusy(false);
     }
-  }, [found, myUid, myName, myCode, myAvatar, nextBusy, activeCall]);
+  }, [found, myUid, myName, myCode, myAvatar, nextBusy, activeCall, requireAccount]);
 
   // "Call Invitation" — an immediate real-time watch-together ring to the found
   // friend. It (re)uses the peer's friend_connections pair as the chat that is
@@ -518,6 +521,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
   const handleCallInvitation = useCallback(async () => {
     if (!found || callBusy) return;
     if (activeCall?.status === "calling") return;
+    if (!requireAccount("بۆ ناردنی بانگهێشتی پەیوەندی پێویستە ئەکاونتێکی هەبێت")) return;
     setCallBusy(true);
     setSearchError(null);
     try {
@@ -550,7 +554,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
     } finally {
       setCallBusy(false);
     }
-  }, [found, callBusy, activeCall, myUid, myName, myCode, myAvatar]);
+  }, [found, callBusy, activeCall, myUid, myName, myCode, myAvatar, requireAccount]);
 
   const handleCancelCall = useCallback(async () => {
     if (!activeCall || activeCall.status !== "calling") return;
@@ -642,112 +646,6 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
 
   // ---- render --------------------------------------------------------------
   if (!open) return null;
-
-  const renderAccountGate = () => (
-    <div className="flex flex-col items-center justify-center gap-4 py-12 text-center px-6" dir="rtl">
-      <div className="w-16 h-16 rounded-full bg-brand-primary/15 border border-brand-primary/30 flex items-center justify-center">
-        <MessageCircle className="w-8 h-8 text-brand-primary" />
-      </div>
-      <div>
-        <p className="text-sm font-black text-white kurdish-text">گفتوگۆی تایبەت</p>
-        <p className="mt-2 text-[12px] text-gray-400 kurdish-text leading-relaxed">
-          بۆ ناردنی بانگهێشت و گفتوگۆی تایبەتی 1-بۆ-1 پێویستت بە ئەکاونتێکە.
-        </p>
-      </div>
-      <button
-        type="button"
-        onClick={onRequestAccount}
-        className="px-5 py-3 rounded-2xl bg-brand-primary hover:bg-red-700 text-white text-xs font-black kurdish-text transition-all shadow-lg shadow-red-600/20"
-      >
-        ئەکاونت دروست بکە یان بچۆ ژوورەوە
-      </button>
-    </div>
-  );
-
-  const renderCheckingGate = () => (
-    <div className="flex flex-col items-center justify-center gap-4 py-12 text-center px-6">
-      <Loader2 className="w-6 h-6 animate-spin text-brand-primary" />
-      <p className="text-[12px] text-gray-400 kurdish-text">
-        بەردەستی ئەکاونت دەپشکنرێت...
-      </p>
-    </div>
-  );
-
-  const renderGateTimeout = () => (
-    <div className="flex flex-col items-center justify-center gap-4 py-12 text-center px-6" dir="rtl">
-      <AlertCircle className="w-8 h-8 text-amber-400" />
-      <p className="text-[12px] text-gray-400 kurdish-text leading-relaxed">
-        پشکنینی ئەکاونت ماوەی تێپەڕاند. تکایە دووبارە هەوڵبدەرەوە.
-      </p>
-      <div className="grid grid-cols-2 gap-2 w-full max-w-[240px]">
-        <button
-          type="button"
-          onClick={onRetryAuth}
-          className="px-5 py-3 rounded-2xl bg-brand-primary hover:bg-red-700 text-white text-xs font-black kurdish-text transition-all"
-        >
-          دووبارە هەوڵدانەوە
-        </button>
-        <button
-          type="button"
-          onClick={onClose}
-          className="px-5 py-3 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 text-xs font-black kurdish-text transition-all"
-        >
-          داخستن
-        </button>
-      </div>
-    </div>
-  );
-
-  const renderIncompleteGate = () => (
-    <div className="flex flex-col items-center justify-center gap-4 py-12 text-center px-6" dir="rtl">
-      <div className="w-16 h-16 rounded-full bg-amber-400/15 border border-amber-400/30 flex items-center justify-center">
-        <AlertCircle className="w-8 h-8 text-amber-400" />
-      </div>
-      <div>
-        <p className="text-sm font-black text-white kurdish-text">ئەکاونتەکەت تەواو نییە</p>
-        <p className="mt-2 text-[12px] text-gray-400 kurdish-text leading-relaxed">
-          بۆ بەکارهێنانی CinemaChat پێویستە ئەم خانانە پڕ بکەیتەوە:
-        </p>
-        <ul className="mt-2 flex flex-col items-center gap-1 text-[11px] font-bold text-amber-300 kurdish-text">
-          {readiness.missingFields.map((field) => (
-            <li key={field}>• {missingFieldLabel(field)}</li>
-          ))}
-        </ul>
-      </div>
-      <button
-        type="button"
-        onClick={onCompleteAccount}
-        className="px-5 py-3 rounded-2xl bg-brand-primary hover:bg-red-700 text-white text-xs font-black kurdish-text transition-all shadow-lg shadow-red-600/20"
-      >
-        تەواوکردنی ئەکاونت
-      </button>
-    </div>
-  );
-
-  const renderGateError = () => (
-    <div className="flex flex-col items-center justify-center gap-4 py-12 text-center px-6" dir="rtl">
-      <AlertCircle className="w-8 h-8 text-amber-400" />
-      <p className="text-[12px] text-gray-400 kurdish-text leading-relaxed">
-        {readiness.error || "ناتوانین ئەکاونتەکەت بپشکنین. تکایە دووبارە هەوڵبدەرەوە."}
-      </p>
-      <div className="grid grid-cols-2 gap-2 w-full max-w-[240px]">
-        <button
-          type="button"
-          onClick={onRetryAuth}
-          className="px-5 py-3 rounded-2xl bg-brand-primary hover:bg-red-700 text-white text-xs font-black kurdish-text transition-all"
-        >
-          دووبارە هەوڵدانەوە
-        </button>
-        <button
-          type="button"
-          onClick={onClose}
-          className="px-5 py-3 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 text-xs font-black kurdish-text transition-all"
-        >
-          داخستن
-        </button>
-      </div>
-    </div>
-  );
 
   const renderPeerBadge = (conn: FriendConnection) => {
     const peer = peerOf(conn);
@@ -1159,9 +1057,11 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
 
   const filteredMovies = useMemo(() => {
     const q = movieQuery.trim().toLowerCase();
-    const list = movieCatalog || [];
+    const list = (movieCatalog || []).filter(
+      (m: any) => !!m && typeof m === "object" && !!resolveMovieSourceUrl(m),
+    );
     if (!q) return list;
-    return list.filter((m: any) => String(m.title || "").toLowerCase().includes(q));
+    return list.filter((m: any) => String(m?.title || "").toLowerCase().includes(q));
   }, [movieCatalog, movieQuery]);
 
   const emitMovieSync = (patch: {
@@ -1489,13 +1389,13 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
                     </p>
                   ) : (
                     <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
-                      {filteredMovies.map((m: any) => (
-                        <button key={m.id} type="button" onClick={() => selectMovie(m)} className="text-right group">
+                      {filteredMovies.map((m: any, idx: number) => (
+                        <button key={m?.id ?? `movie_${idx}`} type="button" onClick={() => selectMovie(m)} className="text-right group">
                           <div className="aspect-video rounded-lg overflow-hidden border border-white/10 bg-white/5 group-hover:border-brand-primary/60 transition-all">
-                            {m.image ? (
+                            {m?.image ? (
                               <img
                                 src={m.image}
-                                alt={m.title}
+                                alt={m?.title || "فیلم"}
                                 loading="lazy"
                                 referrerPolicy="no-referrer"
                                 className="w-full h-full object-cover"
@@ -1507,7 +1407,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
                             )}
                           </div>
                           <p className="text-[9px] font-bold text-gray-400 group-hover:text-white truncate mt-1 kurdish-text">
-                            {m.title}
+                            {m?.title || "بێ ناونیشان"}
                           </p>
                         </button>
                       ))}
@@ -1605,20 +1505,13 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
   };
 
   const renderContent = () => {
-    switch (readiness.state) {
-      case "checking":
-        return gateTimedOut ? renderGateTimeout() : renderCheckingGate();
-      case "guest":
-        return renderAccountGate();
-      case "authenticated-incomplete":
-        return renderIncompleteGate();
-      case "error":
-        return renderGateError();
-      default:
-        break;
-    }
-    if (!myUid) return renderAccountGate();
-    if (inChat) return renderChatStep();
+    // Readiness/PROFILE GATE BYPASSED: "OPEN WATCH TOGETHER" must open Step 1
+    // (friend search) directly — for guests, while auth is still resolving, and
+    // even when profile fields are missing. Safe metadata fallbacks above keep
+    // every path null-safe; the old checking/guest/incomplete/error gate no
+    // longer intercepts (it was what forced profile setup or surfaced the room
+    // crash fallback instead of the search step).
+    if (activeConn && activeConn.status === "accepted") return renderChatStep();
     if (activeConn?.status === "pending") return renderConnectStep();
     return renderFriendStep();
   };
@@ -1665,8 +1558,10 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = ({
               { n: 3, label: "Chat" },
               { n: 4, label: "Movie" },
             ].map((step) => {
-              const ready = readiness.state === "ready";
-              const stepNum = !ready || !myUid ? 0 : inChat && roomMovie ? 4 : inChat ? 3 : activeConn ? 2 : 1;
+              // Readiness gate bypassed: the indicator always reflects the
+              // live step, starting at Step 1 (friend search) on open — even
+              // for guests / incomplete profiles.
+              const stepNum = inChat && roomMovie ? 4 : inChat ? 3 : activeConn ? 2 : 1;
               const active = step.n === stepNum;
               const done = step.n < stepNum;
               return (
