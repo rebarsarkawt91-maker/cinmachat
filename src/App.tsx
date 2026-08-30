@@ -1055,7 +1055,7 @@ const IMMERSIVE_QUALITY_PRESETS = [
 
 import { getYTId as extractYouTubeId, loadYouTubeAPI } from './utils/youtube';
 import { classifySourceType } from './utils/sourceType';
-import HlsVideoPlayer from './components/Player/HlsVideoPlayer';
+import HlsVideoPlayer, { seekActiveHlsPlayer } from './components/Player/HlsVideoPlayer';
 
 // Format a seconds value as `H:MM:SS` (or `MM:SS` when under an hour) for the seek bar.
 function formatTime(seconds: number): string {
@@ -7450,34 +7450,65 @@ export default function App() {
     }
     // 2. Every natively-rendered <video> inside the player container — Plyr's
     //    inner element, the HLS player (room-player-hls-video), and the YouTube
-    //    direct-stream fallback — so the timeline jumps on every player route.
+    //    direct-stream fallback. Capture whether each element was playing so we
+    //    can immediately resume after the seek. A frame that was paused purely
+    //    by buffering stays frozen at the target unless we play() it again.
     const container = modalPlayerRef.current;
     if (container) {
       container.querySelectorAll<HTMLVideoElement>("video").forEach((v) => {
+        const wasPlaying = !v.paused;
         try {
           if (Number.isFinite(v.duration) && t >= v.duration) return;
           v.currentTime = t;
+          if (wasPlaying) {
+            try {
+              void v.play().catch(() => {});
+            } catch {
+              /* ignore */
+            }
+          }
         } catch {
           /* ignore */
         }
       });
     }
-    // 3. YouTube embed: iframe API seekTo command.
-    const roomPlayer = document.getElementById("room-player") as HTMLIFrameElement | null;
-    if (roomPlayer?.contentWindow) {
-      roomPlayer.contentWindow.postMessage(
-        JSON.stringify({ event: "command", func: "seekTo", args: [t, true] }),
-        "https://www.youtube.com",
-      );
-    }
-    // 4. Other embeds: best-effort seek + local-clock fallback so AI subtitles
-    //    re-sync even if the provider ignores the command.
-    const frame = document.getElementById("streaming-player") as HTMLIFrameElement | null;
-    if (frame?.contentWindow) {
-      frame.contentWindow.postMessage(
-        JSON.stringify({ event: "command", func: "seekTo", args: [t, true] }),
-        "*",
-      );
+    // 3. Active hls.js instance: push the position into the loader too — the
+    //    MediaSource can swallow a plain currentTime write while buffering.
+    seekActiveHlsPlayer(t);
+    // 4. Broadcast a seek command to EVERY iframe inside the player container —
+    //    YouTube embed, supported-embed providers, and proxy players (e.g.
+    //    proxy.garageband.rocks). Cross-origin frames ignore direct DOM access,
+    //    so postMessage is the transport; the payload carries both the
+    //    YouTube-command shape AND an explicit `time` field for providers that
+    //    only parse a raw timestamp. Same-origin frames also get direct access.
+    if (container) {
+      const payload = JSON.stringify({
+        event: "command",
+        func: "seekTo",
+        args: [t, true],
+        time: t,
+      });
+      container.querySelectorAll<HTMLIFrameElement>("iframe").forEach((frame) => {
+        try {
+          const inner = (frame.contentWindow as any)?.document?.querySelector?.(
+            "video",
+          ) as HTMLVideoElement | null;
+          if (inner) {
+            try {
+              inner.currentTime = t;
+            } catch {
+              /* ignore */
+            }
+          }
+        } catch {
+          /* cross-origin — fall through to postMessage */
+        }
+        try {
+          frame.contentWindow?.postMessage(payload, "*");
+        } catch {
+          /* ignore */
+        }
+      });
     }
   };
 
@@ -7519,19 +7550,53 @@ export default function App() {
     }
   };
 
+  // After releasing the bar, confirm every native player actually landed on the
+  // target — some players quietly drop a currentTime write while buffering.
+  // Re-assert up to MAX_ATTEMPTS times. Cross-origin iframes can't be verified
+  // (their postMessage was already broadcast by applyScrubToPlayers).
+  const verifySeekApplied = (target: number, attempt: number) => {
+    const MAX_ATTEMPTS = 3;
+    const container = modalPlayerRef.current;
+    if (!container) return;
+    const videos = Array.from(container.querySelectorAll<HTMLVideoElement>("video"));
+    if (videos.length === 0) return;
+    window.setTimeout(() => {
+      if (dragTimeRef.current !== null) return; // a new drag started — stay out
+      let anyMissed = false;
+      videos.forEach((v) => {
+        try {
+          if (Number.isFinite(v.duration) && target >= v.duration) return; // out of range
+          if (Math.abs(v.currentTime - target) > 1.5) {
+            anyMissed = true;
+            v.currentTime = target;
+            try {
+              void v.play().catch(() => {});
+            } catch {
+              /* ignore */
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+      });
+      if (anyMissed && attempt < MAX_ATTEMPTS) {
+        verifySeekApplied(target, attempt + 1);
+      }
+    }, 250);
+  };
+
   const endSeekDrag = () => {
     const nextTime = dragTimeRef.current;
     if (nextTime === null) return;
     seekToPlayer(nextTime);
+    // Commit the hls.js loader position now that the drag ended, so the
+    // MediaSource can't revert the manual write.
+    seekActiveHlsPlayer(nextTime, true);
     dragTimeRef.current = null;
     setDragTime(null);
-    // Re-assert the chosen position shortly after release. Some players
-    // (Plyr / hls.js) finalize seeks asynchronously and may momentarily
-    // overwrite the assigned value with the pre-seek clock; one retry
-    // guarantees the video actually lands on the chosen time.
-    window.setTimeout(() => {
-      if (dragTimeRef.current === null) applyScrubToPlayers(nextTime);
-    }, 120);
+    // Auto-time syncing (the poll) is unblocked above; these async passes only
+    // short-circuit if a native player failed to accept the seek.
+    verifySeekApplied(nextTime, 0);
   };
 
   const getIframe = (id: string): HTMLIFrameElement | null => {

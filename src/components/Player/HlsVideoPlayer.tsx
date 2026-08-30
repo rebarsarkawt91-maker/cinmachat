@@ -11,6 +11,33 @@ import Hls from "hls.js";
  * seeking/volume/fullscreen support.
  */
 
+// ── Module-level registry of live hls.js instances ──────────────────────────
+// Lets the app's seek bar drive the loader directly. Some browsers simply
+// ignore a manual <video>.currentTime write while the MediaSource is actively
+// buffering; passing the position into startLoad() forces the fragment loader
+// to follow. A member of the crew: seekActiveHlsPlayer.
+const activeHlsInstances = new Set<Hls>();
+
+export function seekActiveHlsPlayer(seconds: number, reload = false) {
+  activeHlsInstances.forEach((hls) => {
+    try {
+      if (!hls.media) return;
+      const wasPlaying = !hls.media.paused;
+      hls.media.currentTime = seconds;
+      if (reload) hls.startLoad(seconds);
+      if (wasPlaying) {
+        try {
+          void hls.media.play().catch(() => {});
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  });
+}
+
 interface HlsVideoPlayerProps {
   url: string;
   autoPlay?: boolean;
@@ -148,6 +175,7 @@ export default function HlsVideoPlayer({
         startFragPrefetch: true,
       });
       hlsRef.current = hls;
+      activeHlsInstances.add(hls);
 
       hls.loadSource(url);
       hls.attachMedia(video);
@@ -187,6 +215,7 @@ export default function HlsVideoPlayer({
         clearTimeout(stallTimerRef.current);
         stallTimerRef.current = null;
       }
+      activeHlsInstances.delete(hlsRef.current as Hls);
       hlsRef.current?.destroy();
       hlsRef.current = null;
     };
