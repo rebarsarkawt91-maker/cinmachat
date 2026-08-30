@@ -206,8 +206,13 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   const [chatConnecting, setChatConnecting] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
   const [sessionEnded, setSessionEnded] = useState(false);
+  const [voiceState, setVoiceState] = useState<"idle" | "connecting" | "connected" | "error">("idle");
 
   const clientRef = useRef<PrivateChatClient | null>(null);
+  const voicePeerRef = useRef<RTCPeerConnection | null>(null);
+  const voiceStreamRef = useRef<MediaStream | null>(null);
+  const voiceAudioRef = useRef<HTMLAudioElement | null>(null);
+  const handleVoiceSignalRef = useRef<(payload: { kind: "offer" | "answer" | "ice"; data: any }) => Promise<void>>(async () => {});
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // ---- derived state -------------------------------------------------------
@@ -255,6 +260,65 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     [myUid],
   );
   const activePeer = peerOf(activeConn);
+
+  const ensureVoicePeer = useCallback(async () => {
+    if (voicePeerRef.current) return voicePeerRef.current;
+    const stream = voiceStreamRef.current || await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    voiceStreamRef.current = stream;
+    const peer = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    });
+    stream.getTracks().forEach((track) => peer.addTrack(track, stream));
+    peer.onicecandidate = (event) => {
+      if (event.candidate) clientRef.current?.sendVoiceSignal({ kind: "ice", data: event.candidate.toJSON() });
+    };
+    peer.ontrack = (event) => {
+      const audio = voiceAudioRef.current;
+      if (audio) {
+        audio.srcObject = event.streams[0];
+        void audio.play().catch(() => {});
+      }
+      setVoiceState("connected");
+    };
+    peer.onconnectionstatechange = () => {
+      if (peer.connectionState === "connected") setVoiceState("connected");
+      if (["failed", "disconnected", "closed"].includes(peer.connectionState)) setVoiceState("error");
+    };
+    voicePeerRef.current = peer;
+    return peer;
+  }, []);
+
+  const startVoiceCall = useCallback(async () => {
+    if (!clientRef.current || voiceState === "connecting" || voiceState === "connected") return;
+    setVoiceState("connecting");
+    try {
+      const peer = await ensureVoicePeer();
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      clientRef.current.sendVoiceSignal({ kind: "offer", data: offer });
+    } catch {
+      setVoiceState("error");
+    }
+  }, [ensureVoicePeer, voiceState]);
+
+  handleVoiceSignalRef.current = async (payload) => {
+    try {
+      const peer = await ensureVoicePeer();
+      if (payload.kind === "offer") {
+        await peer.setRemoteDescription(payload.data);
+        const answer = await peer.createAnswer();
+        await peer.setLocalDescription(answer);
+        clientRef.current?.sendVoiceSignal({ kind: "answer", data: answer });
+      } else if (payload.kind === "answer") {
+        await peer.setRemoteDescription(payload.data);
+      } else if (payload.kind === "ice" && payload.data) {
+        await peer.addIceCandidate(payload.data);
+      }
+      setVoiceState("connecting");
+    } catch {
+      setVoiceState("error");
+    }
+  };
 
   // ---- subscriptions -------------------------------------------------------
   // Firestore listeners start as soon as the room is open with a real uid — NO
@@ -467,6 +531,8 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
         setPeerTyping(event.typing);
       } else if (event.type === "movie") {
         handleRemoteMovieRef.current(event.payload);
+      } else if (event.type === "voice_signal") {
+        void handleVoiceSignalRef.current(event.payload);
       } else if (event.type === "session_closed") {
         setSessionEnded(true);
         setPeerOnline(false);
@@ -503,6 +569,11 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
         c.close("closed");
         clientRef.current = null;
       }
+      voicePeerRef.current?.close();
+      voicePeerRef.current = null;
+      voiceStreamRef.current?.getTracks().forEach((track) => track.stop());
+      voiceStreamRef.current = null;
+      if (voiceAudioRef.current) voiceAudioRef.current.srcObject = null;
     };
   }, [open, inChat, activeConn?.id, activeConn?.status]);
 
@@ -743,8 +814,6 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   }, [found]);
 
   // ---- render --------------------------------------------------------------
-  if (!open) return null;
-
   const renderPeerBadge = (conn: FriendConnection) => {
     const peer = peerOf(conn);
     return (
@@ -1332,14 +1401,16 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
             </div>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
+            <audio ref={voiceAudioRef} autoPlay />
             <button
               type="button"
-              disabled
-              title="پەیوەندی دەنگی بەم زووانە چالاک دەکرێت"
-              className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-gray-500 text-[11px] font-black kurdish-text flex items-center gap-1.5 cursor-not-allowed"
+              onClick={() => void startVoiceCall()}
+              disabled={voiceState === "connecting" || voiceState === "connected"}
+              title={voiceState === "connected" ? "پەیوەندی دەنگی چالاکە" : "پەیوەندی دەنگی"}
+              className={`px-3 py-2 rounded-xl border text-[11px] font-black kurdish-text flex items-center gap-1.5 transition-all ${voiceState === "connected" ? "bg-emerald-500/20 border-emerald-500/30 text-emerald-300" : "bg-white/5 border-white/10 text-gray-200 hover:bg-white/10"}`}
             >
               <PhoneCall className="w-3.5 h-3.5" />
-              پەیوەندی دەنگی
+              {voiceState === "connected" ? "دەنگ چالاکە" : voiceState === "connecting" ? "پەیوەندی..." : "پەیوەندی دەنگی"}
             </button>
             <button
               type="button"
@@ -1627,6 +1698,8 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     if (activeConn?.status === "pending") return renderConnectStep();
     return renderFriendStep();
   };
+
+  if (!open) return null;
 
   return createPortal(
     <div className="fixed inset-0 z-[110] flex items-center justify-center p-3 md:p-6">

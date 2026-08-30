@@ -2832,6 +2832,22 @@ function handlePrivateChatSocket(ws: WebSocket) {
       return;
     }
 
+    if (type === 'voice_signal') {
+      const payload = msg?.payload;
+      if (!payload || !['offer', 'answer', 'ice'].includes(String(payload.kind))) {
+        ws.send(JSON.stringify({ type: 'error', message: 'bad_voice_signal' }));
+        return;
+      }
+      let serialized = '';
+      try { serialized = JSON.stringify(payload.data); } catch { serialized = ''; }
+      if (!serialized || serialized.length > 128 * 1024) {
+        ws.send(JSON.stringify({ type: 'error', message: 'voice_signal_too_large' }));
+        return;
+      }
+      privateSessionBroadcast(session, { type: 'voice_signal', uid, payload }, uid);
+      return;
+    }
+
     if (type === 'leave') {
       destroyPrivateSession(session.connectionId, 'participant left');
       return;

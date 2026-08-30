@@ -35,6 +35,7 @@ export type PrivateChatEvent =
   | { type: "presence"; uid: string; online: boolean }
   | { type: "typing"; uid: string; typing: boolean }
   | { type: "movie"; uid: string; payload: MovieSyncPayload }
+  | { type: "voice_signal"; uid: string; payload: { kind: "offer" | "answer" | "ice"; data: unknown } }
   | { type: "heartbeat_ack"; t: number }
   | { type: "session_closed"; reason: string }
   | { type: "error"; message: string };
@@ -196,6 +197,10 @@ export class PrivateChatClient {
   /** Broadcast a watch-together playback state change to the peer participant. */
   sendMovie(payload: MovieSyncPayload): void {
     this.sendJson({ type: "movie", payload });
+  }
+
+  sendVoiceSignal(payload: { kind: "offer" | "answer" | "ice"; data: unknown }): void {
+    this.sendJson({ type: "voice_signal", payload });
   }
 
   /** Graceful leave — the server destroys the session and drops the other side. */

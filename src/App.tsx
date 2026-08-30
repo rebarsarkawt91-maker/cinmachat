@@ -638,7 +638,7 @@ const SafeRender = ({
 // render error INSIDE the modal and offers Retry (re-renders in place) or Close
 // (returns to the app) — the rest of the page keeps working either way.
 class RoomErrorBoundary extends React.Component<any, any> {
-  state = { hasError: false };
+  state = { hasError: false, autoRetrying: false };
 
   static getDerivedStateFromError() {
     return { hasError: true };
@@ -650,11 +650,20 @@ class RoomErrorBoundary extends React.Component<any, any> {
       error,
       errorInfo,
     );
+    if (this.props.fallbackName === "FriendConnectRoom") {
+      this.setState({ hasError: false, autoRetrying: true });
+      window.setTimeout(() => this.setState({ hasError: false, autoRetrying: false }), 50);
+    }
   }
 
-  retry = () => this.setState({ hasError: false });
+  retry = () => this.setState({ hasError: false, autoRetrying: false });
 
   render() {
+    if (this.state.autoRetrying && this.props.fallbackName === "FriendConnectRoom") {
+      return (
+        <div className="fixed inset-0 z-[150] pointer-events-none" aria-hidden="true" />
+      );
+    }
     if (!this.state.hasError) return this.props.children;
     return (
       <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
