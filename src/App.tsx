@@ -7371,6 +7371,9 @@ export default function App() {
     if (!showPlayer) return;
     const isYouTube = !!activeServerUrl && /youtube\.com|youtu\.be/i.test(activeServerUrl);
     const tick = () => {
+      // While the user is pressing/dragging the seek bar, the scrub position
+      // (dragTime) is authoritative — don't overwrite it with the player clock.
+      if (dragTimeRef.current !== null) return;
       let t = 0;
       let d = 0;
       // 0. Direct-stream fallback <video> (YouTubeResilientPlayer "direct" mode)
@@ -7381,21 +7384,31 @@ export default function App() {
         t = typeof directVideo.currentTime === "number" ? directVideo.currentTime : 0;
         d = typeof directVideo.duration === "number" && Number.isFinite(directVideo.duration) ? directVideo.duration : 0;
         localClockRef.current = t;
-      } else if (plyrRef.current?.plyr) {
-        const p = plyrRef.current.plyr;
-        t = typeof p.currentTime === "number" ? p.currentTime : 0;
-        d = typeof p.duration === "number" && Number.isFinite(p.duration) ? p.duration : 0;
-        localClockRef.current = t;
-      } else if (isYouTube) {
-        t = ytCurrentTimeRef.current;
-        localClockRef.current = t;
       } else {
-        // External cross-origin embed (ImmersiveShieldedPlayer) — we cannot
-        // read the iframe's currentTime, so advance the drift clock by the
-        // tick interval (~250 ms).  This is approximate (ignores pauses /
-        // buffering) but good enough for subtitle cue matching.
-        localClockRef.current += 0.25;
-        t = localClockRef.current;
+        // 0.5 HLS player <video> — read its real clock so the bar follows the
+        //     actual playback position (and confirmed seeks read back correctly
+        //     instead of falling into the cross-origin drift clock).
+        const hlsVideo = document.getElementById("room-player-hls-video") as HTMLVideoElement | null;
+        if (hlsVideo) {
+          t = typeof hlsVideo.currentTime === "number" ? hlsVideo.currentTime : 0;
+          d = typeof hlsVideo.duration === "number" && Number.isFinite(hlsVideo.duration) ? hlsVideo.duration : 0;
+          localClockRef.current = t;
+        } else if (plyrRef.current?.plyr) {
+          const p = plyrRef.current.plyr;
+          t = typeof p.currentTime === "number" ? p.currentTime : 0;
+          d = typeof p.duration === "number" && Number.isFinite(p.duration) ? p.duration : 0;
+          localClockRef.current = t;
+        } else if (isYouTube) {
+          t = ytCurrentTimeRef.current;
+          localClockRef.current = t;
+        } else {
+          // External cross-origin embed (ImmersiveShieldedPlayer) — we cannot
+          // read the iframe's currentTime, so advance the drift clock by the
+          // tick interval (~250 ms).  This is approximate (ignores pauses /
+          // buffering) but good enough for subtitle cue matching.
+          localClockRef.current += 0.25;
+          t = localClockRef.current;
+        }
       }
       // Duration fallback: keep the last reported duration when the player reports none.
       setPlayerCurrentTime(t);
@@ -7418,11 +7431,35 @@ export default function App() {
   const seekToPlayer = (seconds: number) => {
     const t = Math.max(0, seconds);
     setPlayerCurrentTime(t);
-    // 1. Direct video (Plyr): native seek.
+    // Keep every clock variant in sync so no read-back path can snap the bar
+    // back to the pre-seek position before the player acknowledges the move.
+    localClockRef.current = t;
+    ytCurrentTimeRef.current = t;
+    // 1. Direct video (Plyr): native seek through the Plyr API.
     if (plyrRef.current?.plyr) {
-      plyrRef.current.plyr.currentTime = t;
+      try {
+        plyrRef.current.plyr.currentTime = t;
+      } catch {
+        /* ignore */
+      }
     }
-    // 2. YouTube embed: iframe API seekTo command.
+    // 2. Every natively-rendered <video> inside the player container — Plyr's
+    //    inner element, the HLS player (room-player-hls-video), and the YouTube
+    //    direct-stream fallback. Seeking each live element guarantees the
+    //    timeline jumps regardless of which player route is active (HLS had no
+    //    seek path at all before this).
+    const container = modalPlayerRef.current;
+    if (container) {
+      container.querySelectorAll<HTMLVideoElement>("video").forEach((v) => {
+        try {
+          if (Number.isFinite(v.duration) && t >= v.duration) return;
+          v.currentTime = t;
+        } catch {
+          /* ignore */
+        }
+      });
+    }
+    // 3. YouTube embed: iframe API seekTo command.
     const roomPlayer = document.getElementById("room-player") as HTMLIFrameElement | null;
     if (roomPlayer?.contentWindow) {
       roomPlayer.contentWindow.postMessage(
@@ -7430,7 +7467,7 @@ export default function App() {
         "https://www.youtube.com",
       );
     }
-    // 3. Other embeds: best-effort seek + local-clock fallback so AI subtitles
+    // 4. Other embeds: best-effort seek + local-clock fallback so AI subtitles
     //    re-sync even if the provider ignores the command.
     const frame = document.getElementById("streaming-player") as HTMLIFrameElement | null;
     if (frame?.contentWindow) {
@@ -7439,17 +7476,6 @@ export default function App() {
         "*",
       );
     }
-    // 4. Direct-stream fallback <video> (YouTubeResilientPlayer "direct" mode):
-    //    seek it natively so the timeline works there too.
-    const directVideo = document.getElementById("room-player-direct-video") as HTMLVideoElement | null;
-    if (directVideo) {
-      try {
-        directVideo.currentTime = t;
-      } catch {
-        /* ignore */
-      }
-    }
-    localClockRef.current = t;
     // Publish immediately so guests follow a host seek without waiting for the
     // next 3s poll (uses the seek target, since iframe clocks lag the command).
     publishPlaybackNowRef.current({ currentTime: t });

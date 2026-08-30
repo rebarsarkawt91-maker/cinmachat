@@ -201,6 +201,7 @@ export default function HlsVideoPlayer({
       ) : (
         <video
           ref={videoRef}
+          id="room-player-hls-video"
           className="w-full h-full object-contain"
           muted={muted}
           controls
