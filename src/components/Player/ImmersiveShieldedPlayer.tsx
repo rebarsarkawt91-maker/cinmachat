@@ -188,14 +188,8 @@ export default function ImmersiveShieldedPlayer({
           className="w-full h-full border-0"
           frameBorder="0"
           scrolling="no"
-          allow="autoplay; fullscreen; encrypted-media; picture-in-picture; accelerometer; gyroscope; clipboard-write"
+          allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
           allowFullScreen
-          // Anti-Copyright Shield sandbox: the earlier strict token set
-          // (no allow-popups/forms) made several providers refuse to initialize
-          // their player. The token set is now relaxed so any provider can run,
-          // while the MutationObserver + injected stylesheet sweep still removes
-          // popups, banners and ad overlays once the document loads.
-          sandbox="allow-scripts allow-same-origin allow-presentation allow-popups allow-popups-to-escape-sandbox allow-forms allow-pointer-lock allow-modals allow-downloads"
           onLoad={() => {
             // Best-effort first sweep right after (re)load.
             setTimeout(() => installShield(iframeRef.current!), 200);
