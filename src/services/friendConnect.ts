@@ -245,13 +245,27 @@ export const searchAccountByCCIdOrContact = async (
   const digits = trimmed.replace(/\D/g, "");
   const isPhoneLike = digits.length >= 7 && /^[\d+\s-]*$/.test(trimmed);
 
+  // Resolve deterministic local E2E identities first. Firestore can remain
+  // pending while offline, but the local development server is immediate.
+  try {
+    const response = await fetch(`/api/local-test/accounts?q=${encodeURIComponent(trimmed)}`);
+    const data = await response.json().catch(() => ({}));
+    const account = Array.isArray(data?.accounts) ? data.accounts[0] : null;
+    if (account?.uid) return account as ContactSearchResult;
+  } catch {
+    /* continue with the real account lookup */
+  }
+
   // Not obviously a phone → try the CC-ID path first (codes are public).
   if (!isPhoneLike) {
     const byCode = await searchAccountByCCId(trimmed);
     if (byCode) return byCode;
   }
   // Fall back to the phone contact search.
-  return searchAccountByContact(trimmed);
+  const firebaseResult = await searchAccountByContact(trimmed);
+  if (firebaseResult) return firebaseResult;
+
+  return null;
 };
 
 // ---------------------------------------------------------------------------

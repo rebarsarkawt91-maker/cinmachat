@@ -6068,6 +6068,29 @@ async function startServer() {
     }
   });
 
+  // Local-only Watch Together test account lookup. Production never exposes
+  // the local db.json test profiles; the real Firebase search remains primary.
+  app.get('/api/local-test/accounts', (req, res) => {
+    if (process.env.NODE_ENV === 'production') {
+      return res.status(404).json({ accounts: [] });
+    }
+    const raw = String(req.query.q || '').trim().toUpperCase();
+    const digits = raw.replace(/\D/g, '');
+    const accounts = (db.users || []).filter((user: any) => {
+      if (!user?.isTestAccount) return false;
+      const code = String(user.uniqueCode || '').trim().toUpperCase();
+      const phone = String(user.phoneNumber || user.phone || '').replace(/\D/g, '');
+      return Boolean(raw && (code === raw || phone === digits));
+    }).map((user: any) => ({
+      uid: String(user.uid),
+      name: String(user.name || 'Watch Test Account'),
+      uniqueCode: String(user.uniqueCode || ''),
+      phone: String(user.phoneNumber || user.phone || ''),
+      avatarUrl: String(user.avatarUrl || user.avatar || ''),
+    }));
+    return res.json({ accounts });
+  });
+
   app.post('/api/notifications/send', async (req, res) => {
     try {
       const { fromUserCode, fromUserName, targetCodeOrName, roomId, roomName } = req.body;
