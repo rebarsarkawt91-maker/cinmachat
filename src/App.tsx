@@ -12728,6 +12728,7 @@ export default function App() {
                         value={toSelectorSubtitleLang(cinemaWindowSubtitleLang)}
                         onChange={(lang) => {
                           setCinemaWindowSubtitleLang(toAppSubtitleLang(lang));
+                          setCcSettings((settings) => ({ ...settings, showSubtitle: lang !== "off" }));
                           setCinemaWindowSubtitleRetryKey((k) => k + 1);
                         }}
                         status={cinemaWindowSubtitleStatus}
@@ -13818,7 +13819,7 @@ export default function App() {
                             </div>
                           )}
                           <div
-                            dir="auto"
+                            dir={cinemaWindowSubtitleLang === "ckb" ? "rtl" : "auto"}
                             className={`max-w-[92%] whitespace-pre-line rounded-lg px-3 py-2 text-center font-bold leading-snug shadow-[0_2px_14px_rgba(0,0,0,0.75)] ${ccFontSizeEntry.mobileCls} md:${ccFontSizeEntry.cls}`}
                             style={ccSubtitleStyle}
                           >
@@ -14253,6 +14254,7 @@ export default function App() {
                               value={toSelectorSubtitleLang(cinemaWindowSubtitleLang)}
                               onChange={(lang) => {
                                 setCinemaWindowSubtitleLang(toAppSubtitleLang(lang));
+                                setCcSettings((settings) => ({ ...settings, showSubtitle: lang !== "off" }));
                                 setCinemaWindowSubtitleRetryKey((k) => k + 1);
                               }}
                               status={cinemaWindowSubtitleStatus}
