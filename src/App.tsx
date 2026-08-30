@@ -7152,6 +7152,8 @@ export default function App() {
   const [playerDuration, setPlayerDuration] = useState(0);
   const [dragTime, setDragTime] = useState<number | null>(null);
   const dragTimeRef = useRef<number | null>(null);
+  // Throttle gate for the real-time scrub while the user drags the seek bar.
+  const lastScrubAppliedAtRef = useRef(0);
 
   // Unified playback speed control. `playbackRateRef` mirrors the state so the
   // hold-to-cycle interval can read the latest value without stale closures.
@@ -7427,10 +7429,13 @@ export default function App() {
     return ratio * playerDuration;
   };
 
-  // Seek the active player to `seconds` (clamped to the known duration).
-  const seekToPlayer = (seconds: number) => {
+  // Directly assign currentTime on every native <video> inside the player
+  // container (Plyr's inner element, HLS room-player-hls-video, YouTube direct
+  // fallback) plus best-effort iframe seek commands and clock sync. This is the
+  // raw seek path — used identically for single clicks (pointerdown) and for
+  // continuous dragging, so the actual playback always follows the bar.
+  const applyScrubToPlayers = (seconds: number) => {
     const t = Math.max(0, seconds);
-    setPlayerCurrentTime(t);
     // Keep every clock variant in sync so no read-back path can snap the bar
     // back to the pre-seek position before the player acknowledges the move.
     localClockRef.current = t;
@@ -7445,9 +7450,7 @@ export default function App() {
     }
     // 2. Every natively-rendered <video> inside the player container — Plyr's
     //    inner element, the HLS player (room-player-hls-video), and the YouTube
-    //    direct-stream fallback. Seeking each live element guarantees the
-    //    timeline jumps regardless of which player route is active (HLS had no
-    //    seek path at all before this).
+    //    direct-stream fallback — so the timeline jumps on every player route.
     const container = modalPlayerRef.current;
     if (container) {
       container.querySelectorAll<HTMLVideoElement>("video").forEach((v) => {
@@ -7476,17 +7479,30 @@ export default function App() {
         "*",
       );
     }
-    // Publish immediately so guests follow a host seek without waiting for the
-    // next 3s poll (uses the seek target, since iframe clocks lag the command).
+  };
+
+  // Commit a seek: show the target immediately, scrub every live element and
+  // publish the new position so Watch Together guests follow the host.
+  const seekToPlayer = (seconds: number) => {
+    const t = Math.max(0, seconds);
+    setPlayerCurrentTime(t);
+    applyScrubToPlayers(t);
     publishPlaybackNowRef.current({ currentTime: t });
   };
 
   const startSeekDrag = (e: React.PointerEvent) => {
     if (playerDuration <= 0) return;
-    e.currentTarget.setPointerCapture(e.pointerId);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
     const nextTime = seekTimeFromEvent(e);
     dragTimeRef.current = nextTime;
     setDragTime(nextTime);
+    lastScrubAppliedAtRef.current = Date.now();
+    // A bare click is a seek: apply immediately on pointerdown.
+    applyScrubToPlayers(nextTime);
   };
 
   const updateSeekDrag = (e: React.PointerEvent) => {
@@ -7494,6 +7510,13 @@ export default function App() {
     const nextTime = seekTimeFromEvent(e);
     dragTimeRef.current = nextTime;
     setDragTime(nextTime);
+    // Live scrub: drive the actual playback position while dragging. Throttled
+    // (~100ms) so MSE/hls.js don't receive a seek storm on every movement tick.
+    const now = Date.now();
+    if (now - lastScrubAppliedAtRef.current >= 100) {
+      lastScrubAppliedAtRef.current = now;
+      applyScrubToPlayers(nextTime);
+    }
   };
 
   const endSeekDrag = () => {
@@ -7502,6 +7525,13 @@ export default function App() {
     seekToPlayer(nextTime);
     dragTimeRef.current = null;
     setDragTime(null);
+    // Re-assert the chosen position shortly after release. Some players
+    // (Plyr / hls.js) finalize seeks asynchronously and may momentarily
+    // overwrite the assigned value with the pre-seek clock; one retry
+    // guarantees the video actually lands on the chosen time.
+    window.setTimeout(() => {
+      if (dragTimeRef.current === null) applyScrubToPlayers(nextTime);
+    }, 120);
   };
 
   const getIframe = (id: string): HTMLIFrameElement | null => {
