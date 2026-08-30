@@ -20,6 +20,7 @@ import {
   Plus,
   ChevronsLeft,
   ChevronsRight,
+  BellRing,
 } from "lucide-react";
 import {
   createFriendConnection,
@@ -29,10 +30,13 @@ import {
   searchAccountByCCIdOrContact,
   subscribeConnectionsForUser,
   subscribeWatchCall,
+  subscribeWatchCalls,
   sendWatchCallInvitation,
   cancelWatchCall,
+  respondToWatchCall,
   friendPairKey,
   maskInvitePhone,
+  WATCH_CALL_TTL_MS,
 } from "../../services/friendConnect";
 import type {
   ContactSearchResult,
@@ -198,6 +202,24 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   const [connections, setConnections] = useState<FriendConnection[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
 
+  // In-modal incoming "Call Invitation" rings (mirror of the global banner):
+  // the room shows its own prominent Accept/Reject card on Step 1 / Step 2 so a
+  // user already inside the modal can answer without relying on the banner.
+  const [incomingCalls, setIncomingCalls] = useState<WatchCall[]>([]);
+  const [joinBusy, setJoinBusy] = useState(false);
+  const [joinError, setJoinError] = useState<string | null>(null);
+  // Internal queue for an in-modal accept — feeds the SAME deterministic join
+  // mechanism as the banner path (no dependency on App-level props).
+  const [localJoinCallId, setLocalJoinCallId] = useState<string | null>(null);
+  const [localJoinConnId, setLocalJoinConnId] = useState<string | null>(null);
+
+  // Effective deterministic-join identity: banner accept (App props) OR in-modal
+  // accept (local). Both route the receiver straight into Step 3 (CHAT) and
+  // Step 4 (MOVIE) — never a guessed "latest accepted" pair.
+  const joinCallId = autoConnectCallIdProp ?? localJoinCallId ?? null;
+  const joinConnId =
+    autoConnectConnectionIdProp ?? localJoinConnId ?? activeRoomIdProp ?? null;
+
   // Chat state (ephemeral — in-memory only).
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [newMessage, setNewMessage] = useState("");
@@ -335,6 +357,24 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     return unsub;
   }, [open, myUid]);
 
+  // Live incoming "Call Invitation" rings, so an in-modal Accept/Reject card can
+  // answer a call WITHOUT the global banner. uid-only keys always match (the
+  // sender stamps target.uid into toKeys). Ringing calls past the TTL are
+  // dropped client-side so a stale doc never shows a ghost button.
+  useEffect(() => {
+    if (!open || !myUid) return;
+    return subscribeWatchCalls(
+      { uid: myUid, phone: null },
+      (calls) =>
+        setIncomingCalls(
+          calls.filter(
+            (c) => Date.now() - new Date(c.startedAt).getTime() < WATCH_CALL_TTL_MS,
+          ),
+        ),
+      () => {},
+    );
+  }, [open, myUid]);
+
   // Live status of OUR outgoing "Call Invitation" ring (doc-level listener —
   // no composite index needed, and answers/declines update in real time).
   const activeCallId = activeCall?.id ?? null;
@@ -361,7 +401,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     if (!open || activeId) return;
     // A call-accept join is pending — never fall back to the fuzzy "latest
     // accepted" pick (it could open a DIFFERENT chat). Wait for the join.
-    if (autoConnectConnectionIdProp && !joinConsumed) return;
+    if (joinConnId && !joinConsumed) return;
     if (searchStatus === "searching" || searchStatus === "found") return;
     const accepted = connections.filter((c) => c.status === "accepted");
     if (accepted.length === 0) return;
@@ -369,7 +409,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
       (b.acceptedAt || b.updatedAt || "").localeCompare(a.acceptedAt || a.updatedAt || ""),
     )[0];
     setActiveId(latest.id);
-  }, [open, activeId, connections, searchStatus, autoConnectConnectionIdProp, joinConsumed]);
+  }, [open, activeId, connections, searchStatus, joinConnId, joinConsumed]);
 
   // A "Call Invitation" the peer accepted streams its invitation doc to
   // status === "accepted". THAT explicit answer is the only auto-advance off
@@ -404,8 +444,6 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   // BOTH the call is "accepted" AND its pair shows "accepted" in the local
   // connections snapshot, jumps straight into that connection's Step-3 chat —
   // clearing any leftover found-friend card without ever guessing a connection.
-  const joinCallId = autoConnectCallIdProp ?? null;
-  const joinConnId = autoConnectConnectionIdProp ?? activeRoomIdProp ?? null;
   useEffect(() => {
     if (!open || !joinCallId) return;
     setJoinCall(null);
@@ -417,7 +455,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   // on a later ring joins again instead of being blocked by an old join.
   useEffect(() => {
     setJoinConsumed(false);
-  }, [autoConnectCallIdProp]);
+  }, [joinCallId]);
 
   useEffect(() => {
     if (!open || joinConsumed) return;
@@ -430,6 +468,10 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     setFound(null);
     setFoundConn(null);
     setJoinConsumed(true);
+    // Drop the internal join queue so a later "leave" never re-routes the user
+    // back into this chat, and a NEW in-modal accept starts from a clean state.
+    setLocalJoinCallId(null);
+    setLocalJoinConnId(null);
     onAutoConnectConsumedRef.current?.();
   }, [open, joinCallId, joinConnId, joinCall, connections, joinConsumed]);
 
@@ -447,6 +489,8 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     setFound(null);
     setFoundConn(null);
     setJoinConsumed(true);
+    setLocalJoinCallId(null);
+    setLocalJoinConnId(null);
     onAutoConnectConsumedRef.current?.();
   }, [open, activeRoomIdProp, joinConnId, connections, joinConsumed]);
 
@@ -738,6 +782,57 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     }
   }, [activeCall, callBusy]);
 
+  // In-modal "وەرگرتنی پەیوەندی" (Accept Call): flags the ring "accepted" in
+  // Firestore (the caller's real-time doc listener advances HIM into the shared
+  // room), then queues the SAME deterministic join the banner uses — the call +
+  // its pair — so THIS room instantly routes to Step 3 (CHAT) / Step 4 (MOVIE)
+  // the moment the Firestore snapshot reflects the accepted pair. No banner, no
+  // second click, no stranded Step-1/Step-2 screen.
+  const handleAcceptIncomingCall = useCallback(
+    async (call: WatchCall) => {
+      if (!call || joinBusy) return;
+      setJoinBusy(true);
+      setJoinError(null);
+      try {
+        const connId = call.connectionId || call.id;
+        await respondToWatchCall(call.id, connId, "accepted", {
+          uid: myUid,
+          name: myName,
+          code: myCode,
+          avatar: myAvatar,
+        });
+        // Queue the deterministic join (call doc + pair) — clear any lingering
+        // found card so the receiver is never stranded on the search step.
+        setJoinConsumed(false);
+        setLocalJoinCallId(call.id);
+        setLocalJoinConnId(connId);
+        setFound(null);
+        setFoundConn(null);
+        setSearchStatus("idle");
+      } catch {
+        setJoinError("پەسەندکردنی بانگهێشتی پەیوەندی سەرکەوتوو نەبوو — دووبارە هەوڵبەرەوە");
+      } finally {
+        setJoinBusy(false);
+      }
+    },
+    [joinBusy, myUid, myName, myCode, myAvatar],
+  );
+
+  const handleRejectIncomingCall = useCallback(
+    async (call: WatchCall) => {
+      if (!call || joinBusy) return;
+      setJoinBusy(true);
+      try {
+        await respondToWatchCall(call.id, call.connectionId || call.id, "declined");
+      } catch {
+        /* best-effort decline */
+      } finally {
+        setJoinBusy(false);
+      }
+    },
+    [joinBusy],
+  );
+
   const handleAccept = useCallback(
     async (conn: FriendConnection) => {
       setNextBusy(true);
@@ -914,8 +1009,68 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     );
   };
 
+  const renderIncomingCallCard = () => {
+    const call = incomingCalls[0];
+    if (!call) return null;
+    return (
+      <div dir="rtl" className="mb-5">
+        <div className="rounded-3xl border border-amber-400/40 bg-amber-400/10 p-4 relative overflow-hidden">
+          <div className="absolute -right-8 -top-8 w-28 h-28 rounded-full bg-amber-400/10" />
+          <div className="relative flex items-center gap-3 min-w-0">
+            <div className="relative w-12 h-12 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center flex-shrink-0">
+              <BellRing className="w-5 h-5 text-amber-400" />
+              <span className="absolute -top-0.5 -right-0.5 flex h-3 w-3">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-400" />
+              </span>
+            </div>
+            <div className="min-w-0">
+              <h4 className="text-sm font-black text-white kurdish-text">
+                بانگهێشتی پەیوەندی
+              </h4>
+              <p className="text-[11px] text-gray-300 kurdish-text mt-0.5 leading-snug">
+                {call.fromName} دەوێت بەیەکەوە فیلم ببینن — وەرگرتنی پەیوەندی
+              </p>
+            </div>
+          </div>
+          {joinError && (
+            <p className="relative mt-2 flex items-center gap-1.5 text-[10px] font-bold text-red-400 kurdish-text">
+              <AlertCircle className="w-3 h-3 shrink-0" />
+              {joinError}
+            </p>
+          )}
+          <div className="relative mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <button
+              type="button"
+              disabled={joinBusy}
+              onClick={() => void handleAcceptIncomingCall(call)}
+              className="px-4 py-2.5 rounded-2xl bg-emerald-500/90 hover:bg-emerald-500 text-white text-xs font-black kurdish-text flex items-center justify-center gap-2 transition-all disabled:opacity-50"
+            >
+              {joinBusy ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <PhoneCall className="w-4 h-4" />
+              )}
+              وەرگرتنی پەیوەندی • {call.fromName}
+            </button>
+            <button
+              type="button"
+              disabled={joinBusy}
+              onClick={() => void handleRejectIncomingCall(call)}
+              className="px-4 py-2.5 rounded-2xl bg-white/5 hover:bg-red-500/20 border border-white/10 text-gray-300 text-xs font-black kurdish-text flex items-center justify-center gap-2 transition-all disabled:opacity-50"
+            >
+              <X className="w-4 h-4" />
+              ڕەتکردنەوەی بانگهێشت
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderFriendStep = () => (
     <div dir="rtl">
+      {renderIncomingCallCard()}
       {renderIncomingSection()}
       {renderOutgoingSection()}
 
@@ -1146,6 +1301,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     const isRequester = activeConn.requesterUid === myUid;
     return (
       <div dir="rtl">
+        {renderIncomingCallCard()}
         <div className="rounded-3xl border border-amber-400/25 bg-amber-400/5 p-5">
           <div className="flex items-center justify-between gap-3 mb-4">
             <h3 className="text-base font-black text-white kurdish-text">
