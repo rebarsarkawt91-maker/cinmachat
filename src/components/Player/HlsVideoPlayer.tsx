@@ -39,6 +39,93 @@ export default function HlsVideoPlayer({
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const stallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stallPendingRef = useRef(false);
+  const stallBudgetRef = useRef(0);
+
+  // Silent resume of a transient buffer stall: forwards the hls.js loader to
+  // the current position (or reloads a native-HLS <video> at the same time)
+  // with no error UI. The App-level watchdog owns the blocking "try again"
+  // overlay for genuinely dead sources, so recoveries here stay silent.
+  const silentResumeStall = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (hlsRef.current) {
+      try {
+        hlsRef.current.startLoad(-1);
+        void video.play().catch(() => {});
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    const savedTime =
+      Number.isFinite(video.currentTime) && video.currentTime > 0 ? video.currentTime : 0;
+    try {
+      video.pause();
+    } catch {
+      /* ignore */
+    }
+    const onReady = () => {
+      video.removeEventListener("loadedmetadata", onReady);
+      video.removeEventListener("canplay", onReady);
+      if (savedTime > 0 && Number.isFinite(video.duration) && savedTime < video.duration) {
+        try {
+          video.currentTime = savedTime;
+        } catch {
+          /* ignore */
+        }
+      }
+      try {
+        void video.play().catch(() => {});
+      } catch {
+        /* ignore */
+      }
+    };
+    video.addEventListener("loadedmetadata", onReady);
+    video.addEventListener("canplay", onReady);
+    try {
+      video.load();
+    } catch {
+      /* ignore */
+    }
+  };
+
+  // Debounced stall watcher: acts only when buffering has been stuck for ~5s
+  // (a transient network hiccup), capped at a small budget per source URL.
+  const scheduleStallRecovery = () => {
+    if (stallTimerRef.current || !videoRef.current) return;
+    stallPendingRef.current = true;
+    stallTimerRef.current = setTimeout(() => {
+      stallTimerRef.current = null;
+      const video = videoRef.current;
+      if (!video || !stallPendingRef.current) return;
+      stallPendingRef.current = false;
+      if (video.readyState >= 2 && !video.paused) return; // recovered on its own
+      if (stallBudgetRef.current >= 2) return; // budget done — leave UI to caller
+      stallBudgetRef.current += 1;
+      silentResumeStall();
+    }, 5000);
+  };
+
+  const cancelStallRecovery = () => {
+    stallPendingRef.current = false;
+    if (stallTimerRef.current) {
+      clearTimeout(stallTimerRef.current);
+      stallTimerRef.current = null;
+    }
+  };
+
+  // Recoverable native <video> errors (network/decode glitches) get one silent
+  // resume; MEDIA_ERR_SRC_NOT_SUPPORTED (code 4) stays a real failure.
+  const handleNativeVideoError = () => {
+    const video = videoRef.current;
+    const code = video?.error?.code;
+    if (code === undefined || code === 4) return;
+    if (stallBudgetRef.current >= 2) return;
+    stallBudgetRef.current += 1;
+    silentResumeStall();
+  };
 
   useEffect(() => {
     const video = videoRef.current;
@@ -49,6 +136,9 @@ export default function HlsVideoPlayer({
       hlsRef.current.destroy();
       hlsRef.current = null;
     }
+    // Fresh source URL → reset the silent-recovery budget.
+    stallBudgetRef.current = 0;
+    cancelStallRecovery();
 
     if (Hls.isSupported()) {
       const hls = new Hls({
@@ -93,6 +183,10 @@ export default function HlsVideoPlayer({
     }
 
     return () => {
+      if (stallTimerRef.current) {
+        clearTimeout(stallTimerRef.current);
+        stallTimerRef.current = null;
+      }
       hlsRef.current?.destroy();
       hlsRef.current = null;
     };
@@ -111,11 +205,20 @@ export default function HlsVideoPlayer({
           muted={muted}
           controls
           playsInline
-          onTimeUpdate={() => onTimeUpdate?.(videoRef.current?.currentTime || 0)}
+          onTimeUpdate={() => {
+            cancelStallRecovery();
+            onTimeUpdate?.(videoRef.current?.currentTime || 0);
+          }}
           onDurationChange={() => onDurationChange?.(videoRef.current?.duration || 0)}
-          onPlay={() => onPlay?.()}
+          onPlaying={() => {
+            cancelStallRecovery();
+            onPlay?.();
+          }}
           onPause={() => onPause?.()}
           onEnded={() => onEnded?.()}
+          onWaiting={scheduleStallRecovery}
+          onStalled={scheduleStallRecovery}
+          onError={handleNativeVideoError}
         />
       )}
     </div>

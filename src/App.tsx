@@ -7100,9 +7100,22 @@ export default function App() {
   // When the player starts loading, we set a timeout. If the media doesn't
   // load within PLAYER_LOAD_TIMEOUT_MS, we show an error with Retry/Close.
   const PLAYER_LOAD_TIMEOUT_MS = 30000; // 30 seconds
+  // Transient buffer stalls (waiting / stalled / recoverable errors) must
+  // NOT throw the blocking overlay. Every watchdog tick silently reloads the
+  // native <video> at the SAME position; only after PLAYER_AUTO_RECOVER_MAX
+  // silent attempts do we show the hard-error overlay. Cross-origin iframe
+  // players (YouTube / embed providers) can't be probed by JS and manage
+  // their own buffering, so the timer never fails them either.
+  const PLAYER_AUTO_RECOVER_MAX = 3; // silent attempts before the blocking error
+  const PLAYER_LOAD_HARD_ERROR_TEXT =
+    "ڤیدیۆکە بە کاتی بە سەر تێدا بارنەکرایەوە. تکایە دووبارە هەوڵبدەرەوە.";
   const [playerLoading, setPlayerLoading] = useState(false);
   const [playerLoadError, setPlayerLoadError] = useState<string | null>(null);
   const playerLoadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Consecutive silent auto-recovery attempts (reset when playback actually starts).
+  const playerRecoverCountRef = useRef(0);
+  // currentTime snapshot preserved across a silent video.load() restart.
+  const playerResumeTimeRef = useRef(0);
   // Tracks how the resilient YouTube player is rendering so the YouTube-only CSS
   // masks are only drawn over the embed (never over the native fallback video).
   const [youtubePlayerMode, setYoutubePlayerMode] = useState<"embed" | "direct" | "error">("embed");
@@ -7618,23 +7631,106 @@ export default function App() {
   // Start a timer when showPlayer becomes true with a valid URL.
   // If the media doesn't signal "canplay" / "playing" within the timeout,
   // show a Sorani error with Retry and Close actions.
+
+  // Silent auto-recovery for transient stalls: reloads a native <video> at the
+  // SAME position so brief network interruptions resume without a modal and
+  // without losing the current frame. MSE-backed (hls.js) elements can't take
+  // a blind reload or the MediaSource binding breaks — they only get a play()
+  // retry. Returns false when there is no native <video> to recover (cross-
+  // origin iframe players), so the watchdog hands those over to the provider.
+  function attemptSilentVideoRecovery(): boolean {
+    const container = modalPlayerRef.current;
+    const video = container?.querySelector("video") as HTMLVideoElement | null;
+    if (!video) return false;
+
+    if (/^blob:/.test(video.src || "")) {
+      try {
+        void video.play().catch(() => {});
+      } catch {
+        /* ignore */
+      }
+      return true;
+    }
+
+    const savedTime =
+      Number.isFinite(video.currentTime) && video.currentTime > 0 ? video.currentTime : 0;
+    playerResumeTimeRef.current = savedTime;
+    try {
+      video.pause();
+    } catch {
+      /* ignore */
+    }
+    const resume = () => {
+      const t = playerResumeTimeRef.current;
+      if (t > 0 && Number.isFinite(video.duration) && t < video.duration) {
+        try {
+          video.currentTime = t;
+        } catch {
+          /* ignore */
+        }
+      }
+      try {
+        void video.play().catch(() => {});
+      } catch {
+        /* ignore */
+      }
+    };
+    const onReady = () => {
+      video.removeEventListener("loadedmetadata", onReady);
+      video.removeEventListener("canplay", onReady);
+      resume();
+    };
+    video.addEventListener("loadedmetadata", onReady);
+    video.addEventListener("canplay", onReady);
+    try {
+      video.load();
+    } catch {
+      /* ignore */
+    }
+    return true;
+  }
+
+  // The bounded watchdog. Every tick silently recovers once and re-arms until
+  // the player signals real playback; only an EXHAUSTED budget (a genuinely
+  // dead source) shows the blocking "try again" overlay.
+  function armPlayerLoadWatchdog() {
+    if (playerLoadTimerRef.current) {
+      clearTimeout(playerLoadTimerRef.current);
+      playerLoadTimerRef.current = null;
+    }
+    playerLoadTimerRef.current = setTimeout(() => {
+      const attempts = playerRecoverCountRef.current + 1;
+      if (attemptSilentVideoRecovery() && attempts < PLAYER_AUTO_RECOVER_MAX) {
+        playerRecoverCountRef.current = attempts;
+        armPlayerLoadWatchdog();
+        return;
+      }
+      playerRecoverCountRef.current = 0;
+      setPlayerLoading(false);
+      if (attempts >= PLAYER_AUTO_RECOVER_MAX) {
+        setPlayerLoadError(PLAYER_LOAD_HARD_ERROR_TEXT);
+      }
+    }, PLAYER_LOAD_TIMEOUT_MS);
+  }
+
   useEffect(() => {
     if (!showPlayer || !activeServerUrl) {
       setPlayerLoading(false);
       setPlayerLoadError(null);
+      playerRecoverCountRef.current = 0;
+      playerResumeTimeRef.current = 0;
       if (playerLoadTimerRef.current) {
         clearTimeout(playerLoadTimerRef.current);
         playerLoadTimerRef.current = null;
       }
       return;
     }
-    // Start loading state
+    // Fresh player mount: reset the silent-recovery budget and start the watchdog.
     setPlayerLoading(true);
     setPlayerLoadError(null);
-    playerLoadTimerRef.current = setTimeout(() => {
-      setPlayerLoading(false);
-      setPlayerLoadError("ڤیدیۆکە بە کاتی بە سەر تێدا بارنەکرایەوە. تکایە دووبارە هەوڵبدەرەوە.");
-    }, PLAYER_LOAD_TIMEOUT_MS);
+    playerRecoverCountRef.current = 0;
+    playerResumeTimeRef.current = 0;
+    armPlayerLoadWatchdog();
 
     // Listen for any <video> or <audio> element's "playing" event inside the
     // player container to clear the loading state (covers Plyr, direct <video>,
@@ -7642,15 +7738,21 @@ export default function App() {
     const clearLoading = () => {
       setPlayerLoading(false);
       setPlayerLoadError(null);
+      playerRecoverCountRef.current = 0;
       if (playerLoadTimerRef.current) {
         clearTimeout(playerLoadTimerRef.current);
         playerLoadTimerRef.current = null;
       }
     };
+    // Transient buffer/stall events never throw the blocking error overlay —
+    // they only keep the buffering state active while the watchdog decides.
+    const markBuffering = () => setPlayerLoading(true);
     const container = modalPlayerRef.current;
     if (container) {
       container.addEventListener("playing", clearLoading, true);
       container.addEventListener("canplay", clearLoading, true);
+      container.addEventListener("waiting", markBuffering, true);
+      container.addEventListener("stalled", markBuffering, true);
     }
 
     return () => {
@@ -7661,6 +7763,8 @@ export default function App() {
       if (container) {
         container.removeEventListener("playing", clearLoading, true);
         container.removeEventListener("canplay", clearLoading, true);
+        container.removeEventListener("waiting", markBuffering, true);
+        container.removeEventListener("stalled", markBuffering, true);
       }
     };
   }, [showPlayer, activeServerUrl, selectedMovie?.id]);
@@ -14489,10 +14593,11 @@ export default function App() {
                               onClick={() => {
                                 setPlayerLoadError(null);
                                 setPlayerLoading(true);
-                                playerLoadTimerRef.current = setTimeout(() => {
-                                  setPlayerLoading(false);
-                                  setPlayerLoadError("ڤیدیۆکە بە کاتی بە سەر تێدا بارنەکرایەوە. تکایە دووبارە هەوڵبدەرەوە.");
-                                }, PLAYER_LOAD_TIMEOUT_MS);
+                                playerRecoverCountRef.current = 0;
+                                if (playerLoadTimerRef.current) {
+                                  clearTimeout(playerLoadTimerRef.current);
+                                  playerLoadTimerRef.current = null;
+                                }
                                 setShowPlayer(false);
                                 setTimeout(() => setShowPlayer(true), 100);
                               }}
