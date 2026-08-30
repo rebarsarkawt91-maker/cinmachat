@@ -87,6 +87,10 @@ interface FriendConnectRoomProps {
    *  when this prop is null/undefined on initial load. Kept optional only for
    *  parent-signal compatibility; the room never gates rendering on it. */
   readiness?: AccountReadiness;
+  /** App root keeps the currently active private room id so a watch-call accept
+   *  can reopen the same room immediately. This is the deterministic room key
+   *  for the shared call between both peers. */
+  activeRoomId?: string;
   /** When a "Call Invitation" ring was answered, the accepted call's identity.
    *  The room then joins THAT connection's private chat deterministically —
    *  never a guessed "latest accepted" pair — even mid-search. Empty when the
@@ -136,6 +140,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     myName: myNameProp,
     myCode: myCodeProp,
     myAvatar: myAvatarProp,
+    activeRoomId: activeRoomIdProp,
     autoConnectCallId: autoConnectCallIdProp,
     autoConnectConnectionId: autoConnectConnectionIdProp,
     onAutoConnectConsumed,
@@ -336,7 +341,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   // connections snapshot, jumps straight into that connection's Step-3 chat —
   // clearing any leftover found-friend card without ever guessing a connection.
   const joinCallId = autoConnectCallIdProp ?? null;
-  const joinConnId = autoConnectConnectionIdProp ?? null;
+  const joinConnId = autoConnectConnectionIdProp ?? activeRoomIdProp ?? null;
   useEffect(() => {
     if (!open || !joinCallId) return;
     setJoinCall(null);
@@ -363,6 +368,23 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     setJoinConsumed(true);
     onAutoConnectConsumedRef.current?.();
   }, [open, joinCallId, joinConnId, joinCall, connections, joinConsumed]);
+
+  // Receiver-side root sync: if the app reopened the room with a known shared
+  // room id before the Firestore listener settles, we still jump immediately to
+  // the accepted private connection instead of waiting for a second click.
+  useEffect(() => {
+    if (!open || joinConsumed) return;
+    const resolvedRoomId = joinConnId || activeRoomIdProp || null;
+    if (!resolvedRoomId) return;
+    const conn = connections.find((c) => c.id === resolvedRoomId);
+    if (!conn || conn.status !== "accepted") return;
+    setActiveId(resolvedRoomId);
+    setSearchStatus("idle");
+    setFound(null);
+    setFoundConn(null);
+    setJoinConsumed(true);
+    onAutoConnectConsumedRef.current?.();
+  }, [open, activeRoomIdProp, joinConnId, connections, joinConsumed]);
 
   // Fresh 1-to-1 chat → start watch-together state clean (preserved across
   // close/re-open of the SAME connection so a paused pair resumes where it was).

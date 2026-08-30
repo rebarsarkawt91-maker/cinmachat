@@ -6887,6 +6887,11 @@ export default function App() {
   const [showCinemaChatRoom, setShowCinemaChatRoom] = useState(false);
   // The CinemaChat private Friend → Connect modal (the card's main entry).
   const [showFriendConnect, setShowFriendConnect] = useState(false);
+  // Always keep the active private room identity at the app root so a call
+  // accept can immediately reopen the same room on the receiver side without a
+  // second click or a fuzzy connection match.
+  const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
+  const [autoConnectConnectionId, setAutoConnectConnectionId] = useState<string | null>(null);
   // When a "Call Invitation" ring was ACCEPTED, this carries the accepted
   // call's identity into FriendConnectRoom so it joins THAT connection's chat
   // deterministically (cleared once consumed or when the modal closes).
@@ -13547,6 +13552,8 @@ export default function App() {
               open={showFriendConnect}
               onClose={() => {
                 setShowFriendConnect(false);
+                setActiveRoomId(null);
+                setAutoConnectConnectionId(null);
                 setFriendConnectJoinCall(null);
               }}
               myUid={fbUser?.uid || ""}
@@ -13559,9 +13566,14 @@ export default function App() {
               }
               myAvatar={socialProfile?.avatarUrl || socialProfile?.avatar}
               readiness={accountReadiness}
+              activeRoomId={activeRoomId}
               autoConnectCallId={friendConnectJoinCall?.callId}
-              autoConnectConnectionId={friendConnectJoinCall?.connectionId}
-              onAutoConnectConsumed={() => setFriendConnectJoinCall(null)}
+              autoConnectConnectionId={autoConnectConnectionId || friendConnectJoinCall?.connectionId}
+              onAutoConnectConsumed={() => {
+                setFriendConnectJoinCall(null);
+                setAutoConnectConnectionId(null);
+                setActiveRoomId(null);
+              }}
               onRequestAccount={() => {
                 setAuthFlowReturn(true);
                 setModalMode("signup");
@@ -13605,11 +13617,25 @@ export default function App() {
           answering opens the private 1-to-1 chat. */}
       <WatchCallNotification
         onOpenRoom={(call) => {
+          if (!call) {
+            setShowFriendConnect(false);
+            setActiveRoomId(null);
+            setAutoConnectConnectionId(null);
+            setFriendConnectJoinCall(null);
+            return;
+          }
+          const roomId = call.connectionId || call.id;
+          // Keep the accepted private room identity at the app root so the
+          // receiver opens the exact shared connection immediately, even before
+          // the modal is re-mounted.
+          setActiveRoomId(roomId);
+          setAutoConnectConnectionId(call.connectionId || roomId);
           // Carry the accepted call's identity so FriendConnectRoom joins THAT
           // connection's private chat deterministically (no fuzzy pick).
-          setFriendConnectJoinCall(
-            call ? { callId: call.id, connectionId: call.connectionId } : null,
-          );
+          setFriendConnectJoinCall({
+            callId: call.id,
+            connectionId: call.connectionId || roomId,
+          });
           setShowFriendConnect(true);
         }}
       />

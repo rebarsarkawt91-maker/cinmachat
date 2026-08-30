@@ -96,9 +96,13 @@ const WatchCallNotification: React.FC<{
     setBusyId(call.id);
     setActionError(null);
     try {
+      const acceptedCall = {
+        ...call,
+        connectionId: call.connectionId || call.id,
+      };
       await respondToWatchCall(
-        call.id,
-        call.connectionId,
+        acceptedCall.id,
+        acceptedCall.connectionId,
         "accepted",
         {
           uid,
@@ -108,9 +112,9 @@ const WatchCallNotification: React.FC<{
             (socialProfile as any)?.avatarUrl || socialProfile?.avatar || null,
         },
       );
-      // The underlying friend connection is now accepted — open the private
-      // chat (the room joins the accepted call's own pair deterministically).
-      onOpenRoom?.(call);
+      // The underlying friend connection is now accepted — open the exact
+      // shared private room immediately using the deterministic connection id.
+      onOpenRoom?.(acceptedCall);
     } catch {
       setActionError("پەسەندکردنی بانگهێشتی پەیوەندی سەرکەوتوو نەبوو — دووبارە هەوڵبەرەوە");
     } finally {
