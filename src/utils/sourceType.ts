@@ -10,7 +10,6 @@ export type SourceType =
   | "hls"
   | "direct-video"
   | "supported-embed"
-  | "imdb"
   | "unsupported";
 
 /**
@@ -25,7 +24,7 @@ const SUPPORTED_EMBED_PATTERNS =
  * Classify a playback URL into one of the supported source types.
  *
  * Classification priority:
- *  1. IMDb title pages → "imdb" (metadata-only, never playback)
+ *  1. IMDb title/video pages → "supported-embed"
  *  2. YouTube watch/embed/shorts/youtu.be → "youtube"
  *  3. HLS .m3u8 streams → "hls"
  *  4. Direct MP4/WebM/OGV files → "direct-video"
@@ -38,8 +37,8 @@ export function classifySourceType(url: string | null): SourceType {
   const trimmed = url.trim();
   if (!trimmed) return "unsupported";
 
-  // ── 1. IMDb title pages → metadata only, never playback ──────────────
-  if (/imdb\.com\/title\//i.test(trimmed)) return "imdb";
+  // ── 1. IMDb title/video pages → existing embed player ────────────────
+  if (/imdb\.com\/(?:title|video)\//i.test(trimmed)) return "supported-embed";
 
   // ── 2. YouTube (watch, embed, youtu.be, shorts, /v/) ─────────────────
   if (/youtube\.com|youtu\.be/i.test(trimmed)) return "youtube";
@@ -71,7 +70,6 @@ export function sourceTypeLabel(t: SourceType): string {
     case "hls":             return "HLS Stream";
     case "direct-video":    return "ڤیدیۆی ڕاستەوخۆ";
     case "supported-embed": return "ئیمبێد";
-    case "imdb":            return "IMDb (زانیاری تەنها)";
     case "unsupported":     return "پەڕەی وێب یان پێشکەشی نەناسراو";
   }
 }

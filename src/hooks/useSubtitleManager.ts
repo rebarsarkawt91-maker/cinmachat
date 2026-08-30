@@ -320,20 +320,36 @@ async function requestSubtitle(
   subtitleUrl?: string,
 ): Promise<SubtitlePayload> {
   const userGeminiKey = getUserGeminiApiKey();
-  const response = await fetch("/api/subtitle/generate", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      url: sourceUrl,
-      lang,
-      subtitleUrl: subtitleUrl || undefined,
-      ...windowOptions,
-      ...(userGeminiKey ? { geminiApiKey: userGeminiKey } : {}),
-    }),
-    signal,
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data?.success) throw new Error(data?.error || "Subtitle generation failed");
+  let data: any = null;
+  let lastError: any = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 45000);
+    const abortParent = () => controller.abort();
+    signal?.addEventListener("abort", abortParent, { once: true });
+    try {
+      const response = await fetch("/api/subtitle/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: sourceUrl, lang, subtitleUrl: subtitleUrl || undefined, ...windowOptions, ...(userGeminiKey ? { geminiApiKey: userGeminiKey } : {}) }),
+        signal: controller.signal,
+      });
+      data = await response.json().catch(() => ({}));
+      if (response.ok && data?.success) break;
+      const error: any = new Error(data?.error || "Subtitle generation failed");
+      error.retryable = [429, 502, 503, 504].includes(response.status);
+      throw error;
+    } catch (error: any) {
+      lastError = error;
+      if (signal?.aborted) throw error;
+      if (attempt === 3 || (error?.name !== "AbortError" && error?.retryable === false)) throw error;
+      await new Promise((resolve) => window.setTimeout(resolve, 500 * attempt));
+    } finally {
+      signal?.removeEventListener("abort", abortParent);
+      window.clearTimeout(timeoutId);
+    }
+  }
+  if (!data?.success) throw lastError || new Error("Subtitle generation failed");
 
   const rawText = sanitizeSubtitleText(String(data?.srt || ""));
   const vttText = subtitleTextToVtt(rawText);
@@ -393,7 +409,7 @@ async function translateSubtitle(
 // ---------------------------------------------------------------------------
 
 const WINDOW_STEP = 180;
-const WINDOW_DURATION = 240;
+const WINDOW_DURATION = 0;
 
 const cache = new Map<string, SubtitlePayload>();
 
@@ -557,9 +573,7 @@ export function useSubtitleManager({
 
     const needsKurdish = isKurdish(mode);
     const needsOriginal = isOriginal(mode);
-    const windowOptions = needsKurdish
-      ? { startSeconds: Math.max(0, Math.floor(playbackTime / WINDOW_STEP) * WINDOW_STEP - 15), windowSeconds: WINDOW_DURATION }
-      : undefined;
+    const windowOptions = needsKurdish ? undefined : undefined;
     const windowKey = windowOptions ? `::${windowOptions.startSeconds}-${windowOptions.windowSeconds}` : "";
     const cacheKey = `${sourceUrl}::${mode}${windowKey}`;
     const originalCacheKey = `${sourceUrl}::original${windowKey}`;
@@ -587,8 +601,6 @@ export function useSubtitleManager({
     setMessage(mode === "original" ? "هێنانی ژێرنووسی ڕەسەن..." : mode === "both" ? "هێنانی ژێرنووسی ڕەسەن و وەرگێڕانی کوردی..." : "وەرگێڕانی ژێرنوس...");
 
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 120000);
-
     const load = async (): Promise<SubtitlePayload | null> => {
       if (mode === "original") {
         return requestSubtitle(sourceUrl, "original", controller.signal, undefined, movieSubtitleUrl);
@@ -613,8 +625,16 @@ export function useSubtitleManager({
               const translated = await translateSubtitle(orig.rawText, "ckb", orig.sourceLang || "auto", controller.signal);
               return translated;
             } catch {
-              if (mode === "both" && orig.vttText) {
-                return { rawText: "", vttText: "", sourceLang: "ckb", source: "original-only-fallback", originalRawText: orig.rawText, originalVttText: orig.vttText, subtitleWarning: "کوردی ئامادە نەبوو؛ ژێرنووسی ڕەسەن پیشان دەدرێت." };
+              if (orig.vttText) {
+                return {
+                  rawText: orig.rawText,
+                  vttText: orig.vttText,
+                  sourceLang: orig.sourceLang || "original",
+                  source: "original-only-fallback",
+                  originalRawText: orig.rawText,
+                  originalVttText: orig.vttText,
+                  subtitleWarning: "کوردی ئامادە نەبوو؛ ژێرنووسی ڕەسەن پیشان دەدرێت.",
+                };
               }
             }
           } catch (fallbackErr) {
@@ -650,17 +670,13 @@ export function useSubtitleManager({
           setStatus("error");
           setMessage(err?.name === "AbortError" ? "وەرگێڕانی ژێرنوس کاتی تەواو بوو" : err?.message || "وەرگێڕانی ژێرنوس سەرکەوتوو نەبوو");
         }
-      })
-      .finally(() => {
-        window.clearTimeout(timeoutId);
       });
 
     return () => {
       cancelled = true;
       controller.abort();
-      window.clearTimeout(timeoutId);
     };
-  }, [sourceUrl, mode, retryKey, movieSubtitleUrl, playbackTime]);
+  }, [sourceUrl, mode, retryKey, movieSubtitleUrl]);
 
   return {
     mode,

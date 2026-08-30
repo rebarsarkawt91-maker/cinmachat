@@ -65,12 +65,11 @@ const app = initializeApp(firebaseConfig);
 // database and leave the app stuck on its initial loading screen.
 export const db = getFirestore(app);
 
-// Local development runs against the local Firestore emulator so the app's
-// writes are validated by this repo's own firestore.rules (deterministic —
-// no dependency on the deployed production ruleset). Vite sets import.meta.env
-// .DEV only for `npm run dev`; production builds never connect to the emulator.
-// Override with VITE_USE_FIRESTORE_EMULATOR=false to test against production.
-if (import.meta.env.DEV && import.meta.env.VITE_USE_FIRESTORE_EMULATOR !== "false") {
+// Local development should use the real Firebase project unless the emulator is
+// explicitly turned on. Falling back to the emulator by default is a common
+// source of ERR_CONNECTION_REFUSED in clean development environments because the
+// local Firestore emulator is not running by default.
+if (import.meta.env.DEV && import.meta.env.VITE_USE_FIRESTORE_EMULATOR === "true") {
   connectFirestoreEmulator(db, "127.0.0.1", 8080);
 }
 

@@ -930,6 +930,19 @@ async function googleTranslateFreeText(
   }
 }
 
+async function googleTranslateWithRetry(
+  text: string,
+  targetLang: string,
+  sourceLang = 'auto',
+): Promise<GoogleTranslateResult> {
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    const result = await googleTranslateFreeText(text, targetLang, sourceLang);
+    if (result) return result;
+    if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 750 * attempt));
+  }
+  return null;
+}
+
 
 
 
@@ -995,6 +1008,20 @@ function alignBatchTranslation(
 //     no 500 responses.
 //   • Timing/structure lines are never sent for translation, so cue timings
 //     survive unchanged by construction.
+async function translateSingleSubtitleLineWithGoogle(
+  sourceText: string,
+  targetLang: string,
+  sourceLang = 'auto',
+): Promise<string | null> {
+  const translated = await googleTranslateWithRetry(sourceText, targetLang, sourceLang);
+  if (!translated) return null;
+  const line = stripSubtitleMetadataFragments(
+    decodeSubtitleEntities(String(translated.text || '')).trim(),
+  ).trim();
+  if (!line || isBadSubtitleTranslation(line, targetLang)) return null;
+  return line;
+}
+
 async function translateSubtitleViaGoogle(
   subtitleText: string,
   targetLang: string,
@@ -1042,12 +1069,18 @@ async function translateSubtitleViaGoogle(
       start += 1;
     }
 
-    const translated = await googleTranslateFreeText(
+    const translated = await googleTranslateWithRetry(
       batch.join(`\n${GOOGLE_TRANSLATE_MARKER}\n`),
       targetLang,
       sourceLang,
     );
-    if (!translated) continue; // batch failed (timeout/429/etc.) → keep originals
+    if (!translated) {
+      for (const sourceText of batch) {
+        const fallback = await translateSingleSubtitleLineWithGoogle(sourceText, targetLang, sourceLang);
+        if (fallback) results.set(sourceText, fallback);
+      }
+      continue;
+    }
 
     // Per-line recovery tiers — first match wins; if all fail the whole batch
     // keeps its originals (never corrupts timings, never throws):
@@ -1086,14 +1119,27 @@ async function translateSubtitleViaGoogle(
         aligned = recovered;
       }
     }
-    if (!aligned) continue; // unrecoverable boundaries → keep originals
 
-    batch.forEach((sourceText, index) => {
-      const line = stripSubtitleMetadataFragments(
-        decodeSubtitleEntities(aligned![index] || ''),
+    if (!aligned) {
+      for (const sourceText of batch) {
+        const fallback = await translateSingleSubtitleLineWithGoogle(sourceText, targetLang, sourceLang);
+        if (fallback) results.set(sourceText, fallback);
+      }
+      continue;
+    }
+
+    for (let index = 0; index < batch.length; index += 1) {
+      const sourceText = batch[index];
+      const candidate = stripSubtitleMetadataFragments(
+        decodeSubtitleEntities(aligned[index] || ''),
       ).trim();
-      if (line && !isBadSubtitleTranslation(line, targetLang)) results.set(sourceText, line);
-    });
+      const nextLine = candidate && !isBadSubtitleTranslation(candidate, targetLang)
+        ? candidate
+        : await translateSingleSubtitleLineWithGoogle(sourceText, targetLang, sourceLang);
+      if (nextLine && !isBadSubtitleTranslation(nextLine, targetLang)) {
+        results.set(sourceText, nextLine);
+      }
+    }
   }
 
   for (const job of jobs) {
@@ -1731,6 +1777,10 @@ function sanitizeUrl(url: string): string {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .trim();
+
+  if (/^(?:www\.)?imdb\.com\/(?:title|video)\//i.test(cleanUrl)) {
+    cleanUrl = `https://${cleanUrl}`;
+  }
 
   // Convert YouTube watch links to embed links
   const ytWatchRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?|shorts)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
@@ -3534,47 +3584,6 @@ async function startServer() {
 
   // Movie Store (In-Memory Cache) - Use a copy to prevent reference sharing with DB
   let moviesCache: any[] = db.manualMovies ? [...db.manualMovies] : [];
-
-  // ── Legacy record normalization: sanitize movies that stored IMDb URLs as ──
-  // playback sources. IMDb title pages are metadata-only; they must never
-  // reach the player. We strip them from source fields and mark the record
-  // so the client shows the Sorani "playback source required" state.
-  {
-    const IS_IMDB = /imdb\.com\/title\//i;
-    const SOURCE_KEYS = [
-      'embedUrl', 'videoUrl', 'streamingUrl', 'external_link',
-      'hdtodayUrl', 'vidsrcUrl', 'vidmolyUrl', 'streamwishUrl',
-      'fileLrunUrl', 'youtubeMovieUrl', 'otherVideoUrl',
-      'streamingSourceUrl', 'externalMovieLink',
-    ];
-    let changed = false;
-    for (const m of moviesCache) {
-      if (!m || typeof m !== 'object') continue;
-      const hadImdbSource = SOURCE_KEYS.some((k) => typeof m[k] === 'string' && IS_IMDB.test(m[k]));
-      if (hadImdbSource) {
-        for (const k of SOURCE_KEYS) {
-          if (typeof m[k] === 'string' && IS_IMDB.test(m[k])) {
-            m[k] = '';
-          }
-        }
-        // Rebuild embedUrl/videoUrl/streamingUrl/external_link from remaining valid sources
-        const validSource = m.hdtodayUrl || m.vidsrcUrl || m.vidmolyUrl || m.streamwishUrl
-          || m.fileLrunUrl || m.youtubeMovieUrl || m.otherVideoUrl || m.streamingSourceUrl || '';
-        if (!validSource) {
-          m.embedUrl = '';
-          m.videoUrl = '';
-          m.streamingUrl = '';
-          m.external_link = '';
-        }
-        m._sourceSanitized = true;
-        changed = true;
-      }
-    }
-    if (changed) {
-      console.log('[Startup] Legacy IMDb source normalization applied — sanitized records marked with _sourceSanitized');
-      saveDB(db).catch((e: any) => console.warn('[Startup] Failed to persist legacy normalization:', e?.message));
-    }
-  }
 
   let ads = {
     banner: { image: 'https://images.unsplash.com/photo-1611162617474-5b21e879e113?auto=format&fit=crop&q=80&w=1200', link: '#' },
@@ -9814,16 +9823,11 @@ async function startServer() {
     }
     const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, mainTrailerUrl, streamingSourceUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, hdtodayUrl, vidsrcUrl, otherVideoUrl, youtubeMovieUrl, subtitleUrl, quality, tags, category, rating, year, type, duration, postType, subtitleText, imdbId: rawImdbId, imdbUrl: rawImdbUrl } = req.body;
 
-    // IMDb title pages are metadata-only — never valid playback sources.
-    const IS_IMDB_URL = /imdb\.com\/title\//i;
-
     // Keeps only well-formed http(s) links (or an empty string) so malformed
     // admin input can never poison the movie record or the subtitle pipeline.
-    // Also strips any IMDb URLs that slip through — they are metadata, not video.
     const safeHttpUrl = (value: unknown): string => {
       if (typeof value !== 'string') return '';
       const trimmed = value.trim();
-      if (IS_IMDB_URL.test(trimmed)) return '';
       return /^https?:\/\/\S+$/i.test(trimmed) ? trimmed : '';
     };
 
@@ -9835,46 +9839,19 @@ async function startServer() {
     const activeVideoSource = streamingUrl || videoUrl || req.body.external_link;
     if (!activeVideoSource) return res.status(400).json({ success: false, error: "لینکی ڤیدیۆ پێویستە (Video source is required)" });
 
-    // ── Reject IMDb title pages as playback source ────────────────────────
-    // IMDb URLs are metadata-only — they must never be sent to the player.
-    const activeSourceLower = (activeVideoSource || '').toLowerCase();
-    if (IS_IMDB_URL.test(activeSourceLower)) {
-      return res.status(400).json({
-        success: false,
-        error: 'ئەم لینکە پەڕەی زانیاریی IMDb ـە، نەک سەرچاوەی پەخشکردنی فیلم. زانیاریی فیلمەکە هێنرا، بەڵام تکایە لینکی پەخشی ڕێگەپێدراو لە خانەی سەرچاوەی فیلم دابنێ.',
-      });
-    }
-
-    // ── Reject IMDb URLs in ALL individual source fields ──────────────────
-    const sourceFieldMap: Record<string, string> = {
-      hdtodayUrl: String(hdtodayUrl || ''),
-      vidsrcUrl: String(vidsrcUrl || ''),
-      vidmolyUrl: String(vidmolyUrl || ''),
-      streamwishUrl: String(streamwishUrl || ''),
-      fileLrunUrl: String(fileLrunUrl || ''),
-      youtubeMovieUrl: String(youtubeMovieUrl || ''),
-      otherVideoUrl: String(otherVideoUrl || ''),
-      streamingSourceUrl: String(streamingSourceUrl || ''),
-      trailerUrl: String(trailerUrl || ''),
-      mainTrailerUrl: String(mainTrailerUrl || ''),
-    };
-    for (const [fieldName, fieldValue] of Object.entries(sourceFieldMap)) {
-      if (fieldValue && IS_IMDB_URL.test(fieldValue)) {
-        return res.status(400).json({
-          success: false,
-          error: `ئەم لینکە (${fieldName}) پەڕەی زانیاریی IMDb ـە، نەک سەرچاوەی پەخشکردنی فیلم.`,
-        });
-      }
+    const normalizedActiveVideoSource = safeHttpUrl(sanitizeUrl(String(activeVideoSource)));
+    if (!normalizedActiveVideoSource) {
+      return res.status(400).json({ success: false, error: 'لینکی ڤیدیۆیەکە نادروستە (Valid HTTP video source is required)' });
     }
 
     const finalPoster = decodeStoredUrl(posterUrl || image || 'https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800');
 
-    console.log(`[Admin] Posting movie: ${title} | Source: ${activeVideoSource}`);
+    console.log(`[Admin] Posting movie: ${title} | Source: ${normalizedActiveVideoSource}`);
 
     const ytRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
 
     // Check if the main source is YouTube
-    const ytMatch = activeVideoSource?.match(ytRegex);
+    const ytMatch = normalizedActiveVideoSource.match(ytRegex);
     const ytEmbedUrl = ytMatch ? `https://www.youtube.com/embed/${ytMatch[1]}` : null;
 
     // Process trailer
@@ -9887,12 +9864,12 @@ async function startServer() {
       description: description || "",
       image: finalPoster,
       posterUrl: finalPoster,
-      embedUrl: ytEmbedUrl || activeVideoSource,
-      videoUrl: activeVideoSource,
+      embedUrl: ytEmbedUrl || normalizedActiveVideoSource,
+      videoUrl: normalizedActiveVideoSource,
       trailerUrl: trailerEmbedUrl,
       mainTrailerUrl: mainTrailerUrl || "",
       streamingSourceUrl: streamingSourceUrl || "",
-      streamingUrl: activeVideoSource,
+      streamingUrl: normalizedActiveVideoSource,
       vidmolyUrl: safeHttpUrl(vidmolyUrl),
       streamwishUrl: safeHttpUrl(streamwishUrl),
       fileLrunUrl: safeHttpUrl(fileLrunUrl),
@@ -9903,7 +9880,7 @@ async function startServer() {
       // Existing subtitle file (.srt/.vtt URL) — priority #1 source for the
       // automatic Kurdish subtitle pipeline.
       subtitleUrl: safeHttpUrl(subtitleUrl),
-      external_link: activeVideoSource,
+      external_link: normalizedActiveVideoSource,
       isYouTube: !!ytEmbedUrl,
       quality: quality || 'HD',
       date: new Date().toISOString(),
@@ -11575,7 +11552,9 @@ async function startServer() {
     const subtitleWindowStart =
       Number.isFinite(Number(startSeconds)) ? Math.max(0, Number(startSeconds)) : null;
     const subtitleWindowDuration =
-      Number.isFinite(Number(windowSeconds)) ? Math.min(Math.max(Number(windowSeconds), 10), 600) : null;
+      Number.isFinite(Number(windowSeconds)) && Number(windowSeconds) > 0
+        ? Math.max(Number(windowSeconds), 10)
+        : null;
     const sourceUrl = sanitizeUrl(url);
     if (!/^https?:\/\//i.test(sourceUrl)) {
       return res.status(400).json({ error: 'Source must be a valid http(s) URL' });
@@ -11610,7 +11589,7 @@ let videoDownloaded = false;
     // 1-2 hour movie with Whisper on CPU would take hours; a 5-minute sample is
     // enough to demo and test the feature quickly. Set SUBTITLE_MAX_DURATION=0
     // to download the full video instead.
-    const maxDurationSec = Math.floor(Number(process.env.SUBTITLE_MAX_DURATION) || 300);
+    const maxDurationSec = Number(process.env.SUBTITLE_MAX_DURATION);
 
     try {
       const isDirectVideo = /\.(mp4|m4v|webm|ogv)(\?|#|$)/i.test(sourceUrl);
@@ -11736,7 +11715,7 @@ let videoDownloaded = false;
                     )
                   : trimSubtitleToMaxStartSeconds(
                       sourceCaptionResult.srt,
-                      Number(process.env.CINEMA_WINDOW_SORANI_PREVIEW_SECONDS) || 300,
+                      Number(process.env.CINEMA_WINDOW_SORANI_PREVIEW_SECONDS) || 0,
                     );
               if (!sourceSrtForSorani.trim()) {
                 throw new Error(`No ${soraniSourceLang} captions found in the requested time window`);

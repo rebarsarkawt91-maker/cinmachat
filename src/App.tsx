@@ -984,10 +984,9 @@ const popOutPlayer = (url: string | undefined) => {
 // embedUrl is intentionally first because the server explicitly computes it as the embed-ready version,
 // while streamingUrl retains the raw user input (e.g. "watch?v=" instead of "embed/").
 //
-// IMDb title URLs are NEVER valid playback sources — they are metadata-only.
+// IMDb title/video URLs are valid Step 4 iframe playback sources.
 function getMovieSourceUrl(movie: any): string | null {
   if (!movie) return null;
-  const isImdbUrl = (url: string) => /imdb\.com\/title\//i.test(url);
   const candidates = [
     movie.embedUrl,
     movie.videoUrl,
@@ -1003,7 +1002,7 @@ function getMovieSourceUrl(movie: any): string | null {
     movie.externalMovieLink,
   ];
   for (const url of candidates) {
-    if (typeof url === 'string' && url && !isImdbUrl(url)) return url;
+    if (typeof url === 'string' && url) return url;
   }
   return null;
 }
@@ -1085,13 +1084,13 @@ const CategoryDropdown = ({ value, onChange, categories, className }: any) => (
   </select>
 );
 
-const transformLink = (url: string) => {
-  // IMDb title pages are metadata-only and must never be used as playback source.
-  // Return empty string so they are excluded from all source fields.
-  if (/imdb\.com\/title\//i.test(url)) {
-    return "";
+const transformLink = (url: string, allowImdbSource = false) => {
+  let normalized = decodeStoredUrl(url).trim();
+  if (/^(?:www\.)?imdb\.com\/(?:title|video)\//i.test(normalized)) {
+    normalized = `https://${normalized}`;
   }
-  return url;
+  if (!allowImdbSource && /imdb\.com\/(?:title|video)\//i.test(normalized)) return "";
+  return normalized;
 };
 
 // ---------------------------------------------------------------------------
@@ -1116,6 +1115,10 @@ const detectVideoProvider = (
 ): { key: VideoProviderKey; label: string } => {
   const url = (rawUrl || "").toLowerCase();
   const match = (needle: string) => url.includes(needle);
+
+  if (match("imdb.com/title/") || match("imdb.com/video/")) {
+    return { key: "otherVideoUrl", label: "IMDb Video" };
+  }
 
   if (match("youtube.com") || match("youtu.be")) {
     return { key: "youtubeMovieUrl", label: "یوتوب" };
@@ -1225,12 +1228,6 @@ const ContentModule = ({
       return;
     }
     // ── Reject IMDb URLs as playback source ───────────────────────────────
-    if (/imdb\.com\/title\//i.test(value)) {
-      setUniversalLinkError(
-        'ئەم لینکە پەڕەی زانیاریی IMDb ـە، نەک سەرچاوەی پەخشکردنی فیلم. زانیاریی فیلمەکە هێنرا، بەڵام تکایە لینکی پەخشی ڕێگەپێدراو لە خانەی سەرچاوەی فیلم دابنێ.'
-      );
-      return;
-    }
     const provider = detectVideoProvider(value);
     setFormData((prev) => ({
       ...prev,
@@ -1541,14 +1538,14 @@ const ContentModule = ({
     const links = {
       trailer: transformLink(formData.trailerUrl?.trim() || ""),
       mainTrailer: transformLink(formData.mainTrailerUrl?.trim() || ""),
-      streamingSource: transformLink(formData.streamingSourceUrl?.trim() || ""),
-      hdtoday: transformLink(formData.hdtodayUrl?.trim() || ""),
-      youtube: transformLink(formData.youtubeMovieUrl?.trim() || ""),
-      other: transformLink(formData.otherVideoUrl?.trim() || ""),
-      vidsrc: transformLink(formData.vidsrcUrl?.trim() || ""),
-      vidmoly: transformLink(formData.vidmolyUrl?.trim() || ""),
-      streamwish: transformLink(formData.streamwishUrl?.trim() || ""),
-      fileLrun: transformLink(formData.fileLrunUrl?.trim() || ""),
+      streamingSource: transformLink(formData.streamingSourceUrl?.trim() || "", true),
+      hdtoday: transformLink(formData.hdtodayUrl?.trim() || "", true),
+      youtube: transformLink(formData.youtubeMovieUrl?.trim() || "", true),
+      other: transformLink(formData.otherVideoUrl?.trim() || "", true),
+      vidsrc: transformLink(formData.vidsrcUrl?.trim() || "", true),
+      vidmoly: transformLink(formData.vidmolyUrl?.trim() || "", true),
+      streamwish: transformLink(formData.streamwishUrl?.trim() || "", true),
+      fileLrun: transformLink(formData.fileLrunUrl?.trim() || "", true),
       external: formData.externalMovieLink?.trim() || "",
     };
 
@@ -1561,15 +1558,6 @@ const ContentModule = ({
         message: "پۆست نەکرا: لانیکەم یەک لینکی ڤیدیۆ پێویستە",
       });
       alert("تکایە لانیکەم یەک لینکی ڤیدیۆ پڕ بکەرەوە");
-      return;
-    }
-
-    // ── Reject IMDb title pages as playback source ────────────────────────
-    const allLinks = Object.values(links).join(' ');
-    if (/imdb\.com\/title\//i.test(allLinks)) {
-      const imdbMsg = 'ئەم لینکە پەڕەی زانیاریی IMDb ـە، نەک سەرچاوەی پەخشکردنی فیلم. زانیاریی فیلمەکە هێنرا، بەڵام تکایە لینکی پەخشی ڕێگەپێدراو لە خانەی سەرچاوەی فیلم دابنێ.';
-      setPostStatus({ type: "error", message: imdbMsg });
-      alert(imdbMsg);
       return;
     }
 
@@ -1611,7 +1599,8 @@ const ContentModule = ({
       tags: finalTags,
       type: movieType,
       streamingUrl: anyLink || "",
-      // IMDb metadata — ID stored separately, URL is metadata-only
+      // IMDb metadata remains separate; an IMDb URL in the Step 4 source field
+      // is also retained as the published embed source.
       imdbId: formData.imdbId || "",
       // Include all links
       trailerUrl: links.trailer,
@@ -1827,10 +1816,6 @@ const ContentModule = ({
                   value={formData.externalMovieLink}
                   onChange={(e) => {
                     const val = e.target.value;
-                    if (/imdb\.com\/title\//i.test(val)) {
-                      setPostStatus({ type: "error", message: "ئەم لینکە پەڕەی زانیاریی IMDb ـە، نەک سەرچاوەی پەخش." });
-                      return;
-                    }
                     setFormData({ ...formData, externalMovieLink: val });
                   }}
                   className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-white kurdish-text outline-none focus:border-brand-primary transition-all"
@@ -2179,10 +2164,6 @@ const ContentModule = ({
                 value={formData.externalMovieLink}
                 onChange={(e) => {
                   const val = e.target.value;
-                  if (/imdb\.com\/title\//i.test(val)) {
-                    setPostStatus({ type: "error", message: "ئەم لینکە پەڕەی زانیاریی IMDb ـە، نەک سەرچاوەی پەخش." });
-                    return;
-                  }
                   setFormData({ ...formData, externalMovieLink: val });
                 }}
                 className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-white kurdish-text outline-none focus:border-brand-primary transition-all"
@@ -6186,6 +6167,45 @@ const parseCinemaWindowSubtitleCues = (subtitleText: string): CinemaWindowSubtit
   return cues;
 };
 
+const fetchSubtitleJsonWithRetry = async (
+  url: string,
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+) => {
+  let lastError: any = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 45000);
+    const abortParent = () => controller.abort();
+    signal?.addEventListener("abort", abortParent, { once: true });
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && data?.success) return data;
+      const error: any = new Error(data?.error || `Subtitle request failed (${response.status})`);
+      error.retryable = response.status === 429 || response.status === 502 || response.status === 503 || response.status === 504;
+      throw error;
+    } catch (error: any) {
+      lastError = error;
+      if (signal?.aborted) throw error;
+      if (attempt < 3 && (error?.name === "AbortError" || error?.retryable !== false)) {
+        await new Promise((resolve) => window.setTimeout(resolve, 500 * attempt));
+        continue;
+      }
+      throw error;
+    } finally {
+      signal?.removeEventListener("abort", abortParent);
+      window.clearTimeout(timeoutId);
+    }
+  }
+  throw lastError || new Error("Subtitle request failed");
+};
+
 const requestCinemaWindowSubtitle = async (
   sourceUrl: string,
   lang: string,
@@ -6193,16 +6213,11 @@ const requestCinemaWindowSubtitle = async (
   windowOptions?: { startSeconds?: number; windowSeconds?: number },
   subtitleUrl?: string,
 ) => {
-  const response = await fetch("/api/subtitle/generate", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url: sourceUrl, lang, subtitleUrl: subtitleUrl || undefined, ...windowOptions }),
+  const data = await fetchSubtitleJsonWithRetry(
+    "/api/subtitle/generate",
+    { url: sourceUrl, lang, subtitleUrl: subtitleUrl || undefined, ...windowOptions },
     signal,
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data?.success) {
-    throw new Error(data?.error || "Subtitle generation failed");
-  }
+  );
   const rawText = String(data?.srt || "");
   const vttText = subtitleTextToVtt(rawText);
   if (!vttText) throw new Error("Subtitle file is empty");
@@ -6224,16 +6239,11 @@ const translateCinemaWindowSubtitle = async (
   sourceLang: string,
   signal?: AbortSignal,
 ) => {
-  const response = await fetch("/api/subtitle/translate", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ srt: subtitleText, lang: targetLang, sourceLang }),
+  const data = await fetchSubtitleJsonWithRetry(
+    "/api/subtitle/translate",
+    { srt: subtitleText, lang: targetLang, sourceLang },
     signal,
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data?.success) {
-    throw new Error(data?.error || "Subtitle translation failed");
-  }
+  );
   const rawText = String(data?.srt || "");
   const vttText = subtitleTextToVtt(rawText);
   if (!vttText) throw new Error("Translated subtitle file is empty");
@@ -9852,11 +9862,6 @@ export default function App() {
     ? cinemaWindowPlaybackTime
     : playerCurrentTime;
 
-  // Windowed subtitle index — Sorani splits into 60-second chunks so each
-  // request fetches only a small portion of the video's captions.
-  const subtitleWindowIndex =
-    cinemaWindowSubtitleLang === "ckb" ? Math.floor(subtitlePlaybackTime / 60) : 0;
-
   // The movie object backing the active watch room — used to resolve both the
   // stored subtitle file URL and the pre-generated Kurdish (ckb) track.
   const activeSubtitleMovie = useMemo(() => {
@@ -10034,10 +10039,7 @@ export default function App() {
     const selectedSubtitleLanguage = getCinemaWindowSubtitleLanguage(cinemaWindowSubtitleLang);
     const subtitleWindowOptions =
       selectedSubtitleLanguage.code === "ckb"
-        ? {
-            startSeconds: Math.max(0, subtitleWindowIndex * 60 - 5),
-            windowSeconds: 80,
-          }
+        ? undefined
         : undefined;
     const subtitleWindowKey = subtitleWindowOptions
       ? `::${subtitleWindowOptions.startSeconds}-${subtitleWindowOptions.windowSeconds}`
@@ -10064,7 +10066,6 @@ export default function App() {
     setCinemaWindowSubtitleStatus("loading");
     setCinemaWindowSubtitleMessage(`وەرگێڕانی ژێرنوس بۆ ${selectedSubtitleLanguage.label}...`);
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 120000);
 
     const loadSubtitle = async () => {
       try {
@@ -10119,6 +10120,19 @@ export default function App() {
           }
         }
 
+        if (movieSubtitleUrl) {
+          const original = await requestCinemaWindowSubtitle(
+            subtitleSourceUrl,
+            "original",
+            controller.signal,
+            undefined,
+            movieSubtitleUrl,
+          );
+          return {
+            ...original,
+            subtitleWarning: "وەرگێڕانی کوردی بەردەست نەبوو؛ ژێرنووسی ڕەسەن پیشان دەدرێت.",
+          };
+        }
         throw lastFallbackError;
       }
     };
@@ -10154,12 +10168,11 @@ export default function App() {
           setCinemaWindowSubtitleMessage(`${selectedSubtitleLanguage.label} ئامادەیە`);
         })
         .catch(() => {
-          window.clearTimeout(timeoutId);
           if (!cancelled) loadSubtitle();
         });
       return () => {
         cancelled = true;
-        window.clearTimeout(timeoutId);
+        controller.abort();
         if (objectUrl) URL.revokeObjectURL(objectUrl);
       };
     }
@@ -10195,22 +10208,17 @@ export default function App() {
               : err?.message || "وەرگێڕانی ژێرنوس سەرکەوتوو نەبوو",
           );
         }
-      })
-      .finally(() => {
-        window.clearTimeout(timeoutId);
       });
 
     return () => {
       cancelled = true;
       controller.abort();
-      window.clearTimeout(timeoutId);
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [
     isInMainWatchRoom,
     subtitleSourceUrl,
     cinemaWindowSubtitleLang,
-    subtitleWindowIndex,
     subtitleMovieFileUrl,
     kurdishPreGeneratedUrl,
     cinemaWindowSubtitleRetryKey,
@@ -13696,19 +13704,7 @@ export default function App() {
                       {((): React.ReactNode => {
                         const srcType = classifySourceType(activeServerUrl);
 
-                        // 1. IMDb → metadata-only, should never reach here
-                        if (srcType === "imdb") {
-                          return (
-                            <div className="relative w-full h-full flex flex-col items-center justify-center bg-zinc-950 p-6 text-center">
-                              <AlertCircle className="w-8 h-8 text-red-500 mb-3" />
-                              <p className="text-sm font-bold text-red-300 kurdish-text">
-                                ئەم لینکە زانیاریی تەنها — سەرچاوەی پلەیباک نییە
-                              </p>
-                            </div>
-                          );
-                        }
-
-                        // 2. YouTube → dedicated non-sandboxed player
+                        // 1. YouTube → dedicated non-sandboxed player
                         if (srcType === "youtube") {
                           return (
                             <YouTubeResilientPlayer
