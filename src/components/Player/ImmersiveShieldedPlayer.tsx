@@ -185,6 +185,7 @@ export default function ImmersiveShieldedPlayer({
           id={iframeId}
           src={url}
           title={title || "CinemaChat Cinematic Player"}
+          loading="eager"
           className="w-full h-full border-0"
           frameBorder="0"
           scrolling="no"
