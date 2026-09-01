@@ -7478,16 +7478,13 @@ export default function App() {
     // 4. Broadcast a seek command to EVERY iframe inside the player container —
     //    YouTube embed, supported-embed providers, and proxy players (e.g.
     //    proxy.garageband.rocks). Cross-origin frames ignore direct DOM access,
-    //    so postMessage is the transport; the payload carries both the
-    //    YouTube-command shape AND an explicit `time` field for providers that
-    //    only parse a raw timestamp. Same-origin frames also get direct access.
+    //    so postMessage is the transport; the payload carries both the raw
+    //    time format and the YouTube-command form the embed expects.
     if (container) {
-      const payload = JSON.stringify({
-        event: "command",
-        func: "seekTo",
-        args: [t, true],
-        time: t,
-      });
+      const framePayloads = [
+        JSON.stringify({ type: "seek", time: t, seconds: t }),
+        JSON.stringify({ event: "command", func: "seekTo", args: [t, true], time: t }),
+      ];
       container.querySelectorAll<HTMLIFrameElement>("iframe").forEach((frame) => {
         try {
           const inner = (frame.contentWindow as any)?.document?.querySelector?.(
@@ -7504,7 +7501,7 @@ export default function App() {
           /* cross-origin — fall through to postMessage */
         }
         try {
-          frame.contentWindow?.postMessage(payload, "*");
+          framePayloads.forEach((payload) => frame.contentWindow?.postMessage(payload, "*"));
         } catch {
           /* ignore */
         }
@@ -7514,10 +7511,30 @@ export default function App() {
 
   // Commit a seek: show the target immediately, scrub every live element and
   // publish the new position so Watch Together guests follow the host.
+  const broadcastIframeSeekBridge = (container: HTMLElement | null, targetTime: number) => {
+    if (!container) return;
+    const frames = Array.from(container.querySelectorAll<HTMLIFrameElement>("iframe"));
+    frames.forEach((frame) => {
+      try {
+        frame.contentWindow?.postMessage(
+          JSON.stringify({ type: "seek", time: targetTime, seconds: targetTime }),
+          "*",
+        );
+        frame.contentWindow?.postMessage(
+          JSON.stringify({ event: "command", func: "seekTo", args: [targetTime, true] }),
+          "*",
+        );
+      } catch {
+        /* cross-origin / remounted embeds are intentionally ignored */
+      }
+    });
+  };
+
   const seekToPlayer = (seconds: number) => {
     const t = Math.max(0, seconds);
     setPlayerCurrentTime(t);
     applyScrubToPlayers(t);
+    broadcastIframeSeekBridge(modalPlayerRef.current, t);
     publishPlaybackNowRef.current({ currentTime: t });
   };
 

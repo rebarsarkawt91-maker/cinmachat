@@ -459,21 +459,21 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
 
   useEffect(() => {
     if (!open || joinConsumed) return;
-    if (!joinCallId || !joinConnId) return;
-    if (!joinCall || joinCall.status !== "accepted") return;
-    const conn = connections.find((c) => c.id === joinConnId);
+    const resolvedRoomId = joinConnId || activeRoomIdProp || null;
+    if (!resolvedRoomId) return;
+    if (!joinCall && !joinCallId) return;
+    if (joinCall && joinCall.status !== "accepted") return;
+    const conn = connections.find((c) => c.id === resolvedRoomId || c.id === joinCall?.connectionId);
     if (!conn || conn.status !== "accepted") return;
-    setActiveId(joinConnId);
+    setActiveId(conn.id);
     setSearchStatus("idle");
     setFound(null);
     setFoundConn(null);
     setJoinConsumed(true);
-    // Drop the internal join queue so a later "leave" never re-routes the user
-    // back into this chat, and a NEW in-modal accept starts from a clean state.
     setLocalJoinCallId(null);
     setLocalJoinConnId(null);
     onAutoConnectConsumedRef.current?.();
-  }, [open, joinCallId, joinConnId, joinCall, connections, joinConsumed]);
+  }, [open, joinCallId, joinConnId, joinCall, connections, joinConsumed, activeRoomIdProp]);
 
   // Receiver-side root sync: if the app reopened the room with a known shared
   // room id before the Firestore listener settles, we still jump immediately to

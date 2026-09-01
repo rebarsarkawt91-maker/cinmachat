@@ -115,6 +115,11 @@ const WatchCallNotification: React.FC<{
       // The underlying friend connection is now accepted — open the exact
       // shared private room immediately using the deterministic connection id.
       onOpenRoom?.(acceptedCall);
+      window.dispatchEvent(
+        new CustomEvent("cinemachat:watch-call-accepted", {
+          detail: acceptedCall,
+        }),
+      );
     } catch {
       setActionError("پەسەندکردنی بانگهێشتی پەیوەندی سەرکەوتوو نەبوو — دووبارە هەوڵبەرەوە");
     } finally {

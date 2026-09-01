@@ -2937,7 +2937,24 @@ async function startServer() {
     return preferredPort;
   };
 
-  const preferredPort = Number(process.env.PORT) || 3001;
+  const cliPortFromArgs = (() => {
+    const args = process.argv.slice(2);
+    for (let i = 0; i < args.length; i += 1) {
+      const arg = args[i];
+      if (arg === '--port' || arg === '-p') {
+        const value = Number(args[i + 1]);
+        if (Number.isFinite(value) && value > 0) return value;
+      }
+      const match = /^(?:--port| -p)=(\d+)$/i.exec(arg);
+      if (match) {
+        const value = Number(match[1]);
+        if (Number.isFinite(value) && value > 0) return value;
+      }
+    }
+    return null;
+  })();
+
+  const preferredPort = Number(process.env.PORT) || cliPortFromArgs || 3003;
   const PORT = await getAvailablePort(preferredPort);
 
   // Database initialization
