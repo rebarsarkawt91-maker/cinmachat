@@ -7514,8 +7514,16 @@ export default function App() {
 
   const broadcastSeekToFrame = (frame: HTMLIFrameElement, targetTime: number) => {
     const payloads = [
+      // Object-form message variants used by proxy embeds and custom player hosts.
+      JSON.stringify({ type: "seekTo", time: targetTime, seconds: targetTime, value: targetTime }),
       JSON.stringify({ type: "seek", time: targetTime, seconds: targetTime }),
+      JSON.stringify({ action: "seek", time: targetTime, seconds: targetTime }),
       JSON.stringify({ event: "command", func: "seekTo", args: [targetTime, true], time: targetTime }),
+      // stringified method calls used by iframe-based player wrappers
+      JSON.stringify({ method: "setCurrentTime", value: targetTime, currentTime: targetTime }),
+      JSON.stringify({ method: "seekTo", value: targetTime, currentTime: targetTime, seconds: targetTime }),
+      JSON.stringify({ type: "setCurrentTime", currentTime: targetTime, value: targetTime }),
+      JSON.stringify({ event: "command", func: "seekTo", args: [targetTime, true], time: targetTime, currentTime: targetTime }),
     ];
     // Same-origin frames: also write the raw currentTime directly to any nested
     // <video> so MSE/hls players that swallow a postMessage still move.
@@ -7526,6 +7534,9 @@ export default function App() {
       if (inner) {
         try {
           inner.currentTime = targetTime;
+          if (Number.isFinite(inner.duration) && targetTime < inner.duration) {
+            inner.dispatchEvent(new Event("timeupdate"));
+          }
         } catch {
           /* ignore */
         }
