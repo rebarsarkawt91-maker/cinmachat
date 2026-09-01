@@ -7481,60 +7481,94 @@ export default function App() {
     //    so postMessage is the transport; the payload carries both the raw
     //    time format and the YouTube-command form the embed expects.
     if (container) {
-      const framePayloads = [
-        JSON.stringify({ type: "seek", time: t, seconds: t }),
-        JSON.stringify({ event: "command", func: "seekTo", args: [t, true], time: t }),
-      ];
-      container.querySelectorAll<HTMLIFrameElement>("iframe").forEach((frame) => {
-        try {
-          const inner = (frame.contentWindow as any)?.document?.querySelector?.(
-            "video",
-          ) as HTMLVideoElement | null;
-          if (inner) {
-            try {
-              inner.currentTime = t;
-            } catch {
-              /* ignore */
-            }
-          }
-        } catch {
-          /* cross-origin — fall through to postMessage */
-        }
-        try {
-          framePayloads.forEach((payload) => frame.contentWindow?.postMessage(payload, "*"));
-        } catch {
-          /* ignore */
-        }
-      });
+      broadcastSeekToIframes(container, t);
     }
   };
 
-  // Commit a seek: show the target immediately, scrub every live element and
-  // publish the new position so Watch Together guests follow the host.
-  const broadcastIframeSeekBridge = (container: HTMLElement | null, targetTime: number) => {
+  // Post a seek to every iframe reachable from the player container — including
+  // nested frames that a proxy embed (proxy.garageband.rocks/embed/movie/tt…)
+  // mounts for its internal player. This is the single transport used by every
+  // seek path, so the proxy's own player can never "miss" a seek: it gets both
+  // the raw `{ type: "seek", time }` shape and the YouTube API `seekTo` command.
+  const broadcastSeekToIframes = (container: HTMLElement | null, targetTime: number) => {
     if (!container) return;
     const frames = Array.from(container.querySelectorAll<HTMLIFrameElement>("iframe"));
     frames.forEach((frame) => {
+      broadcastSeekToFrame(frame, targetTime);
+      // Deep-reach same-origin/proxy-origin-aware docs: if the outer frame's
+      // document is same-origin-reachable, its nested <iframe>s hold the real
+      // player the user scrubs. Walk one level so the actual <video> gets the
+      // timestamp directly, not just the outer wrapper.
       try {
-        frame.contentWindow?.postMessage(
-          JSON.stringify({ type: "seek", time: targetTime, seconds: targetTime }),
-          "*",
-        );
-        frame.contentWindow?.postMessage(
-          JSON.stringify({ event: "command", func: "seekTo", args: [targetTime, true] }),
-          "*",
-        );
+        const innerDoc = frame.contentDocument;
+        if (innerDoc) {
+          innerDoc.querySelectorAll<HTMLIFrameElement>("iframe").forEach((nested) => {
+            broadcastSeekToFrame(nested, targetTime);
+          });
+        }
       } catch {
-        /* cross-origin / remounted embeds are intentionally ignored */
+        /* cross-origin inner document — rely on the outer postMessage relay */
       }
     });
   };
 
+  const broadcastSeekToFrame = (frame: HTMLIFrameElement, targetTime: number) => {
+    const payloads = [
+      JSON.stringify({ type: "seek", time: targetTime, seconds: targetTime }),
+      JSON.stringify({ event: "command", func: "seekTo", args: [targetTime, true], time: targetTime }),
+    ];
+    // Same-origin frames: also write the raw currentTime directly to any nested
+    // <video> so MSE/hls players that swallow a postMessage still move.
+    try {
+      const inner = (frame.contentWindow as any)?.document?.querySelector?.(
+        "video",
+      ) as HTMLVideoElement | null;
+      if (inner) {
+        try {
+          inner.currentTime = targetTime;
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch {
+      /* cross-origin — fall through to postMessage */
+    }
+    try {
+      payloads.forEach((payload) => frame.contentWindow?.postMessage(payload, "*"));
+    } catch {
+      /* ignore */
+    }
+  };
+
+  // Re-assert a seek into every iframe a few times after the initial broadcast.
+  // Proxies that swap their document after load, or whose embedded script still
+  // booting when the first message landed, miss the one-shot postMessage; the
+  // delayed repeats guarantee the proxy eventually receives the new position.
+  const reassertSeekToIframes = (container: HTMLElement | null, targetTime: number, attempt = 0) => {
+    if (!container) return;
+    if (attempt >= 4) return;
+    window.setTimeout(() => {
+      broadcastSeekToIframes(container, targetTime);
+      reassertSeekToIframes(container, targetTime, attempt + 1);
+    }, 180 * (attempt + 1));
+  };
+
+  // Commit a seek: show the target immediately, scrub every live element and
+  // publish the new position so Watch Together guests follow the host.
   const seekToPlayer = (seconds: number) => {
     const t = Math.max(0, seconds);
+    // Force the internal clock so the slider locks on the new timestamp instead
+    // of snapping back to the pre-seek position while the proxy acknowledges.
+    localClockRef.current = t;
+    ytCurrentTimeRef.current = t;
     setPlayerCurrentTime(t);
+    setDragTime(null);
+    dragTimeRef.current = null;
     applyScrubToPlayers(t);
-    broadcastIframeSeekBridge(modalPlayerRef.current, t);
+    broadcastSeekToIframes(modalPlayerRef.current, t);
+    // Proxies that boot a nested player late may miss the one-shot postMessage;
+    // re-assert the seek so the embedded frame reliably lands on the target.
+    reassertSeekToIframes(modalPlayerRef.current, t);
     publishPlaybackNowRef.current({ currentTime: t });
   };
 
@@ -7548,6 +7582,10 @@ export default function App() {
     const nextTime = seekTimeFromEvent(e);
     dragTimeRef.current = nextTime;
     setDragTime(nextTime);
+    // Lock the displayed position immediately so the bar can't snap back.
+    localClockRef.current = nextTime;
+    ytCurrentTimeRef.current = nextTime;
+    setPlayerCurrentTime(nextTime);
     lastScrubAppliedAtRef.current = Date.now();
     // A bare click is a seek: apply immediately on pointerdown.
     applyScrubToPlayers(nextTime);
@@ -7558,6 +7596,11 @@ export default function App() {
     const nextTime = seekTimeFromEvent(e);
     dragTimeRef.current = nextTime;
     setDragTime(nextTime);
+    // Keep both the drag thumb and the internal clock pinned to the dragged
+    // timestamp so no read-back path can snap the bar backwards mid-scrub.
+    localClockRef.current = nextTime;
+    ytCurrentTimeRef.current = nextTime;
+    setPlayerCurrentTime(nextTime);
     // Live scrub: drive the actual playback position while dragging. Throttled
     // (~100ms) so MSE/hls.js don't receive a seek storm on every movement tick.
     const now = Date.now();
