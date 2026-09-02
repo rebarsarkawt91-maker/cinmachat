@@ -14,6 +14,7 @@ import bcrypt from 'bcryptjs';
 import net from 'node:net';
 import { rateLimiter, sanitizationMiddleware, createAdminGuard, logFailedAttempt } from './security';
 import { generateSubtitle, translateSrtViaGemini } from './features/subtitles/subtitleGenerator.js';
+import { getSearchConsoleStats } from './features/seo/searchConsole.js';
 import {
   SCHEMA_VERSION,
   normalizeHeroValue,
@@ -5710,6 +5711,16 @@ async function startServer() {
         firewallHealth: "Perfect (Shield Active)"
       }
     });
+  });
+
+  app.get('/api/admin/seo-stats', async (req, res) => {
+    try {
+      const stats = await getSearchConsoleStats();
+      res.json({ success: true, ...stats });
+    } catch (err: any) {
+      console.error('[Search Console] /api/admin/seo-stats failed:', err?.message || err);
+      res.status(500).json({ success: false, error: 'Failed to load SEO statistics.' });
+    }
   });
 
   app.get('/api/health', (req, res) => {

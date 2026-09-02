@@ -239,6 +239,7 @@ export function createAdminGuard(db: any) {
       // Canonical Hero config endpoints (Admin Section 7):
       if ((method === 'GET' || method === 'PUT') && requestPath === '/api/admin/hero-config') return true;
       if (method === 'GET' && requestPath === '/api/admin/smart-analytics') return true;
+      if (method === 'GET' && requestPath === '/api/admin/seo-stats') return true;
       if (method === 'PATCH' && requestPath.startsWith('/api/admin/movies/')) return true;
       return false;
     };
