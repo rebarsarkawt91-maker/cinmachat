@@ -182,6 +182,11 @@ const UserAnalyticsModule = React.lazy(() =>
     default: m.UserAnalyticsModule,
   })),
 );
+const AdminSEOAnalyticsModule = React.lazy(() =>
+  import("./components/Admin/AdminSEOAnalyticsModule").then((m) => ({
+    default: m.AdminSEOAnalyticsModule,
+  })),
+);
 import { VIPRoomModal } from "./components/Social/VIPRoomModal";
 import { CinemaWindowModal } from "./components/Social/CinemaWindowModal";
 import { AccountCenter } from "./components/Social/AccountCenter";
@@ -15650,8 +15655,15 @@ export default function App() {
                     />
 
                     <SidebarItem
+                      icon={Search}
+                      label="٣. ئامارەکانی SEO & Google Search"
+                      active={adminTab === "seo-analytics"}
+                      onClick={() => setAdminTab("seo-analytics")}
+                    />
+
+                    <SidebarItem
                       icon={LayoutDashboard}
-                      label="٣. بەڕێوبەرایەتی پۆلێنەکان"
+                      label="٤. بەڕێوبەرایەتی پۆلێنەکان"
                       active={adminTab === "categories"}
                       onClick={() => setAdminTab("categories")}
                     />
@@ -15659,7 +15671,7 @@ export default function App() {
                     {/* Content Management Tabs */}
                     <SidebarItem
                       icon={Plus}
-                      label="٤. پۆستکردنی فیلم و یوتوب"
+                      label="٥. پۆستکردنی فیلم و یوتوب"
                       active={adminTab === "content"}
                       onClick={() => setAdminTab("content")}
                     />
@@ -15670,20 +15682,20 @@ export default function App() {
                     ) && (
                       <SidebarItem
                         icon={Radio}
-                        label="٥. ژوورەکانی پەخش (Room)"
+                        label="٦. ژوورەکانی پەخش (Room)"
                         active={adminTab === "broadcast"}
                         onClick={() => setAdminTab("broadcast")}
                       />
                     )}
                     <SidebarItem
                       icon={Film}
-                      label="٦. سەرپەرشتی فیلمەکان"
+                      label="٧. سەرپەرشتی فیلمەکان"
                       active={adminTab === "manage"}
                       onClick={() => setAdminTab("manage")}
                     />
                     <SidebarItem
                       icon={Youtube}
-                      label="٧. هیرۆ ڤیدیۆ و ترەیلەر"
+                      label="٨. هیرۆ ڤیدیۆ و ترەیلەر"
                       active={adminTab === "hero"}
                       onClick={() => setAdminTab("hero")}
                     />
@@ -15694,14 +15706,14 @@ export default function App() {
                     ) && (
                       <SidebarItem
                         icon={Users}
-                        label="٨. بەکارهێنەران و مافەکان"
+                        label="٩. بەکارهێنەران و مافەکان"
                         active={adminTab === "managed-users"}
                         onClick={() => setAdminTab("managed-users")}
                       />
                     )}
                     <SidebarItem
                       icon={Link2}
-                      label="٩. ڕێکخستنی چەناڵ و ئۆفەر"
+                      label="١٠. ڕێکخستنی چەناڵ و ئۆفەر"
                       active={adminTab === "channel"}
                       onClick={() => setAdminTab("channel")}
                     />
@@ -15713,68 +15725,68 @@ export default function App() {
                       <>
                         <SidebarItem
                           icon={ShieldAlert}
-                          label="١٠. چات و مۆدێرەیشن"
+                          label="١١. چات و مۆدێرەیشن"
                           active={adminTab === "security-control"}
                           onClick={() => setAdminTab("security-control")}
                         />
                         <SidebarItem
                           icon={ShieldCheck}
                           active={adminTab === "security-shield"}
-                          label="١١. قەڵخان و ئایپی ڕەش"
+                          label="١٢. قەڵخان و ئایپی ڕەش"
                           onClick={() => setAdminTab("security-shield")}
                         />
                         <SidebarItem
                           icon={BarChart2}
                           active={adminTab === "user-analytics"}
-                          label="١٢. زانیاری و شیکاری بەکارهێنەران"
+                          label="١٣. زانیاری و شیکاری بەکارهێنەران"
                           onClick={() => setAdminTab("user-analytics")}
                         />
                         <SidebarItem
                           icon={Database}
                           active={adminTab === "database-audit"}
-                          label="١٣. بنکەدراوە و هەڵەکان"
+                          label="١٤. بنکەدراوە و هەڵەکان"
                           onClick={() => setAdminTab("database-audit")}
                         />
                         <SidebarItem
                           icon={BarChart2}
                           active={adminTab === "smart-analytics"}
-                          label="١٤. شیکارکاری ژیر"
+                          label="١٥. شیکارکاری ژیر"
                           onClick={() => setAdminTab("smart-analytics")}
                         />
                         <SidebarItem
                           icon={Ticket}
                           active={adminTab === "ticket-vip"}
-                          label="١٥. سیستەمی بلیت VIP"
+                          label="١٦. سیستەمی بلیت VIP"
                           onClick={() => setAdminTab("ticket-vip")}
                         />
                         <SidebarItem
                           icon={Shield}
                           active={adminTab === "system-hub"}
-                          label="١٦. سەنتەری سیستەم"
+                          label="١٧. سەنتەری سیستەم"
                           onClick={() => setAdminTab("system-hub")}
                         />
                         <SidebarItem
                           icon={TrendingUp}
                           active={adminTab === "growth"}
-                          label="١٧. مارکێتینگ و گەشە"
+                          label="١٨. مارکێتینگ و گەشە"
                           onClick={() => setAdminTab("growth")}
                         />
                         <SidebarItem
                           icon={ShieldAlert}
                           active={adminTab === "m17-auth"}
-                          label="١٨. ڕێگەپێدانی فرە-ئاستی"
+                          label="١٩. ڕێگەپێدانی فرە-ئاستی"
                           onClick={() => setAdminTab("m17-auth")}
                         />
                         <SidebarItem
                           icon={MessageSquare}
                           active={adminTab === "whatsapp-automation"}
-                          label="١٩. ئۆتۆمەیشنی وەتسئەپ (Webhook)"
+                          label="٢٠. ئۆتۆمەیشنی وەتسئەپ (Webhook)"
                           onClick={() => setAdminTab("whatsapp-automation")}
                         />
                         <SidebarItem
                           icon={Tv}
                           active={adminTab === "broadcast-main"}
-                          label="٢٠. پەخشی گشتی (Main Broadcast)"
+                          label="٢١. پەخشی گشتی (Main Broadcast)"
                           onClick={() => setAdminTab("broadcast-main")}
                         />
                         <SidebarItem
@@ -16531,6 +16543,12 @@ const trailerId = movie.trailerUrl
                             </div>
                           </div>
                         </div>
+                      )}
+
+                      {adminTab === "seo-analytics" && (
+                        <SafeRender fallbackName="AdminSEOAnalyticsModule">
+                          <AdminSEOAnalyticsModule currentUser={currentUser} />
+                        </SafeRender>
                       )}
 
                       {adminTab === "smart-analytics" && (
