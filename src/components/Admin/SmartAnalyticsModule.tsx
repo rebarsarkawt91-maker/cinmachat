@@ -31,6 +31,10 @@ export const SmartAnalyticsModule: React.FC<SmartAnalyticsModuleProps> = ({ curr
   const [seoLoading, setSeoLoading] = useState(true);
   const [seoRange, setSeoRange] = useState<number>(30);
 
+  // Non-narrowed alias so toggle-active checks stay valid inside each early-return
+  // branch (TS narrows `activeTab` to "seo"/"live" once it is compared in `if`).
+  const currentTab = activeTab;
+
   const adminName = currentUser?.username || "Admin";
 
   const fetchSeo = async (range: number = seoRange) => {
@@ -96,31 +100,41 @@ export const SmartAnalyticsModule: React.FC<SmartAnalyticsModuleProps> = ({ curr
           </div>
         </div>
 
-        {/* Tabs */}
-        <div className="flex items-center gap-2 flex-wrap justify-between">
-          <div className="flex items-center gap-2 flex-wrap">
-            <button
-              onClick={() => setActiveTab("live")}
-              className="px-4 py-2 rounded-xl text-xs font-bold border bg-[#0f1013] border-white/5 text-gray-300 kurdish-text hover:border-white/20"
-            >
-              ئامارە زیندووەکان (Live)
-            </button>
-            <button
-              onClick={() => setActiveTab("seo")}
-              className="px-4 py-2 rounded-xl text-xs font-bold border bg-blue-500/10 border-blue-500/30 text-blue-300 kurdish-text"
-            >
-              SEO & گووگڵ
-            </button>
-          </div>
+        {/* Toggle buttons */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <button
+            onClick={() => setActiveTab("live")}
+            className={`flex items-center justify-center gap-2 px-4 py-3 rounded-2xl text-sm font-black border transition-colors kurdish-text ${
+              currentTab === "live"
+                ? "bg-teal-500/15 border-teal-500/40 text-teal-300 shadow-lg shadow-teal-500/5"
+                : "bg-[#0f1013] border-white/10 text-gray-300 hover:border-white/25 hover:bg-white/[0.03]"
+            }`}
+          >
+            <BarChart2 className="w-5 h-5" />
+            ئامارە گشتییەکان (General Stats)
+          </button>
+          <button
+            onClick={() => setActiveTab("seo")}
+            className={`flex items-center justify-center gap-2 px-4 py-3 rounded-2xl text-sm font-black border transition-colors kurdish-text ${
+              currentTab === "seo"
+                ? "bg-blue-500/15 border-blue-500/40 text-blue-300 shadow-lg shadow-blue-500/5"
+                : "bg-[#0f1013] border-white/10 text-gray-300 hover:border-white/25 hover:bg-white/[0.03]"
+            }`}
+          >
+            <Search className="w-5 h-5" />
+            SEO & Google Search Analytics
+          </button>
+        </div>
 
-          {/* Time Range Filter */}
+        {/* Time Range Filter */}
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <span className="text-xs text-gray-400 kurdish-text">ماوەی ڕاپۆرت (Report Range):</span>
           <div className="flex items-center gap-1.5">
-            <span className="text-[10px] text-gray-500 kurdish-text mr-1">ماوە:</span>
             {[7, 30, 90].map((d) => (
               <button
                 key={d}
                 onClick={() => setSeoRange(d)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold border font-mono transition-colors ${
+                className={`px-4 py-1.5 rounded-lg text-xs font-bold border font-mono transition-colors ${
                   seoRange === d
                     ? "bg-blue-500/20 border-blue-500/40 text-blue-300"
                     : "bg-[#0f1013] border-white/5 text-gray-400 hover:border-white/20"
@@ -324,19 +338,29 @@ export const SmartAnalyticsModule: React.FC<SmartAnalyticsModuleProps> = ({ curr
             </div>
           </div>
 
-          {/* Tabs */}
-          <div className="flex items-center gap-2 flex-wrap shrink-0">
+          {/* Toggle buttons */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 shrink-0">
             <button
               onClick={() => setActiveTab("live")}
-              className="px-4 py-2 rounded-xl text-xs font-bold border bg-teal-500/10 border-teal-500/30 text-teal-300 kurdish-text"
+              className={`flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black border transition-colors kurdish-text ${
+                currentTab === "live"
+                  ? "bg-teal-500/15 border-teal-500/40 text-teal-300"
+                  : "bg-[#0f1013] border-white/10 text-gray-300 hover:border-white/25"
+              }`}
             >
-              ئامارە زیندووەکان (Live)
+              <BarChart2 className="w-4 h-4" />
+              ئامارە گشتییەکان (General Stats)
             </button>
             <button
               onClick={() => setActiveTab("seo")}
-              className="px-4 py-2 rounded-xl text-xs font-bold border bg-[#0f1013] border-white/5 text-gray-300 kurdish-text hover:border-white/20"
+              className={`flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black border transition-colors kurdish-text ${
+                currentTab === "seo"
+                  ? "bg-blue-500/15 border-blue-500/40 text-blue-300"
+                  : "bg-[#0f1013] border-white/10 text-gray-300 hover:border-white/25"
+              }`}
             >
-              SEO & گووگڵ
+              <Search className="w-4 h-4" />
+              SEO & Google Search Analytics
             </button>
           </div>
         </div>
