@@ -23,17 +23,13 @@ interface SmartAnalyticsModuleProps {
 }
 
 export const SmartAnalyticsModule: React.FC<SmartAnalyticsModuleProps> = ({ currentUser }) => {
-  const [activeTab, setActiveTab] = useState<"live" | "seo">("live");
+  const [seoOpen, setSeoOpen] = useState(false);
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
   const [seoData, setSeoData] = useState<any>(null);
   const [seoLoading, setSeoLoading] = useState(true);
   const [seoRange, setSeoRange] = useState<number>(30);
-
-  // Non-narrowed alias so toggle-active checks stay valid inside each early-return
-  // branch (TS narrows `activeTab` to "seo"/"live" once it is compared in `if`).
-  const currentTab = activeTab;
 
   const adminName = currentUser?.username || "Admin";
 
@@ -78,53 +74,28 @@ export const SmartAnalyticsModule: React.FC<SmartAnalyticsModuleProps> = ({ curr
   }, []);
 
   useEffect(() => {
-    if (activeTab === "seo") fetchSeo(seoRange);
-  }, [activeTab, seoRange]);
+    if (seoOpen) fetchSeo(seoRange);
+  }, [seoOpen, seoRange]);
 
   const kurdishNum = (n: any) => String(n ?? 0);
 
-  if (activeTab === "seo") {
-    return (
-      <div className="space-y-6" dir="rtl">
-        {/* Banner */}
-        <div className="p-6 rounded-3xl bg-gradient-to-r from-blue-900/40 via-[#0f1013] to-slate-900/40 border border-white/5 relative overflow-hidden">
-          <div className="absolute left-0 top-0 h-40 w-40 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />
-          <div className="flex items-center gap-4 relative z-10">
-            <div className="w-14 h-14 bg-blue-500/10 rounded-2xl flex items-center justify-center text-blue-400 border border-blue-500/20 shadow-lg shadow-blue-500/5">
-              <Search className="w-7 h-7" />
-            </div>
-            <div>
-              <h2 className="text-xl lg:text-2xl font-black text-white kurdish-text">SEO & ئاماری گووگڵ (Google Search Analytics)</h2>
-              <p className="text-xs text-gray-400 kurdish-text mt-1">وشە ڕێنیووەکان، کلیک و ئیمپرێشن لە گووگڵ بە درێژایی ڕۆژەکانی پێشوو.</p>
-            </div>
+  // Standalone SEO & Google Search Console section, rendered inside its own
+  // expandable card (separate from the General Live Statistics card).
+  const renderSeoSection = () => (
+    <div className="space-y-6" dir="rtl">
+      {/* Banner */}
+      <div className="p-6 rounded-3xl bg-gradient-to-r from-blue-900/40 via-[#0f1013] to-slate-900/40 border border-white/5 relative overflow-hidden">
+        <div className="absolute left-0 top-0 h-40 w-40 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="flex items-center gap-4 relative z-10">
+          <div className="w-14 h-14 bg-blue-500/10 rounded-2xl flex items-center justify-center text-blue-400 border border-blue-500/20 shadow-lg shadow-blue-500/5">
+            <Search className="w-7 h-7" />
+          </div>
+          <div>
+            <h2 className="text-xl lg:text-2xl font-black text-white kurdish-text">SEO & ئاماری گووگڵ (Google Search Analytics)</h2>
+            <p className="text-xs text-gray-400 kurdish-text mt-1">وشە ڕێنیووەکان، کلیک و ئیمپرێشن لە گووگڵ بە درێژایی ڕۆژەکانی پێشوو.</p>
           </div>
         </div>
-
-        {/* Toggle buttons */}
-        <div className="flex flex-col sm:flex-row gap-2 w-full my-3">
-          <button
-            onClick={() => setActiveTab("live")}
-            className={`flex flex-1 items-center justify-center gap-2 px-4 py-3 rounded-2xl text-sm font-black border transition-colors kurdish-text ${
-              currentTab === "live"
-                ? "bg-teal-500/15 border-teal-500/40 text-teal-300 shadow-lg shadow-teal-500/5"
-                : "bg-[#0f1013] border-white/10 text-gray-300 hover:border-white/25 hover:bg-white/[0.03]"
-            }`}
-          >
-            <BarChart2 className="w-5 h-5 shrink-0" />
-            ئامارە گشتییەکان (General Stats)
-          </button>
-          <button
-            onClick={() => setActiveTab("seo")}
-            className={`flex flex-1 items-center justify-center gap-2 px-4 py-3 rounded-2xl text-sm font-black border transition-colors kurdish-text ${
-              currentTab === "seo"
-                ? "bg-blue-500/15 border-blue-500/40 text-blue-300 shadow-lg shadow-blue-500/5"
-                : "bg-[#0f1013] border-white/10 text-gray-300 hover:border-white/25 hover:bg-white/[0.03]"
-            }`}
-          >
-            <Search className="w-5 h-5 shrink-0" />
-            SEO & Google Search Analytics
-          </button>
-        </div>
+      </div>
 
         {/* Time Range Filter */}
         <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -288,9 +259,8 @@ export const SmartAnalyticsModule: React.FC<SmartAnalyticsModuleProps> = ({ curr
             </div>
           </div>
         )}
-      </div>
-    );
-  }
+    </div>
+  );
 
   if (loading) {
     return (
@@ -337,33 +307,44 @@ export const SmartAnalyticsModule: React.FC<SmartAnalyticsModuleProps> = ({ curr
               <p className="text-xs text-gray-400 kurdish-text mt-1">تۆمارە چاودێراو و بەردەوامەکانی ترافیک، لێکدانەوەی بەژداربووان، و ڕێژەی سەرکەوتوویی قەڵغانی سێرڤەر.</p>
             </div>
           </div>
-
-          {/* Toggle buttons */}
-          <div className="flex flex-col sm:flex-row gap-2 w-full my-1 sm:w-auto">
-            <button
-              onClick={() => setActiveTab("live")}
-              className={`flex flex-1 items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black border transition-colors kurdish-text ${
-                currentTab === "live"
-                  ? "bg-teal-500/15 border-teal-500/40 text-teal-300"
-                  : "bg-[#0f1013] border-white/10 text-gray-300 hover:border-white/25"
-              }`}
-            >
-              <BarChart2 className="w-4 h-4 shrink-0" />
-              ئامارە گشتییەکان (General Stats)
-            </button>
-            <button
-              onClick={() => setActiveTab("seo")}
-              className={`flex flex-1 items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black border transition-colors kurdish-text ${
-                currentTab === "seo"
-                  ? "bg-blue-500/15 border-blue-500/40 text-blue-300"
-                  : "bg-[#0f1013] border-white/10 text-gray-300 hover:border-white/25"
-              }`}
-            >
-              <Search className="w-4 h-4 shrink-0" />
-              SEO & Google Search Analytics
-            </button>
-          </div>
         </div>
+      </div>
+
+      {/* Standalone SEO & Search Console card — separate menu item */}
+      <div className="bg-[#0f1013] border border-white/10 rounded-3xl overflow-hidden">
+        <button
+          onClick={() => setSeoOpen((open) => !open)}
+          className="w-full flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-5 text-right hover:bg-white/[0.02] transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 bg-blue-500/10 rounded-2xl flex items-center justify-center text-blue-400 border border-blue-500/20 shrink-0">
+              <Search className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="text-sm font-black text-white kurdish-text">
+                🔍 بەشی زانیاری و ئامارەکانی Google Search Console
+              </h3>
+              <p className="text-[11px] text-gray-400 kurdish-text mt-0.5">
+                کلیک بکە بۆ کردنەوە — کلیک، ئیمپرێشن، وشە ڕێنیووەکان و دۆخی ئیندێکس
+              </p>
+            </div>
+          </div>
+          <span
+            className={`flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg border transition-colors ${
+              seoOpen
+                ? "bg-blue-500/15 border-blue-500/40 text-blue-300"
+                : "bg-white/[0.03] border-white/10 text-gray-400"
+            }`}
+          >
+            {seoOpen ? "داخستن (Close)" : "کردنەوە (Open)"}
+          </span>
+        </button>
+
+        {seoOpen && (
+          <div className="border-t border-white/5 p-4 sm:p-6 bg-[#0b0c0f]">
+            {renderSeoSection()}
+          </div>
+        )}
       </div>
 
       {/* Grid Summary Counts */}
