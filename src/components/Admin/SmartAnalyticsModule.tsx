@@ -101,27 +101,27 @@ export const SmartAnalyticsModule: React.FC<SmartAnalyticsModuleProps> = ({ curr
         </div>
 
         {/* Toggle buttons */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="flex flex-col sm:flex-row gap-2 w-full my-3">
           <button
             onClick={() => setActiveTab("live")}
-            className={`flex items-center justify-center gap-2 px-4 py-3 rounded-2xl text-sm font-black border transition-colors kurdish-text ${
+            className={`flex flex-1 items-center justify-center gap-2 px-4 py-3 rounded-2xl text-sm font-black border transition-colors kurdish-text ${
               currentTab === "live"
                 ? "bg-teal-500/15 border-teal-500/40 text-teal-300 shadow-lg shadow-teal-500/5"
                 : "bg-[#0f1013] border-white/10 text-gray-300 hover:border-white/25 hover:bg-white/[0.03]"
             }`}
           >
-            <BarChart2 className="w-5 h-5" />
+            <BarChart2 className="w-5 h-5 shrink-0" />
             ئامارە گشتییەکان (General Stats)
           </button>
           <button
             onClick={() => setActiveTab("seo")}
-            className={`flex items-center justify-center gap-2 px-4 py-3 rounded-2xl text-sm font-black border transition-colors kurdish-text ${
+            className={`flex flex-1 items-center justify-center gap-2 px-4 py-3 rounded-2xl text-sm font-black border transition-colors kurdish-text ${
               currentTab === "seo"
                 ? "bg-blue-500/15 border-blue-500/40 text-blue-300 shadow-lg shadow-blue-500/5"
                 : "bg-[#0f1013] border-white/10 text-gray-300 hover:border-white/25 hover:bg-white/[0.03]"
             }`}
           >
-            <Search className="w-5 h-5" />
+            <Search className="w-5 h-5 shrink-0" />
             SEO & Google Search Analytics
           </button>
         </div>
@@ -339,27 +339,27 @@ export const SmartAnalyticsModule: React.FC<SmartAnalyticsModuleProps> = ({ curr
           </div>
 
           {/* Toggle buttons */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 shrink-0">
+          <div className="flex flex-col sm:flex-row gap-2 w-full my-1 sm:w-auto">
             <button
               onClick={() => setActiveTab("live")}
-              className={`flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black border transition-colors kurdish-text ${
+              className={`flex flex-1 items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black border transition-colors kurdish-text ${
                 currentTab === "live"
                   ? "bg-teal-500/15 border-teal-500/40 text-teal-300"
                   : "bg-[#0f1013] border-white/10 text-gray-300 hover:border-white/25"
               }`}
             >
-              <BarChart2 className="w-4 h-4" />
+              <BarChart2 className="w-4 h-4 shrink-0" />
               ئامارە گشتییەکان (General Stats)
             </button>
             <button
               onClick={() => setActiveTab("seo")}
-              className={`flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black border transition-colors kurdish-text ${
+              className={`flex flex-1 items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black border transition-colors kurdish-text ${
                 currentTab === "seo"
                   ? "bg-blue-500/15 border-blue-500/40 text-blue-300"
                   : "bg-[#0f1013] border-white/10 text-gray-300 hover:border-white/25"
               }`}
             >
-              <Search className="w-4 h-4" />
+              <Search className="w-4 h-4 shrink-0" />
               SEO & Google Search Analytics
             </button>
           </div>
