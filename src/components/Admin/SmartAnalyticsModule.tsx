@@ -29,14 +29,19 @@ export const SmartAnalyticsModule: React.FC<SmartAnalyticsModuleProps> = ({ curr
 
   const [seoData, setSeoData] = useState<any>(null);
   const [seoLoading, setSeoLoading] = useState(true);
+  const [seoRange, setSeoRange] = useState<number>(30);
 
   const adminName = currentUser?.username || "Admin";
 
-  const fetchSeo = async () => {
+  const fetchSeo = async (range: number = seoRange) => {
+    setSeoLoading(true);
     try {
-      const res = await fetch(`/api/admin/seo-stats?adminName=${encodeURIComponent(adminName)}`, {
-        headers: { "x-admin-username": adminName },
-      });
+      const res = await fetch(
+        `/api/admin/seo-stats?range=${range}&adminName=${encodeURIComponent(adminName)}`,
+        {
+          headers: { "x-admin-username": adminName },
+        },
+      );
       if (res.ok) {
         const json = await res.json();
         setSeoData(json);
@@ -69,8 +74,8 @@ export const SmartAnalyticsModule: React.FC<SmartAnalyticsModuleProps> = ({ curr
   }, []);
 
   useEffect(() => {
-    if (activeTab === "seo") fetchSeo();
-  }, [activeTab]);
+    if (activeTab === "seo") fetchSeo(seoRange);
+  }, [activeTab, seoRange]);
 
   const kurdishNum = (n: any) => String(n ?? 0);
 
@@ -92,19 +97,39 @@ export const SmartAnalyticsModule: React.FC<SmartAnalyticsModuleProps> = ({ curr
         </div>
 
         {/* Tabs */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            onClick={() => setActiveTab("live")}
-            className="px-4 py-2 rounded-xl text-xs font-bold border bg-[#0f1013] border-white/5 text-gray-300 kurdish-text hover:border-white/20"
-          >
-            ئامارە زیندووەکان (Live)
-          </button>
-          <button
-            onClick={() => setActiveTab("seo")}
-            className="px-4 py-2 rounded-xl text-xs font-bold border bg-blue-500/10 border-blue-500/30 text-blue-300 kurdish-text"
-          >
-            SEO & گووگڵ
-          </button>
+        <div className="flex items-center gap-2 flex-wrap justify-between">
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={() => setActiveTab("live")}
+              className="px-4 py-2 rounded-xl text-xs font-bold border bg-[#0f1013] border-white/5 text-gray-300 kurdish-text hover:border-white/20"
+            >
+              ئامارە زیندووەکان (Live)
+            </button>
+            <button
+              onClick={() => setActiveTab("seo")}
+              className="px-4 py-2 rounded-xl text-xs font-bold border bg-blue-500/10 border-blue-500/30 text-blue-300 kurdish-text"
+            >
+              SEO & گووگڵ
+            </button>
+          </div>
+
+          {/* Time Range Filter */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] text-gray-500 kurdish-text mr-1">ماوە:</span>
+            {[7, 30, 90].map((d) => (
+              <button
+                key={d}
+                onClick={() => setSeoRange(d)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold border font-mono transition-colors ${
+                  seoRange === d
+                    ? "bg-blue-500/20 border-blue-500/40 text-blue-300"
+                    : "bg-[#0f1013] border-white/5 text-gray-400 hover:border-white/20"
+                }`}
+              >
+                {d} ڕۆژ
+              </button>
+            ))}
+          </div>
         </div>
 
         {seoLoading ? (

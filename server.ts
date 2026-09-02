@@ -5715,7 +5715,13 @@ async function startServer() {
 
   app.get('/api/admin/seo-stats', async (req, res) => {
     try {
-      const stats = await getSearchConsoleStats();
+      // Allowed time ranges for the SEO dashboard filter (7 / 30 / 90 days).
+      const rawRange = Number((req.query as any)?.range);
+      const allowedRanges = [7, 30, 90];
+      const days = Number.isFinite(rawRange) && allowedRanges.includes(rawRange)
+        ? rawRange
+        : 30;
+      const stats = await getSearchConsoleStats(days);
       res.json({ success: true, ...stats });
     } catch (err: any) {
       console.error('[Search Console] /api/admin/seo-stats failed:', err?.message || err);

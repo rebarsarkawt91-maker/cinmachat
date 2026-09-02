@@ -154,8 +154,11 @@ async function fetchIndexStatus(jwt: JWT): Promise<IndexStatus> {
 }
 
 // Deterministic-looking demo dataset so the dashboard renders when Search
-// Console credentials are unavailable (dev machines, fresh deploys).
-function demoData(): any {
+// Console credentials are unavailable (dev machines, fresh deploys). The demo
+// figures scale loosely with the requested time range so the UI reacts to the
+// 7/30/90-day filter even without live credentials.
+function demoData(days: number): any {
+  const factor = Math.max(1, Math.round(days / 7));
   const demoQueries = [
     'cinemachat', 'فیلمی کوردی', 'زنجیرەی کوردی', 'سینەما چات', 'فیلمی دۆبلاژی کوردی',
     'nawwnirani filmi kordi', 'film u zinjerekan be kurdi', 'سەیرکردنی فیلم بە کوردی',
@@ -163,8 +166,8 @@ function demoData(): any {
   ];
   const queries = demoQueries.map((query, idx) => ({
     query,
-    clicks: 14 + ((idx * 7) % 40),
-    impressions: 120 + ((idx * 43) % 520),
+    clicks: (14 + ((idx * 7) % 40)) * factor,
+    impressions: (120 + ((idx * 43) % 520)) * factor,
     ctr: 0.04 + ((idx * 0.011) % 0.06),
     position: 3.2 + ((idx * 0.7) % 6),
   }));
@@ -173,7 +176,7 @@ function demoData(): any {
   return {
     configured: false,
     siteUrl: siteUrl(),
-    rangeDays: 30,
+    rangeDays: days,
     report: {
       queries,
       totals: {
@@ -194,24 +197,24 @@ function demoData(): any {
 
 // Main entry used by the /api/admin/seo-stats route. Never throws — falls back
 // to demo data on any configuration/API failure.
-export async function getSearchConsoleStats(): Promise<any> {
+export async function getSearchConsoleStats(days = 30): Promise<any> {
   const jwt = buildJwtClient();
-  if (!jwt) return demoData();
+  if (!jwt) return demoData(days);
 
   const [report, index] = await Promise.all([
-    fetchQueryReport(jwt, 30),
+    fetchQueryReport(jwt, days),
     fetchIndexStatus(jwt),
   ]);
 
   if (!report) {
     console.warn('[Search Console] API request failed. Serving demo SEO data.');
-    return demoData();
+    return demoData(days);
   }
 
   return {
     configured: true,
     siteUrl: siteUrl(),
-    rangeDays: 30,
+    rangeDays: days,
     report,
     index,
   };
