@@ -144,6 +144,42 @@ import { CinemaChatInviteNotification } from "./components/Social/CinemaChatInvi
 import WatchCallNotification from "./components/Social/WatchCallNotification";
 import { RoomInviteNotification } from "./components/Social/RoomInviteNotification";
 import type { CinemaChatParticipant } from "./services/cinemaChat";
+
+const MOVIE_CATALOG_CACHE_KEY = "cinemachat:movie-catalog:v1";
+const MOVIE_CATALOG_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+const readCachedMovieCatalog = (): Movie[] => {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(MOVIE_CATALOG_CACHE_KEY);
+    if (!raw) return [];
+    const cached = JSON.parse(raw);
+    if (
+      !cached ||
+      !Array.isArray(cached.movies) ||
+      Date.now() - Number(cached.savedAt || 0) > MOVIE_CATALOG_CACHE_MAX_AGE_MS
+    ) {
+      localStorage.removeItem(MOVIE_CATALOG_CACHE_KEY);
+      return [];
+    }
+    return cached.movies.filter((movie: any) => movie && movie.id);
+  } catch {
+    localStorage.removeItem(MOVIE_CATALOG_CACHE_KEY);
+    return [];
+  }
+};
+
+const cacheMovieCatalog = (movies: Movie[]) => {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(
+      MOVIE_CATALOG_CACHE_KEY,
+      JSON.stringify({ savedAt: Date.now(), movies }),
+    );
+  } catch {
+    // Storage can be unavailable in private mode; live loading still works.
+  }
+};
 const SecurityShieldModule = React.lazy(() =>
   import("./components/Admin/SecurityShieldModule").then((m) => ({
     default: m.SecurityShieldModule,
@@ -6684,8 +6720,16 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
-  const [movies, setMovies] = useState<Movie[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const initialMovieCatalogRef = useRef<Movie[] | null>(null);
+  if (initialMovieCatalogRef.current === null) {
+    initialMovieCatalogRef.current = readCachedMovieCatalog();
+  }
+  const [movies, setMovies] = useState<Movie[]>(initialMovieCatalogRef.current);
+  const [isLoading, setIsLoading] = useState(initialMovieCatalogRef.current.length === 0);
+
+  useEffect(() => {
+    cacheMovieCatalog(movies);
+  }, [movies]);
 
   // ===== Drama Rooms (persistent curated collections) =====
   // Loaded from /api/drama-rooms (server-persisted in db.dramaRooms). The hub
@@ -11531,8 +11575,7 @@ export default function App() {
   // clears the grid.
   const applyMovies = (list: any[]) => {
     const unique = Array.from(new Map(list.map((m: any) => [m.id, m])).values());
-    setMovies(
-      unique
+    const normalized = unique
         .filter((m: any) => !deletedMovieIdsRef.current.has(m.id))
         .map((m: any) => ({
           ...m,
@@ -11546,8 +11589,9 @@ export default function App() {
           const timeA = a.date ? new Date(a.date).getTime() : 0;
           const timeB = b.date ? new Date(b.date).getTime() : 0;
           return timeB - timeA;
-        }),
-    );
+        });
+    setMovies(normalized);
+    cacheMovieCatalog(normalized as Movie[]);
   };
 
   // Guard so the 60s refresh poll can never overlap with an in-flight fetch
@@ -11569,38 +11613,30 @@ export default function App() {
     };
 
     try {
-      // Release the initial spinner from the server payload first so a slow or
-      // broken Firestore connection can never block the homepage shell.
-      let serverMovies: any[] = [];
-      try {
-        const serverResults = await api.getMovies();
-        if (Array.isArray(serverResults)) {
-          serverMovies = serverResults.filter((m: any) => m && m.id !== "hero-promo");
-          if (serverMovies.length > 0) {
-            applyMovies(serverMovies);
-            setErrorMsg(null);
-          }
-        }
-      } catch (srvErr) {
-        console.warn("[Movies] Initial server bootstrap skipped:", srvErr);
-      } finally {
-        releaseLoading();
-      }
-
       const moviesRef = collection(realDb, "movies");
-      const snapshot = await getDocs(
-        query(moviesRef, orderBy("createdAt", "desc"), limit(200)),
-      );
+      // Start both sources together. Firestore owns the catalog; the backend
+      // only enriches it and has a short timeout in api.getMovies().
+      const [serverResult, firestoreResult] = await Promise.allSettled([
+        api.getMovies(),
+        getDocs(query(moviesRef, orderBy("createdAt", "desc"), limit(200))),
+      ]);
+      const serverMovies =
+        serverResult.status === "fulfilled" && Array.isArray(serverResult.value)
+          ? serverResult.value.filter((m: any) => m && m.id !== "hero-promo")
+          : [];
       const firestoreMovies: any[] = [];
-      snapshot.forEach((doc) =>
-        firestoreMovies.push({ ...doc.data(), id: doc.id }),
-      );
+      if (firestoreResult.status === "fulfilled") {
+        firestoreResult.value.forEach((doc) =>
+          firestoreMovies.push({ ...doc.data(), id: doc.id }),
+        );
+      }
 
       const merged = mergeMovieLists(firestoreMovies, serverMovies);
       if (merged.length > 0) {
         applyMovies(merged);
         setErrorMsg(null);
       }
+      releaseLoading();
     } catch (err) {
       // Firestore read failed — keep whatever is already on screen.
       console.error("fetchMovies failed:", err);

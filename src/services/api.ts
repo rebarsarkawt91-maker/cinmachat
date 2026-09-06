@@ -151,12 +151,23 @@ export const api = {
   },
 
   async getMovies() {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 6000);
     try {
-      const data = await api.baseFetch('/api/movies');
+      // The public catalog also comes from Firestore. Do not make the first
+      // paint wait through baseFetch's long cold-server retry sequence.
+      const response = await fetch(api.resolveApiUrl('/api/movies'), {
+        headers: { 'Accept': 'application/json' },
+        signal: controller.signal
+      });
+      if (!response.ok) return [];
+      const data = await response.json();
       return data.results || [];
     } catch (error) {
-      console.error('Movies fetch failed:', error);
+      console.warn('Movies fetch skipped:', error);
       return [];
+    } finally {
+      clearTimeout(timeout);
     }
   },
 
