@@ -46,17 +46,17 @@ import { Movie, SocialUser } from "../../types";
 import YouTubeResilientPlayer from "../Player/YouTubeResilientPlayer";
 import ImmersiveShieldedPlayer from "../Player/ImmersiveShieldedPlayer";
 import VideoLoadOverlay from "../Player/VideoLoadOverlay";
-import SubtitleJobStatus from "../Player/SubtitleJobStatus";
-import UniversalSubtitleSelector, {
-  type UniversalSubtitleLang,
-} from "../UniversalSubtitleSelector";
+import SubtitleJobStatus from "../Player/RoomSubtitleStatus";
+import { useRoomSubtitles } from "../../hooks/useRoomSubtitles";
+import { loadRoomSubtitleLanguage } from "../../lib/roomSubtitleCore";
+import RoomSubtitleOverlay from "../Player/RoomSubtitleOverlay";
+import RoomSubtitleSelector from "../Player/RoomSubtitleSelector";
 import {
   hasPlayableBuffer,
   type NativeVideoLoadState,
 } from "../../utils/videoBuffering";
 import {
   ccSubtitleBottomPercent,
-  useDelayedSubtitleLoad,
   SUBTITLE_SYNC_LEAD_S,
 } from "../../hooks/useSubtitleManager";
 import { ProfileCard } from "./ProfileCard";
@@ -121,36 +121,6 @@ import {
 // snapshots).
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Subtitle lang mapping: the room pipeline uses app codes (ckb/en), while
-// UniversalSubtitleSelector uses display codes (ku/original).
-// ─────────────────────────────────────────────────────────────────────────────
-const ROOM_LANG_TO_SELECTOR: Record<string, UniversalSubtitleLang> = {
-  ckb: "ku",
-  ku: "ku",
-  en: "original",
-  original: "original",
-  ar: "ar",
-  tr: "tr",
-  off: "off",
-};
-
-const roomToSelectorLang = (code: string): UniversalSubtitleLang =>
-  ROOM_LANG_TO_SELECTOR[code] || "ku";
-
-const selectorToRoomLang = (lang: UniversalSubtitleLang): string =>
-  lang === "ku" ? "ckb" : lang === "original" ? "en" : lang;
-
-const ROOM_LANG_SHORT: Record<string, string> = {
-  ckb: "KU",
-  ku: "KU",
-  en: "EN",
-  original: "EN",
-  ar: "AR",
-  tr: "TR",
-  off: "OFF",
-};
-
 interface CinemaChatRoomProps {
   open: boolean;
   onClose: () => void;
@@ -171,24 +141,6 @@ interface CinemaChatRoomProps {
   accountCode?: string;
   /** Opens the app's account create/connect modal from inside the room. */
   onRequestAccount?: () => void;
-  /** AI subtitle cues for overlay rendering. */
-  subtitleCues?: Array<{ start: number; end: number; text: string }>;
-  /** Original/source subtitle cues for optional dual-line display. */
-  originalSubtitleCues?: Array<{ start: number; end: number; text: string }>;
-  /** Current subtitle language code. */
-  subtitleLang?: string;
-  /** Subtitle generation status. */
-  subtitleStatus?: "idle" | "loading" | "ready" | "error";
-  /** Status/error message for subtitle generation. */
-  subtitleMessage?: string;
-  /** Available subtitle languages for the language picker. */
-  subtitleLanguages?: Array<{ code: string; label: string; shortLabel: string }>;
-  /** Called when user picks a different subtitle language. */
-  onSubtitleLangChange?: (langCode: string) => void;
-  /** Called when user clicks the retry button after a subtitle error. */
-  onSubtitleRetry?: () => void;
-  /** Reports the current video source URL back to the parent for subtitle generation. */
-  onSourceUrl?: (url: string) => void;
   /** CC display settings from parent. */
   ccSettings?: { fontSize: string; bgOpacity: number; textColor: string; showSubtitle: boolean; showOriginal: boolean; subtitleOffsetY?: number };
   /** Font size entry for current CC setting. */
@@ -326,15 +278,6 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
   accountName,
   accountCode,
   onRequestAccount,
-  subtitleCues,
-  originalSubtitleCues,
-  subtitleLang = "ckb",
-  subtitleStatus = "idle",
-  subtitleMessage,
-  subtitleLanguages,
-  onSubtitleLangChange,
-  onSubtitleRetry,
-  onSourceUrl,
   ccSettings,
   ccFontSizeEntry,
   ccSubtitleStyle,
@@ -343,9 +286,12 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
   onUpdateCcSettings,
 }) => {
   const myId = identity.id;
-  // True when the subtitle pipeline has been stuck "loading" for a while —
-  // swaps the small spinner pill for the "pause the video" network hint.
-  const subtitleDelayed = useDelayedSubtitleLoad(subtitleStatus);
+  const [subtitleLang, onSubtitleLangChange] = useState(loadRoomSubtitleLanguage);
+  const [subtitleRetryKey, setSubtitleRetryKey] = useState(0);
+  const onSubtitleRetry = () => setSubtitleRetryKey((key) => key + 1);
+  useEffect(() => {
+    try { localStorage.setItem("cinemachat_room_subtitle_lang", subtitleLang); } catch { /* Optional. */ }
+  }, [subtitleLang]);
 
   const [state, setState] = useState<CinemaChatRoomState>(() =>
     normalizeCinemaChatState(null),
@@ -485,11 +431,13 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
     [clearDirectVideoSlowTimer],
   );
 
-  // Report the current video source URL to the parent so the subtitle pipeline
-  // can fetch/translate/generate subtitles for this room.
-  useEffect(() => {
-    if (sourceUrl) onSourceUrl?.(sourceUrl);
-  }, [sourceUrl, onSourceUrl]);
+  const { cues: subtitleCues, original: originalSubtitleCues, status: subtitleStatus, message: subtitleMessage } = useRoomSubtitles({
+    enabled: open && ccSettings?.showSubtitle !== false && isActiveSession,
+    roomKey: `${CINEMA_CHAT_ROOM_ID}:${state.sessionId || ""}`,
+    videoId: String(movieData?.id || sourceUrl || ""), sourceUrl: sourceUrl || "",
+    subtitleUrl: movies.find((movie) => movie.id === movieData?.id)?.subtitleUrl || "", language: subtitleLang,
+    currentTime: displayTime, retryKey: subtitleRetryKey,
+  });
 
   const safeLink = useMemo(
     () =>
@@ -1481,61 +1429,13 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                                 }
                               />
                             )}
-                          {/* AI subtitle overlay for CinemaChat — renders on top
-                              of whichever player type is active. */}
-                          {subtitleCues && displayTime > 0 && subtitleLang !== "off" && (ccSettings?.showSubtitle !== false) && (() => {
-                            // Match slightly ahead of playback so cues appear
-                            // in sync with the audio (see SUBTITLE_SYNC_LEAD_S).
-                            const t = displayTime + SUBTITLE_SYNC_LEAD_S;
-                            const activeCue = subtitleCues.find(
-                              (c) => t >= c.start && t <= c.end,
-                            );
-                            const activeOriginalCue =
-                              subtitleLang === "both"
-                                ? originalSubtitleCues?.find(
-                                    (c) => t >= c.start && t <= c.end,
-                                  )
-                                : undefined;
-                            if (!activeCue && !activeOriginalCue) return null;
-                            return (
-                              <div
-                                className="pointer-events-none absolute inset-x-3 z-10 flex flex-col items-center gap-1 transition-[bottom] duration-300"
-                                style={{ bottom: ccSubtitleBottomPercent(ccSettings?.subtitleOffsetY) }}
-                              >
-                                {activeOriginalCue && (
-                                  <div
-                                    dir="auto"
-                                    className={`max-w-[92%] whitespace-pre-line rounded-lg px-3 py-1.5 text-center font-bold leading-snug opacity-80 shadow-[0_2px_12px_rgba(0,0,0,0.55)] ${ccFontSizeEntry?.mobileCls || 'text-[11px]'} ${ccFontSizeEntry?.cls || ''}`}
-                                    style={{
-                                      ...(ccSubtitleStyle || {
-                                        backgroundColor: 'rgba(0,0,0,0.55)',
-                                        color: '#e5e7eb',
-                                        textShadow: '0 1px 6px rgba(0,0,0,0.9)',
-                                      }),
-                                      color: '#e5e7eb',
-                                      backgroundColor: `rgba(0,0,0,${Math.max((ccSettings?.bgOpacity ?? 0.7) - 0.15, 0.35)})`,
-                                    }}
-                                  >
-                                    {activeOriginalCue.text}
-                                  </div>
-                                )}
-                                {activeCue && (
-                                  <div
-                                    dir="auto"
-                                    className={`max-w-[92%] whitespace-pre-line rounded-lg px-3 py-2 text-center font-bold leading-snug shadow-[0_2px_14px_rgba(0,0,0,0.55)] ${ccFontSizeEntry?.mobileCls || 'text-[11px]'} ${ccFontSizeEntry?.cls || ''}`}
-                                    style={ccSubtitleStyle || { backgroundColor: 'rgba(0,0,0,0.7)', color: '#ffffff', textShadow: '0 1px 6px rgba(0,0,0,0.9)' }}
-                                  >
-                                    {activeCue.text}
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })()}
+                          <RoomSubtitleOverlay cues={subtitleCues} original={originalSubtitleCues} time={displayTime}
+                            language={subtitleLang} settings={ccSettings} font={ccFontSizeEntry} style={ccSubtitleStyle} />
                           {/* Live subtitle-generation status (loading/error).
                               Raised above the player's native controls into the
                               clear zone (same vertical logic as the CC toggle);
                               shows live pipeline progress via SubtitleJobStatus. */}
-                          {subtitleLang !== "off" &&
+                          {
                             (subtitleStatus === "error" ||
                               subtitleStatus === "loading") && (
                             <div className="absolute inset-x-0 bottom-[84px] z-20">
@@ -1544,7 +1444,6 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                                 message={subtitleMessage}
                                 movieId={movieData?.id}
                                 enabled
-                                delayedLoad={subtitleDelayed}
                                 onRetry={onSubtitleRetry}
                               />
                             </div>
@@ -1569,8 +1468,7 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                                   <button
                                     type="button"
                                     onClick={() => {
-                                      const shouldShow = ccSettings?.showSubtitle === false || subtitleLang === "off";
-                                      onSubtitleLangChange?.(shouldShow ? "ckb" : "off");
+                                      onUpdateCcSettings?.((previous) => ({ ...previous, showSubtitle: !previous.showSubtitle }));
                                     }}
                                     className={`w-7 h-3.5 rounded-full transition-all cursor-pointer ${ccSettings?.showSubtitle !== false ? 'bg-brand-primary' : 'bg-zinc-600'}`}
                                   >
@@ -1888,9 +1786,9 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                               player controls share one row like the volume
                               control cluster in the main player. The popup menu
                               opens upward into the video area. */}
-                          {subtitleLanguages && subtitleLanguages.length > 0 && (
+                          {(
                             <div
-                              className="relative"
+                              className="relative z-[60]"
                               /* The trigger sits UNDER the seek/timeline row
                                  inside this bar; raise the popup + toasts well
                                  past that row (same technique as the main
@@ -1903,19 +1801,12 @@ export const CinemaChatRoom: React.FC<CinemaChatRoomProps> = ({
                                 } as React.CSSProperties
                               }
                             >
-                              <UniversalSubtitleSelector
-                                value={roomToSelectorLang(subtitleLang || "ckb")}
-                                onChange={(lang) => onSubtitleLangChange?.(selectorToRoomLang(lang))}
+                              <RoomSubtitleSelector
+                                value={subtitleLang}
+                                onChange={onSubtitleLangChange}
                                 status={subtitleStatus}
                                 message={subtitleMessage}
                                 onRetry={onSubtitleRetry}
-                                languages={subtitleLanguages
-                                  .filter((lang) => lang.code !== "off")
-                                  .map((lang) => ({
-                                    code: roomToSelectorLang(lang.code),
-                                    label: lang.label,
-                                    shortLabel: ROOM_LANG_SHORT[lang.code] || lang.shortLabel,
-                                  }))}
                                 onSettingsClick={() => onToggleCcPanel?.()}
                                 settingsActive={!!showCcPanel}
                               />

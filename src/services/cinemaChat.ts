@@ -957,18 +957,26 @@ export const subscribeCinemaChatInvitations = (
   onChange: (invites: CinemaChatInvitation[]) => void,
 ): (() => void) => {
   if (!toId) return () => {};
+  // Keep this listener on a single equality field. The former
+  // kind+toId+status+createdAt query required a production composite index;
+  // when that index was absent Firestore 12 could poison the shared watch
+  // stream and make unrelated friend-connection writes fail internally.
+  // Recipient scoping stays server-side; kind/status/order are inexpensive
+  // client filters over the bounded result.
   const q = query(
     collection(db, INVITATIONS_COL),
-    where("kind", "==", "cinemachat"),
     where("toId", "==", toId),
-    where("status", "==", "pending"),
-    orderBy("createdAt", "desc"),
-    limit(20),
+    limit(50),
   );
   return onSnapshot(
     q,
     (snap) => {
-      onChange(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })));
+      const invites = snap.docs
+        .map((d) => ({ id: d.id, ...(d.data() as any) }) as CinemaChatInvitation)
+        .filter((invite) => invite.kind === "cinemachat" && invite.status === "pending")
+        .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
+        .slice(0, 20);
+      onChange(invites);
     },
     (err) => console.warn("cinemachat invitations listener failed:", err),
   );

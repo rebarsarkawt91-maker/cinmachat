@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { BellRing, Film, UserCheck, X, Loader2 } from "lucide-react";
 import { useSocialAuth } from "../../context/SocialAuthContext";
@@ -39,12 +40,14 @@ const WatchCallNotification: React.FC<{
   const [actionError, setActionError] = useState<string | null>(null);
   // One ring per invitation id — reset once the ring resolves (so re-calls ring
   // again from a fresh start).
-  const shownRef = useRef<Set<string>>(new Set());
 
   const uid = String(currentUser?.uid || "");
   // Only real accounts have a stable Firebase UID to receive call invitations
   // (guests and the local-admin shell never qualify).
-  const ready = uid.length >= 20 && uid !== "admin_local_bypass" && !!socialProfile;
+  // The Firebase account is enough to receive a ring. Requiring the separately
+  // loaded social profile created a startup race: the subscription was absent
+  // until a page refresh even though the user was already authenticated.
+  const ready = !!uid && uid !== "admin_local_bypass";
   // Normalized phone from the signed-in profile — matched (via canonical key)
   // against the sender's typed/search phone, so address + identity always agree.
   const myPhone =
@@ -65,17 +68,9 @@ const WatchCallNotification: React.FC<{
           }
           return true;
         });
-        const ids = new Set(live.map((c) => c.id));
-        setRings((prev) => {
-          // Rings that disappeared resolved — forget their guard so a re-call
-          // (a brand-new doc) can ring again.
-          const resolved = prev.filter((c) => !ids.has(c.id));
-          resolved.forEach((c) => shownRef.current.delete(c.id));
-          const kept = prev.filter((c) => ids.has(c.id));
-          const fresh = live.filter((c) => !shownRef.current.has(c.id));
-          fresh.forEach((c) => shownRef.current.add(c.id));
-          return [...kept, ...fresh];
-        });
+        // Snapshot IDs already deduplicate rings. Mutating a ref inside a state
+        // updater loses new rings when StrictMode evaluates that updater twice.
+        setRings(live);
       },
       () => {},
     );
@@ -142,7 +137,7 @@ const WatchCallNotification: React.FC<{
 
   if (!ready) return null;
 
-  return (
+  return createPortal(
     <div className="fixed top-4 right-4 left-4 sm:left-auto sm:w-96 z-[1100] flex flex-col gap-2 pointer-events-none">
       <AnimatePresence>
         {rings.map((call) => (
@@ -212,7 +207,8 @@ const WatchCallNotification: React.FC<{
           </motion.div>
         ))}
       </AnimatePresence>
-    </div>
+    </div>,
+    document.body,
   );
 };
 

@@ -9,6 +9,7 @@ import {
   Languages,
   Sparkles,
   TrendingUp,
+  Edit3,
 } from "lucide-react";
 import type { Movie } from "../../types";
 
@@ -36,6 +37,8 @@ export interface MovieCardProps {
   onOpen: (movie: Movie) => void;
   onToggleFavorite: (movie: Movie) => void;
   onToggleLike: (movie: Movie) => void;
+  /** Owner-only catalog editor. Omitted for every non-owner session. */
+  onEdit?: (movie: Movie) => void;
 }
 
 /** Formats large counts like 12400 -> "12.4K". */
@@ -142,6 +145,7 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
   onOpen,
   onToggleFavorite,
   onToggleLike,
+  onEdit,
 }) => {
   const duration = movie.duration || "";
   const year = movie.year || "";
@@ -169,6 +173,12 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
     e.preventDefault();
     e.stopPropagation();
     onToggleLike(movie);
+  };
+
+  const handleEdit = (e: React.MouseEvent | React.KeyboardEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onEdit?.(movie);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -214,6 +224,19 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
 
         {/* Top-left live stack */}
         <div className="absolute top-2 left-2 flex flex-col items-start gap-1.5 z-10">
+          {onEdit && (
+            <button
+              type="button"
+              onClick={handleEdit}
+              onKeyDown={handleActionKeyDown}
+              className="flex items-center gap-1 rounded-md border border-red-500/70 bg-black/80 px-2 py-1 text-[9px] font-black text-white shadow-lg backdrop-blur-md transition-colors hover:bg-red-600"
+              aria-label={`Edit ${movie.title}`}
+              title="دەستکاریکردنی فیلم"
+            >
+              <Edit3 className="h-3 w-3" aria-hidden="true" />
+              EDIT
+            </button>
+          )}
           {/* Live now — driven by REAL concurrent viewers (≥1). Solid red so it is
               impossible to miss, with the live count right on the pill. */}
           {liveViewers > 0 && (

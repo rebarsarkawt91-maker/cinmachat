@@ -10,6 +10,7 @@ import { Readable } from 'node:stream';
 import fs from 'node:fs/promises';
 import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import crypto from 'node:crypto';
+import { gunzipSync } from 'node:zlib';
 import bcrypt from 'bcryptjs';
 import net from 'node:net';
 import { rateLimiter, sanitizationMiddleware, createAdminGuard, logFailedAttempt } from './security';
@@ -31,6 +32,8 @@ import {
   HERO_LEGACY_FS_FIELDS
 } from './features/hero/heroConfig.js';
 import { execFile } from 'node:child_process';
+import os from 'node:os';
+import { registerRoomSubtitleRoutes } from './features/room-subtitles/routes';
 import * as XLSX from 'xlsx';
 // `import admin from` (esModuleInterop) resolves firebase-admin's CJS
 // `export =` namespace to its default export: the full admin object. A bare
@@ -1598,6 +1601,7 @@ async function fetchYoutubeCaptionsViaYtDlp(
   videoUrl: string,
   workDir: string,
   targetLang: string,
+  originalOnly = false,
 ): Promise<{ srt: string; mode: string; lang: string }> {
   if (ytDlpAvailable === false) {
     throw Object.assign(new Error('yt-dlp not available'), { code: 'YTDLP_MISSING' });
@@ -1605,11 +1609,26 @@ async function fetchYoutubeCaptionsViaYtDlp(
   const requestedLang = (targetLang || 'en').toLowerCase();
   const lang = requestedLang;
   const outputBase = path.join(workDir, 'subs');
-  const captionLangs = requestedLang === 'en'
+  let captionLangs = requestedLang === 'en'
     ? ['en']
     : requestedLang === 'ckb'
       ? ['ckb', 'ku', 'en']
       : [lang, 'en'];
+  if (originalOnly) {
+    // Inspect actual caption tracks; never request YouTube's translated tracks.
+    // Existing non-room callers keep their previous extraction behavior.
+    const { stdout } = await execFileText('yt-dlp', ['--skip-download', '--dump-single-json', '--no-playlist', '--quiet', '--no-warnings', videoUrl], { timeoutMs: 30000 });
+    const info = JSON.parse(stdout);
+    const native = (tracks: any) => Object.entries(tracks || {}).filter(([, formats]) => Array.isArray(formats) && formats.some((format: any) => {
+      try { return typeof format.url === 'string' && !new URL(format.url).searchParams.has('tlang'); } catch { return false; }
+    })).map(([code]) => code);
+    const manual = native(info.subtitles);
+    const automatic = native(info.automatic_captions);
+    const available = [...manual, ...automatic];
+    const selected = available.find((code) => /^en(?:-orig|[-_][A-Za-z]+)?$/.test(code)) || available[0];
+    if (!selected || !/^[A-Za-z0-9_-]{2,32}$/.test(selected)) throw new Error('Original captions unavailable');
+    captionLangs = [selected];
+  }
   const attempts: Array<{ mode: string; captionLang: string; args: string[] }> = captionLangs.map((captionLang) => ({
     mode: `yt-dlp-${captionLang}`,
     captionLang,
@@ -1640,7 +1659,7 @@ async function fetchYoutubeCaptionsViaYtDlp(
         logs.push(`[${attempt.mode}] no subtitle file (stdout=${(stdout || '').trim().slice(0, 120) || '<empty>'} stderr=${(stderr || '').trim().slice(0, 120) || '<empty>'})`);
         continue;
       }
-      return { srt: subtitleResult.srt, mode: attempt.mode, lang: subtitleResult.lang };
+      return { srt: originalOnly ? await fs.readFile(path.join(workDir, subtitleResult.file), 'utf8') : subtitleResult.srt, mode: attempt.mode, lang: originalOnly ? attempt.captionLang.replace(/-orig$/, '') : subtitleResult.lang };
     } catch (error: any) {
       const cause = error?.cause;
       if (cause?.code === 'ENOENT') {
@@ -1650,7 +1669,7 @@ async function fetchYoutubeCaptionsViaYtDlp(
       const subtitleResult = readSubtitleFromDir(workDir, attempt.captionLang);
       if (subtitleResult) {
         logs.push(`[${attempt.mode}] command failed but subtitle file ${subtitleResult.file} was usable`);
-        return { srt: subtitleResult.srt, mode: attempt.mode, lang: subtitleResult.lang };
+        return { srt: originalOnly ? await fs.readFile(path.join(workDir, subtitleResult.file), 'utf8') : subtitleResult.srt, mode: attempt.mode, lang: originalOnly ? attempt.captionLang.replace(/-orig$/, '') : subtitleResult.lang };
       }
       logs.push(`[${attempt.mode}] error=${error?.message?.split('\n')[0] || error}`);
     }
@@ -2593,6 +2612,9 @@ interface PrivateSession {
   createdAt: number;
   lastHeartbeatAt: number;
   members: Map<string, PrivateSessionMember>;
+  // Latest watch state only (no chat history). A peer that reconnects or joins
+  // a moment after movie selection must receive the current movie immediately.
+  movieState?: unknown;
 }
 
 // connectionId → session. Message history is intentionally NOT stored anywhere.
@@ -2760,6 +2782,14 @@ function handlePrivateChatSocket(ws: WebSocket) {
             participants: found.participants,
             peerUid: found.participants.find((p) => p !== uid) || '',
           }));
+          const peerUid = found.participants.find((participantUid) => participantUid !== uid);
+          const peer = peerUid ? found.members.get(peerUid) : undefined;
+          if (peerUid && peer?.socket?.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'presence', uid: peerUid, online: true }));
+          }
+          if (found.movieState) {
+            ws.send(JSON.stringify({ type: 'movie', uid: peerUid || '', payload: found.movieState }));
+          }
           privateSessionBroadcast(found, { type: 'presence', uid, online: true }, uid);
           privateSessionLog('Participant joined', found.id, uid);
         })
@@ -2829,6 +2859,7 @@ function handlePrivateChatSocket(ws: WebSocket) {
         ws.send(JSON.stringify({ type: 'error', message: 'movie_payload_too_large' }));
         return;
       }
+      session.movieState = payload;
       privateSessionBroadcast(session, { type: 'movie', uid, payload }, uid);
       return;
     }
@@ -9792,6 +9823,112 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  // Full movie editor. This route is intentionally owner-only even though
+  // some other dashboard actions are available to deputies. Fields are
+  // allowlisted, and an explicit empty string means "clear this field".
+  app.patch('/api/admin/movies/:id', async (req, res) => {
+    const { id } = req.params;
+    const rawAdminName = String(
+      req.headers['x-admin-username'] || req.body?.adminName || req.query.adminName || ''
+    );
+    const cleanAdminName = rawAdminName.trim().toLowerCase();
+    const adminRecord = db.admins.find(
+      (entry: any) => entry.username?.trim().toLowerCase() === cleanAdminName
+    );
+    const isPrimaryOwner =
+      OWNER_USERNAMES.includes(cleanAdminName) || adminRecord?.role === 'owner';
+    if (!isPrimaryOwner) {
+      return res.status(403).json({
+        success: false,
+        error: 'تەنها ئەدمینی سەرەکی دەتوانێت فیلم دەستکاری بکات',
+      });
+    }
+
+    const existing =
+      db.manualMovies.find((movie: any) => movie.id === id) ||
+      firestoreMoviesCache[id] ||
+      moviesCache.find((movie: any) => movie.id === id);
+    if (!existing) {
+      return res.status(404).json({ success: false, error: 'Movie not found' });
+    }
+
+    const input = req.body || {};
+    const stringFields = [
+      'title', 'description', 'posterUrl', 'streamingUrl', 'hdtodayUrl',
+      'vidsrcUrl', 'vidmolyUrl', 'streamwishUrl', 'fileLrunUrl',
+      'youtubeMovieUrl', 'otherVideoUrl', 'trailerUrl', 'mainTrailerUrl',
+      'subtitleUrl', 'kurdishSubtitleUrl', 'subtitleText', 'imdbUrl', 'imdbId',
+      'rating', 'year', 'duration', 'quality', 'language', 'category',
+      'whatsappLink', 'externalMovieLink', 'type', 'postType',
+    ];
+    const urlFields = new Set([
+      'posterUrl', 'streamingUrl', 'hdtodayUrl', 'vidsrcUrl', 'vidmolyUrl',
+      'streamwishUrl', 'fileLrunUrl', 'youtubeMovieUrl', 'otherVideoUrl',
+      'trailerUrl', 'mainTrailerUrl', 'subtitleUrl', 'kurdishSubtitleUrl',
+      'imdbUrl', 'whatsappLink', 'externalMovieLink',
+    ]);
+    const changes: Record<string, any> = {};
+    for (const field of stringFields) {
+      if (!(field in input)) continue;
+      if (typeof input[field] !== 'string') {
+        return res.status(400).json({ success: false, error: `Invalid ${field}` });
+      }
+      const value = input[field].trim();
+      const isHostedAsset = /^\/(?:api\/subtitles|uploads)\/[A-Za-z0-9%._\/-]+$/i.test(value);
+      if (urlFields.has(field) && value && !/^https?:\/\/\S+$/i.test(value) && !isHostedAsset) {
+        return res.status(400).json({ success: false, error: `Invalid URL in ${field}` });
+      }
+      changes[field] = value;
+    }
+    if ('tags' in input) {
+      if (!Array.isArray(input.tags)) {
+        return res.status(400).json({ success: false, error: 'Invalid tags' });
+      }
+      changes.tags = input.tags
+        .filter((tag: unknown) => typeof tag === 'string')
+        .map((tag: string) => tag.trim())
+        .filter(Boolean)
+        .slice(0, 30);
+    }
+    if (!String(changes.title ?? existing.title ?? '').trim()) {
+      return res.status(400).json({ success: false, error: 'Title is required' });
+    }
+
+    // Keep the aliases used by older players/cards synchronized.
+    if ('posterUrl' in changes) changes.image = changes.posterUrl;
+    if ('streamingUrl' in changes) {
+      changes.videoUrl = changes.streamingUrl;
+      changes.embedUrl = changes.streamingUrl;
+      changes.external_link = changes.streamingUrl;
+    }
+    changes.updatedAt = new Date().toISOString();
+    const updatedMovie = { ...existing, ...changes, id };
+
+    try {
+      // Firestore is the durable catalog used by every visitor.
+      const movieAdminApp = initializeFirebaseAdmin();
+      if (!movieAdminApp) throw new Error('Firebase Admin is unavailable');
+      await admin.firestore(movieAdminApp).collection('movies').doc(id).set(changes, { merge: true });
+      firestoreMoviesCache[id] = updatedMovie;
+      setMoviesCache((previous) =>
+        previous.map((movie) => movie.id === id ? updatedMovie : movie)
+      );
+      const manualIndex = db.manualMovies.findIndex((movie: any) => movie.id === id);
+      if (manualIndex !== -1) db.manualMovies[manualIndex] = updatedMovie;
+      await addAuditLog(
+        db,
+        rawAdminName,
+        'Edit Movie',
+        `Movie updated: "${updatedMovie.title}" (${id})`
+      );
+      await saveDB(db);
+      return res.json({ success: true, movie: updatedMovie });
+    } catch (error: any) {
+      console.error(`[movies] owner edit failed for ${id}:`, error?.message || error);
+      return res.status(500).json({ success: false, error: 'Movie update failed' });
+    }
+  });
+
   app.patch('/api/admin/movies/:id/tags', async (req, res) => {
     const { id } = req.params;
     const rawTags: any[] = Array.isArray(req.body?.tags) ? req.body.tags : [];
@@ -9894,7 +10031,7 @@ async function startServer() {
     if (!req.body) {
       return res.status(400).json({ success: false, error: "Body is empty — check Content-Type header (use application/json or text/plain)" });
     }
-    const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, mainTrailerUrl, streamingSourceUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, hdtodayUrl, vidsrcUrl, otherVideoUrl, youtubeMovieUrl, subtitleUrl, quality, tags, category, rating, year, type, duration, postType, subtitleText, imdbId: rawImdbId, imdbUrl: rawImdbUrl } = req.body;
+    const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, mainTrailerUrl, streamingSourceUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, hdtodayUrl, vidsrcUrl, otherVideoUrl, youtubeMovieUrl, subtitleUrl, kurdishSubtitleUrl, quality, tags, category, rating, year, type, duration, postType, subtitleText, imdbId: rawImdbId, imdbUrl: rawImdbUrl } = req.body;
 
     // Keeps only well-formed http(s) links (or an empty string) so malformed
     // admin input can never poison the movie record or the subtitle pipeline.
@@ -9953,6 +10090,9 @@ async function startServer() {
       // Existing subtitle file (.srt/.vtt URL) — priority #1 source for the
       // automatic Kurdish subtitle pipeline.
       subtitleUrl: safeHttpUrl(subtitleUrl),
+      // Optional pre-generated Sorani WebVTT. This remains editable later and
+      // takes precedence in players that support the Kurdish track directly.
+      kurdishSubtitleUrl: safeHttpUrl(kurdishSubtitleUrl),
       external_link: normalizedActiveVideoSource,
       isYouTube: !!ytEmbedUrl,
       quality: quality || 'HD',
@@ -11533,6 +11673,61 @@ async function startServer() {
   // YouTube / streaming-source URLs use pure web caption extraction (timedtext +
   // player-response track discovery) without yt-dlp.
   // direct .mp4/.webm file URLs are downloaded with a plain HTTP fetch instead.
+  const stopRoomSubtitleEngine = registerRoomSubtitleRoutes(app, async (sourceUrl) => {
+    const source = new URL(sourceUrl);
+    const youtubeHosts = ['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be', 'www.youtube-nocookie.com'];
+    if (youtubeHosts.includes(source.hostname)) {
+      const id = extractYoutubeVideoId(sourceUrl);
+      if (!id || !/^[A-Za-z0-9_-]{11}$/.test(id)) throw new Error('Invalid video');
+      const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cinemachat-room-captions-'));
+      try { return await fetchYoutubeCaptionsViaYtDlp(`https://www.youtube.com/watch?v=${id}`, workDir, 'en', true); }
+      finally {
+        const resolved = path.resolve(workDir);
+        if (path.dirname(resolved) === path.resolve(os.tmpdir()) && path.basename(resolved).startsWith('cinemachat-room-captions-')) {
+          await fs.rm(resolved, { recursive: true, force: true });
+        }
+      }
+    }
+
+    // VidSrc-compatible proxy embeds expose an IMDb id but seal their nested
+    // video/caption DOM behind cross-origin iframes. Resolve the same English
+    // OpenSubtitles source used by that player, then feed it into the existing
+    // local translation/cache pipeline.
+    const imdbMatch = source.pathname.match(/\/embed\/(?:movie|tv)\/(tt\d{7,10})/i);
+    if (imdbMatch && /(?:^|\.)garageband\.rocks$/i.test(source.hostname)) {
+      const imdbNumeric = imdbMatch[1].slice(2);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 20_000);
+      try {
+        const searchResponse = await fetch(
+          `https://rest.opensubtitles.org/search/imdbid-${imdbNumeric}/sublanguageid-eng`,
+          { headers: { 'X-User-Agent': 'trailers.to-UA', Accept: 'application/json' }, signal: controller.signal },
+        );
+        if (!searchResponse.ok) throw new Error('Subtitle search unavailable');
+        const results = await searchResponse.json() as any[];
+        const candidates = Array.isArray(results)
+          ? results.filter((item) => /^https:\/\/dl\.opensubtitles\.org\//i.test(String(item?.SubDownloadLink || '')))
+          : [];
+        candidates.sort((a, b) => {
+          const hearingA = String(a?.SubHearingImpaired || '0') === '1' ? 1 : 0;
+          const hearingB = String(b?.SubHearingImpaired || '0') === '1' ? 1 : 0;
+          if (hearingA !== hearingB) return hearingA - hearingB;
+          return Number(b?.SubDownloadsCnt || 0) - Number(a?.SubDownloadsCnt || 0);
+        });
+        if (!candidates.length) throw new Error('Original captions unavailable');
+        const subtitleResponse = await fetch(candidates[0].SubDownloadLink, { signal: controller.signal });
+        if (!subtitleResponse.ok) throw new Error('Subtitle download unavailable');
+        const compressed = Buffer.from(await subtitleResponse.arrayBuffer());
+        if (compressed.length > 2 * 1024 * 1024) throw new Error('Subtitle archive too large');
+        const srt = gunzipSync(compressed, { maxOutputLength: 2 * 1024 * 1024 }).toString('utf8');
+        return { srt, lang: 'en' };
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    throw new Error('Original captions unavailable');
+  });
+
   app.post('/api/subtitle/generate', async (req, res) => {
     const { url, subtitleUrl, lang, startSeconds, windowSeconds, geminiApiKey: userGeminiKey } = req.body || {};
 
@@ -12184,6 +12379,192 @@ let videoDownloaded = false;
     }
   });
 
+  // Authenticated Watch Together call creation. Both identities come from the
+  // verified sender token and canonical user documents; public names/codes in
+  // the request body are never trusted.
+  app.post('/api/friend-connect/watch-call', async (req: any, res: any) => {
+    try {
+      const senderUid = await verifyFirebaseIdToken(req.headers.authorization);
+      const targetUid = String(req.body?.targetUid || '').trim();
+      if (!targetUid || targetUid === senderUid) {
+        return res.status(400).json({ error: 'invalid watch-call target' });
+      }
+      const adminApp = initializeFirebaseAdmin();
+      if (!adminApp) return res.status(503).json({ error: 'Firebase Admin unavailable' });
+      const firestore = admin.firestore(adminApp);
+      const [senderSnap, targetSnap] = await Promise.all([
+        firestore.collection('users').doc(senderUid).get(),
+        firestore.collection('users').doc(targetUid).get(),
+      ]);
+      if (!senderSnap.exists || !targetSnap.exists) {
+        return res.status(404).json({ error: 'account not found' });
+      }
+      const sender = senderSnap.data() as any;
+      const target = targetSnap.data() as any;
+      const connectionId = [senderUid, targetUid].sort().join('__');
+      const now = new Date().toISOString();
+      const callRef = firestore.collection('invitations').doc();
+      await callRef.set({
+        kind: 'watchcall',
+        status: 'calling',
+        fromId: senderUid,
+        fromName: String(sender?.name || sender?.displayName || 'بەکارهێنەر'),
+        fromCode: String(sender?.uniqueCode || ''),
+        fromAvatar: sender?.avatarUrl || sender?.avatar || null,
+        toId: targetUid,
+        toName: String(target?.name || target?.displayName || 'بەکارهێنەر'),
+        toCode: String(target?.uniqueCode || ''),
+        toAvatar: target?.avatarUrl || target?.avatar || null,
+        toKeys: [targetUid, String(target?.uniqueCode || ''), canonicalizeMobilePhone(target?.phoneNumber || target?.phone || '')].filter(Boolean),
+        toPhone: target?.phoneNumber || target?.phone || null,
+        connectionId,
+        startedAt: now,
+        createdAt: now,
+        readAt: null,
+      });
+      return res.json({ ok: true, callId: callRef.id, connectionId });
+    } catch (err: any) {
+      if (err?.status === 401 || err?.status === 503) return respondAuthError(res, err);
+      return res.status(err?.status || 500).json({ error: err?.message || 'watch-call creation failed' });
+    }
+  });
+
+  app.get('/api/friend-connect/watch-calls', async (req: any, res: any) => {
+    try {
+      const uid = await verifyFirebaseIdToken(req.headers.authorization);
+      const adminApp = initializeFirebaseAdmin();
+      if (!adminApp) return res.status(503).json({ error: 'Firebase Admin unavailable' });
+      const snapshot = await admin.firestore(adminApp)
+        .collection('invitations')
+        .where('toId', '==', uid)
+        .limit(50)
+        .get();
+      const cutoff = Date.now() - 90_000;
+      const calls = snapshot.docs
+        .map((item) => ({ id: item.id, ...item.data() } as any))
+        .filter((call) => call.kind === 'watchcall' && call.status === 'calling' && Date.parse(call.startedAt || '') >= cutoff)
+        .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+        .slice(0, 20);
+      return res.json({ ok: true, calls });
+    } catch (err: any) {
+      if (err?.status === 401 || err?.status === 503) return respondAuthError(res, err);
+      return res.status(err?.status || 500).json({ error: err?.message || 'watch-call lookup failed' });
+    }
+  });
+
+  app.get('/api/friend-connect/watch-call/:callId', async (req: any, res: any) => {
+    try {
+      const uid = await verifyFirebaseIdToken(req.headers.authorization);
+      const adminApp = initializeFirebaseAdmin();
+      if (!adminApp) return res.status(503).json({ error: 'Firebase Admin unavailable' });
+      const snapshot = await admin.firestore(adminApp)
+        .collection('invitations')
+        .doc(String(req.params.callId || ''))
+        .get();
+      if (!snapshot.exists) return res.status(404).json({ error: 'watch call not found' });
+      const call = { id: snapshot.id, ...snapshot.data() } as any;
+      if (call.kind !== 'watchcall' || (call.fromId !== uid && call.toId !== uid)) {
+        return res.status(403).json({ error: 'forbidden' });
+      }
+      return res.json({ ok: true, call });
+    } catch (err: any) {
+      if (err?.status === 401 || err?.status === 503) return respondAuthError(res, err);
+      return res.status(err?.status || 500).json({ error: err?.message || 'watch-call lookup failed' });
+    }
+  });
+
+  // Authenticated Watch Together accept/decline. The receiver identity comes
+  // exclusively from the verified Firebase token; client-supplied UIDs are
+  // never trusted. Admin SDK writes make this path independent of stale
+  // deployed client rules and publish `accepted` only after the shared pair is
+  // ready, so both browsers always resolve the same private session.
+  app.post('/api/friend-connect/watch-call/respond', async (req: any, res: any) => {
+    try {
+      const uid = await verifyFirebaseIdToken(req.headers.authorization);
+      const callId = String(req.body?.callId || '').trim();
+      const requestedConnectionId = String(req.body?.connectionId || '').trim();
+      const status = String(req.body?.status || '').trim();
+      if (!callId || !['accepted', 'declined'].includes(status)) {
+        return res.status(400).json({ error: 'invalid watch-call response' });
+      }
+
+      const adminApp = initializeFirebaseAdmin();
+      if (!adminApp) return res.status(503).json({ error: 'Firebase Admin unavailable' });
+      const firestore = admin.firestore(adminApp);
+      const callRef = firestore.collection('invitations').doc(callId);
+
+      const result = await firestore.runTransaction(async (transaction) => {
+        const callSnap = await transaction.get(callRef);
+        if (!callSnap.exists) {
+          const error: any = new Error('watch call not found');
+          error.status = 404;
+          throw error;
+        }
+        const call = callSnap.data() as any;
+        if (call?.kind !== 'watchcall' || call?.toId !== uid) {
+          const error: any = new Error('forbidden');
+          error.status = 403;
+          throw error;
+        }
+        if (!['calling', status].includes(String(call?.status || ''))) {
+          const error: any = new Error('watch call already resolved');
+          error.status = 409;
+          throw error;
+        }
+
+        const now = new Date().toISOString();
+        if (status === 'declined') {
+          transaction.update(callRef, { status: 'declined', updatedAt: now });
+          return { connectionId: call.connectionId || requestedConnectionId || '' };
+        }
+
+        const fromId = String(call.fromId || '').trim();
+        const toId = String(call.toId || '').trim();
+        if (!fromId || !toId || fromId === toId) {
+          const error: any = new Error('invalid watch-call participants');
+          error.status = 422;
+          throw error;
+        }
+        const canonicalConnectionId = [fromId, toId].sort().join('__');
+        if (requestedConnectionId && requestedConnectionId !== canonicalConnectionId) {
+          const error: any = new Error('connection id mismatch');
+          error.status = 422;
+          throw error;
+        }
+        const connectionRef = firestore
+          .collection(PRIVATE_CONNECTIONS_COLLECTION)
+          .doc(canonicalConnectionId);
+        transaction.set(connectionRef, {
+          kind: 'friend',
+          participants: [fromId, toId].sort(),
+          requesterUid: fromId,
+          requesterName: String(call.fromName || 'بەکارهێنەر'),
+          requesterCode: String(call.fromCode || ''),
+          requesterAvatar: call.fromAvatar || null,
+          targetUid: toId,
+          targetName: String(call.toName || 'بەکارهێنەر'),
+          targetCode: String(call.toCode || ''),
+          targetAvatar: call.toAvatar || null,
+          status: 'accepted',
+          createdAt: String(call.createdAt || now),
+          updatedAt: now,
+          acceptedAt: now,
+        }, { merge: false });
+        transaction.update(callRef, {
+          status: 'accepted',
+          connectionId: canonicalConnectionId,
+          updatedAt: now,
+        });
+        return { connectionId: canonicalConnectionId };
+      });
+
+      return res.json({ ok: true, status, ...result });
+    } catch (err: any) {
+      if (err?.status === 401 || err?.status === 503) return respondAuthError(res, err);
+      return res.status(err?.status || 500).json({ error: err?.message || 'watch-call response failed' });
+    }
+  });
+
   app.all('/api/*', (req, res, next) => {
     if (res.headersSent) return next();
     console.warn(`[${new Date().toISOString()}] 404 API: ${req.method} ${req.url}`);
@@ -12364,6 +12745,7 @@ let videoDownloaded = false;
   // The private-chat WebSocket shares the app's HTTP server on a dedicated
   // path so the whole stack (static files, REST API, WS) runs on one port.
   const httpServer = http.createServer(app);
+  httpServer.once('close', stopRoomSubtitleEngine);
   const privateChatWss = new WebSocketServer({ server: httpServer, path: '/ws/private-chat' });
   privateChatWss.on('connection', handlePrivateChatSocket);
 

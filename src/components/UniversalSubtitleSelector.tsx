@@ -26,7 +26,7 @@ import {
 import { Captions, CheckCircle2, RefreshCw, Settings2 } from "lucide-react";
 import "../styles/subtitle-selector.css";
 
-export type UniversalSubtitleLang = "off" | "original" | "ku" | "ar" | "tr";
+export type UniversalSubtitleLang = "off" | "original" | "ku" | "ar" | "tr" | "ckb" | "ar-IQ";
 
 export type UniversalSubtitleStatus = "idle" | "loading" | "ready" | "error";
 
@@ -74,6 +74,8 @@ export interface UniversalSubtitleSelectorProps {
   onRetry?: () => void;
   /** Language list override (defaults to EN/KU/AR/TR) */
   languages?: UniversalSubtitleLanguage[];
+  /** Room mode has four languages; visibility stays in the existing CC panel. */
+  includeOff?: boolean;
   /** "floating" (default) = round button + popup, "inline" = chip row */
   variant?: "floating" | "inline";
   /** Tooltip/title on the trigger button */
@@ -91,6 +93,7 @@ export function UniversalSubtitleSelector({
   message = "",
   onRetry,
   languages = UNIVERSAL_SUBTITLE_LANGUAGES,
+  includeOff = true,
   variant = "floating",
   title = "ژێرنوس (Subtitles)",
   onSettingsClick,
@@ -107,7 +110,7 @@ export function UniversalSubtitleSelector({
       document.documentElement.dir === "rtl",
   );
 
-  const allLanguages = useMemo(() => [OFF_LANGUAGE, ...languages], [languages]);
+  const allLanguages = useMemo(() => includeOff ? [OFF_LANGUAGE, ...languages] : languages, [languages, includeOff]);
   const activeLanguage =
     allLanguages.find((lang) => lang.code === value) || OFF_LANGUAGE;
 
@@ -294,7 +297,7 @@ export function UniversalSubtitleSelector({
           <div className="uss-panel" role="menu" dir="auto">
             <div className="uss-heading">زمانی ژێرنوس</div>
 
-            {[OFF_LANGUAGE, ...languages].map((lang) => {
+            {allLanguages.map((lang) => {
               const isActive = value === lang.code;
               return (
                 <button

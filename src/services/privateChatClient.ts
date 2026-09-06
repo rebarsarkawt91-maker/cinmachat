@@ -112,6 +112,13 @@ export class PrivateChatClient {
     this.ws = ws;
 
     ws.onopen = () => {
+      // React's development StrictMode can dispose a client while its socket is
+      // still connecting.  Never let that stale socket authenticate later and
+      // replace the live socket for the same account.
+      if (this.closedByUser || this.ws !== ws) {
+        try { ws.close(1000, "stale"); } catch { /* socket is gone */ }
+        return;
+      }
       void (async () => {
         const user = auth.currentUser;
         if (!user) {
@@ -120,6 +127,7 @@ export class PrivateChatClient {
         }
         try {
           const token = await user.getIdToken();
+          if (this.closedByUser || this.ws !== ws || ws.readyState !== WebSocket.OPEN) return;
           ws.send(JSON.stringify({ type: "auth", token, sessionId: this.sessionId }));
         } catch {
           this.close("auth_missing");
@@ -128,6 +136,7 @@ export class PrivateChatClient {
     };
 
     ws.onmessage = (event) => {
+      if (this.closedByUser || this.ws !== ws) return;
       let data: any;
       try { data = JSON.parse(String(event.data)); } catch { return; }
       if (data?.type === "joined") {
@@ -142,8 +151,20 @@ export class PrivateChatClient {
       this.onEvent(data as PrivateChatEvent);
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
+      // Ignore callbacks from a socket superseded by openSocket().
+      if (this.ws !== ws) return;
       this.stopHeartbeat();
+      // The server deliberately replaces an older socket when the same account
+      // opens this room in a newer tab/device. The displaced socket must stay
+      // closed; reconnecting it would evict the new socket and create an
+      // endless replacement loop that breaks chat/movie delivery.
+      if (event.code === 4000) {
+        this.closedByUser = true;
+        this.lastCloseReason = "replaced";
+        this.onClosed("replaced");
+        return;
+      }
       if (this.closedByUser) {
         this.onClosed(this.lastCloseReason);
         return;
@@ -219,7 +240,10 @@ export class PrivateChatClient {
       window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (
+      this.ws &&
+      (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)
+    ) {
       try { this.ws.close(1000, reason); } catch { /* socket is gone */ }
     }
     this.ws = null;

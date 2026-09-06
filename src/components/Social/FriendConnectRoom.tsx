@@ -47,8 +47,8 @@ import { censorOutgoingMessage } from "../../services/bannedWords";
 import { PrivateChatClient, fetchPrivateSessionId } from "../../services/privateChatClient";
 import type { PrivateChatMessage, MovieSyncPayload } from "../../services/privateChatClient";
 import { resolveMovieSourceUrl } from "../../services/cinemaChat";
-import { db, collection, getDocs } from "../../lib/firebase";
 import type { AccountReadiness } from "../../services/accountReadiness";
+import { getYTId, loadYouTubeAPI } from "../../utils/youtube";
 
 // ---------------------------------------------------------------------------
 // Friend → Connect private 1-to-1 flow (replaces the old general chat flow).
@@ -170,8 +170,12 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
 
   // --- Watch-together movie sync (real-time relay over the private-chat socket) ---
   const [roomMovie, setRoomMovie] = useState<SyncedMovie | null>(null);
+  const movieYoutubeRef = useRef<any>(null);
+  const movieEmbedRef = useRef<HTMLIFrameElement | null>(null);
   const [moviePlaying, setMoviePlaying] = useState(false);
   const [movieTime, setMovieTime] = useState(0);
+  const movieTimeRef = useRef(0);
+  movieTimeRef.current = movieTime;
   const [movieDuration, setMovieDuration] = useState(0);
   const [moviePickerOpen, setMoviePickerOpen] = useState(false);
   const [movieQuery, setMovieQuery] = useState("");
@@ -201,6 +205,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   // truth for incoming asks + status transitions.
   const [connections, setConnections] = useState<FriendConnection[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const manualReturnToSearchRef = useRef(false);
 
   // In-modal incoming "Call Invitation" rings (mirror of the global banner):
   // the room shows its own prominent Accept/Reject card on Step 1 / Step 2 so a
@@ -388,29 +393,6 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     return unsub;
   }, [open, activeCallId]);
 
-  // Auto-open the most recent accepted connection (e.g. right after the other
-  // side accepts while the room is open on the target's device).
-  //
-  // Guard: while a found-friend card is on screen (searchStatus === "found")
-  // we NEVER auto-jump — a background `connections` snapshot arriving after the
-  // search used to flip `foundPeerAccepted` (when the found peer was already an
-  // accepted friend) and swap the friend step for the chat, making the card
-  // vanish ~1s later. The card stays until the user acts: پێشەوە / کردنەوەی چات,
-  // "هاوڕێیەکی تر هەڵبژێرە" or clearing the input (which sets idle).
-  useEffect(() => {
-    if (!open || activeId) return;
-    // A call-accept join is pending — never fall back to the fuzzy "latest
-    // accepted" pick (it could open a DIFFERENT chat). Wait for the join.
-    if (joinConnId && !joinConsumed) return;
-    if (searchStatus === "searching" || searchStatus === "found") return;
-    const accepted = connections.filter((c) => c.status === "accepted");
-    if (accepted.length === 0) return;
-    const latest = [...accepted].sort((a, b) =>
-      (b.acceptedAt || b.updatedAt || "").localeCompare(a.acceptedAt || a.updatedAt || ""),
-    )[0];
-    setActiveId(latest.id);
-  }, [open, activeId, connections, searchStatus, joinConnId, joinConsumed]);
-
   // A "Call Invitation" the peer accepted streams its invitation doc to
   // status === "accepted". THAT explicit answer is the only auto-advance off
   // the found friend card (a background accepted pair still never jumps the
@@ -418,7 +400,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   // sides land in the same room together. We wait for the accepted pair to show
   // up in the local snapshot so the chat step never renders without a peer.
   useEffect(() => {
-    if (!open || activeId || !activeCall || activeCall.status !== "accepted") return;
+    if (manualReturnToSearchRef.current || !open || activeId || !activeCall || activeCall.status !== "accepted") return;
     const target = activeCall.connectionId;
     if (!target) return;
     const conn = connections.find((c) => c.id === target);
@@ -454,11 +436,12 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   // Reset the consumed flag whenever a (new) call is queued, so a fresh accept
   // on a later ring joins again instead of being blocked by an old join.
   useEffect(() => {
+    if (joinCallId) manualReturnToSearchRef.current = false;
     setJoinConsumed(false);
   }, [joinCallId]);
 
   useEffect(() => {
-    if (!open || joinConsumed) return;
+    if (manualReturnToSearchRef.current || !open || joinConsumed) return;
     const resolvedRoomId = joinConnId || activeRoomIdProp || null;
     if (!resolvedRoomId) return;
     if (!joinCall && !joinCallId) return;
@@ -479,7 +462,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   // room id before the Firestore listener settles, we still jump immediately to
   // the accepted private connection instead of waiting for a second click.
   useEffect(() => {
-    if (!open || joinConsumed) return;
+    if (manualReturnToSearchRef.current || !open || joinConsumed) return;
     const resolvedRoomId = joinConnId || activeRoomIdProp || null;
     if (!resolvedRoomId) return;
     const conn = connections.find((c) => c.id === resolvedRoomId);
@@ -554,7 +537,12 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
 
     client.onEvent = (event) => {
       if (cancelled) return;
-      if (event.type === "message") {
+      if (event.type === "joined") {
+        // Do not enable chat/movie controls until the server has authenticated
+        // this socket. Otherwise an early click is silently dropped.
+        setChatConnecting(false);
+        setSessionEnded(false);
+      } else if (event.type === "message") {
         if (event.ack) {
           // Own optimistic message confirmed by the server.
           setMessages((prev) =>
@@ -596,7 +584,6 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
         const sessionId = await fetchPrivateSessionId(activeConn.id);
         if (cancelled) return;
         client.connect(sessionId);
-        setChatConnecting(false);
       } catch {
         if (!cancelled) {
           setChatError("دەستپێکردنی دانیشتن سەرکەوتوو نەبوو؛ دووبارە هەوڵبدە");
@@ -705,6 +692,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
 
   const handleNext = useCallback(async () => {
     if (!found || nextBusy) return;
+    manualReturnToSearchRef.current = false;
     if (!requireAccount("بۆ بانگهێشتکردنی هاوڕێ پێویستە ئەکاونتێکی هەبێت")) return;
     setNextBusy(true);
     try {
@@ -733,6 +721,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   // the global WatchCallNotification surfaces anywhere in the app.
   const handleCallInvitation = useCallback(async () => {
     if (!found || callBusy) return;
+    manualReturnToSearchRef.current = false;
     if (activeCall?.status === "calling") return;
     if (!requireAccount("بۆ ناردنی بانگهێشتی پەیوەندی پێویستە ئەکاونتێکی هەبێت")) return;
     setCallBusy(true);
@@ -791,6 +780,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   const handleAcceptIncomingCall = useCallback(
     async (call: WatchCall) => {
       if (!call || joinBusy) return;
+      manualReturnToSearchRef.current = false;
       setJoinBusy(true);
       setJoinError(null);
       try {
@@ -878,7 +868,9 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
 
   const handleSend = useCallback(async () => {
     const raw = newMessage.trim();
-    if (!raw || !clientRef.current) return;
+    // The server intentionally keeps no message history. Wait for the peer's
+    // live socket so a message cannot be accepted locally and then disappear.
+    if (!raw || !clientRef.current || !peerOnline) return;
     const censored = await censorOutgoingMessage(raw);
     const text = censored;
     const clientId = generateClientId();
@@ -889,7 +881,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     setNewMessage("");
     clientRef.current.send(text, clientId);
     clientRef.current.sendTyping(false);
-  }, [newMessage, myUid]);
+  }, [newMessage, myUid, peerOnline]);
 
   const handleTyping = useCallback(
     (typing: boolean) => {
@@ -901,6 +893,22 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   const handleLeave = useCallback(() => {
     tearDownClient(true);
     setActiveId(null);
+  }, [tearDownClient]);
+
+  const returnToFriendSearch = useCallback(() => {
+    // Leaving an ephemeral 1-to-1 session must release both sockets before a
+    // new peer is selected; the accepted friendship record itself is retained.
+    manualReturnToSearchRef.current = true;
+    tearDownClient(true);
+    setActiveId(null);
+    setActiveCall(null);
+    setFound(null);
+    setFoundConn(null);
+    setSearchStatus("idle");
+    setSearchError(null);
+    setInput("");
+    setRoomMovie(null);
+    setMoviePickerOpen(false);
   }, [tearDownClient]);
 
   const maskedContact = useMemo(() => {
@@ -1423,25 +1431,42 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   const handleTogglePlay = () => {
     if (!roomMovie) return;
     const v = movieVideoRef.current;
+    const yt = movieYoutubeRef.current;
     const next = !moviePlaying;
+    if (movieEmbedRef.current) postEmbedPlayback(next ? "play" : "pause", movieTime);
     setMoviePlaying(next);
-    emitMovieSync({ movie: undefined, playing: next, time: v?.currentTime || 0 });
+    const time = yt && typeof yt.getCurrentTime === "function" ? yt.getCurrentTime() : v?.currentTime || 0;
+    emitMovieSync({ movie: undefined, playing: next, time });
   };
 
   const handleSeek = (time: number) => {
     const v = movieVideoRef.current;
-    if (!v || !roomMovie) return;
-    const max = v.duration && isFinite(v.duration) ? v.duration : 0;
+    const yt = movieYoutubeRef.current;
+    if ((!v && !yt) || !roomMovie) return;
+    const ytDuration = yt && typeof yt.getDuration === "function" ? yt.getDuration() : 0;
+    const max = ytDuration || (v?.duration && isFinite(v.duration) ? v.duration : 0);
     const next = Math.max(0, max ? Math.min(time, max) : time);
-    v.currentTime = next;
+    if (yt && typeof yt.seekTo === "function") {
+      yt.seekTo(next, true);
+      // YouTube may ignore the first seek while its media pipeline is changing
+      // state. A short idempotent retry keeps the local side aligned with the
+      // peer that already received the requested target.
+      window.setTimeout(() => {
+        if (movieYoutubeRef.current === yt) yt.seekTo(next, true);
+      }, 350);
+    }
+    else if (movieEmbedRef.current) postEmbedPlayback("seek", next);
+    else if (v) v.currentTime = next;
     setMovieTime(next);
     emitMovieSync({ movie: undefined, playing: moviePlaying, time: next });
   };
 
   const handleSeekBy = (delta: number) => {
     const v = movieVideoRef.current;
-    if (!v || !roomMovie) return;
-    handleSeek(v.currentTime + delta);
+    const yt = movieYoutubeRef.current;
+    if ((!v && !yt) || !roomMovie) return;
+    const current = yt && typeof yt.getCurrentTime === "function" ? yt.getCurrentTime() : v?.currentTime || 0;
+    handleSeek(current + delta);
   };
 
   // Fetch the shared movie catalog once (shared by the picker AND the prefetch
@@ -1449,11 +1474,12 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   const ensureMovieCatalog = useCallback(() => {
     if (movieCatFetchedRef.current || movieCatLoading) return;
     setMovieCatLoading(true);
-    getDocs(collection(db, "movies"))
-      .then((snap) => {
-        const list = snap.docs
-          .map((d) => ({ id: d.id, ...(d.data() as any) }))
-          .filter((m: any) => !!resolveMovieSourceUrl(m));
+    fetch("/api/movies", { headers: { Accept: "application/json" } })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`movie-catalog-${response.status}`);
+        const payload = await response.json();
+        const raw = Array.isArray(payload) ? payload : Array.isArray(payload?.results) ? payload.results : Array.isArray(payload?.movies) ? payload.movies : [];
+        const list = raw.filter((m: any) => !!resolveMovieSourceUrl(m));
         setMovieCatalog(list);
         movieCatFetchedRef.current = true;
       })
@@ -1482,33 +1508,98 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     if (typeof payload.seq === "number" && payload.seq <= lastRemoteSeqRef.current) return;
     lastRemoteSeqRef.current = payload.seq ?? lastRemoteSeqRef.current;
     const v = movieVideoRef.current;
+    const yt = movieYoutubeRef.current;
     const target = Number(payload.time) || 0;
     if (!roomMovie || roomMovie.id !== payload.movie.id || roomMovie.url !== payload.movie.url) {
       pendingSeekRef.current = target;
       setRoomMovie(payload.movie);
       setMoviePlaying(payload.playing);
-      if (v) v.currentTime = Math.max(0, target);
+      if (yt && typeof yt.seekTo === "function") yt.seekTo(Math.max(0, target), true);
+      else if (v) v.currentTime = Math.max(0, target);
       return;
     }
     setMoviePlaying(payload.playing);
     if (v && (!v.duration || !isFinite(v.duration) || Math.abs(v.currentTime - target) > 4)) {
       v.currentTime = Math.max(0, Math.min(target, v.duration || target));
     }
+    if (yt && typeof yt.getCurrentTime === "function" && Math.abs(yt.getCurrentTime() - target) > 4) {
+      yt.seekTo(target, true);
+    }
+    if (movieEmbedRef.current) {
+      postEmbedPlayback("seek", target);
+      postEmbedPlayback(payload.playing ? "play" : "pause", target);
+    }
   };
   // Latest-version handler so the socket onEvent closure never goes stale.
   const handleRemoteMovieRef = useRef<(p: MovieSyncPayload) => void>(() => {});
   handleRemoteMovieRef.current = handleRemoteMovie;
+
+  // YouTube URLs need the IFrame API; assigning an embed URL to <video src>
+  // creates an element but can never decode or control the movie.
+  const roomYoutubeId = roomMovie ? getYTId(roomMovie.url) : null;
+  const roomGenericEmbed = !!roomMovie && !roomYoutubeId && /\/embed\//i.test(roomMovie.url);
+  const postEmbedPlayback = (action: "play" | "pause" | "seek", time: number) => {
+    const target = movieEmbedRef.current?.contentWindow;
+    if (!target) return;
+    const commands = action === "seek"
+      ? [
+          { method: "setCurrentTime", value: time, currentTime: time },
+          { method: "seekTo", value: time, seconds: time },
+          { event: "command", func: "seekTo", args: [time, true] },
+        ]
+      : [
+          { method: action },
+          { event: "command", func: action === "play" ? "playVideo" : "pauseVideo", args: [] },
+        ];
+    commands.forEach((command) => target.postMessage(JSON.stringify(command), "*"));
+  };
+  useEffect(() => {
+    if (!roomMovie || !roomYoutubeId) {
+      if (movieYoutubeRef.current?.destroy) movieYoutubeRef.current.destroy();
+      movieYoutubeRef.current = null;
+      return;
+    }
+    let cancelled = false;
+    void loadYouTubeAPI().then(() => {
+      if (cancelled) return;
+      movieYoutubeRef.current = new (window as any).YT.Player("friend-connect-yt-player", {
+        videoId: roomYoutubeId,
+        playerVars: { autoplay: 0, controls: 0, playsinline: 1, enablejsapi: 1, origin: window.location.origin },
+        events: {
+          onReady: (event: any) => {
+            const duration = Number(event.target.getDuration?.()) || 0;
+            if (duration) setMovieDuration(duration);
+            const target = pendingSeekRef.current;
+            if (target != null) event.target.seekTo(target, true);
+            pendingSeekRef.current = null;
+            if (moviePlaying) event.target.playVideo();
+          },
+        },
+      });
+    });
+    return () => {
+      cancelled = true;
+      if (movieYoutubeRef.current?.destroy) movieYoutubeRef.current.destroy();
+      movieYoutubeRef.current = null;
+    };
+  }, [roomYoutubeId]);
 
   // Drive the <video> element from the synced playback state. Autoplay may be
   // blocked without a user gesture — then the peer keeps playing and the user
   // just taps Play locally.
   useEffect(() => {
     const v = movieVideoRef.current;
-    if (!v || !roomMovie) return;
-    if (moviePlaying) {
+    const yt = movieYoutubeRef.current;
+    if (!roomMovie) return;
+    if (yt) {
+      if (moviePlaying) yt.playVideo?.();
+      else yt.pauseVideo?.();
+    } else if (movieEmbedRef.current) {
+      postEmbedPlayback(moviePlaying ? "play" : "pause", movieTime);
+    } else if (v && moviePlaying) {
       void v.play().catch(() => setMoviePlaying(false));
     } else {
-      v.pause();
+      v?.pause();
     }
   }, [moviePlaying, roomMovie?.url]);
 
@@ -1519,11 +1610,16 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     let tick = 0;
     const iv = window.setInterval(() => {
       const v = movieVideoRef.current;
-      if (!v) return;
-      setMovieTime((prev) => (Math.abs(prev - v.currentTime) > 0.5 ? v.currentTime : prev));
+      const yt = movieYoutubeRef.current;
+      const embed = movieEmbedRef.current;
+      if (!v && !yt && !embed) return;
+      const current = yt && typeof yt.getCurrentTime === "function"
+        ? yt.getCurrentTime()
+        : v?.currentTime || (embed && moviePlaying ? movieTimeRef.current + 0.5 : movieTimeRef.current);
+      setMovieTime((prev) => (Math.abs(prev - current) > 0.5 ? current : prev));
       tick += 1;
       if (tick % 16 === 0 && roomMovie && moviePlaying) {
-        emitMovieSync({ movie: undefined, playing: true, time: v.currentTime });
+        emitMovieSync({ movie: undefined, playing: true, time: current });
       }
     }, 500);
     return () => window.clearInterval(iv);
@@ -1585,7 +1681,20 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
             {roomMovie ? (
               <>
                 <div className="relative aspect-video bg-black/70">
-                  <video
+                  {roomYoutubeId ? (
+                    <div id="friend-connect-yt-player" className="w-full h-full" />
+                  ) : roomGenericEmbed ? (
+                    <iframe
+                      key={`${roomMovie.id}__${roomMovie.url}`}
+                      ref={movieEmbedRef}
+                      src={roomMovie.url}
+                      title={roomMovie.title}
+                      allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
+                      allowFullScreen
+                      referrerPolicy="origin"
+                      className="w-full h-full border-0"
+                    />
+                  ) : <video
                     key={`${roomMovie.id}__${roomMovie.url}`}
                     ref={movieVideoRef}
                     src={roomMovie.url}
@@ -1606,7 +1715,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
                       const d = e.currentTarget.duration;
                       if (d && isFinite(d)) setMovieDuration(d);
                     }}
-                  />
+                  />}
                   {!moviePlaying && (
                     <button
                       type="button"
@@ -1832,7 +1941,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
           <button
             type="button"
             onClick={handleSend}
-            disabled={!newMessage.trim() || sessionEnded || chatConnecting}
+            disabled={!newMessage.trim() || sessionEnded || chatConnecting || !peerOnline}
             className="px-5 py-3 rounded-2xl bg-brand-primary hover:bg-red-700 text-white text-xs font-black kurdish-text flex items-center justify-center gap-2 transition-all disabled:opacity-50 flex-shrink-0"
           >
             <Send className="w-4 h-4" />
@@ -1906,21 +2015,25 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
               const active = step.n === stepNum;
               const done = step.n < stepNum;
               return (
-                <div
+                <button
+                  type="button"
                   key={step.n}
+                  onClick={step.n === 1 && stepNum > 1 ? returnToFriendSearch : undefined}
+                  disabled={step.n !== 1 || stepNum === 1}
+                  aria-label={step.n === 1 && stepNum > 1 ? "گەڕانەوە بۆ گەڕانی هاوڕێ" : undefined}
                   className={`h-9 rounded-xl border flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-widest transition-all ${
                     active
                       ? "bg-brand-primary text-white border-brand-primary"
                       : done
                         ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/25"
                         : "bg-white/5 text-gray-500 border-white/10"
-                  }`}
+                  } ${step.n === 1 && stepNum > 1 ? "cursor-pointer hover:border-white/50 hover:brightness-125" : "cursor-default"}`}
                 >
                   <span className="w-5 h-5 rounded-full bg-black/25 flex items-center justify-center">
                     {done ? <CheckCircle2 className="w-3 h-3" /> : step.n}
                   </span>
                   <span className="hidden sm:inline">{step.label}</span>
-                </div>
+                </button>
               );
             })}
           </div>

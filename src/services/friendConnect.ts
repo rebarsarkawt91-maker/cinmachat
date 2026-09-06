@@ -14,6 +14,7 @@
  * as SEARCH KEYS on the `users` collection — never as a room/session id.
  */
 import {
+  auth,
   db,
   doc,
   getDoc,
@@ -241,6 +242,24 @@ export const searchAccountByCCIdOrContact = async (
 
   // Email addresses are NOT used for friend pairing — reject immediately.
   if (trimmed.includes("@")) return null;
+
+  // Use the same-origin server lookup first. It resolves the canonical phone
+  // variants through the Admin SDK/db mirror, applies rate limiting and privacy
+  // rules, and avoids leaving the UI stuck while several client Firestore
+  // queries time out one after another on a weak connection.
+  try {
+    const response = await fetch("/api/friend-request/lookup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ query: trimmed }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (response.ok && data?.user?.uid) {
+      return data.user as ContactSearchResult;
+    }
+  } catch {
+    /* fall through to local/client lookup when the API is unavailable */
+  }
 
   const digits = trimmed.replace(/\D/g, "");
   const isPhoneLike = digits.length >= 7 && /^[\d+\s-]*$/.test(trimmed);
@@ -472,6 +491,29 @@ export const sendWatchCallInvitation = async (params: {
   // knows exactly where the private chat pair lives (exists or not yet).
   const connectionId = friendPairKey(requesterUid, target.uid);
 
+  // Durable authenticated server path. It avoids browser Firestore write/rule
+  // failures and returns only after the ring document is visible remotely.
+  const currentUser = auth.currentUser;
+  if (currentUser) {
+    const token = await currentUser.getIdToken();
+    const response = await fetch("/api/friend-connect/watch-call", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ targetUid: target.uid }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (response.ok && data?.callId && data?.connectionId) {
+      return { callId: String(data.callId), connectionId: String(data.connectionId) };
+    }
+    if (response.status !== 404) {
+      throw new Error(data?.error || `watch-call-create-${response.status}`);
+    }
+  }
+
   // Canonical receiver keys: uid always; plus CC-ID and normalized phone when
   // the search exposed them. The receiver listens with array-contains on its
   // OWN uid/phone keys, so both sides always agree on identity.
@@ -524,41 +566,81 @@ export const respondToWatchCall = async (
     avatar?: string | null;
   },
 ): Promise<void> => {
-  await updateDoc(doc(db, WATCH_CALLS_COL, callId), {
-    status,
-    updatedAt: new Date().toISOString(),
-  });
-  if (status !== "accepted") return;
+  // The server owns the atomic accept path. Some deployed Firestore rule sets
+  // predate `friend_connections` and reject an otherwise valid browser write;
+  // the authenticated backend verifies the receiver UID and writes the pair +
+  // call together with the Admin SDK. Keep the direct path below as a fallback
+  // for older/self-hosted servers that do not expose this endpoint yet.
+  const currentUser = auth.currentUser;
+  if (currentUser) {
+    try {
+      const token = await currentUser.getIdToken();
+      const response = await fetch("/api/friend-connect/watch-call/respond", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json",
+        },
+        body: JSON.stringify({ callId, connectionId, status }),
+      });
+      if (response.ok) return;
+      if (response.status !== 404) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data?.error || `watch-call-response-${response.status}`);
+      }
+    } catch (error: any) {
+      if (!String(error?.message || "").includes("watch-call-response-404")) {
+        throw error;
+      }
+    }
+  }
+
+  if (status !== "accepted") {
+    await updateDoc(doc(db, WATCH_CALLS_COL, callId), {
+      status,
+      updatedAt: new Date().toISOString(),
+    });
+    return;
+  }
+  // Prepare the private pair before publishing `accepted`. The caller treats
+  // that status as permission to enter the chat, so publishing it first can
+  // strand both clients in different steps when the pair write fails.
   // Only accept a still-pending ask — an already-accepted friend just stays
   // accepted (firestore.rules forbids re-accepting a non-pending connection).
   const snap = await getDoc(doc(db, FRIEND_CONNECTIONS_COLLECTION, connectionId));
   if (snap.exists() && snap.data()?.status === "pending") {
-    await respondToFriendConnection(connectionId, "accepted");
+    // A reversed pending pair is accepted by the caller after it observes the
+    // call status; Firestore correctly allows only the pending target to do it.
+    if (!recipient?.uid || snap.data()?.targetUid === recipient.uid) {
+      await respondToFriendConnection(connectionId, "accepted");
+    }
   } else if (!snap.exists() && recipient?.uid) {
     // The caller's best-effort ensure failed (e.g. denied on their side). The
     // RECEIVER creates the pair instead so the private chat still exists — the
     // caller sees it as a normal incoming ask and the flow completes.
-    try {
-      const callSnapRaw = await getDoc(doc(db, WATCH_CALLS_COL, callId));
-      const callDataRaw = callSnapRaw.data() as
-        | { fromId: string; fromName?: string; fromCode?: string }
-        | undefined;
-      if (!callDataRaw?.fromId) return;
-      await createFriendConnection({
-        requesterUid: recipient.uid,
-        requesterName: recipient.name,
-        requesterCode: recipient.code,
-        requesterAvatar: recipient.avatar || null,
-        target: {
-          uid: callDataRaw.fromId,
-          name: callDataRaw.fromName || "بەکارهێنەر",
-          uniqueCode: callDataRaw.fromCode || "",
-        },
-      });
-    } catch (err) {
-      console.warn("watch call: receiver-side connection ensure failed:", err);
-    }
+    const callSnapRaw = await getDoc(doc(db, WATCH_CALLS_COL, callId));
+    const callDataRaw = callSnapRaw.data() as
+      | { fromId: string; fromName?: string; fromCode?: string }
+      | undefined;
+    if (!callDataRaw?.fromId) throw new Error("watch-call-sender-missing");
+    await createFriendConnection({
+      requesterUid: recipient.uid,
+      requesterName: recipient.name,
+      requesterCode: recipient.code,
+      requesterAvatar: recipient.avatar || null,
+      target: {
+        uid: callDataRaw.fromId,
+        name: callDataRaw.fromName || "بەکارهێنەر",
+        uniqueCode: callDataRaw.fromCode || "",
+      },
+    });
   }
+
+  await updateDoc(doc(db, WATCH_CALLS_COL, callId), {
+    status: "accepted",
+    updatedAt: new Date().toISOString(),
+  });
 };
 
 /** Caller withdraws an outgoing ring. */
@@ -593,28 +675,51 @@ export const subscribeWatchCalls = (
   ) as string[];
   if (keys.length === 0) return () => {};
 
-  const known = new Map<string, WatchCall>();
+  // Keep an independent snapshot per query. This removes resolved calls from
+  // the union correctly and supports legacy documents that only have `toId`.
+  const sources = new Map<string, Map<string, WatchCall>>();
   const push = () => {
+    const known = new Map<string, WatchCall>();
+    for (const source of sources.values()) {
+      for (const [id, call] of source) known.set(id, call);
+    }
     const live = [...known.values()]
       .filter((c) => c.kind === "watchcall" && c.status === "calling")
       .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
     onChange(live.slice(0, 20));
   };
 
-  const unsubs = keys.map((key) =>
-    onSnapshot(
-      query(
+  const watchQueries = [
+    {
+      id: `uid:${identity.uid}`,
+      value: query(
+        collection(db, WATCH_CALLS_COL),
+        where("toId", "==", identity.uid),
+        limit(50),
+      ),
+    },
+    ...keys.map((key) => ({
+      id: `key:${key}`,
+      value: query(
         collection(db, WATCH_CALLS_COL),
         where("toKeys", "array-contains", key),
         limit(50),
       ),
+    })),
+  ];
+
+  const unsubs = watchQueries.map(({ id: sourceId, value }) =>
+    onSnapshot(
+      value,
       (snap) => {
-        for (const d of snap.docs) known.set(d.id, toWatchCall(d as any));
+        const current = new Map<string, WatchCall>();
+        for (const d of snap.docs) current.set(d.id, toWatchCall(d as any));
         // Bound memory: drop anything way past the 90s ring TTL immediately.
         const cutoff = Date.now() - WATCH_CALL_TTL_MS * 15;
-        for (const [id, call] of known) {
-          if (new Date(call.startedAt).getTime() < cutoff) known.delete(id);
+        for (const [id, call] of current) {
+          if (new Date(call.startedAt).getTime() < cutoff) current.delete(id);
         }
+        sources.set(sourceId, current);
         push();
       },
       (err) => {
@@ -624,7 +729,35 @@ export const subscribeWatchCalls = (
     ),
   );
 
-  return () => unsubs.forEach((unsub) => unsub());
+  let stopped = false;
+  const poll = async () => {
+    const user = auth.currentUser;
+    if (stopped || !user) return;
+    try {
+      const token = await user.getIdToken();
+      const response = await fetch("/api/friend-connect/watch-calls", {
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      const current = new Map<string, WatchCall>();
+      for (const call of Array.isArray(data?.calls) ? data.calls : []) {
+        if (call?.id) current.set(String(call.id), call as WatchCall);
+      }
+      sources.set("backend", current);
+      push();
+    } catch {
+      /* Firestore listener remains the primary path */
+    }
+  };
+  void poll();
+  const pollTimer = window.setInterval(() => void poll(), 2_000);
+
+  return () => {
+    stopped = true;
+    window.clearInterval(pollTimer);
+    unsubs.forEach((unsub) => unsub());
+  };
 };
 
 /** Single-doc listener for the CALLER's own ring (knows the callId it created). */
@@ -634,7 +767,7 @@ export const subscribeWatchCall = (
   onError?: (err: unknown) => void,
 ): (() => void) => {
   if (!callId) return () => {};
-  return onSnapshot(
+  const unsub = onSnapshot(
     doc(db, WATCH_CALLS_COL, callId),
     (snap) => {
       onChange(snap.exists() ? toWatchCall(snap) : null);
@@ -644,6 +777,29 @@ export const subscribeWatchCall = (
       onError?.(err);
     },
   );
+  let stopped = false;
+  const poll = async () => {
+    const user = auth.currentUser;
+    if (stopped || !user) return;
+    try {
+      const token = await user.getIdToken();
+      const response = await fetch(`/api/friend-connect/watch-call/${encodeURIComponent(callId)}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      onChange(data?.call || null);
+    } catch {
+      /* Firestore listener remains the primary path */
+    }
+  };
+  void poll();
+  const pollTimer = window.setInterval(() => void poll(), 2_000);
+  return () => {
+    stopped = true;
+    window.clearInterval(pollTimer);
+    unsub();
+  };
 };
 
 /** Normalize a member code for display/compare (re-export of cinemaChat's). */

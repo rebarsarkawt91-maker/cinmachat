@@ -2,6 +2,7 @@ node_modules/
 build/
 dist/
 coverage/
+.tmp-video-review/
 .DS_Store
 *.log
 .env*
@@ -11,3 +12,8 @@ coverage/
 gen-lang-client-0240212572-*.json
 auth-records.json
 db.json
+uploads/
+features/room-subtitles/*-results.json
+features/room-subtitles/*.evaluate.py
+features/room-subtitles/*.evaluate.ts
+features/room-subtitles/*.holdout.json

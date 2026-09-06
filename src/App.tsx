@@ -92,9 +92,11 @@ import { UsersIcon } from "lucide-react";
 import "plyr-react/plyr.css";
 import { GoogleGenAI } from "@google/genai";
 import ImmersiveShieldedPlayer from "./components/Player/ImmersiveShieldedPlayer";
-import { useDelayedSubtitleLoad, SUBTITLE_SYNC_LEAD_S } from "./hooks/useSubtitleManager";
+import { SUBTITLE_SYNC_LEAD_S } from "./hooks/useSubtitleManager";
 import YouTubeResilientPlayer from "./components/Player/YouTubeResilientPlayer";
-import SubtitleJobStatus from "./components/Player/SubtitleJobStatus";
+import SubtitleJobStatus from "./components/Player/RoomSubtitleStatus";
+import { useRoomSubtitles } from "./hooks/useRoomSubtitles";
+import { ROOM_SUBTITLE_LANGUAGES, loadRoomSubtitleLanguage } from "./lib/roomSubtitleCore";
 import { api } from "./services/api";
 import { useI18n } from "./i18n";
 import {
@@ -207,10 +209,10 @@ import {
 } from "./utils/search";
 import type { SemanticSignals } from "./utils/search";
 import UserActivityMonitor from "./components/Admin/UserActivityMonitor";
+import MovieEditModal from "./components/Admin/MovieEditModal";
 import FriendPresenceNotification from "./components/Social/FriendPresenceNotification";
-import UniversalSubtitleSelector, {
-  type UniversalSubtitleLang,
-} from "./components/UniversalSubtitleSelector";
+import RoomSubtitleOverlay from "./components/Player/RoomSubtitleOverlay";
+import RoomSubtitleSelector from "./components/Player/RoomSubtitleSelector";
 
 import { 
   db, 
@@ -1198,6 +1200,7 @@ const ContentModule = ({
     quality: "HD",
         tags: "",
         subtitleUrl: "",
+        kurdishSubtitleUrl: "",
         subtitleText: "",
         rating: "",
     year: "",
@@ -1670,6 +1673,7 @@ const ContentModule = ({
         quality: "HD",
         tags: "",
         subtitleUrl: "",
+        kurdishSubtitleUrl: "",
         subtitleText: "",
         rating: "",
         year: "",
@@ -1759,6 +1763,7 @@ const ContentModule = ({
         quality: "HD",
         tags: "",
         subtitleUrl: "",
+        kurdishSubtitleUrl: "",
         subtitleText: "",
         rating: "",
         year: "",
@@ -2134,6 +2139,19 @@ const ContentModule = ({
               automatic Kurdish subtitle pipeline as priority #3. The universal
               link field above is the only video-server input. */}
           <div className="p-8 bg-zinc-900/50 border border-white/10 rounded-[2.5rem] space-y-4">
+            <label className="text-xs font-black text-emerald-400 kurdish-text uppercase tracking-widest flex items-center gap-2">
+              <Captions className="w-4 h-4" />
+              Kurdish VTT URL (ژێرنووسی کوردی سۆرانی)
+            </label>
+            <input
+              type="url"
+              placeholder="https://example.com/movie-ckb.vtt"
+              value={formData.kurdishSubtitleUrl}
+              onChange={(e) =>
+                setFormData({ ...formData, kurdishSubtitleUrl: e.target.value })
+              }
+              className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-3 text-white outline-none focus:border-emerald-500 transition-all text-xs"
+            />
             <label className="text-xs font-black text-brand-primary kurdish-text uppercase tracking-widest flex items-center gap-2 mb-2">
               <Tv className="w-4 h-4" />
               Subtitle Text (Copy & Paste the .srt/.vtt content here)
@@ -6000,85 +6018,8 @@ const getCinemaWindowRoomVideoUrl = (room: any) =>
       "",
   ).trim();
 
-type CinemaWindowSubtitlePayload = {
-  rawText: string;
-  vttText: string;
-  sourceLang: string;
-  source: string;
-  originalRawText?: string;
-  originalVttText?: string;
-};
-
-const cinemaWindowSubtitleCache = new Map<string, CinemaWindowSubtitlePayload>();
-
-const subtitleTextToVtt = (subtitleText: string) => {
-  const cleanText = String(subtitleText || "").replace(/^\uFEFF/, "").trim();
-  if (!cleanText) return "";
-  if (/^WEBVTT/i.test(cleanText)) return cleanText;
-  return `WEBVTT\n\n${cleanText.replace(/\r+/g, "").replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, "$1.$2")}\n`;
-};
-
-// ---------------------------------------------------------------------------
-// Non-speech "noise" tags — [Music], [ هەناسەدان ], [ پێکەنین ], [ مۆسیقا ],
-// [cry], [Applause] ... — are stripped from dialogue lines so viewers only
-// see spoken content. Mirrors the stripper in useSubtitleManager.
-// ---------------------------------------------------------------------------
-const SOUND_TAG_CONTENT_RE =
-  /(هەناسەدان|پێکەنین|مۆسیقا|گریان|ژاڕ|قیژا|چیرپ|چەپڵە|دەنگ|ئاواز|گۆرانی|شینکردن|\b(?:music|instrumental|theme song|applause|applauding|laughter|laughing|laughs?|sighs?|sighing|breaths?|breathing|breathes?|exhales?|inhales?|pants?|panting|crys?|crying|cries|sobbing|sobs?|whimpers?|screams?|screaming|shrieks?|shouts?|shouting|yells?|yelling|whispers?|whispering|gasps?|gasping|groans?|groaning|moans?|chuckles?|chuckling|giggles?|giggling|sniffles?|sniffs?|coughs?|coughing|sneezes?|sneezing|clears? throat|throat clearing|silence|silent|pause|pauses|speaks?|speaking|singing|sings?|sung|humming|hums?|cheering|cheers?|clapping|claps?|gunshots?|gunfire|explosions?|blasts?|footsteps?|door slams?|doorbell|knocking|knocks?|thunder|rumbles?|phone rings?|ringtone|heartbeat|narrator|voice[- ]?over|no dialogue|inaudible|mumbles?|mumbling|muttering|mutters?|stammers?|stammering|stutters?|stuttering)\b)/i;
-
-const BRACKET_TAG_RE = /[[【〔]\s*([^[】〕]{1,64}?)\s*[\]】〕]/g;
-
-const stripSoundTagFragments = (line: string): string =>
-  String(line || "")
-    .replace(BRACKET_TAG_RE, (match, inner: string) =>
-      SOUND_TAG_CONTENT_RE.test(inner) ? " " : match,
-    )
-    .replace(/\s{2,}/g, " ")
-    .trim();
-
-const CINEMA_WINDOW_SUBTITLE_LANGUAGES = [
-  { code: "off", label: "داخستن", shortLabel: "داخستن CC" },
-  { code: "ckb", label: "کوردی", shortLabel: "کوردی CC" },
-  { code: "ar", label: "عەرەبی", shortLabel: "عەرەبی CC" },
-  { code: "en", label: "ئینگلیزی", shortLabel: "ئینگلیزی CC" },
-  { code: "tr", label: "تورکی", shortLabel: "تورکی CC" },
-];
-
 const getCinemaWindowSubtitleLanguage = (code: string) =>
-  CINEMA_WINDOW_SUBTITLE_LANGUAGES.find((language) => language.code === code) ||
-  CINEMA_WINDOW_SUBTITLE_LANGUAGES.find((language) => language.code === "ckb")!;
-
-// ---------------------------------------------------------------------------
-// Mapping between the app pipeline's subtitle lang codes (ckb / en / ...) and
-// the UniversalSubtitleSelector codes (ku / original / ...).
-// ---------------------------------------------------------------------------
-const APP_LANG_TO_SELECTOR_LANG: Record<string, UniversalSubtitleLang> = {
-  ckb: "ku",
-  en: "original",
-  ar: "ar",
-  tr: "tr",
-  off: "off",
-};
-
-const SELECTOR_LANG_TO_APP_LANG: Record<UniversalSubtitleLang, string> = {
-  ku: "ckb",
-  original: "en",
-  ar: "ar",
-  tr: "tr",
-  off: "off",
-};
-
-const toSelectorSubtitleLang = (code: string): UniversalSubtitleLang =>
-  APP_LANG_TO_SELECTOR_LANG[code] || "ku";
-
-const toAppSubtitleLang = (lang: UniversalSubtitleLang): string =>
-  SELECTOR_LANG_TO_APP_LANG[lang];
-
-type CinemaWindowSubtitleCue = {
-  start: number;
-  end: number;
-  text: string;
-};
+  ROOM_SUBTITLE_LANGUAGES.find((language) => language.code === code) || ROOM_SUBTITLE_LANGUAGES[0];
 
 type CcSettings = {
   fontSize: 'sm' | 'md' | 'lg' | 'xl';
@@ -6119,157 +6060,6 @@ function loadCcSettings(): CcSettings {
   } catch { return DEFAULT_CC_SETTINGS; }
 }
 function saveCcSettings(s: CcSettings) { try { localStorage.setItem(CC_SETTINGS_STORAGE_KEY, JSON.stringify(s)); } catch { /* */ } }
-
-const parseCinemaWindowSubtitleTime = (value: string) => {
-  const normalized = value.trim().replace(",", ".");
-  const parts = normalized.split(":");
-  if (parts.length < 3) return 0;
-  const hours = Number(parts[0]) || 0;
-  const minutes = Number(parts[1]) || 0;
-  const seconds = Number(parts[2]) || 0;
-  return hours * 3600 + minutes * 60 + seconds;
-};
-
-const decodeCinemaWindowSubtitleText = (value: string) => {
-  const withoutTags = value
-    .replace(/<\d{2}:\d{2}:\d{2}\.\d{3}>/g, "")
-    .replace(/<\/?c[^>]*>/g, "")
-    .replace(/<[^>]+>/g, "");
-
-  if (typeof document === "undefined") {
-    return withoutTags
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'");
-  }
-
-  const textarea = document.createElement("textarea");
-  textarea.innerHTML = withoutTags;
-  return textarea.value;
-};
-
-const parseCinemaWindowSubtitleCues = (subtitleText: string): CinemaWindowSubtitleCue[] => {
-  const lines = subtitleText.replace(/^\uFEFF/, "").split(/\r?\n/);
-  const cues: CinemaWindowSubtitleCue[] = [];
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const timingMatch = lines[index].match(
-      /(\d{2}:\d{2}:\d{2}[\.,]\d{3})\s+-->\s+(\d{2}:\d{2}:\d{2}[\.,]\d{3})/,
-    );
-    if (!timingMatch) continue;
-
-    const textLines: string[] = [];
-    index += 1;
-    while (index < lines.length && lines[index].trim()) {
-      const line = lines[index].trim();
-      if (!/^(Kind|Language):/i.test(line)) textLines.push(stripSoundTagFragments(line));
-      index += 1;
-    }
-
-    const text = decodeCinemaWindowSubtitleText(textLines.join("\n")).trim();
-    if (text) {
-      cues.push({
-        start: parseCinemaWindowSubtitleTime(timingMatch[1]),
-        end: parseCinemaWindowSubtitleTime(timingMatch[2]),
-        text,
-      });
-    }
-  }
-
-  return cues;
-};
-
-const fetchSubtitleJsonWithRetry = async (
-  url: string,
-  body: Record<string, unknown>,
-  signal?: AbortSignal,
-) => {
-  let lastError: any = null;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 45000);
-    const abortParent = () => controller.abort();
-    signal?.addEventListener("abort", abortParent, { once: true });
-    try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-      const data = await response.json().catch(() => ({}));
-      if (response.ok && data?.success) return data;
-      const error: any = new Error(data?.error || `Subtitle request failed (${response.status})`);
-      error.retryable = response.status === 429 || response.status === 502 || response.status === 503 || response.status === 504;
-      throw error;
-    } catch (error: any) {
-      lastError = error;
-      if (signal?.aborted) throw error;
-      if (attempt < 3 && (error?.name === "AbortError" || error?.retryable !== false)) {
-        await new Promise((resolve) => window.setTimeout(resolve, 500 * attempt));
-        continue;
-      }
-      throw error;
-    } finally {
-      signal?.removeEventListener("abort", abortParent);
-      window.clearTimeout(timeoutId);
-    }
-  }
-  throw lastError || new Error("Subtitle request failed");
-};
-
-const requestCinemaWindowSubtitle = async (
-  sourceUrl: string,
-  lang: string,
-  signal?: AbortSignal,
-  windowOptions?: { startSeconds?: number; windowSeconds?: number },
-  subtitleUrl?: string,
-) => {
-  const data = await fetchSubtitleJsonWithRetry(
-    "/api/subtitle/generate",
-    { url: sourceUrl, lang, subtitleUrl: subtitleUrl || undefined, ...windowOptions },
-    signal,
-  );
-  const rawText = String(data?.srt || "");
-  const vttText = subtitleTextToVtt(rawText);
-  if (!vttText) throw new Error("Subtitle file is empty");
-  const originalRaw = String(data?.originalSrt || "");
-  const originalVtt = originalRaw ? subtitleTextToVtt(originalRaw) : "";
-  return {
-    rawText,
-    vttText,
-    sourceLang: String(data?.lang || lang),
-    source: String(data?.source || ""),
-    originalRawText: originalRaw || undefined,
-    originalVttText: originalVtt || undefined,
-  };
-};
-
-const translateCinemaWindowSubtitle = async (
-  subtitleText: string,
-  targetLang: string,
-  sourceLang: string,
-  signal?: AbortSignal,
-) => {
-  const data = await fetchSubtitleJsonWithRetry(
-    "/api/subtitle/translate",
-    { srt: subtitleText, lang: targetLang, sourceLang },
-    signal,
-  );
-  const rawText = String(data?.srt || "");
-  const vttText = subtitleTextToVtt(rawText);
-  if (!vttText) throw new Error("Translated subtitle file is empty");
-  return {
-    rawText,
-    vttText,
-    sourceLang: String(data?.lang || targetLang),
-    source: String(data?.source || ""),
-    originalRawText: subtitleText || undefined,
-    originalVttText: subtitleText ? subtitleTextToVtt(subtitleText) : undefined,
-  };
-};
 
 const CinemaWindowCard = ({ onOpen, room }: any) => {  const cardPreviewSourceUrl =
     room?.previewUrl ||
@@ -7242,13 +7032,32 @@ export default function App() {
   // Track the embedded YouTube player's clock via its postMessage events.
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
-      if (!/youtube\.com|youtu\.be/.test(event.origin)) return;
       let data: any;
       try {
-        data = JSON.parse(event.data);
+        data = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
       } catch {
         return;
       }
+
+      // VidSrc/garageband proxy relays the real nested player's clock through
+      // the outer iframe. Use that authoritative clock for the progress bar,
+      // subtitle cue matching and play/pause state.
+      if (data?.type === "PLAYER_EVENT" && data.data) {
+        const frame = document.getElementById("streaming-player") as HTMLIFrameElement | null;
+        if (!frame?.contentWindow || event.source !== frame.contentWindow) return;
+        const progress = Number(data.data.player_progress);
+        const duration = Number(data.data.player_duration);
+        if (Number.isFinite(progress) && progress >= 0) {
+          localClockRef.current = progress;
+          setPlayerCurrentTime(progress);
+        }
+        if (Number.isFinite(duration) && duration > 0) setPlayerDuration(duration);
+        if (data.data.player_status === "playing") setIsIframePlaying(true);
+        if (data.data.player_status === "paused") setIsIframePlaying(false);
+        return;
+      }
+
+      if (!/youtube\.com|youtu\.be/.test(event.origin)) return;
       if (data?.event === "infoDelivery" && data.info && typeof data.info.currentTime === "number") {
         // Accept time only from the modal's own embed (ignore the hero beneath
         // it). Resolve the iframe now so late-mounted or remounted embeds work.
@@ -7518,7 +7327,11 @@ export default function App() {
   };
 
   const broadcastSeekToFrame = (frame: HTMLIFrameElement, targetTime: number) => {
+    const wholeSecond = Math.max(0, Math.floor(targetTime));
     const payloads = [
+      // VidSrc-compatible command used by proxy.garageband.rocks and relayed
+      // through each of its nested iframe layers.
+      JSON.stringify({ player: true, action: `seek${wholeSecond}` }),
       // Object-form message variants used by proxy embeds and custom player hosts.
       JSON.stringify({ type: "seekTo", time: targetTime, seconds: targetTime, value: targetTime }),
       JSON.stringify({ type: "seek", time: targetTime, seconds: targetTime }),
@@ -10063,67 +9876,31 @@ export default function App() {
   const [cinemaWindowPublicRoom, setCinemaWindowPublicRoom] = useState<any | null>(null);
   const [cinemaWindowDirectVideoUrl, setCinemaWindowDirectVideoUrl] = useState("");
   const cinemaWindowVideoRef = useRef<HTMLVideoElement | null>(null);
+  const cinemaWindowFrameRef = useRef<HTMLIFrameElement | null>(null);
   const [cinemaWindowStreamRefreshKey, setCinemaWindowStreamRefreshKey] = useState(0);
   const [cinemaWindowNativeFailureCount, setCinemaWindowNativeFailureCount] = useState(0);
   const [cinemaWindowVideoStatus, setCinemaWindowVideoStatus] = useState<"idle" | "loading" | "ready" | "fallback">("idle");
-  const [cinemaWindowSubtitleUrl, setCinemaWindowSubtitleUrl] = useState("");
-  const [cinemaWindowSubtitleCues, setCinemaWindowSubtitleCues] = useState<CinemaWindowSubtitleCue[]>([]);
-  const [originalCinemaWindowSubtitleCues, setOriginalCinemaWindowSubtitleCues] = useState<CinemaWindowSubtitleCue[]>([]);
   const [cinemaWindowPlaybackTime, setCinemaWindowPlaybackTime] = useState(0);
-  // Selected subtitle language persists across reloads (and therefore across
-  // fullscreen / orientation changes / seeks, which never remount this tree).
-  const [cinemaWindowSubtitleLang, setCinemaWindowSubtitleLang] = useState(() => {
-    try {
-      return localStorage.getItem("cinemachat_cc_subtitle_lang") || "ckb";
-    } catch {
-      return "ckb";
-    }
-  });
+  const [cinemaWindowSubtitleLang, setCinemaWindowSubtitleLang] = useState(loadRoomSubtitleLanguage);
   useEffect(() => {
-    try {
-      localStorage.setItem("cinemachat_cc_subtitle_lang", cinemaWindowSubtitleLang);
-    } catch {
-      /* storage unavailable */
-    }
+    try { localStorage.setItem("cinemachat_room_subtitle_lang", cinemaWindowSubtitleLang); } catch { /* Optional. */ }
   }, [cinemaWindowSubtitleLang]);
-  const [cinemaWindowSubtitleStatus, setCinemaWindowSubtitleStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
-  const [cinemaWindowSubtitleMessage, setCinemaWindowSubtitleMessage] = useState("");
   const [cinemaWindowSubtitleRetryKey, setCinemaWindowSubtitleRetryKey] = useState(0);
   const [ccSettings, setCcSettings] = useState<CcSettings>(loadCcSettings);
   const [showCcPanel, setShowCcPanel] = useState(false);
   useEffect(() => { saveCcSettings(ccSettings); }, [ccSettings]);
-  // True when the Cinema Window subtitle pipeline has been stuck "loading" for
-  // a while (slow network) — drives the "pause the video" hint over the video.
-  const cinemaWindowDelayedLoad = useDelayedSubtitleLoad(cinemaWindowSubtitleStatus);
-
-  // Gate: subtitle fetching, translation, and CC overlay are only active when
-  // the user is inside one of the three main watch rooms. Outside these rooms
-  // all subtitle-related network requests and overlay rendering are disabled.
-  const isInMainWatchRoom = !!activeCinemaWindowRoom || !!selectedDramaRoom || !!showCinemaChatRoom;
-
-  // Central entry point for AI subtitle generation. Every caller (the subtitle
-  // useEffect, manual retry, etc.) must route through this so the room-gate is
-  // enforced in a single place.
-  const handleGenerateAiSubtitles = useCallback(
-    async (
-      sourceUrl: string,
-      lang: string,
-      signal?: AbortSignal,
-      windowOptions?: { startSeconds?: number; windowSeconds?: number },
-      subtitleUrl?: string,
-    ) => {
-      if (!isInMainWatchRoom) return null;
-      return requestCinemaWindowSubtitle(sourceUrl, lang, signal, windowOptions, subtitleUrl);
-    },
-    [isInMainWatchRoom],
-  );
+  const isCinemaWindowRoomActive = socialTab === "cinema_window" && !!activeCinemaWindowRoom && !showPlayer;
+  // Subtitle controls are universal: the Cinema Window and every modal movie
+  // player use the same pipeline, including ordinary catalog playback outside
+  // Drama/VIP rooms.
+  const isInMainWatchRoom =
+    isCinemaWindowRoomActive || (showPlayer && !!activeServerUrl);
 
   const [dashboardRooms, setDashboardRooms] = useState<any[]>([]);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [dashboardCreateRoomName, setDashboardCreateRoomName] = useState("");
   const [dashboardCreateHostCode, setDashboardCreateHostCode] = useState("");
   const [dashboardCreateMovieUrl, setDashboardCreateMovieUrl] = useState("");
-  const [cinemaChatSourceUrl, setCinemaChatSourceUrl] = useState("");
   const [dashboardIsLoading, setDashboardIsLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState("");
   const [dashboardSuccess, setDashboardSuccess] = useState("");
@@ -10149,59 +9926,34 @@ export default function App() {
     [activeCinemaWindowRoom],
   );
 
-  // ---------------------------------------------------------------------------
-  // Unified subtitle source resolution — the subtitle pipeline activates when
-  // ANY of the three main watch rooms has a playable video URL.
-  // ---------------------------------------------------------------------------
-  const isDramaRoomActive = !!selectedDramaRoom && showPlayer && !!activeServerUrl;
-  const isCinemaChatActive = !!showCinemaChatRoom;
-
-  const subtitleSourceUrl = useMemo(() => {
-    if (activeCinemaWindowRoom && activeCinemaWindowSourceUrl) return activeCinemaWindowSourceUrl;
-    if (isDramaRoomActive) return activeServerUrl || "";
-    if (isCinemaChatActive && cinemaChatSourceUrl) return cinemaChatSourceUrl;
-    return "";
-  }, [activeCinemaWindowRoom, activeCinemaWindowSourceUrl, isDramaRoomActive, activeServerUrl, isCinemaChatActive, cinemaChatSourceUrl]);
-
-  const prevSubtitleLangRef = useRef(cinemaWindowSubtitleLang);
-  const prevSubtitleSourceRef = useRef(subtitleSourceUrl);
-
-  // Playback time used for subtitle cue matching. Cinema Window tracks its own
-  // time from the native <video>; Drama Rooms reuse `playerCurrentTime`.
-  const subtitlePlaybackTime = activeCinemaWindowRoom
-    ? cinemaWindowPlaybackTime
-    : playerCurrentTime;
-
-  // The movie object backing the active watch room — used to resolve both the
-  // stored subtitle file URL and the pre-generated Kurdish (ckb) track.
-  const activeSubtitleMovie = useMemo(() => {
-    if (activeCinemaWindowRoom?.movieId) {
-      return movies.find((m) => m.id === activeCinemaWindowRoom.movieId) || null;
-    }
-    if (selectedDramaRoom && selectedMovie?.id) {
-      return selectedMovie;
-    }
-    return null;
-  }, [activeCinemaWindowRoom?.movieId, selectedDramaRoom, selectedMovie?.id, movies]);
-
-  // The movie's stored subtitle file URL (pre-existing .srt/.vtt, not AI).
-  const subtitleMovieFileUrl = useMemo(
-    () => activeSubtitleMovie?.subtitleUrl || "",
-    [activeSubtitleMovie],
-  );
-
-  // Server-generated Kurdish Sorani track (background pipeline). When present,
-  // the ckb subtitle mode uses it directly instead of asking the server to
-  // translate on demand.
-  const kurdishPreGeneratedUrl = useMemo(
-    () =>
-      cinemaWindowSubtitleLang === "ckb"
-        ? activeSubtitleMovie?.kurdishSubtitleStatus === "ready" && activeSubtitleMovie?.kurdishSubtitleUrl
-          ? activeSubtitleMovie.kurdishSubtitleUrl
-          : ""
-        : "",
-    [activeSubtitleMovie, cinemaWindowSubtitleLang],
-  );
+  // Every modal source renders in the same main player shell; Cinema Window
+  // has its own native clock. CinemaChat owns a separate hook beside its own
+  // playback clock.
+  const isRoomModalActive = showPlayer && !!activeServerUrl;
+  const subtitleSourceUrl = isCinemaWindowRoomActive ? activeCinemaWindowSourceUrl : isRoomModalActive ? activeServerUrl || "" : "";
+  const subtitlePlaybackTime = isCinemaWindowRoomActive ? cinemaWindowPlaybackTime : playerCurrentTime;
+  const activeSubtitleMovie = isCinemaWindowRoomActive && activeCinemaWindowRoom?.movieId
+    ? movies.find((movie) => movie.id === activeCinemaWindowRoom.movieId) || null
+    : isRoomModalActive ? selectedMovie : null;
+  const roomSubtitles = useRoomSubtitles({
+    enabled: isInMainWatchRoom && ccSettings.showSubtitle,
+    roomKey: isCinemaWindowRoomActive
+      ? `window:${activeCinemaWindowRoom.id}`
+      : activeSyncGroup?.isVIP
+        ? `vip:${activeSyncGroup.id}`
+        : selectedDramaRoom
+          ? `drama:${selectedDramaRoom.id}`
+          : `movie:${selectedMovie?.id || subtitleSourceUrl}`,
+    videoId: String(activeSubtitleMovie?.id || subtitleSourceUrl),
+    sourceUrl: subtitleSourceUrl,
+    subtitleUrl: activeSubtitleMovie?.subtitleUrl || "",
+    translatedSubtitleUrl: activeSubtitleMovie?.kurdishSubtitleUrl || "",
+    language: cinemaWindowSubtitleLang,
+    currentTime: subtitlePlaybackTime,
+    retryKey: cinemaWindowSubtitleRetryKey,
+  });
+  const { cues: cinemaWindowSubtitleCues, original: originalCinemaWindowSubtitleCues,
+    status: cinemaWindowSubtitleStatus, message: cinemaWindowSubtitleMessage } = roomSubtitles;
 
   const cinemaWindowActiveSubtitleText = useMemo(() => {
     if (!cinemaWindowSubtitleCues.length) return "";
@@ -10212,15 +9964,6 @@ export default function App() {
     );
     return activeCue?.text || "";
   }, [subtitlePlaybackTime, cinemaWindowSubtitleCues]);
-
-  const cinemaWindowActiveOriginalText = useMemo(() => {
-    if (!ccSettings.showOriginal || !originalCinemaWindowSubtitleCues.length) return "";
-    const t = subtitlePlaybackTime + SUBTITLE_SYNC_LEAD_S;
-    const activeCue = originalCinemaWindowSubtitleCues.find(
-      (cue) => t >= cue.start && t <= cue.end,
-    );
-    return activeCue?.text || "";
-  }, [subtitlePlaybackTime, originalCinemaWindowSubtitleCues, ccSettings.showOriginal]);
 
   const ccFontSizeEntry = useMemo(() => CC_FONT_SIZES.find((e) => e.key === ccSettings.fontSize) || CC_FONT_SIZES[1], [ccSettings.fontSize]);
   const ccSubtitleStyle = useMemo<React.CSSProperties>(() => ({
@@ -10234,6 +9977,27 @@ export default function App() {
     setCinemaWindowNativeFailureCount(0);
     setCinemaWindowPlaybackTime(0);
   }, [socialTab, activeCinemaWindowSourceUrl]);
+
+  // Subscribe only to this fallback iframe's clock; no play/pause/seek commands.
+  useEffect(() => {
+    if (!isCinemaWindowRoomActive || cinemaWindowVideoStatus !== "fallback") return;
+    let clockReceived = false;
+    const receive = (event: MessageEvent) => {
+      if (event.origin !== "https://www.youtube.com" || event.source !== cinemaWindowFrameRef.current?.contentWindow) return;
+      try {
+        const data = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
+        if (data?.event === "infoDelivery" && typeof data.info?.currentTime === "number" && Number.isFinite(data.info.currentTime)) {
+          clockReceived = true;
+          setCinemaWindowPlaybackTime(data.info.currentTime);
+        }
+      } catch { /* Ignore non-player messages. */ }
+    };
+    window.addEventListener("message", receive);
+    const timer = window.setInterval(() => {
+      if (!clockReceived) cinemaWindowFrameRef.current?.contentWindow?.postMessage(JSON.stringify({event:"listening",id:"widget",channel:"widget",funcs:["onInfoDelivery"]}), "https://www.youtube.com");
+    }, 500);
+    return () => { window.clearInterval(timer); window.removeEventListener("message", receive); };
+  }, [isCinemaWindowRoomActive, cinemaWindowVideoStatus, activeCinemaWindowSourceUrl]);
 
   const handleCinemaWindowNativeVideoFailure = useCallback(() => {
     if (!extractYouTubeId(activeCinemaWindowSourceUrl)) {
@@ -10316,223 +10080,6 @@ export default function App() {
 
     return () => window.clearTimeout(timer);
   }, [socialTab, cinemaWindowDirectVideoUrl, handleCinemaWindowNativeVideoFailure]);
-
-  useEffect(() => {
-    let cancelled = false;
-    let objectUrl = "";
-
-    if (!isInMainWatchRoom || !subtitleSourceUrl || cinemaWindowSubtitleLang === "off") {
-      setCinemaWindowSubtitleUrl("");
-      setCinemaWindowSubtitleCues([]);
-      setCinemaWindowSubtitleStatus("idle");
-      setCinemaWindowSubtitleMessage("");
-      prevSubtitleLangRef.current = cinemaWindowSubtitleLang;
-      prevSubtitleSourceRef.current = subtitleSourceUrl;
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    const langChanged = prevSubtitleLangRef.current !== cinemaWindowSubtitleLang;
-    const sourceChanged = prevSubtitleSourceRef.current !== subtitleSourceUrl;
-    prevSubtitleLangRef.current = cinemaWindowSubtitleLang;
-    prevSubtitleSourceRef.current = subtitleSourceUrl;
-
-    if (langChanged || sourceChanged) {
-      setCinemaWindowSubtitleUrl("");
-      setCinemaWindowSubtitleCues([]);
-      setOriginalCinemaWindowSubtitleCues([]);
-    }
-
-    const movieSubtitleUrl = subtitleMovieFileUrl;
-
-    const selectedSubtitleLanguage = getCinemaWindowSubtitleLanguage(cinemaWindowSubtitleLang);
-    const subtitleWindowOptions =
-      selectedSubtitleLanguage.code === "ckb"
-        ? undefined
-        : undefined;
-    const subtitleWindowKey = subtitleWindowOptions
-      ? `::${subtitleWindowOptions.startSeconds}-${subtitleWindowOptions.windowSeconds}`
-      : "";
-    const cacheKey = `${subtitleSourceUrl}::${selectedSubtitleLanguage.code}${subtitleWindowKey}`;
-    const cachedSubtitle = cinemaWindowSubtitleCache.get(cacheKey);
-    if (cachedSubtitle?.vttText) {
-      objectUrl = URL.createObjectURL(new Blob([cachedSubtitle.vttText], { type: "text/vtt" }));
-      setCinemaWindowSubtitleUrl(objectUrl);
-      setCinemaWindowSubtitleCues(parseCinemaWindowSubtitleCues(cachedSubtitle.vttText));
-      if (cachedSubtitle.originalVttText) {
-        setOriginalCinemaWindowSubtitleCues(parseCinemaWindowSubtitleCues(cachedSubtitle.originalVttText));
-      } else {
-        setOriginalCinemaWindowSubtitleCues([]);
-      }
-      setCinemaWindowSubtitleStatus("ready");
-      setCinemaWindowSubtitleMessage(`${selectedSubtitleLanguage.label} ئامادەیە`);
-      return () => {
-        cancelled = true;
-        if (objectUrl) URL.revokeObjectURL(objectUrl);
-      };
-    }
-
-    setCinemaWindowSubtitleStatus("loading");
-    setCinemaWindowSubtitleMessage(`وەرگێڕانی ژێرنوس بۆ ${selectedSubtitleLanguage.label}...`);
-    const controller = new AbortController();
-
-    const loadSubtitle = async () => {
-      try {
-        return await handleGenerateAiSubtitles(
-          subtitleSourceUrl,
-          selectedSubtitleLanguage.code,
-          controller.signal,
-          subtitleWindowOptions,
-          movieSubtitleUrl,
-        );
-      } catch (targetErr) {
-        if (selectedSubtitleLanguage.code === "en") throw targetErr;
-
-        const fallbackLangs = ["en", "ar", "ku"].filter(
-          (fallbackLang) => fallbackLang !== selectedSubtitleLanguage.code,
-        );
-        let lastFallbackError = targetErr;
-
-        for (const fallbackLang of fallbackLangs) {
-          const fallbackCacheKey = `${subtitleSourceUrl}::${fallbackLang}${subtitleWindowKey}`;
-          let fallbackSubtitle = cinemaWindowSubtitleCache.get(fallbackCacheKey);
-          let fallbackSourceLang = fallbackLang;
-
-          if (!fallbackSubtitle?.rawText) {
-            try {
-              fallbackSubtitle = await handleGenerateAiSubtitles(
-                subtitleSourceUrl,
-                fallbackLang,
-                controller.signal,
-                subtitleWindowOptions,
-                movieSubtitleUrl,
-              );
-              fallbackSourceLang = fallbackSubtitle.sourceLang || fallbackLang;
-              cinemaWindowSubtitleCache.set(fallbackCacheKey, fallbackSubtitle);
-            } catch (fallbackErr) {
-              lastFallbackError = fallbackErr;
-              continue;
-            }
-          } else {
-            fallbackSourceLang = fallbackSubtitle.sourceLang || fallbackLang;
-          }
-
-          try {
-            return await translateCinemaWindowSubtitle(
-              fallbackSubtitle.rawText,
-              selectedSubtitleLanguage.code,
-              fallbackSourceLang,
-              controller.signal,
-            );
-          } catch (translateErr) {
-            lastFallbackError = translateErr;
-          }
-        }
-
-        if (movieSubtitleUrl) {
-          const original = await requestCinemaWindowSubtitle(
-            subtitleSourceUrl,
-            "original",
-            controller.signal,
-            undefined,
-            movieSubtitleUrl,
-          );
-          return {
-            ...original,
-            subtitleWarning: "وەرگێڕانی کوردی بەردەست نەبوو؛ ژێرنووسی ڕەسەن پیشان دەدرێت.",
-          };
-        }
-        throw lastFallbackError;
-      }
-    };
-
-    // Fast path: the movie already carries a server-generated Kurdish Sorani
-    // track (background publish pipeline). Fetch it directly — no on-demand
-    // translation request, no rate limits. Falls through to the normal
-    // pipeline if the fetch fails for any reason.
-    if (kurdishPreGeneratedUrl) {
-      setCinemaWindowSubtitleStatus("loading");
-      setCinemaWindowSubtitleMessage(`ژێرنوسی ${selectedSubtitleLanguage.label} ئامادە دەبێت...`);
-      fetch(kurdishPreGeneratedUrl)
-        .then((response) => {
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          return response.text();
-        })
-        .then((vttText) => {
-          if (!vttText.trim()) throw new Error("Empty subtitle file");
-          cinemaWindowSubtitleCache.set(cacheKey, {
-            vttText,
-            sourceLang: "ckb",
-            rawText: vttText,
-          } as any);
-          objectUrl = URL.createObjectURL(new Blob([vttText], { type: "text/vtt" }));
-          if (cancelled) {
-            URL.revokeObjectURL(objectUrl);
-            return;
-          }
-          setCinemaWindowSubtitleUrl(objectUrl);
-          setCinemaWindowSubtitleCues(parseCinemaWindowSubtitleCues(vttText));
-          setOriginalCinemaWindowSubtitleCues([]);
-          setCinemaWindowSubtitleStatus("ready");
-          setCinemaWindowSubtitleMessage(`${selectedSubtitleLanguage.label} ئامادەیە`);
-        })
-        .catch(() => {
-          if (!cancelled) loadSubtitle();
-        });
-      return () => {
-        cancelled = true;
-        controller.abort();
-        if (objectUrl) URL.revokeObjectURL(objectUrl);
-      };
-    }
-
-    loadSubtitle()
-      .then((subtitle) => {
-        if (!subtitle) return;
-        const { vttText } = subtitle;
-        cinemaWindowSubtitleCache.set(cacheKey, subtitle);
-        objectUrl = URL.createObjectURL(new Blob([vttText], { type: "text/vtt" }));
-        if (cancelled) {
-          URL.revokeObjectURL(objectUrl);
-          return;
-        }
-        setCinemaWindowSubtitleUrl(objectUrl);
-        setCinemaWindowSubtitleCues(parseCinemaWindowSubtitleCues(vttText));
-        if (subtitle.originalVttText) {
-          setOriginalCinemaWindowSubtitleCues(parseCinemaWindowSubtitleCues(subtitle.originalVttText));
-        } else {
-          setOriginalCinemaWindowSubtitleCues([]);
-        }
-        setCinemaWindowSubtitleStatus("ready");
-        setCinemaWindowSubtitleMessage(`${selectedSubtitleLanguage.label} ئامادەیە`);
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setCinemaWindowSubtitleCues([]);
-          setOriginalCinemaWindowSubtitleCues([]);
-          setCinemaWindowSubtitleStatus("error");
-          setCinemaWindowSubtitleMessage(
-            err?.name === "AbortError"
-              ? "وەرگێڕانی ژێرنوس کاتی تەواو بوو"
-              : err?.message || "وەرگێڕانی ژێرنوس سەرکەوتوو نەبوو",
-          );
-        }
-      });
-
-    return () => {
-      cancelled = true;
-      controller.abort();
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [
-    isInMainWatchRoom,
-    subtitleSourceUrl,
-    cinemaWindowSubtitleLang,
-    subtitleMovieFileUrl,
-    kurdishPreGeneratedUrl,
-    cinemaWindowSubtitleRetryKey,
-  ]);
 
   // Sync dashboardCreateHostCode with socialProfile when defined
   useEffect(() => {
@@ -11562,6 +11109,14 @@ export default function App() {
 
   const SYSTEM_ADMIN_PASS = "1223344";
   const [adminTab, setAdminTab] = useState<string>("overview");
+  const [movieBeingEdited, setMovieBeingEdited] = useState<any | null>(null);
+
+  // The edit control is deliberately stricter than the wider admin dashboard:
+  // deputies/staff can keep their existing tools, but only the primary owner
+  // receives this callback and the server independently enforces the same rule.
+  const isPrimaryOwner =
+    currentUser?.isOwner === true ||
+    currentUser?.role?.toLowerCase() === "owner";
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -12127,6 +11682,39 @@ export default function App() {
         "سڕینەوەکە تەواو نەبوو — فیلمەکە نەتوانرا لە سێرڤەر یان بنکەدراوە بسڕدرێتەوە. تکایە دووبارە هەوڵبدەرەوە",
       );
       fetchMovies();
+    }
+  };
+
+  const handleSaveMovieEdit = async (draft: any) => {
+    if (!isPrimaryOwner || !draft?.id) {
+      throw new Error("تەنها ئەدمینی سەرەکی دەتوانێت فیلم دەستکاری بکات");
+    }
+
+    const adminName = currentUser?.username || "";
+    const response = await fetchApi(
+      `/api/admin/movies/${encodeURIComponent(draft.id)}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Admin-Username": adminName,
+        },
+        body: JSON.stringify({ ...draft, adminName }),
+      },
+    );
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload?.movie) {
+      throw new Error(payload?.error || "نوێکردنەوەی فیلم سەرکەوتوو نەبوو");
+    }
+
+    const updatedMovie = payload.movie;
+    setMovies((previous) =>
+      previous.map((movie: any) =>
+        movie.id === updatedMovie.id ? { ...movie, ...updatedMovie } : movie,
+      ),
+    );
+    if (selectedMovie?.id === updatedMovie.id) {
+      setSelectedMovie((previous: any) => ({ ...previous, ...updatedMovie }));
     }
   };
 
@@ -12874,7 +12462,7 @@ export default function App() {
 
             {activeCinemaWindowRoom ? (
               <div className="grid lg:grid-cols-[minmax(0,1fr)_320px] gap-5">
-                <div className="bg-black border border-white/10 rounded-2xl overflow-hidden min-h-[280px] md:min-h-[520px]">
+                <div className="relative bg-black border border-white/10 rounded-2xl overflow-hidden min-h-[280px] md:min-h-[520px]">
                   {(() => {
                     const roomVideoUrl = activeCinemaWindowSourceUrl;
                     const playableRoomVideoUrl = toCinemaWindowPlaybackUrl(roomVideoUrl, {
@@ -12928,48 +12516,6 @@ export default function App() {
                             onError={handleCinemaWindowNativeVideoFailure}
                             onStalled={handleCinemaWindowNativeVideoFailure}
                           />
-                          {isInMainWatchRoom && cinemaWindowActiveSubtitleText && ccSettings.showSubtitle && (
-                            <div
-                              className="pointer-events-none absolute inset-x-3 z-10 flex flex-col items-center gap-1 transition-[bottom] duration-300"
-                              style={{ bottom: ccSubtitleBottomPercent(ccSettings.subtitleOffsetY) }}
-                            >
-                              {cinemaWindowActiveOriginalText && (
-                                <div
-                                  dir="auto"
-                                  className={`max-w-[92%] whitespace-pre-line rounded-lg px-3 py-1.5 text-center font-bold leading-snug opacity-70 ${ccFontSizeEntry.mobileCls} md:${ccFontSizeEntry.cls}`}
-                                  style={{ color: '#cccccc', backgroundColor: 'rgba(0,0,0,0.5)', textShadow: '0 1px 4px rgba(0,0,0,0.8)' }}
-                                >
-                                  {cinemaWindowActiveOriginalText}
-                                </div>
-                              )}
-                              <div
-                                dir="auto"
-                                className={`max-w-[92%] whitespace-pre-line rounded-lg px-3 py-2 text-center font-bold leading-snug shadow-[0_2px_14px_rgba(0,0,0,0.75)] ${ccFontSizeEntry.mobileCls} md:${ccFontSizeEntry.cls}`}
-                                style={ccSubtitleStyle}
-                              >
-                                {cinemaWindowActiveSubtitleText}
-                              </div>
-                            </div>
-                          )}
-                          {/* Live subtitle-generation status (loading/error).
-                              Raised above the native <video> controls into the
-                              clear zone so it never clips behind player chrome;
-                              shows live pipeline progress via SubtitleJobStatus. */}
-                          {isInMainWatchRoom &&
-                            (cinemaWindowSubtitleStatus === "error" ||
-                              (cinemaWindowSubtitleStatus === "loading" &&
-                                !cinemaWindowActiveSubtitleText)) && (
-                            <div className="absolute inset-x-0 bottom-[84px] z-20">
-                              <SubtitleJobStatus
-                                status={cinemaWindowSubtitleStatus}
-                                message={cinemaWindowSubtitleMessage}
-                                movieId={activeSubtitleMovie?.id}
-                                enabled={isInMainWatchRoom}
-                                delayedLoad={cinemaWindowDelayedLoad}
-                                onRetry={() => setCinemaWindowSubtitleRetryKey((k) => k + 1)}
-                              />
-                            </div>
-                          )}
                         </div>
                       );
                     }
@@ -12989,7 +12535,8 @@ export default function App() {
                       return (
                         <iframe
                           title={activeCinemaWindowRoom.name || "Cinema Window Player"}
-                          src={playableRoomVideoUrl}
+                          ref={cinemaWindowFrameRef}
+                          src={`${playableRoomVideoUrl}&enablejsapi=1`}
                           className="w-full aspect-video min-h-[280px] md:min-h-[520px]"
                           allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
                           allowFullScreen
@@ -12999,6 +12546,10 @@ export default function App() {
 
                     return null;
                   })()}
+                  <RoomSubtitleOverlay cues={cinemaWindowSubtitleCues} original={originalCinemaWindowSubtitleCues}
+                    time={subtitlePlaybackTime} language={cinemaWindowSubtitleLang} settings={ccSettings} font={ccFontSizeEntry} style={ccSubtitleStyle} />
+                  {(cinemaWindowSubtitleStatus === "error" || (cinemaWindowSubtitleStatus === "loading" && !cinemaWindowActiveSubtitleText)) &&
+                    <div className="absolute inset-x-0 bottom-[84px] z-20"><SubtitleJobStatus status={cinemaWindowSubtitleStatus} onRetry={() => setCinemaWindowSubtitleRetryKey((key) => key + 1)} /></div>}
                 </div>
 
                 <aside className="bg-[#0b0c10] border border-white/10 rounded-2xl p-5 h-fit">
@@ -13033,12 +12584,12 @@ export default function App() {
                         <Globe className="w-4 h-4" />
                         زمانی ژێرنوس
                       </span>
-                      <UniversalSubtitleSelector
+                      <RoomSubtitleSelector
                         variant="inline"
-                        value={toSelectorSubtitleLang(cinemaWindowSubtitleLang)}
+                        value={cinemaWindowSubtitleLang}
                         onChange={(lang) => {
-                          setCinemaWindowSubtitleLang(toAppSubtitleLang(lang));
-                          setCcSettings((settings) => ({ ...settings, showSubtitle: lang !== "off" }));
+                          setCinemaWindowSubtitleLang(lang);
+                          setCcSettings((settings) => ({ ...settings, showSubtitle: true }));
                           setCinemaWindowSubtitleRetryKey((k) => k + 1);
                         }}
                         status={cinemaWindowSubtitleStatus}
@@ -13560,6 +13111,7 @@ export default function App() {
                       onOpen={openMovieDetails}
                       onToggleFavorite={handleToggleFavorite}
                       onToggleLike={handleToggleLike}
+                      onEdit={isPrimaryOwner ? setMovieBeingEdited : undefined}
                     />
                   );
 
@@ -13704,6 +13256,7 @@ export default function App() {
                             onOpen={openMovieDetails}
                             onToggleFavorite={handleToggleFavorite}
                             onToggleLike={handleToggleLike}
+                            onEdit={isPrimaryOwner ? setMovieBeingEdited : undefined}
                           />
                         </div>
                       ))}
@@ -13739,6 +13292,7 @@ export default function App() {
                               onOpen={openMovieDetails}
                               onToggleFavorite={handleToggleFavorite}
                               onToggleLike={handleToggleLike}
+                              onEdit={isPrimaryOwner ? setMovieBeingEdited : undefined}
                             />
                             {/* Real resume progress bar */}
                             <div className="mt-2 h-1.5 w-full bg-white/10 rounded-full overflow-hidden">
@@ -13840,18 +13394,6 @@ export default function App() {
                 setModalMode("signup");
                 setShowSocialModal(true);
               }}
-              subtitleCues={showCinemaChatRoom ? cinemaWindowSubtitleCues : []}
-              subtitleLang={cinemaWindowSubtitleLang}
-              subtitleStatus={showCinemaChatRoom ? cinemaWindowSubtitleStatus : "idle"}
-              subtitleMessage={showCinemaChatRoom ? cinemaWindowSubtitleMessage : ""}
-              subtitleLanguages={CINEMA_WINDOW_SUBTITLE_LANGUAGES}
-              onSubtitleLangChange={(lang: string) => {
-                setCinemaWindowSubtitleLang(lang);
-                setCinemaWindowSubtitleRetryKey((k) => k + 1);
-              }}
-              onSubtitleRetry={() => setCinemaWindowSubtitleRetryKey((k) => k + 1)}
-              onSourceUrl={(url: string) => setCinemaChatSourceUrl(url)}
-              originalSubtitleCues={showCinemaChatRoom ? originalCinemaWindowSubtitleCues : []}
               ccSettings={ccSettings}
               ccFontSizeEntry={ccFontSizeEntry}
               ccSubtitleStyle={ccSubtitleStyle}
@@ -14110,41 +13652,16 @@ export default function App() {
                         );
                       })()}
 
-                      {/* AI subtitle overlay for Drama Rooms — renders on top of
-                          whatever player type is active (YouTube, embed, or Plyr).
-                          Cinema Window renders its own overlay inside its native
-                          <video> block; this covers the main App player only. */}
-                      {isDramaRoomActive && cinemaWindowActiveSubtitleText && ccSettings.showSubtitle && (
-                        <div
-                          className="pointer-events-none absolute inset-x-3 z-10 flex flex-col items-center gap-1 transition-[bottom] duration-300"
-                          style={{ bottom: ccSubtitleBottomPercent(ccSettings.subtitleOffsetY) }}
-                        >
-                          {cinemaWindowActiveOriginalText && (
-                            <div
-                              dir="auto"
-                              className={`max-w-[92%] whitespace-pre-line rounded-lg px-3 py-1.5 text-center font-bold leading-snug opacity-70 ${ccFontSizeEntry.mobileCls} md:${ccFontSizeEntry.cls}`}
-                              style={{ color: '#cccccc', backgroundColor: 'rgba(0,0,0,0.5)', textShadow: '0 1px 4px rgba(0,0,0,0.8)' }}
-                            >
-                              {cinemaWindowActiveOriginalText}
-                            </div>
-                          )}
-                          <div
-                            dir={cinemaWindowSubtitleLang === "ckb" ? "rtl" : "auto"}
-                            className={`max-w-[92%] whitespace-pre-line rounded-lg px-3 py-2 text-center font-bold leading-snug shadow-[0_2px_14px_rgba(0,0,0,0.75)] ${ccFontSizeEntry.mobileCls} md:${ccFontSizeEntry.cls}`}
-                            style={ccSubtitleStyle}
-                          >
-                            {cinemaWindowActiveSubtitleText}
-                          </div>
-                        </div>
-                      )}
+                      {isRoomModalActive && <RoomSubtitleOverlay cues={cinemaWindowSubtitleCues} original={originalCinemaWindowSubtitleCues}
+                    time={subtitlePlaybackTime} language={cinemaWindowSubtitleLang} settings={ccSettings} font={ccFontSizeEntry} style={ccSubtitleStyle} />}
                       {/* Live subtitle-generation status (loading/error) for
                           Drama Rooms. Positioned in the clear zone ABOVE the
                           seek/timeline row and the control bar — the same
                           vertical slot the volume slider popup uses — so it
                           never hides behind the bottom chrome or YouTube
                           shield blocks. Renders live pipeline progress via
-                          SubtitleJobStatus (stage, ETA, slow-network). */}
-                      {isDramaRoomActive &&
+                          the room subtitle status indicator. */}
+                      {isRoomModalActive &&
                         (cinemaWindowSubtitleStatus === "error" ||
                           (cinemaWindowSubtitleStatus === "loading" &&
                             !cinemaWindowActiveSubtitleText)) && (
@@ -14153,8 +13670,7 @@ export default function App() {
                             status={cinemaWindowSubtitleStatus}
                             message={cinemaWindowSubtitleMessage}
                             movieId={activeSubtitleMovie?.id}
-                            enabled={isDramaRoomActive}
-                            delayedLoad={cinemaWindowDelayedLoad}
+                            enabled={isRoomModalActive}
                             onRetry={() => setCinemaWindowSubtitleRetryKey((k) => k + 1)}
                           />
                         </div>
@@ -14259,6 +13775,7 @@ export default function App() {
                               onSyncPlayback={handleSyncedPlayback}
                               vipVideoUrl={(activeSyncGroup as any)?.videoUrl || undefined}
                               onSelectVipVideo={handleVipSelectVideo}
+                              roomSubtitleActive={!!activeSyncGroup.isVIP && ccSettings.showSubtitle && (cinemaWindowSubtitleLang !== "original" || cinemaWindowSubtitleCues.length > 0)}
                             />
                           </div>
                         </SafeRender>
@@ -14317,7 +13834,7 @@ export default function App() {
                           [4] Forward 10s · [4.5] Next Episode (Drama Room) ·
                           [5] Play/Pause · [6] Back 10s ·
                           [7] Exit Fullscreen · [8] Mute */}
-                      <div className="absolute bottom-0 right-0 z-50 h-16 flex items-center gap-1.5 md:gap-2 px-4 md:px-6 pointer-events-auto select-none font-sans">
+                      <div className="absolute bottom-0 right-0 z-[60] h-16 flex items-center gap-1.5 md:gap-2 px-4 md:px-6 pointer-events-auto select-none font-sans">
                         {/* [6] Mute / Audio Toggle + vertical Volume slider.
                             Hovering (or focusing) the mute control reveals a
                             vertically-centered volume slider popup above it —
@@ -14543,12 +14060,12 @@ export default function App() {
                           )}
                         </div>
 
-                        {/* [1.5] Subtitle Language Toggle — Drama Room only. Lets
+                        {/* [1.5] Subtitle Language Toggle — Drama and VIP rooms. Lets
                             the user switch subtitle language from inside the main
                             player without needing the Cinema Window sidebar. */}
-                        {isDramaRoomActive && (
+                        {isRoomModalActive && (
                           <div
-                            className="relative"
+                            className="relative z-[60]"
                             /* The trigger lives INSIDE the bottom control bar;
                                lift its popup + toasts well above the seek/timeline
                                row so they never overlap it (matches the volume
@@ -14560,11 +14077,11 @@ export default function App() {
                               } as React.CSSProperties
                             }
                           >
-                            <UniversalSubtitleSelector
-                              value={toSelectorSubtitleLang(cinemaWindowSubtitleLang)}
+                            <RoomSubtitleSelector
+                              value={cinemaWindowSubtitleLang}
                               onChange={(lang) => {
-                                setCinemaWindowSubtitleLang(toAppSubtitleLang(lang));
-                                setCcSettings((settings) => ({ ...settings, showSubtitle: lang !== "off" }));
+                                setCinemaWindowSubtitleLang(lang);
+                                setCcSettings((settings) => ({ ...settings, showSubtitle: true }));
                                 setCinemaWindowSubtitleRetryKey((k) => k + 1);
                               }}
                               status={cinemaWindowSubtitleStatus}
@@ -15431,6 +14948,7 @@ export default function App() {
                               onOpen={openMovieDetails}
                               onToggleFavorite={handleToggleFavorite}
                               onToggleLike={handleToggleLike}
+                              onEdit={isPrimaryOwner ? setMovieBeingEdited : undefined}
                             />
                           </div>
                         ))} {/* Similar Movies List */}
@@ -15583,6 +15101,16 @@ export default function App() {
           setSocialTab("cinema_window"); // Switch to cinema window tab
         }}
       />
+
+      <AnimatePresence>
+        {isPrimaryOwner && movieBeingEdited && (
+          <MovieEditModal
+            movie={movieBeingEdited}
+            onClose={() => setMovieBeingEdited(null)}
+            onSave={handleSaveMovieEdit}
+          />
+        )}
+      </AnimatePresence>
 
       {/* Professional Management Dashboard Overlay (Point 31/32/33) */}
       <AnimatePresence> {/* Admin Dashboard */}
@@ -16198,6 +15726,17 @@ const trailerId = movie.trailerUrl
                                   </div>
                                 </div>
                                 <div className="flex items-center gap-2">
+                                  {isPrimaryOwner && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setMovieBeingEdited(movie)}
+                                      className="flex items-center gap-1 rounded-lg border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-[9px] font-black text-red-300 transition-colors hover:bg-red-600 hover:text-white kurdish-text"
+                                      title="دەستکاریکردنی فیلم"
+                                    >
+                                      <Edit3 className="h-3.5 w-3.5" />
+                                      ئیدیت
+                                    </button>
+                                  )}
                                   <div className="flex items-center gap-2 border-l border-white/10 pl-2">
                                     <span className="text-[8px] font-black text-gray-600 kurdish-text">
                                       پۆلێن

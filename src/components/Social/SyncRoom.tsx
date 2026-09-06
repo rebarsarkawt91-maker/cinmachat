@@ -47,11 +47,13 @@ interface SyncRoomProps {
   onSyncPlayback: (time: number, playing: boolean) => void;
   vipVideoUrl?: string;
   onSelectVipVideo?: (url: string, title?: string, isTrailer?: boolean) => void;
+  /** The enclosing VIP player owns the active subtitle track. */
+  roomSubtitleActive?: boolean;
 }
 
 const AGORA_APP_ID = (import.meta.env.VITE_AGORA_APP_ID || '').trim();
 
-export const SyncRoom: React.FC<SyncRoomProps> = ({ room, currentMovie, onClose, onSyncPlayback, vipVideoUrl, onSelectVipVideo }) => {
+export const SyncRoom: React.FC<SyncRoomProps> = ({ room, currentMovie, onClose, onSyncPlayback, vipVideoUrl, onSelectVipVideo, roomSubtitleActive = false }) => {
   const { socialProfile } = useSocialAuth();
   // VIP rooms live in their own collection (vip_rooms); regular rooms in
   // syncGroups. All room-bound listeners/writes go through this root.
@@ -743,7 +745,7 @@ export const SyncRoom: React.FC<SyncRoomProps> = ({ room, currentMovie, onClose,
               </div>
 
                {/* Translation Subtitles Layer */}
-               {((translationLang && currentSubtitle) || (roomSubtitles && roomSubtitles.length > 0 && currentSubtitle)) && isPlaying && (
+               {!roomSubtitleActive && ((translationLang && currentSubtitle) || (roomSubtitles && roomSubtitles.length > 0 && currentSubtitle)) && isPlaying && (
                  <div className="absolute inset-x-0 bottom-32 md:bottom-24 flex justify-center z-[1000] pointer-events-none px-8">
                    <motion.div 
                      initial={{ y: 20, opacity: 0 }}
