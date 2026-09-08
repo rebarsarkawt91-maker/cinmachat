@@ -6,6 +6,32 @@ import { resolveApiUrl } from "./backendConfig";
 
 export { resolveApiUrl };
 
+// Firebase Hosting must still show the catalog while the Firestore free-tier
+// read quota is temporarily exhausted. This file is generated from the local
+// admin catalog at release time and is only used when the API has no real
+// movies (the hero placeholder does not count as a movie).
+let publicCatalogFallback: any[] | null = null;
+
+const loadPublicCatalogFallback = async (): Promise<any[]> => {
+  if (publicCatalogFallback) return publicCatalogFallback;
+  try {
+    const response = await fetch("/catalog-fallback.json", {
+      headers: { Accept: "application/json" },
+      cache: "force-cache",
+    });
+    if (!response.ok) return [];
+    const payload = await response.json();
+    publicCatalogFallback = Array.isArray(payload?.results)
+      ? payload.results
+      : Array.isArray(payload)
+        ? payload
+        : [];
+    return publicCatalogFallback;
+  } catch {
+    return [];
+  }
+};
+
 export const api = {
   resolveApiUrl(url: string): string {
     // Single centralized URL resolver (same-origin default; explicit remote only
@@ -162,10 +188,12 @@ export const api = {
       });
       if (!response.ok) return [];
       const data = await response.json();
-      return data.results || [];
+      const results = Array.isArray(data?.results) ? data.results : [];
+      const realMovies = results.filter((movie: any) => movie?.id && movie.id !== "hero-promo");
+      return realMovies.length > 0 ? results : await loadPublicCatalogFallback();
     } catch (error) {
       console.warn('Movies fetch skipped:', error);
-      return [];
+      return loadPublicCatalogFallback();
     } finally {
       clearTimeout(timeout);
     }

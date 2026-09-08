@@ -56,6 +56,7 @@ import { censorOutgoingMessage } from "../../services/bannedWords";
 import { PrivateChatClient, fetchPrivateSessionId } from "../../services/privateChatClient";
 import type { PrivateChatMessage, MovieSyncPayload } from "../../services/privateChatClient";
 import { resolveMovieSourceUrl } from "../../services/cinemaChat";
+import { api } from "../../services/api";
 import type { AccountReadiness } from "../../services/accountReadiness";
 import { getYTId, loadYouTubeAPI } from "../../utils/youtube";
 import ImmersiveShieldedPlayer from "../Player/ImmersiveShieldedPlayer";
@@ -2071,11 +2072,9 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   const ensureMovieCatalog = useCallback(() => {
     if (movieCatFetchedRef.current || movieCatLoading) return;
     setMovieCatLoading(true);
-    fetch("/api/movies", { headers: { Accept: "application/json" } })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`movie-catalog-${response.status}`);
-        const payload = await response.json();
-        const raw = Array.isArray(payload) ? payload : Array.isArray(payload?.results) ? payload.results : Array.isArray(payload?.movies) ? payload.movies : [];
+    api.getMovies()
+      .then((payload) => {
+        const raw = Array.isArray(payload) ? payload : [];
         const list = raw.filter((m: any) => !!resolveMovieSourceUrl(m));
         setMovieCatalog(list);
         movieCatFetchedRef.current = true;
