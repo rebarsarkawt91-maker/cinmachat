@@ -11857,8 +11857,16 @@ export default function App() {
         snapshot.forEach((doc) =>
           firestoreMovies.push({ ...doc.data(), id: doc.id }),
         );
-        if (firestoreMovies.length > 0) {
-          applyMovies(firestoreMovies);
+        // Firestore can temporarily return only the synthetic hero document
+        // while its free-tier quota is exhausted. That document is not a card
+        // and must never replace the usable API/static catalog already shown.
+        const durableMovies = firestoreMovies.filter((movie) => movie.id !== "hero-promo");
+        if (durableMovies.length > 0) {
+          setMovies((previous) =>
+            mergeMovieLists(durableMovies, previous).filter(
+              (movie: any) => !deletedMovieIdsRef.current.has(movie.id),
+            ),
+          );
           setErrorMsg(null);
         }
         setIsLoading(false);
