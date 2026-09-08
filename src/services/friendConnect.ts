@@ -226,6 +226,50 @@ export const searchAccountByCCId = async (
   return null;
 };
 
+/** Same-origin JSON fetch with a hard timeout. The old timeout-less fetch let a
+ *  hanging backend (quota-retrying Firestore) hold the search spinner forever;
+ *  a bounded request always resolves into a visible UI state. */
+const SEARCH_TIMEOUT_MS = 8_000;
+
+const fetchJsonBounded = async (
+  url: string,
+  init: RequestInit & { json?: unknown } = {},
+  timeoutMs = SEARCH_TIMEOUT_MS,
+): Promise<any | null> => {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  const { json, ...rest } = init;
+  try {
+    const response = await fetch(url, {
+      ...rest,
+      headers: {
+        ...(json !== undefined ? { "Content-Type": "application/json" } : {}),
+        Accept: "application/json",
+        ...(rest.headers || {}),
+      },
+      ...(json !== undefined ? { body: JSON.stringify(json) } : {}),
+      signal: controller.signal,
+    });
+    return await response.json().catch(() => null);
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timer);
+  }
+};
+
+/** Short-lived cache of successful lookups. Keyed by the trimmed raw query so
+ *  a repeat submit (double-tap, retry after a transient drop) is instant and
+ *  free; entries expire quickly so fresh profile changes are still respected.
+ *  Only the public card fields are cached — never anything more than the
+ *  lookup endpoint itself already returns. */
+const LOOKUP_CACHE_TTL_MS = 30_000;
+const lookupCache = new Map<string, { at: number; user: ContactSearchResult }>();
+
+export const clearLookupCache = (): void => {
+  lookupCache.clear();
+};
+
 /** One-stop lookup for the in-room friend request panel: accepts a CC-ID or a
  *  mobile number and returns the public profile (phone lookups still respect
  *  each account's privacy settings).
@@ -243,37 +287,43 @@ export const searchAccountByCCIdOrContact = async (
   // Email addresses are NOT used for friend pairing — reject immediately.
   if (trimmed.includes("@")) return null;
 
+  // A phone number is never a CC-ID: pure digit input (any spelling) skips the
+  // code-lookup phase entirely so a miss resolves through ONE fast path
+  // instead of walking every fallback one after another.
+  const digits = trimmed.replace(/\D/g, "");
+  const isPhoneLike = digits.length >= 7 && /^[\d+\s().-]+$/.test(trimmed);
+
+  // Instant repeat lookups (30s window) — bounded, public fields only.
+  const cached = lookupCache.get(trimmed);
+  if (cached && Date.now() - cached.at < LOOKUP_CACHE_TTL_MS) {
+    return cached.user;
+  }
+
   // Use the same-origin server lookup first. It resolves the canonical phone
   // variants through the Admin SDK/db mirror, applies rate limiting and privacy
   // rules, and avoids leaving the UI stuck while several client Firestore
   // queries time out one after another on a weak connection.
-  try {
-    const response = await fetch("/api/friend-request/lookup", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ query: trimmed }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (response.ok && data?.user?.uid) {
-      return data.user as ContactSearchResult;
-    }
-  } catch {
-    /* fall through to local/client lookup when the API is unavailable */
+  const lookupData = await fetchJsonBounded("/api/friend-request/lookup", {
+    method: "POST",
+    headers: auth.currentUser
+      ? { Authorization: `Bearer ${await auth.currentUser.getIdToken()}` }
+      : undefined,
+    json: { query: trimmed },
+  });
+  const lookupUser = lookupData?.user;
+  if (lookupData?.ok && lookupUser?.uid) {
+    const user = lookupUser as ContactSearchResult;
+    lookupCache.set(trimmed, { at: Date.now(), user });
+    return user;
   }
-
-  const digits = trimmed.replace(/\D/g, "");
-  const isPhoneLike = digits.length >= 7 && /^[\d+\s-]*$/.test(trimmed);
 
   // Resolve deterministic local E2E identities first. Firestore can remain
   // pending while offline, but the local development server is immediate.
-  try {
-    const response = await fetch(`/api/local-test/accounts?q=${encodeURIComponent(trimmed)}`);
-    const data = await response.json().catch(() => ({}));
-    const account = Array.isArray(data?.accounts) ? data.accounts[0] : null;
-    if (account?.uid) return account as ContactSearchResult;
-  } catch {
-    /* continue with the real account lookup */
-  }
+  const localData = await fetchJsonBounded(
+    `/api/local-test/accounts?q=${encodeURIComponent(trimmed)}`,
+  );
+  const account = Array.isArray(localData?.accounts) ? localData.accounts[0] : null;
+  if (account?.uid) return account as ContactSearchResult;
 
   // Not obviously a phone → try the CC-ID path first (codes are public).
   if (!isPhoneLike) {
@@ -282,7 +332,10 @@ export const searchAccountByCCIdOrContact = async (
   }
   // Fall back to the phone contact search.
   const firebaseResult = await searchAccountByContact(trimmed);
-  if (firebaseResult) return firebaseResult;
+  if (firebaseResult) {
+    lookupCache.set(trimmed, { at: Date.now(), user: firebaseResult });
+    return firebaseResult;
+  }
 
   return null;
 };
@@ -437,7 +490,20 @@ export const subscribeFriendConnection = (
  *  already ships permissive rules (allow read/write: if true). */
 const WATCH_CALLS_COL = "invitations";
 
-export type WatchCallStatus = "calling" | "accepted" | "declined" | "ended";
+export type WatchCallStatus =
+  | "calling"
+  | "ringing"
+  | "accepted"
+  | "declined"
+  | "cancelled"
+  | "expired"
+  | "connected"
+  | "ended";
+
+/** A call that is live (may still be answered) — server pushes may deliver
+ *  "ringing" as well as the legacy "calling". */
+export const isAnswerableWatchCallStatus = (status?: string): boolean =>
+  status === "calling" || status === "ringing";
 
 export interface WatchCall {
   id: string;
@@ -450,22 +516,29 @@ export interface WatchCall {
   toId: string;
   toName: string;
   toCode: string;
-  /** Canonical receiver identity keys — [uid, uniqueCode, phone-digits] — used
-   *  for the receiver's single-field array-contains listener (no composite
-   *  index needed, and phone/uid spellings always agree on both sides). */
-  toKeys?: string[];
-  toPhone?: string | null;
+  toAvatar?: string | null;
   /** friend_connections doc id (pair key) opened when the receiver answers. */
   connectionId: string;
+  /** Deterministic shared room id (server store contract — equals the
+   *  connectionId for the private 1-to-1 room). */
+  roomId?: string;
   startedAt: string;
   createdAt: string;
   updatedAt?: string;
   readAt?: string | null;
+  /** Server store monotonic version (present on wire-shape payloads). */
+  version?: number;
 }
 
 /** A ring that is not answered within this window is treated as stale/ignored
  *  (caller went offline, closed the app, ...) and is auto-expired client-side. */
 export const WATCH_CALL_TTL_MS = 90_000;
+
+/** Safety-net polling cadence for the backend mirror of watch calls. The
+ *  real-time path is Firestore onSnapshot; this only heals a dead listener and
+ *  must stay SLOW — it costs one server-side Firestore read per tick per user
+ *  and the old 2s value alone exhausted the project's daily Firestore quota. */
+export const WATCH_CALL_POLL_MS = 20_000;
 
 const toWatchCall = (snap: any): WatchCall =>
   ({ id: snap.id, ...(snap.data() as object) }) as WatchCall;
@@ -482,7 +555,7 @@ export const sendWatchCallInvitation = async (params: {
   requesterCode: string;
   requesterAvatar?: string | null;
   target: ContactSearchResult;
-}): Promise<{ callId: string; connectionId: string }> => {
+}): Promise<{ callId: string; connectionId: string; roomId: string }> => {
   const { requesterUid, requesterName, requesterCode, requesterAvatar, target } = params;
   if (requesterUid === target.uid) throw new Error("cannot-call-self");
   if (!target.uid) throw new Error("invalid-target");
@@ -491,8 +564,8 @@ export const sendWatchCallInvitation = async (params: {
   // knows exactly where the private chat pair lives (exists or not yet).
   const connectionId = friendPairKey(requesterUid, target.uid);
 
-  // Durable authenticated server path. It avoids browser Firestore write/rule
-  // failures and returns only after the ring document is visible remotely.
+  // SERVER-AUTHORITATIVE path: the store creates the call without any
+  // Firestore dependency and pushes the ring to the receiver's live sockets.
   const currentUser = auth.currentUser;
   if (currentUser) {
     const token = await currentUser.getIdToken();
@@ -507,10 +580,17 @@ export const sendWatchCallInvitation = async (params: {
     });
     const data = await response.json().catch(() => ({}));
     if (response.ok && data?.callId && data?.connectionId) {
-      return { callId: String(data.callId), connectionId: String(data.connectionId) };
+      return {
+        callId: String(data.callId),
+        connectionId: String(data.connectionId),
+        roomId: String(data.roomId || data.connectionId),
+      };
     }
     if (response.status !== 404) {
-      throw new Error(data?.error || `watch-call-create-${response.status}`);
+      throw Object.assign(new Error(data?.error || `watch-call-create-${response.status}`), {
+        responseStatus: response.status,
+        serverCode: data?.code || "",
+      });
     }
   }
 
@@ -550,11 +630,17 @@ export const sendWatchCallInvitation = async (params: {
     console.warn("watch call: ring delivered but friend connection ensure failed:", err);
   }
 
-  return { callId: ref.id, connectionId };
+  return { callId: ref.id, connectionId, roomId: connectionId };
 };
 
-/** Receiver answers (accept → also accepts/ensures the underlying friend
- *  connection so the Chat step opens automatically) or ignores the ring. */
+/** Receiver answers (accept → the server atomically creates the canonical
+ *  accepted connection) or declines the ring.
+ *
+ *  SERVER-AUTHORITATIVE: the response returns the canonical
+ *  call/connection/roomId straight from the server store — the caller and the
+ *  receiver open the SAME room from these values with ZERO Firestore reads.
+ *  The legacy direct-Firestore write below only runs when the server itself
+ *  is unreachable (self-hosted/old server). */
 export const respondToWatchCall = async (
   callId: string,
   connectionId: string,
@@ -565,7 +651,7 @@ export const respondToWatchCall = async (
     code: string;
     avatar?: string | null;
   },
-): Promise<void> => {
+): Promise<{ call: WatchCall; connectionId: string; roomId: string } | null> => {
   // The server owns the atomic accept path. Some deployed Firestore rule sets
   // predate `friend_connections` and reject an otherwise valid browser write;
   // the authenticated backend verifies the receiver UID and writes the pair +
@@ -584,10 +670,21 @@ export const respondToWatchCall = async (
         },
         body: JSON.stringify({ callId, connectionId, status }),
       });
-      if (response.ok) return;
+      if (response.ok) {
+        const data = await response.json().catch(() => ({}));
+        const call = (data?.call as WatchCall | undefined) ?? null;
+        return {
+          call: call ?? { id: callId, connectionId: data?.connectionId || connectionId } as WatchCall,
+          connectionId: String(data?.connectionId || connectionId),
+          roomId: String(data?.roomId || data?.connectionId || connectionId),
+        };
+      }
       if (response.status !== 404) {
         const data = await response.json().catch(() => ({}));
-        throw new Error(data?.error || `watch-call-response-${response.status}`);
+        throw Object.assign(
+          new Error(data?.error || `watch-call-response-${response.status}`),
+          { responseStatus: response.status, serverCode: data?.code || "" },
+        );
       }
     } catch (error: any) {
       if (!String(error?.message || "").includes("watch-call-response-404")) {
@@ -601,7 +698,7 @@ export const respondToWatchCall = async (
       status,
       updatedAt: new Date().toISOString(),
     });
-    return;
+    return null;
   }
   // Prepare the private pair before publishing `accepted`. The caller treats
   // that status as permission to enter the chat, so publishing it first can
@@ -641,21 +738,117 @@ export const respondToWatchCall = async (
     status: "accepted",
     updatedAt: new Date().toISOString(),
   });
+  return null;
 };
 
-/** Caller withdraws an outgoing ring. */
+/** Caller withdraws an outgoing ring. SERVER-AUTHORITATIVE first (the store
+ *  cancels atomically and pushes `watch_call:cancelled` to the receiver);
+ *  the direct Firestore write below is only the legacy-server fallback. */
 export const cancelWatchCall = async (callId: string): Promise<void> => {
+  const currentUser = auth.currentUser;
+  if (currentUser) {
+    try {
+      const token = await currentUser.getIdToken();
+      const response = await fetch("/api/friend-connect/watch-call/cancel", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json",
+        },
+        body: JSON.stringify({ callId }),
+      });
+      if (response.ok) return;
+      if (response.status !== 404) {
+        const data = await response.json().catch(() => ({}));
+        throw Object.assign(
+          new Error(data?.error || `watch-call-cancel-${response.status}`),
+          { responseStatus: response.status },
+        );
+      }
+    } catch (error: any) {
+      if (!String(error?.message || "").includes("watch-call-cancel-404")) throw error;
+    }
+  }
   await updateDoc(doc(db, WATCH_CALLS_COL, callId), {
     status: "ended",
     updatedAt: new Date().toISOString(),
   });
 };
 
-/** Passive cleanup: a calling doc left ringing past its TTL becomes "ended". */
-export const expireWatchCallIfStale = async (call: WatchCall): Promise<void> => {
-  const age = Date.now() - new Date(call.startedAt).getTime();
-  if (call.status !== "calling" || age < WATCH_CALL_TTL_MS) return;
-  await cancelWatchCall(call.id);
+/** Either participant ends the accepted session (server-authoritative). */
+export const endWatchSession = async (connectionId: string): Promise<void> => {
+  const currentUser = auth.currentUser;
+  if (!currentUser) return;
+  const token = await currentUser.getIdToken();
+  try {
+    await fetch("/api/friend-connect/watch-call/end", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ connectionId }),
+    });
+  } catch {
+    /* network-level failure — the store TTL/next poll reconciles */
+  }
+};
+
+/** Recovery surface: the caller's/receiver's CURRENT accepted session, read
+ *  from the server store (works with Firestore quota-dead). Returns null when
+ *  nothing is active or the request cannot be served. */
+export const fetchActiveWatchSession = async (): Promise<{
+  call: WatchCall;
+  connection: any;
+} | null> => {
+  const currentUser = auth.currentUser;
+  if (!currentUser) return null;
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 8_000);
+  try {
+    const token = await currentUser.getIdToken();
+    const response = await fetch("/api/friend-connect/active-session", {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    const data = await response.json().catch(() => null);
+    if (!data?.active || !data?.session?.call) return null;
+    return { call: data.session.call as WatchCall, connection: data.session.connection };
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timer);
+  }
+};
+
+/** Map a call-flow failure to ONE safe, human category (Kurdish). Never
+ *  exposes tokens, raw uids or phone numbers. */
+export const describeWatchCallError = (err: unknown): string => {
+  const message = String((err as any)?.message || "");
+  const status = Number((err as any)?.responseStatus || 0);
+  const code = String((err as any)?.serverCode || "");
+  if (code === "target_unavailable" || status === 404) {
+    return "ئەم ئەکاونتە بەردەست نییە یان نەدۆزرایەوە";
+  }
+  if (status === 401 || /401/.test(message)) {
+    return "نشستت کۆتایی هاتووە — دووبارە بچۆ ژوورەوە";
+  }
+  if (status === 409 || status === 410 || /already|expired/i.test(message)) {
+    return "بانگەکە بەسەرچووە یان پێشتر وەڵام دراوەتەوە";
+  }
+  if (status === 403 || /403/.test(message)) {
+    return "ڕێگەت پێ نەدرا بۆ ئەم کردارە";
+  }
+  if (status >= 500 || status === 503 || /503|500/.test(message)) {
+    return "سێرڤەر بەردەست نییە — دواتر هەوڵبدەرەوە";
+  }
+  if (/Failed to fetch|NetworkError|aborted|AbortError/i.test(message)) {
+    return "پەیوەندی نێتەورک پچڕاوە — پشکنین بکە";
+  }
+  return "بانگهێشتی پەیوەندی سەرکەوتوو نەبوو؛ دووبارە هەوڵ بدە";
 };
 
 /** Global listener for incoming "calling" rings (the receiver's device).
@@ -684,7 +877,7 @@ export const subscribeWatchCalls = (
       for (const [id, call] of source) known.set(id, call);
     }
     const live = [...known.values()]
-      .filter((c) => c.kind === "watchcall" && c.status === "calling")
+      .filter((c) => c.kind === "watchcall" && isAnswerableWatchCallStatus(c.status))
       .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
     onChange(live.slice(0, 20));
   };
@@ -751,7 +944,13 @@ export const subscribeWatchCalls = (
     }
   };
   void poll();
-  const pollTimer = window.setInterval(() => void poll(), 2_000);
+  // Safety-net poll ONLY. Firestore onSnapshot is the real-time path; polling
+  // here every couple of seconds burned tens of thousands of Firestore reads
+  // per day per online user (each poll is a server-side Firestore query) and
+  // pushed the project into RESOURCE_EXHAUSTED, which then killed search,
+  // catalogs AND call delivery for everyone. A 20s cadence still heals a dead
+  // listener quickly while costing ~0.2% of the old read volume.
+  const pollTimer = window.setInterval(() => void poll(), WATCH_CALL_POLL_MS);
 
   return () => {
     stopped = true;
@@ -794,7 +993,10 @@ export const subscribeWatchCall = (
     }
   };
   void poll();
-  const pollTimer = window.setInterval(() => void poll(), 2_000);
+  // Same safety-net cadence as subscribeWatchCalls (see the quota note there):
+  // the doc-level onSnapshot delivers accept/decline in real time; the poll
+  // only covers a dead listener.
+  const pollTimer = window.setInterval(() => void poll(), WATCH_CALL_POLL_MS);
   return () => {
     stopped = true;
     window.clearInterval(pollTimer);

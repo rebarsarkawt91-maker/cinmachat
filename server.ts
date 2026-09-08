@@ -33,8 +33,16 @@ import {
 } from './features/hero/heroConfig.js';
 import { execFile } from 'node:child_process';
 import os from 'node:os';
+import { privateSessionSweepable } from './src/lib/privateChatSweep';
 import { registerRoomSubtitleRoutes } from './features/room-subtitles/routes';
 import * as XLSX from 'xlsx';
+import {
+  WatchCallStore,
+  StoreError,
+  type AcceptedConnectionRecord,
+  type WatchCallRecord,
+  type WatchCallParticipant,
+} from './watchCallStore';
 // `import admin from` (esModuleInterop) resolves firebase-admin's CJS
 // `export =` namespace to its default export: the full admin object. A bare
 // `import * as admin` would only expose the `default` slot under tsx's ESM
@@ -2592,6 +2600,7 @@ const PRIVATE_CONNECTIONS_COLLECTION = 'friend_connections';
 const PRIVATE_SESSION_HEARTBEAT_MS = 45000; // silent this long → dead session
 const PRIVATE_SESSION_SWEEP_MS = 15000;     // sweep frequency
 const PRIVATE_MESSAGE_MAX_LEN = 2000;
+const PRIVATE_MOVIE_MESSAGE_MAX_LEN = 16 * 1024;
 const PRIVATE_MESSAGE_RATE_WINDOW_MS = 15000;
 const PRIVATE_MESSAGE_RATE_MAX = 30;        // per participant per window
 
@@ -2607,14 +2616,32 @@ interface PrivateSessionMember {
 interface PrivateSession {
   id: string;             // cryptographically random — the only session identifier
   connectionId: string;   // friend_connections doc id
+  callId?: string;
   participants: string[]; // sorted [uidA, uidB]
   status: 'open' | 'closed';
   createdAt: number;
   lastHeartbeatAt: number;
+  /** Frozen when the LAST member's socket disconnects. The sweep anchors the
+   *  no-members grace here (not createdAt) so a transient drop or a late
+   *  joining peer can never be reaped by an old creation timestamp. */
+  lastMemberLeftAt?: number;
   members: Map<string, PrivateSessionMember>;
   // Latest watch state only (no chat history). A peer that reconnects or joins
   // a moment after movie selection must receive the current movie immediately.
   movieState?: unknown;
+  lastMovieMessage?: {
+    type: 'message';
+    clientId: string;
+    senderId: string;
+    text: string;
+    ts: number;
+  };
+  lastMovieInvite?: {
+    type: 'movie_invite';
+    uid: string;
+    clientId: string;
+    payload: { id: string; title: string; image?: string; url: string };
+  };
 }
 
 // connectionId → session. Message history is intentionally NOT stored anywhere.
@@ -2660,16 +2687,16 @@ function destroyPrivateSession(connectionId: string, reason: string) {
   privateSessionLog('Session destroyed', session.id, reason);
 }
 
-function getOrCreatePrivateSession(connectionId: string, uidA: string, uidB: string): PrivateSession {
+function getOrCreatePrivateSession(connectionId: string, uidA: string, uidB: string, callId?: string): PrivateSession {
   const existing = privateSessions.get(connectionId);
-  if (existing && existing.status === 'open') return existing;
+  if (existing && existing.status === 'open' && (!callId || existing.callId === callId)) return existing;
   if (existing) {
-    existing.members.clear();
-    privateSessions.delete(connectionId);
+    destroyPrivateSession(connectionId, callId ? 'replaced by a newer call' : 'session replaced');
   }
   const session: PrivateSession = {
     id: crypto.randomBytes(16).toString('hex'),
     connectionId,
+    callId,
     participants: [uidA, uidB].sort(),
     status: 'open',
     createdAt: Date.now(),
@@ -2701,7 +2728,10 @@ function sanitizePrivateText(raw: unknown): string {
   const s = String(raw ?? '')
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
     .trim();
-  if (!s || s.length > PRIVATE_MESSAGE_MAX_LEN) return '';
+  const maxLength = s.startsWith('__cinemachat_movie__:')
+    ? PRIVATE_MOVIE_MESSAGE_MAX_LEN
+    : PRIVATE_MESSAGE_MAX_LEN;
+  if (!s || s.length > maxLength) return '';
   return s;
 }
 
@@ -2709,6 +2739,18 @@ function sanitizePrivateText(raw: unknown): string {
  *  the two participants. Shared by the REST endpoint and the WS auth path so
  *  both parties always resolve to the SAME session id for a connection. */
 async function privateSessionIdForParticipant(uid: string, connectionId: string): Promise<string> {
+  // WATCH-CALL STORE FIRST: an accepted watch call authorizes the private
+  // session with ZERO Firestore dependency. This is what keeps chat + movie
+  // sync working while Firestore is quota-dead (HTTP 429).
+  const storeConnection = watchCallStore.getAcceptedConnection(connectionId);
+  if (storeConnection) {
+    if (!storeConnection.participants.includes(uid)) {
+      const err: any = new Error('forbidden: not a participant');
+      err.status = 403;
+      throw err;
+    }
+    return getOrCreatePrivateSession(connectionId, storeConnection.participants[0], storeConnection.participants[1], storeConnection.callId).id;
+  }
   const connection = await getPrivateConnection(connectionId);
   if (!connection) {
     const err: any = new Error('connection not found');
@@ -2725,7 +2767,366 @@ async function privateSessionIdForParticipant(uid: string, connectionId: string)
     err.status = 403;
     throw err;
   }
-  return getOrCreatePrivateSession(connectionId, connection.requesterUid, connection.targetUid).id;
+  return getOrCreatePrivateSession(connectionId, connection.requesterUid, connection.targetUid, typeof connection.callId === 'string' ? connection.callId : undefined).id;
+}
+
+// ---------------------------------------------------------------------------
+// WatchCall signaling — server-authoritative, quota-independent call flow.
+//
+// The store (watchCallStore.ts) is the SINGLE RUNTIME AUTHORITY: create, ring,
+// accept, decline, cancel, expire, connect and session-restore all resolve
+// against an in-memory Map and NEVER require a live Firestore read/write.
+// Firestore is demoted to a best-effort ASYNC mirror below (circuit breaker +
+// log-once): a 429 there can never fail or delay a call again.
+// ---------------------------------------------------------------------------
+
+/** Test hook: CC_FORCE_FIRESTORE_429=1 simulates a quota-exhausted Firestore
+ *  for EVERY watch-call mirror/fallback path, so the full flow can be proven
+ *  to work with Firestore effectively dead. Never set in production. */
+const FORCE_FIRESTORE_429 = process.env.CC_FORCE_FIRESTORE_429 === '1';
+
+const watchCallStore = new WatchCallStore();
+const WATCH_CALL_MASK_PHONE = (value: unknown): string => {
+  const digits = String(value ?? '').replace(/\D/g, '');
+  if (digits.length < 6) return '';
+  return `${digits.slice(0, 3)}***${digits.slice(-2)}`;
+};
+const WATCH_CALL_SHORT = (value: unknown): string => String(value ?? '').slice(0, 8);
+
+/** Firestore mirror circuit breaker: after one RESOURCE_EXHAUSTED the mirror
+ *  goes quiet for MIRROR_COOLDOWN_MS (no retry storm, no quota burn) and one
+ *  line is logged per breaker episode. */
+const MIRROR_COOLDOWN_MS = 5 * 60_000;
+let mirrorOpenUntil = 0;
+let mirrorEpisodeLogged = false;
+
+function noteMirrorFailure(label: string, err: any): void {
+  const quotaLike =
+    String(err?.code || '').includes('RESOURCE_EXHAUSTED') ||
+    Number(err?.status) === 429 ||
+    /RESOURCE_EXHAUSTED|Quota exceeded/i.test(String(err?.message || ''));
+  if (!quotaLike) {
+    console.warn(`[WatchCall] Firestore mirror "${label}" skipped:`, err?.message || err);
+    return;
+  }
+  mirrorOpenUntil = Date.now() + MIRROR_COOLDOWN_MS;
+  if (!mirrorEpisodeLogged) {
+    mirrorEpisodeLogged = true;
+    console.warn(
+      `[WatchCall] Firestore quota exhausted (429) during "${label}" — mirroring paused ` +
+        `${MIRROR_COOLDOWN_MS / 1000}s. Calls keep working from the in-memory store.`,
+    );
+    setTimeout(() => { mirrorEpisodeLogged = false; }, MIRROR_COOLDOWN_MS);
+  }
+}
+
+/** Best-effort, never-blocking Firestore mirror. Firestore success is NEVER a
+ *  precondition for any call operation. */
+function mirrorWatchCallToFirestore(label: string, op: () => Promise<unknown>): void {
+  if (FORCE_FIRESTORE_429) {
+    if (!mirrorEpisodeLogged) {
+      mirrorEpisodeLogged = true;
+      console.warn('[WatchCall] FORCED 429 MODE — Firestore mirrors are simulating RESOURCE_EXHAUSTED.');
+      setTimeout(() => { mirrorEpisodeLogged = false; }, 30_000);
+    }
+    return;
+  }
+  if (Date.now() < mirrorOpenUntil) return; // breaker open — stay quiet
+  void (async () => {
+    try {
+      await op();
+    } catch (err: any) {
+      noteMirrorFailure(label, err);
+    }
+  })();
+}
+
+/** Guard used by Firestore FALLBACK reads in the watch-call path: under the
+ *  forced-429 test flag the fallback behaves exactly like a quota-dead
+ *  Firestore instead of quietly succeeding. */
+function firestoreQuotaGate(label: string): void {
+  if (FORCE_FIRESTORE_429) {
+    const err: any = new Error(`FORCED: RESOURCE_EXHAUSTED (simulated) at ${label}`);
+    err.code = '8';
+    err.status = 429;
+    throw err;
+  }
+}
+
+/** Live call-signaling sockets per uid (multiple devices supported). */
+const watchCallSockets = new Map<string, Set<WebSocket>>();
+/** Display-only profile data registered by authenticated sockets. NEVER used
+ *  for authorization — identity always comes from the verified ID token. */
+const watchCallProfiles = new Map<string, WatchCallParticipant>();
+
+function pushToUser(uid: string, payload: unknown): boolean {
+  const sockets = watchCallSockets.get(String(uid || ''));
+  if (!sockets || sockets.size === 0) return false;
+  let delivered = false;
+  const raw = JSON.stringify(payload);
+  for (const socket of sockets) {
+    if (socket.readyState === WebSocket.OPEN) {
+      try { socket.send(raw); delivered = true; } catch { /* socket is gone */ }
+    }
+  }
+  return delivered;
+}
+
+/** Fan every store transition out to BOTH participants' live sockets. */
+watchCallStore.onEvent((event) => {
+  const payload = { type: event.type, call: serializeWatchCall(event.call) };
+  pushToUser(event.call.callerUid, payload);
+  pushToUser(event.call.receiverUid, payload);
+  // Keep the Firestore mirror in sync (best-effort, async, breaker-guarded).
+  mirrorWatchCallToFirestore(`status:${event.type}`, () =>
+    mirrorWatchCallStatus(event.call),
+  );
+});
+
+/** Wire shape shared with the existing client components (id/fromName/...). */
+function serializeWatchCall(call: WatchCallRecord) {
+  return {
+    id: call.callId,
+    callId: call.callId,
+    kind: 'watchcall' as const,
+    status: call.status,
+    connectionId: call.connectionId,
+    roomId: call.roomId,
+    fromId: call.callerUid,
+    fromName: call.caller.name,
+    fromCode: call.caller.code,
+    fromAvatar: call.caller.avatar ?? null,
+    toId: call.receiverUid,
+    toName: call.receiver.name,
+    toCode: call.receiver.code,
+    toAvatar: call.receiver.avatar ?? null,
+    startedAt: new Date(call.createdAt).toISOString(),
+    createdAt: new Date(call.createdAt).toISOString(),
+    updatedAt: new Date(call.updatedAt).toISOString(),
+    expiresAt: new Date(call.expiresAt).toISOString(),
+    version: call.version,
+  };
+}
+
+function serializeWatchConnection(connection: AcceptedConnectionRecord) {
+  return {
+    id: connection.connectionId,
+    connectionId: connection.connectionId,
+    roomId: connection.roomId,
+    callId: connection.callId,
+    kind: 'friend' as const,
+    participants: connection.participants,
+    requesterUid: connection.participants[0],
+    requesterName: connection.a.name,
+    requesterCode: connection.a.code,
+    requesterAvatar: connection.a.avatar ?? null,
+    targetUid: connection.participants[1],
+    targetName: connection.b.name,
+    targetCode: connection.b.code,
+    targetAvatar: connection.b.avatar ?? null,
+    status: 'accepted' as const,
+    createdAt: new Date(connection.createdAt).toISOString(),
+    updatedAt: new Date(connection.updatedAt).toISOString(),
+    acceptedAt: new Date(connection.createdAt).toISOString(),
+  };
+}
+
+function respondStoreError(res: express.Response, err: unknown): void {
+  if (err instanceof StoreError) {
+    res.status(err.status).json({ error: err.message, code: err.code });
+    return;
+  }
+  console.error('[WatchCall] unexpected store error:', (err as any)?.message || err);
+  res.status(500).json({ error: 'watch-call internal error' });
+}
+
+/** Accessor for the live db.json user mirror. Assigned once startServer has
+ *  loaded the database; keeps resolveWatchCallUser Firestore-independent. */
+let watchCallDbUsers: () => any[] = () => [];
+
+/** Resolve a call participant's DISPLAY profile without requiring Firestore:
+ *  1. live authenticated socket registration (the user provably exists —
+ *     their identity token was verified),
+ *  2. the local db.json user mirror,
+ *  3. one bounded Admin-SDK read (quota-tolerant; skipped under forced-429).
+ *  Authorization NEVER depends on this — it only fills display fields. */
+async function resolveWatchCallUser(uid: string): Promise<WatchCallParticipant | null> {
+  const target = String(uid || '').trim();
+  if (!target) return null;
+  const live = watchCallProfiles.get(target);
+  if (live) return { ...live };
+  const local = watchCallDbUsers().find((u: any) => String(u?.uid || '') === target);
+  if (local) {
+    return {
+      uid: target,
+      name: String(local?.name || local?.displayName || 'بەکارهێنەر'),
+      code: String(local?.uniqueCode || ''),
+      avatar: (typeof local?.avatarUrl === 'string' && local.avatarUrl) || (typeof local?.avatar === 'string' ? local.avatar : null),
+    };
+  }
+  try {
+    firestoreQuotaGate('resolve-user');
+    const adminApp = initializeFirebaseAdmin();
+    if (!adminApp) return null;
+    let timer: NodeJS.Timeout | undefined;
+    const snap = await Promise.race([
+      admin.firestore(adminApp).collection('users').doc(target).get(),
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 6000); }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (snap && snap.exists) {
+      const d = snap.data() as any;
+      return {
+        uid: target,
+        name: String(d?.name || d?.displayName || 'بەکارهێنەر'),
+        code: String(d?.uniqueCode || ''),
+        avatar: (typeof d?.avatarUrl === 'string' && d.avatarUrl) || (typeof d?.avatar === 'string' ? d.avatar : null),
+      };
+    }
+  } catch (err: any) {
+    noteMirrorFailure('resolve-user', err);
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Best-effort Firestore mirrors (same documents the old direct-write flow
+// produced, so an older deployed client's Firestore listener keeps working).
+// ---------------------------------------------------------------------------
+
+function mirrorWatchCallCreate(call: WatchCallRecord): Promise<unknown> {
+  firestoreQuotaGate('mirror-create');
+  const adminApp = initializeFirebaseAdmin();
+  if (!adminApp) return Promise.resolve(null);
+  const payload = serializeWatchCall(call);
+  return admin.firestore(adminApp).collection('invitations').doc(call.callId).set({
+    kind: 'watchcall',
+    status: payload.status,
+    fromId: call.callerUid,
+    fromName: call.caller.name,
+    fromCode: call.caller.code,
+    fromAvatar: call.caller.avatar ?? null,
+    toId: call.receiverUid,
+    toName: call.receiver.name,
+    toCode: call.receiver.code,
+    toAvatar: call.receiver.avatar ?? null,
+    toKeys: [call.receiverUid, call.receiver.code, WATCH_CALL_MASK_PHONE(call.receiver.code)].filter(Boolean),
+    connectionId: call.connectionId,
+    startedAt: payload.startedAt,
+    createdAt: payload.createdAt,
+    updatedAt: payload.updatedAt,
+    readAt: null,
+  });
+}
+
+function mirrorWatchCallStatus(call: WatchCallRecord): Promise<unknown> {
+  firestoreQuotaGate('mirror-status');
+  const adminApp = initializeFirebaseAdmin();
+  if (!adminApp) return Promise.resolve(null);
+  return admin.firestore(adminApp).collection('invitations').doc(call.callId).set(
+    {
+      status: call.status,
+      connectionId: call.connectionId,
+      updatedAt: new Date(call.updatedAt).toISOString(),
+    },
+    { merge: true },
+  );
+}
+
+function mirrorConnectionUpsert(connection: ReturnType<WatchCallStore['createOrGetConnection']>): Promise<unknown> {
+  firestoreQuotaGate('mirror-connection');
+  const adminApp = initializeFirebaseAdmin();
+  if (!adminApp) return Promise.resolve(null);
+  return admin.firestore(adminApp).collection('friend_connections').doc(connection.connectionId).set({
+    kind: 'friend',
+    participants: connection.participants,
+    requesterUid: connection.participants[0],
+    requesterName: connection.a.name,
+    requesterCode: connection.a.code,
+    requesterAvatar: connection.a.avatar ?? null,
+    targetUid: connection.participants[1],
+    targetName: connection.b.name,
+    targetCode: connection.b.code,
+    targetAvatar: connection.b.avatar ?? null,
+    status: 'accepted',
+    createdAt: new Date(connection.createdAt).toISOString(),
+    updatedAt: new Date(connection.updatedAt).toISOString(),
+    acceptedAt: new Date(connection.createdAt).toISOString(),
+  }, { merge: false });
+}
+
+/** Per-connection handler for the global call-signaling socket. ONE authentic
+ *  connection per device; the server pushes every call transition instantly —
+ *  the receiver never needs a refresh, a modal, or a poll. */
+function handleCallSignalingSocket(ws: WebSocket) {
+  let uid: string | null = null;
+
+  const fail = (code: number, message: string) => {
+    try { ws.send(JSON.stringify({ type: 'error', message })); } catch { /* socket is gone */ }
+    try { ws.close(code, message); } catch { /* socket is gone */ }
+  };
+
+  const unregister = () => {
+    if (!uid) return;
+    const sockets = watchCallSockets.get(uid);
+    if (sockets) {
+      sockets.delete(ws);
+      if (sockets.size === 0) watchCallSockets.delete(uid);
+    }
+    uid = null;
+  };
+
+  ws.on('message', (raw) => {
+    let msg: any;
+    try { msg = JSON.parse(raw.toString()); } catch { return; }
+
+    if (msg?.type === 'auth') {
+      if (uid) { fail(1002, 'already authenticated'); return; }
+      const token = String(msg?.token || '');
+      if (!token) { fail(1002, 'auth requires a token'); return; }
+      verifyFirebaseIdToken(`Bearer ${token}`)
+        .then((verifiedUid) => {
+          if (ws.readyState !== WebSocket.OPEN) return;
+          uid = verifiedUid;
+          const sockets = watchCallSockets.get(uid) ?? new Set<WebSocket>();
+          sockets.add(ws);
+          watchCallSockets.set(uid, sockets);
+          // Display-only registration (never an authorization source).
+          watchCallProfiles.set(uid, {
+            uid,
+            name: String(msg?.name || '').slice(0, 60) || 'بەکارهێنەر',
+            code: String(msg?.code || '').slice(0, 32),
+            avatar: typeof msg?.avatar === 'string' ? msg.avatar.slice(0, 500) : null,
+          });
+          try { ws.send(JSON.stringify({ type: 'ready', uid })); } catch { /* gone */ }
+          // Instant recovery for reconnects: everything this user currently
+          // has live in the store, in one message.
+          const active = watchCallStore.getActiveSessionFor(uid);
+          try {
+            ws.send(JSON.stringify({
+              type: 'watch_call:state_sync',
+              incoming: watchCallStore.listIncomingCalls(uid).map(serializeWatchCall),
+              outgoing: watchCallStore.listOutgoingCalls(uid).map(serializeWatchCall),
+              activeSession: active
+                ? { call: serializeWatchCall(active.call), connection: serializeWatchConnection(active.connection) }
+                : null,
+            }));
+          } catch { /* gone */ }
+          console.log(
+            `[WatchCall] signaling ready uid=${WATCH_CALL_SHORT(uid)} calls=${watchCallStore.debugSize().calls} sockets=${watchCallSockets.size}`,
+          );
+        })
+        .catch(() => fail(1008, 'authentication failed'));
+      return;
+    }
+
+    if (msg?.type === 'heartbeat' && uid) {
+      try { ws.send(JSON.stringify({ type: 'heartbeat_ack', t: Date.now() })); } catch { /* gone */ }
+    }
+  });
+
+  ws.on('close', unregister);
+  ws.on('error', unregister);
 }
 
 /** Per-connection WebSocket handler for the ephemeral private chat. */
@@ -2753,10 +3154,24 @@ function handlePrivateChatSocket(ws: WebSocket) {
           const found = findPrivateSessionById(sessionId);
           if (!found) { fail(1004, 'session not found or closed'); return; }
           if (!found.participants.includes(verifiedUid)) { fail(1008, 'forbidden: not a participant'); return; }
-          // Re-authorize against Firestore so a revoked / re-created connection
-          // can never be resurrected in an open session.
-          const connection = await getPrivateConnection(found.connectionId);
-          if (!connection || connection.status !== 'accepted') {
+          // Re-authorize the connection so a revoked / re-created pair can
+          // never be resurrected in an open session. WATCH-CALL STORE FIRST:
+          // an accepted store connection authorizes the join with ZERO
+          // Firestore dependency. Otherwise fall back to Firestore; if
+          // Firestore itself is unavailable (quota 429 / timeout) the session
+          // stays alive — participation was already proven when the session
+          // id was issued, and a quota error must never kill a live call.
+          let connectionRejected = false;
+          if (!watchCallStore.isAcceptedParticipant(found.connectionId, verifiedUid)) {
+            try {
+              firestoreQuotaGate('private-session-reauth');
+              const connection = await getPrivateConnection(found.connectionId);
+              if (!connection || connection.status !== 'accepted') connectionRejected = true;
+            } catch (err: any) {
+              noteMirrorFailure('private-session-reauth', err);
+            }
+          }
+          if (connectionRejected) {
             destroyPrivateSession(found.connectionId, 'connection no longer accepted');
             fail(1004, 'session unavailable');
             return;
@@ -2776,19 +3191,26 @@ function handlePrivateChatSocket(ws: WebSocket) {
             rateHits: [],
             typing: false,
           });
+          const peerUid = found.participants.find((participantUid) => participantUid !== uid);
+          const peer = peerUid ? found.members.get(peerUid) : undefined;
           ws.send(JSON.stringify({
             type: 'joined',
             sessionId: found.id,
             participants: found.participants,
             peerUid: found.participants.find((p) => p !== uid) || '',
+            peerOnline: !!peer?.socket && peer.socket.readyState === WebSocket.OPEN,
           }));
-          const peerUid = found.participants.find((participantUid) => participantUid !== uid);
-          const peer = peerUid ? found.members.get(peerUid) : undefined;
           if (peerUid && peer?.socket?.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'presence', uid: peerUid, online: true }));
           }
           if (found.movieState) {
             ws.send(JSON.stringify({ type: 'movie', uid: peerUid || '', payload: found.movieState }));
+          }
+          if (found.lastMovieMessage && found.lastMovieMessage.senderId !== uid) {
+            ws.send(JSON.stringify(found.lastMovieMessage));
+          }
+          if (found.lastMovieInvite && found.lastMovieInvite.uid !== uid) {
+            ws.send(JSON.stringify(found.lastMovieInvite));
           }
           privateSessionBroadcast(found, { type: 'presence', uid, online: true }, uid);
           privateSessionLog('Participant joined', found.id, uid);
@@ -2807,7 +3229,22 @@ function handlePrivateChatSocket(ws: WebSocket) {
     member.lastHeartbeatAt = now;
 
     if (type === 'heartbeat') {
-      ws.send(JSON.stringify({ type: 'heartbeat_ack', t: now }));
+      const peerUid = session.participants.find((participantUid) => participantUid !== uid);
+      const peer = peerUid ? session.members.get(peerUid) : undefined;
+      ws.send(JSON.stringify({
+        type: 'heartbeat_ack',
+        t: now,
+        peerOnline: !!peer?.socket && peer.socket.readyState === WebSocket.OPEN,
+      }));
+      if (session.lastMovieMessage && session.lastMovieMessage.senderId !== uid) {
+        ws.send(JSON.stringify(session.lastMovieMessage));
+      }
+      if (session.lastMovieInvite && session.lastMovieInvite.uid !== uid) {
+        ws.send(JSON.stringify(session.lastMovieInvite));
+      }
+      if (session.movieState) {
+        ws.send(JSON.stringify({ type: 'movie', uid: peerUid || '', payload: session.movieState }));
+      }
       return;
     }
     if (session.status !== 'open') { fail(1004, 'session closed'); return; }
@@ -2825,12 +3262,15 @@ function handlePrivateChatSocket(ws: WebSocket) {
       }
       member.rateHits.push(now);
       const payload = {
-        type: 'message',
+        type: 'message' as const,
         clientId: String(msg?.clientId || '').slice(0, 64),
         senderId: uid,
         text,
         ts: now,
       };
+      if (text.startsWith('__cinemachat_movie__:')) {
+        session.lastMovieMessage = payload;
+      }
       // Deliver to the ONE other participant only — never broadcast publicly.
       privateSessionBroadcast(session, payload, uid);
       // Echo an ack to the sender (optimistic UI keeps the server timestamp).
@@ -2841,6 +3281,30 @@ function handlePrivateChatSocket(ws: WebSocket) {
     if (type === 'typing') {
       member.typing = !!msg?.typing;
       privateSessionBroadcast(session, { type: 'typing', uid, typing: member.typing }, uid);
+      return;
+    }
+
+    if (type === 'movie_invite') {
+      const movie = msg?.movie;
+      const clientId = String(msg?.clientId || '').slice(0, 64);
+      if (!clientId || !movie || typeof movie !== 'object' || Array.isArray(movie)) {
+        ws.send(JSON.stringify({ type: 'error', message: 'bad_movie_invite' }));
+        return;
+      }
+      const payload = {
+        id: String(movie.id || '').slice(0, 256),
+        title: String(movie.title || '').slice(0, 500),
+        ...(movie.image ? { image: String(movie.image).slice(0, 8192) } : {}),
+        url: String(movie.url || '').slice(0, 32 * 1024),
+      };
+      if (!payload.id || !payload.title || !payload.url) {
+        ws.send(JSON.stringify({ type: 'error', message: 'bad_movie_invite' }));
+        return;
+      }
+      const invite = { type: 'movie_invite' as const, uid, clientId, payload };
+      session.lastMovieInvite = invite;
+      privateSessionBroadcast(session, invite, uid);
+      ws.send(JSON.stringify({ ...invite, ack: true }));
       return;
     }
 
@@ -2855,7 +3319,9 @@ function handlePrivateChatSocket(ws: WebSocket) {
       }
       let serialized = '';
       try { serialized = JSON.stringify(payload); } catch { serialized = ''; }
-      if (!serialized || serialized.length > 4096) {
+      // Signed stream URLs can be long. The client strips posters/base64 data;
+      // retain a bounded ceiling for legitimate playback commands.
+      if (!serialized || serialized.length > 40 * 1024) {
         ws.send(JSON.stringify({ type: 'error', message: 'movie_payload_too_large' }));
         return;
       }
@@ -2892,8 +3358,16 @@ function handlePrivateChatSocket(ws: WebSocket) {
       if (member && member.socket === ws) {
         session.members.delete(uid);
         privateSessionBroadcast(session, { type: 'presence', uid, online: false }, uid);
+        // NEVER destroy the session from here. A transient socket drop (page
+        // reload, tab hidden/backgrounded, network blip, React dev-mode
+        // remount) of the FIRST joiner must not reap the shared room while the
+        // peer is still joining — that stranded the reconnecting client against
+        // a dead session id forever ("stuck on connecting", messages dropped).
+        // Abandoned sessions are reaped by the heartbeat sweep below with the
+        // grace anchored at this disconnect, so a reconnecting / late-joining
+        // participant always rejoins the SAME session id.
         if (session.members.size === 0) {
-          destroyPrivateSession(session.connectionId, 'both participants disconnected');
+          session.lastMemberLeftAt = Date.now();
         }
       }
     }
@@ -2904,9 +3378,13 @@ function handlePrivateChatSocket(ws: WebSocket) {
   });
 }
 
-// Periodic sweep: destroy sessions whose heartbeats went silent (abrupt network
-// / browser shutdown). This bounded fallback guarantees ephemerality even when
-// a Leave/Close event can never arrive.
+// Periodic sweep: destroy sessions that are SURELY dead (no member heartbeats
+// for the full window — abrupt network / browser shutdown where a Leave/Close
+// event can never arrive). This is the ONLY sparse path for the shared room to
+// disappear after a disconnect; a session is never reaped from a socket close
+// handler, so a newly created session and a fresh reconnect window always
+// survive long enough for both clients to join. Bounded fallback that keeps
+// ephemerality even when a Leave/Close event can never arrive.
 setInterval(() => {
   const now = Date.now();
   for (const [connectionId, session] of privateSessions) {
@@ -2914,11 +3392,25 @@ setInterval(() => {
       privateSessions.delete(connectionId);
       continue;
     }
-    const allStale = session.participants.every((p) => {
-      const member = session.members.get(p);
-      return !member || now - member.lastHeartbeatAt > PRIVATE_SESSION_HEARTBEAT_MS;
+    const members = new Map<string, number>();
+    for (const [puid, member] of session.members) members.set(puid, member.lastHeartbeatAt);
+    const allStale = privateSessionSweepable({
+      participants: session.participants,
+      members,
+      createdAt: session.createdAt,
+      lastMemberLeftAt: session.lastMemberLeftAt,
+      now,
+      heartbeatWindowMs: PRIVATE_SESSION_HEARTBEAT_MS,
     });
-    if (allStale) destroyPrivateSession(connectionId, 'heartbeat expired');
+    if (allStale) {
+      // Distinguish a session whose last member disconnected from one that only
+      // ever had silent heartbeats, so the log stays greppable for both.
+      const reason =
+        session.members.size === 0 && session.lastMemberLeftAt !== undefined
+          ? 'both participants disconnected'
+          : 'heartbeat expired';
+      destroyPrivateSession(connectionId, reason);
+    }
   }
 }, PRIVATE_SESSION_SWEEP_MS);
 
@@ -2998,6 +3490,9 @@ async function startServer() {
     console.error('[DB] Critical failed to load/init database:', err);
     db = { ...INITIAL_DB }; // Fallback to memory
   }
+  // The watch-call user mirror reads the LIVE db.json users (registrations
+  // included) so call-target resolution never needs a Firestore read.
+  watchCallDbUsers = () => db.users || [];
 
   // Ensure all top-level properties exist
   if (!db.deletedIds) db.deletedIds = [];
@@ -8452,6 +8947,10 @@ async function startServer() {
 
   app.post('/api/friend-request/lookup', async (req, res) => {
     try {
+      // Contact lookup exposes whether a phone/CC-ID belongs to an account, so
+      // it is available only to a signed-in CinemaChat user. The caller UID is
+      // token-derived and is never accepted from the request body.
+      await verifyFirebaseIdToken(req.headers.authorization);
       const clientIp = getClientIp(req);
       const now = Date.now();
       if (!friendLookupRateLimits[clientIp]) friendLookupRateLimits[clientIp] = [];
@@ -8468,9 +8967,45 @@ async function startServer() {
 
       const adminApp = initializeFirebaseAdmin();
 
+      // Bounded Firestore read. A quota-exhausted project (RESOURCE_EXHAUSTED)
+      // retries with long backoffs inside the Admin SDK, so an unbounded query
+      // can hang the client's search spinner for minutes. Every Firestore read
+      // below races a timeout; quota errors fail FAST with 503 so the UI can
+      // show a recoverable error instead of an endless hang.
+      const BOUNDED_QUERY_MS = 6000;
+      const boundedFirestoreRead = async <T>(task: () => Promise<T>): Promise<T | null> => {
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          return await Promise.race([
+            task(),
+            new Promise<null>((resolve) => {
+              timer = setTimeout(() => resolve(null), BOUNDED_QUERY_MS);
+            }),
+          ]);
+        } catch (err: any) {
+          if (String(err?.code || '').includes('RESOURCE_EXHAUSTED')) {
+            const quotaError: any = new Error('lookup temporarily unavailable');
+            quotaError.status = 503;
+            throw quotaError;
+          }
+          console.warn('[friend-lookup] Firestore read skipped:', err?.message || err);
+          return null;
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      };
+
+      // A phone number can never be a CC-ID. Digits-only input (allowing the
+      // usual +/spaces/dashes/brackets spelling) must go STRAIGHT to the mobile
+      // path — routing it through the CC phase used to burn several quota-dead
+      // Firestore queries before the phone lookup ever ran, which is exactly
+      // the "search appears unresponsive" report.
+      const rawDigits = raw.replace(/\D/g, '');
+      const isPhoneLike = rawDigits.length >= 7 && /^[\d+\s().-]+$/.test(raw);
+
       // --- 1. CC-ID path (no privacy opt-in required; codes are public) -----
       const core = stripCcGroups(raw);
-      if (/^[A-Z0-9-]{2,}$/.test(core)) {
+      if (!isPhoneLike && /^[A-Z0-9-]{2,}$/.test(core)) {
         const codeCandidates = [core, `CC-${core}`, `CC-CC-${core}`].filter((c, i, arr) => c && arr.indexOf(c) === i);
         for (const code of codeCandidates) {
           const local = (db.users || []).find(
@@ -8478,22 +9013,20 @@ async function startServer() {
           );
           if (local) return res.json({ ok: true, user: sanitizeFriendLookupResult(local) });
           if (adminApp) {
-            try {
-              const snap = await admin
+            const snap = await boundedFirestoreRead(() =>
+              admin
                 .firestore(adminApp)
                 .collection('users')
                 .where('uniqueCode', '==', code)
                 .limit(1)
-                .get();
-              if (!snap.empty) {
-                const d = snap.docs[0].data();
-                return res.json({
-                  ok: true,
-                  user: sanitizeFriendLookupResult({ uid: snap.docs[0].id, ...d }),
-                });
-              }
-            } catch (err: any) {
-              console.warn('[friend-lookup] Firestore code query skipped:', err?.message || err);
+                .get(),
+            );
+            if (snap && !snap.empty) {
+              const d = snap.docs[0].data();
+              return res.json({
+                ok: true,
+                user: sanitizeFriendLookupResult({ uid: snap.docs[0].id, ...d }),
+              });
             }
           }
         }
@@ -8509,33 +9042,62 @@ async function startServer() {
         if (local) return res.json({ ok: true, user: sanitizeFriendLookupResult(local) });
 
         if (adminApp) {
+          // Stored spellings vary (+964…, 964…, 07…). One bounded `in` query per
+          // field replaces the old per-spelling == chain, cutting Firestore
+          // reads (quota) and worst-case latency at the same time.
+          const digits = canonicalPhone.replace(/\D/g, '');
+          const localSpelling = digits.startsWith('964') ? `0${digits.slice(3)}` : '';
+          const phoneVariants = Array.from(
+            new Set([canonicalPhone, digits, localSpelling].filter(Boolean)),
+          ).slice(0, 10);
           const searchFields = ['phone', 'phoneNumber'];
           for (const field of searchFields) {
-            try {
-              const snap = await admin
+            const snap = await boundedFirestoreRead(() =>
+              admin
                 .firestore(adminApp)
                 .collection('users')
-                .where(field, '==', canonicalPhone)
+                .where(field, 'in', phoneVariants)
                 .limit(1)
-                .get();
-              if (!snap.empty) {
-                const d = snap.docs[0].data() as any;
-                const privacy = d?.privacySettings || {};
-                const allowsLookup =
-                  privacy.allowPhoneLookup !== false &&
-                  privacy.lookupByPhone !== false &&
-                  privacy.phoneLookup !== false &&
-                  String(privacy.phoneLookupVisibility || '').toLowerCase() !== 'nobody';
-                if (!allowsLookup) {
-                  return res.status(404).json({ ok: false, error: 'Not found' });
-                }
-                return res.json({
-                  ok: true,
-                  user: sanitizeFriendLookupResult({ uid: snap.docs[0].id, ...d }),
-                });
+                .get(),
+            );
+            if (snap && !snap.empty) {
+              const d = snap.docs[0].data() as any;
+              const privacy = d?.privacySettings || {};
+              const allowsLookup =
+                privacy.allowPhoneLookup !== false &&
+                privacy.lookupByPhone !== false &&
+                privacy.phoneLookup !== false &&
+                String(privacy.phoneLookupVisibility || '').toLowerCase() !== 'nobody';
+              if (!allowsLookup) {
+                return res.status(404).json({ ok: false, error: 'Not found' });
               }
-            } catch (err: any) {
-              console.warn('[friend-lookup] Firestore phone query skipped:', err?.message || err);
+              return res.json({
+                ok: true,
+                user: sanitizeFriendLookupResult({ uid: snap.docs[0].id, ...d }),
+              });
+            }
+          }
+
+          // Older mobile accounts can legitimately exist in Firebase Auth
+          // while their public `users/{uid}` profile is missing (for example,
+          // an interrupted legacy registration/migration). They must remain
+          // discoverable for Watch Together. This fallback is deliberately
+          // last: an existing profile's privacy settings above always win.
+          try {
+            const authUser = await admin.auth(adminApp).getUserByPhoneNumber(canonicalPhone);
+            if (authUser?.uid) {
+              return res.json({
+                ok: true,
+                user: sanitizeFriendLookupResult({
+                  uid: authUser.uid,
+                  name: authUser.displayName || 'بەکارهێنەر',
+                  uniqueCode: '',
+                }),
+              });
+            }
+          } catch (authErr: any) {
+            if (authErr?.code !== 'auth/user-not-found') {
+              console.warn('[friend-lookup] Auth phone fallback skipped:', authErr?.message || authErr);
             }
           }
         }
@@ -8543,6 +9105,7 @@ async function startServer() {
 
       return res.status(404).json({ ok: false, error: 'Not found' });
     } catch (err: any) {
+      if (err?.status === 401 || err?.status === 503) return respondAuthError(res, err);
       console.error('[friend-lookup]', err?.message || err);
       res.status(500).json({ ok: false, error: 'Internal server error' });
     }
@@ -12379,9 +12942,15 @@ let videoDownloaded = false;
     }
   });
 
-  // Authenticated Watch Together call creation. Both identities come from the
-  // verified sender token and canonical user documents; public names/codes in
-  // the request body are never trusted.
+  // ── Watch Together call flow — server-authoritative, quota-independent ──
+  // Every endpoint below resolves state from the in-memory WatchCallStore
+  // FIRST. Firestore is only touched by the async, breaker-guarded mirror —
+  // a 429/RESOURCE_EXHAUSTED there can no longer fail, delay, or block any
+  // call operation. Identities ALWAYS come from the verified Firebase token;
+  // client-supplied UIDs are never trusted for authorization.
+
+  // Create a call: store-first, push `watch_call:ringing` to the receiver's
+  // live sockets immediately, then mirror to Firestore in the background.
   app.post('/api/friend-connect/watch-call', async (req: any, res: any) => {
     try {
       const senderUid = await verifyFirebaseIdToken(req.headers.authorization);
@@ -12389,63 +12958,70 @@ let videoDownloaded = false;
       if (!targetUid || targetUid === senderUid) {
         return res.status(400).json({ error: 'invalid watch-call target' });
       }
-      const adminApp = initializeFirebaseAdmin();
-      if (!adminApp) return res.status(503).json({ error: 'Firebase Admin unavailable' });
-      const firestore = admin.firestore(adminApp);
-      const [senderSnap, targetSnap] = await Promise.all([
-        firestore.collection('users').doc(senderUid).get(),
-        firestore.collection('users').doc(targetUid).get(),
+
+      const [receiver, sender] = await Promise.all([
+        resolveWatchCallUser(targetUid),
+        resolveWatchCallUser(senderUid),
       ]);
-      if (!senderSnap.exists || !targetSnap.exists) {
-        return res.status(404).json({ error: 'account not found' });
+      if (!receiver) {
+        return res.status(404).json({ error: 'ئەکاونتی وەرگر بەردەست نییە', code: 'target_unavailable' });
       }
-      const sender = senderSnap.data() as any;
-      const target = targetSnap.data() as any;
-      const connectionId = [senderUid, targetUid].sort().join('__');
-      const now = new Date().toISOString();
-      const callRef = firestore.collection('invitations').doc();
-      await callRef.set({
-        kind: 'watchcall',
-        status: 'calling',
-        fromId: senderUid,
-        fromName: String(sender?.name || sender?.displayName || 'بەکارهێنەر'),
-        fromCode: String(sender?.uniqueCode || ''),
-        fromAvatar: sender?.avatarUrl || sender?.avatar || null,
-        toId: targetUid,
-        toName: String(target?.name || target?.displayName || 'بەکارهێنەر'),
-        toCode: String(target?.uniqueCode || ''),
-        toAvatar: target?.avatarUrl || target?.avatar || null,
-        toKeys: [targetUid, String(target?.uniqueCode || ''), canonicalizeMobilePhone(target?.phoneNumber || target?.phone || '')].filter(Boolean),
-        toPhone: target?.phoneNumber || target?.phone || null,
-        connectionId,
-        startedAt: now,
-        createdAt: now,
-        readAt: null,
+
+      let created: { call: WatchCallRecord; duplicate: boolean };
+      try {
+        created = watchCallStore.createCall({
+          caller: sender ?? { uid: senderUid, name: 'بەکارهێنەر', code: '', avatar: null },
+          receiver,
+        });
+      } catch (storeErr) {
+        return respondStoreError(res, storeErr);
+      }
+
+      const call = created.call;
+      // INSTANT delivery: every live socket of the receiver rings now. A
+      // receiver that is offline picks the ring up via the 20s safety-net poll
+      // or the state_sync on their next socket auth — never a page refresh.
+      const deliveredLive = pushToUser(targetUid, {
+        type: 'watch_call:ringing',
+        call: serializeWatchCall(call),
       });
-      return res.json({ ok: true, callId: callRef.id, connectionId });
+      if (deliveredLive) watchCallStore.markRinging(call.callId);
+
+      // Best-effort Firestore mirror (never blocks the response).
+      if (!created.duplicate) {
+        mirrorWatchCallToFirestore('create', () => mirrorWatchCallCreate(call));
+      }
+
+      console.log(
+        `[WatchCall] created call=${WATCH_CALL_SHORT(call.callId)} from=${WATCH_CALL_SHORT(senderUid)} ` +
+          `to=${WATCH_CALL_SHORT(targetUid)} live=${deliveredLive} dup=${created.duplicate}`,
+      );
+      const payload = serializeWatchCall(call);
+      return res.json({
+        ok: true,
+        callId: payload.callId,
+        connectionId: payload.connectionId,
+        roomId: payload.roomId,
+        status: payload.status,
+        expiresAt: payload.expiresAt,
+        duplicate: created.duplicate,
+        deliveredLive,
+        call: payload,
+      });
     } catch (err: any) {
       if (err?.status === 401 || err?.status === 503) return respondAuthError(res, err);
       return res.status(err?.status || 500).json({ error: err?.message || 'watch-call creation failed' });
     }
   });
 
+  // Safety-net recovery list (store-backed — Firestore NOT involved). The
+  // client polls this every ~20s; the WebSocket remains the instant path.
   app.get('/api/friend-connect/watch-calls', async (req: any, res: any) => {
     try {
       const uid = await verifyFirebaseIdToken(req.headers.authorization);
-      const adminApp = initializeFirebaseAdmin();
-      if (!adminApp) return res.status(503).json({ error: 'Firebase Admin unavailable' });
-      const snapshot = await admin.firestore(adminApp)
-        .collection('invitations')
-        .where('toId', '==', uid)
-        .limit(50)
-        .get();
-      const cutoff = Date.now() - 90_000;
-      const calls = snapshot.docs
-        .map((item) => ({ id: item.id, ...item.data() } as any))
-        .filter((call) => call.kind === 'watchcall' && call.status === 'calling' && Date.parse(call.startedAt || '') >= cutoff)
-        .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
-        .slice(0, 20);
-      return res.json({ ok: true, calls });
+      const incoming = watchCallStore.listIncomingCalls(uid).map(serializeWatchCall);
+      const outgoing = watchCallStore.listOutgoingCalls(uid).map(serializeWatchCall);
+      return res.json({ ok: true, calls: incoming, incoming, outgoing });
     } catch (err: any) {
       if (err?.status === 401 || err?.status === 503) return respondAuthError(res, err);
       return res.status(err?.status || 500).json({ error: err?.message || 'watch-call lookup failed' });
@@ -12455,113 +13031,130 @@ let videoDownloaded = false;
   app.get('/api/friend-connect/watch-call/:callId', async (req: any, res: any) => {
     try {
       const uid = await verifyFirebaseIdToken(req.headers.authorization);
-      const adminApp = initializeFirebaseAdmin();
-      if (!adminApp) return res.status(503).json({ error: 'Firebase Admin unavailable' });
-      const snapshot = await admin.firestore(adminApp)
-        .collection('invitations')
-        .doc(String(req.params.callId || ''))
-        .get();
-      if (!snapshot.exists) return res.status(404).json({ error: 'watch call not found' });
-      const call = { id: snapshot.id, ...snapshot.data() } as any;
-      if (call.kind !== 'watchcall' || (call.fromId !== uid && call.toId !== uid)) {
-        return res.status(403).json({ error: 'forbidden' });
-      }
-      return res.json({ ok: true, call });
+      const call = watchCallStore.getCallForParticipant(String(req.params.callId || ''), uid);
+      if (!call) return res.status(404).json({ error: 'watch call not found' });
+      return res.json({ ok: true, call: serializeWatchCall(call) });
     } catch (err: any) {
       if (err?.status === 401 || err?.status === 503) return respondAuthError(res, err);
       return res.status(err?.status || 500).json({ error: err?.message || 'watch-call lookup failed' });
     }
   });
 
-  // Authenticated Watch Together accept/decline. The receiver identity comes
-  // exclusively from the verified Firebase token; client-supplied UIDs are
-  // never trusted. Admin SDK writes make this path independent of stale
-  // deployed client rules and publish `accepted` only after the shared pair is
-  // ready, so both browsers always resolve the same private session.
+  // Accept/decline: ONLY the receiver (token-derived), atomic in the store,
+  // pushes the transition to BOTH participants' live sockets, and creates the
+  // canonical accepted connection in the same synchronous step — both clients
+  // get identical callId/connectionId/roomId straight from the server.
   app.post('/api/friend-connect/watch-call/respond', async (req: any, res: any) => {
     try {
       const uid = await verifyFirebaseIdToken(req.headers.authorization);
       const callId = String(req.body?.callId || '').trim();
-      const requestedConnectionId = String(req.body?.connectionId || '').trim();
       const status = String(req.body?.status || '').trim();
       if (!callId || !['accepted', 'declined'].includes(status)) {
         return res.status(400).json({ error: 'invalid watch-call response' });
       }
-
-      const adminApp = initializeFirebaseAdmin();
-      if (!adminApp) return res.status(503).json({ error: 'Firebase Admin unavailable' });
-      const firestore = admin.firestore(adminApp);
-      const callRef = firestore.collection('invitations').doc(callId);
-
-      const result = await firestore.runTransaction(async (transaction) => {
-        const callSnap = await transaction.get(callRef);
-        if (!callSnap.exists) {
-          const error: any = new Error('watch call not found');
-          error.status = 404;
-          throw error;
-        }
-        const call = callSnap.data() as any;
-        if (call?.kind !== 'watchcall' || call?.toId !== uid) {
-          const error: any = new Error('forbidden');
-          error.status = 403;
-          throw error;
-        }
-        if (!['calling', status].includes(String(call?.status || ''))) {
-          const error: any = new Error('watch call already resolved');
-          error.status = 409;
-          throw error;
-        }
-
-        const now = new Date().toISOString();
-        if (status === 'declined') {
-          transaction.update(callRef, { status: 'declined', updatedAt: now });
-          return { connectionId: call.connectionId || requestedConnectionId || '' };
-        }
-
-        const fromId = String(call.fromId || '').trim();
-        const toId = String(call.toId || '').trim();
-        if (!fromId || !toId || fromId === toId) {
-          const error: any = new Error('invalid watch-call participants');
-          error.status = 422;
-          throw error;
-        }
-        const canonicalConnectionId = [fromId, toId].sort().join('__');
-        if (requestedConnectionId && requestedConnectionId !== canonicalConnectionId) {
-          const error: any = new Error('connection id mismatch');
-          error.status = 422;
-          throw error;
-        }
-        const connectionRef = firestore
-          .collection(PRIVATE_CONNECTIONS_COLLECTION)
-          .doc(canonicalConnectionId);
-        transaction.set(connectionRef, {
-          kind: 'friend',
-          participants: [fromId, toId].sort(),
-          requesterUid: fromId,
-          requesterName: String(call.fromName || 'بەکارهێنەر'),
-          requesterCode: String(call.fromCode || ''),
-          requesterAvatar: call.fromAvatar || null,
-          targetUid: toId,
-          targetName: String(call.toName || 'بەکارهێنەر'),
-          targetCode: String(call.toCode || ''),
-          targetAvatar: call.toAvatar || null,
-          status: 'accepted',
-          createdAt: String(call.createdAt || now),
-          updatedAt: now,
-          acceptedAt: now,
-        }, { merge: false });
-        transaction.update(callRef, {
-          status: 'accepted',
-          connectionId: canonicalConnectionId,
-          updatedAt: now,
+      let result;
+      try {
+        result = watchCallStore.respondToCall({
+          callId,
+          receiverUid: uid,
+          decision: status as 'accepted' | 'declined',
         });
-        return { connectionId: canonicalConnectionId };
-      });
+      } catch (storeErr) {
+        return respondStoreError(res, storeErr);
+      }
 
-      return res.json({ ok: true, status, ...result });
+      // Best-effort mirrors AFTER the authoritative store write succeeded.
+      if (status === 'accepted' && result.connection) {
+        const connection = result.connection;
+        mirrorWatchCallToFirestore('respond-connection', () => mirrorConnectionUpsert(connection));
+      }
+      mirrorWatchCallToFirestore('respond-status', () => mirrorWatchCallStatus(result.call));
+
+      console.log(
+        `[WatchCall] respond call=${WATCH_CALL_SHORT(callId)} by=${WATCH_CALL_SHORT(uid)} → ${status}`,
+      );
+      return res.json({
+        ok: true,
+        status,
+        callId: result.call.callId,
+        connectionId: result.call.connectionId,
+        roomId: result.call.roomId,
+        call: serializeWatchCall(result.call),
+        connection: result.connection ? serializeWatchConnection(result.connection) : null,
+      });
     } catch (err: any) {
       if (err?.status === 401 || err?.status === 503) return respondAuthError(res, err);
       return res.status(err?.status || 500).json({ error: err?.message || 'watch-call response failed' });
+    }
+  });
+
+  // Cancel: ONLY the caller. The ring disappears for the receiver instantly
+  // (socket push) and the pair is free for a new call.
+  app.post('/api/friend-connect/watch-call/cancel', async (req: any, res: any) => {
+    try {
+      const uid = await verifyFirebaseIdToken(req.headers.authorization);
+      const callId = String(req.body?.callId || '').trim();
+      if (!callId) return res.status(400).json({ error: 'missing callId' });
+      try {
+        const call = watchCallStore.cancelCall({ callId, callerUid: uid });
+        mirrorWatchCallToFirestore('cancel', () => mirrorWatchCallStatus(call));
+        return res.json({ ok: true, call: serializeWatchCall(call) });
+      } catch (storeErr) {
+        return respondStoreError(res, storeErr);
+      }
+    } catch (err: any) {
+      if (err?.status === 401 || err?.status === 503) return respondAuthError(res, err);
+      return res.status(err?.status || 500).json({ error: err?.message || 'watch-call cancel failed' });
+    }
+  });
+
+  // End: EITHER participant of an accepted/connected session. Tears the
+  // private chat session down with it so both UIs land in a consistent state.
+  app.post('/api/friend-connect/watch-call/end', async (req: any, res: any) => {
+    try {
+      const uid = await verifyFirebaseIdToken(req.headers.authorization);
+      const connectionId = String(req.body?.connectionId || '').trim();
+      if (!connectionId) return res.status(400).json({ error: 'missing connectionId' });
+      let result;
+      try {
+        result = watchCallStore.endSession({ connectionId, uid });
+      } catch (storeErr) {
+        return respondStoreError(res, storeErr);
+      }
+      destroyPrivateSession(connectionId, 'watch-call ended');
+      if (result.call) {
+        mirrorWatchCallToFirestore('end', () => mirrorWatchCallStatus(result.call!));
+      }
+      return res.json({
+        ok: true,
+        call: result.call ? serializeWatchCall(result.call) : null,
+        connection: serializeWatchConnection(result.connection),
+      });
+    } catch (err: any) {
+      if (err?.status === 401 || err?.status === 503) return respondAuthError(res, err);
+      return res.status(err?.status || 500).json({ error: err?.message || 'watch-call end failed' });
+    }
+  });
+
+  // Recovery surface: the caller's/receiver's CURRENT accepted session, read
+  // purely from the store. Drives refresh/reconnect restoration without any
+  // Firestore dependency.
+  app.get('/api/friend-connect/active-session', async (req: any, res: any) => {
+    try {
+      const uid = await verifyFirebaseIdToken(req.headers.authorization);
+      const active = watchCallStore.getActiveSessionFor(uid);
+      if (!active) return res.json({ ok: true, active: false, session: null });
+      return res.json({
+        ok: true,
+        active: true,
+        session: {
+          call: serializeWatchCall(active.call),
+          connection: serializeWatchConnection(active.connection),
+        },
+      });
+    } catch (err: any) {
+      if (err?.status === 401 || err?.status === 503) return respondAuthError(res, err);
+      return res.status(err?.status || 500).json({ error: err?.message || 'active-session lookup failed' });
     }
   });
 
@@ -12578,8 +13171,17 @@ let videoDownloaded = false;
 
   app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
+  // Create the HTTP server before Vite so development HMR can share this exact
+  // listener. `hmr: { port: 0 }` in middleware mode falls back to Vite's
+  // separate port 24678, which collides as soon as a second local CinemaChat
+  // server is running and fills both browsers with handshake errors.
+  const httpServer = http.createServer(app);
+
   if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({ server: { middlewareMode: true, hmr: { port: 0 } }, appType: 'spa' }); // Ensure HMR is configured
+    const vite = await createViteServer({
+      server: { middlewareMode: true, hmr: { server: httpServer } },
+      appType: 'spa',
+    });
     app.use(vite.middlewares);
     // Fallback for development if Vite doesn't handle the request (e.g., Vite dev server is not running)
     app.get('*', (req, res, next) => { // Added next to allow other routes to handle
@@ -12742,12 +13344,45 @@ let videoDownloaded = false;
     }
   }, 10000);
 
-  // The private-chat WebSocket shares the app's HTTP server on a dedicated
-  // path so the whole stack (static files, REST API, WS) runs on one port.
-  const httpServer = http.createServer(app);
+  // Both realtime channels share ONE HTTP upgrade router. Registering two
+  // WebSocketServer instances with `{ server, path }` makes the first listener
+  // reject the other path with HTTP 400 before the matching listener runs.
+  // `noServer` plus one path router prevents that listener-order race.
   httpServer.once('close', stopRoomSubtitleEngine);
-  const privateChatWss = new WebSocketServer({ server: httpServer, path: '/ws/private-chat' });
+  const privateChatWss = new WebSocketServer({ noServer: true });
   privateChatWss.on('connection', handlePrivateChatSocket);
+
+  // Global call-signaling socket: ONE authenticated channel per device that
+  // receives every Watch Together transition instantly (ringing / accepted /
+  // declined / cancelled / expired / ended). Same HTTP server, same verified
+  // tokens — no new ports, no new services.
+  const callSignalingWss = new WebSocketServer({ noServer: true });
+  callSignalingWss.on('connection', handleCallSignalingSocket);
+
+  httpServer.on('upgrade', (request, socket, head) => {
+    const pathname = new URL(request.url || '/', 'http://localhost').pathname;
+    const target = pathname === '/ws/private-chat'
+      ? privateChatWss
+      : pathname === '/ws/call-signaling'
+        ? callSignalingWss
+        : null;
+    if (!target) return;
+    target.handleUpgrade(request, socket, head, (webSocket) => {
+      target.emit('connection', webSocket, request);
+    });
+  });
+
+  // WatchCallStore TTL sweep: unanswered rings expire authoritatively on the
+  // SERVER (the emitted events fan out to both parties' sockets), and terminal
+  // records are purged so memory stays bounded.
+  const watchCallSweepTimer = setInterval(() => {
+    try {
+      watchCallStore.cleanupExpiredCalls();
+    } catch (err: any) {
+      console.warn('[WatchCall] sweep failed:', err?.message || err);
+    }
+  }, 10_000);
+  watchCallSweepTimer.unref?.();
 
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log('==================================================');
@@ -12763,6 +13398,10 @@ let videoDownloaded = false;
         ? '[Firebase Admin] Ready for token verification.'
         : '[Firebase Admin] NOT configured — profile persistence endpoints return 503.',
     );
+    if (FORCE_FIRESTORE_429) {
+      console.log('[WatchCall] *** FORCED FIRESTORE 429 MODE — watch-call Firestore mirrors/fallbacks simulate RESOURCE_EXHAUSTED ***');
+    }
+    console.log('[WatchCall] server-authoritative call store active (Firestore-independent).');
     console.log('==================================================');
     // Fire-and-forget rehydration of Drama Rooms from Firestore (non-blocking,
     // never crashes boot if Firestore is unreachable).

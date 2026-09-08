@@ -20,23 +20,27 @@ export interface PrivateChatMessage {
 }
 
 /** Full watch-together playback state exchanged between the two participants
- *  (movie selection, play/pause and the current playhead position). */
+ *  (movie selection, play/pause and the current playhead position).
+ *  `seek` marks an EXPLICIT user seek — receivers apply it immediately instead
+ *  of converging only when the playhead gap is meaningful. */
 export interface MovieSyncPayload {
   movie: { id: string; title: string; image?: string; url: string } | null;
   playing: boolean;
   time: number;
   seq: number;
   updatedAt: number;
+  seek?: boolean;
 }
 
 export type PrivateChatEvent =
-  | { type: "joined"; sessionId: string; participants: string[]; peerUid: string }
+  | { type: "joined"; sessionId: string; participants: string[]; peerUid: string; peerOnline?: boolean }
   | { type: "message"; clientId: string; senderId: string; text: string; ts: number; ack?: boolean }
   | { type: "presence"; uid: string; online: boolean }
   | { type: "typing"; uid: string; typing: boolean }
   | { type: "movie"; uid: string; payload: MovieSyncPayload }
+  | { type: "movie_invite"; uid: string; clientId: string; payload: MovieSyncPayload["movie"]; ack?: boolean }
   | { type: "voice_signal"; uid: string; payload: { kind: "offer" | "answer" | "ice"; data: unknown } }
-  | { type: "heartbeat_ack"; t: number }
+  | { type: "heartbeat_ack"; t: number; peerOnline?: boolean }
   | { type: "session_closed"; reason: string }
   | { type: "error"; message: string };
 
@@ -79,6 +83,7 @@ export class PrivateChatClient {
   private reconnectTimer: number | null = null;
   private reconnectAttempts = 0;
   private closedByUser = false;
+  private joined = false;
   private lastCloseReason = "closed";
 
   /** Fired for every server event (message/presence/typing/joined/...). */
@@ -100,6 +105,7 @@ export class PrivateChatClient {
   }
 
   private openSocket(): void {
+    this.joined = false;
     if (this.ws) {
       try { this.ws.close(); } catch { /* already closed */ }
     }
@@ -140,12 +146,15 @@ export class PrivateChatClient {
       let data: any;
       try { data = JSON.parse(String(event.data)); } catch { return; }
       if (data?.type === "joined") {
+        this.joined = true;
         this.reconnectAttempts = 0;
         this.startHeartbeat();
       }
       if (data?.type === "error") {
-        // Fatal server-side rejection (bad auth, unknown/closed session, ...)
-        this.close(String(data?.message || "error"));
+        // Delivery/validation errors belong to one message and must never tear
+        // down the whole chat socket. Fatal auth/session failures are followed
+        // by a server close frame and handled by onclose.
+        this.onEvent(data as PrivateChatEvent);
         return;
       }
       this.onEvent(data as PrivateChatEvent);
@@ -216,8 +225,12 @@ export class PrivateChatClient {
   }
 
   /** Broadcast a watch-together playback state change to the peer participant. */
-  sendMovie(payload: MovieSyncPayload): void {
-    this.sendJson({ type: "movie", payload });
+  sendMovie(payload: MovieSyncPayload): boolean {
+    return this.joined && this.sendJson({ type: "movie", payload });
+  }
+
+  sendMovieInvite(movie: NonNullable<MovieSyncPayload["movie"]>, clientId: string): boolean {
+    return this.joined && this.sendJson({ type: "movie_invite", movie, clientId });
   }
 
   sendVoiceSignal(payload: { kind: "offer" | "answer" | "ice"; data: unknown }): void {
@@ -234,6 +247,7 @@ export class PrivateChatClient {
   close(reason: string): void {
     if (this.closedByUser) return;
     this.closedByUser = true;
+    this.joined = false;
     this.lastCloseReason = reason;
     this.stopHeartbeat();
     if (this.reconnectTimer !== null) {

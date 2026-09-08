@@ -1,86 +1,130 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { BellRing, Film, UserCheck, X, Loader2 } from "lucide-react";
 import { useSocialAuth } from "../../context/SocialAuthContext";
 import {
-  WatchCall,
-  expireWatchCallIfStale,
+  describeWatchCallError,
   respondToWatchCall,
   subscribeWatchCalls,
   WATCH_CALL_TTL_MS,
+  isAnswerableWatchCallStatus,
+  type WatchCall,
 } from "../../services/friendConnect";
+import {
+  ensureCallSignaling,
+  onCallEvent,
+  type WatchCallWire,
+} from "../../services/callSignaling";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WatchCallNotification — the GLOBAL "call invitation" ring for CinemaChat.
 //
-// Mounted at the app root (like FriendPresenceNotification / the invite toasts)
-// so a "Call Invitation" pressed on a found friend's card rings the RECEIVER
-// anywhere in the app — even with FriendConnectRoom closed. The signal lives in
-// the `invitations` collection (kind: "watchcall"), which already ships
-// permissive rules, so no firestore.rules change is needed.
-//
-// Dedupe: Repeating snapshots (e.g. heartbeat-style writes) must not re-ring.
-// Each invitation id is rung once; when a ring resolves (accepted / declined /
-// ended) its guard is cleared so a FUTURE re-call rings again. Rings older than
-// WATCH_CALL_TTL_MS (caller offline/closed) are dropped client-side and the doc
-// is passively expired.
+// Delivery paths (in order of speed):
+//   1. /ws/call-signaling push  — INSTANT (server-authoritative, no Firestore)
+//   2. 20s REST safety-net poll — store-backed, works with Firestore quota-dead
+//   3. Firestore onSnapshot     — legacy mirror path (best-effort only)
+// All three merge into ONE ring list deduped by call id, so a transition can
+// arrive on any path exactly once on screen.
 // ─────────────────────────────────────────────────────────────────────────────
 
+const wireToCall = (wire: WatchCallWire): WatchCall =>
+  ({
+    ...(wire as any),
+    id: wire.callId || (wire as any).id,
+  }) as WatchCall;
+
 const WatchCallNotification: React.FC<{
-  /** Called after a successful Accept so the app opens the FriendConnectRoom
-   *  (the private 1-to-1 chat the call was placed through). The accepted call
-   *  is passed up so the room can join THAT connection deterministically —
-   *  never a guessed "latest accepted" pair. */
+  /** Called after a successful Accept (server-confirmed) so the app opens the
+   *  FriendConnectRoom on the EXACT accepted call/connection/room identity. */
   onOpenRoom?: (call: WatchCall) => void;
 }> = ({ onOpenRoom }) => {
   const { currentUser, socialProfile } = useSocialAuth();
   const [rings, setRings] = useState<WatchCall[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  // One ring per invitation id — reset once the ring resolves (so re-calls ring
-  // again from a fresh start).
+  const onOpenRoomRef = useRef(onOpenRoom);
+  onOpenRoomRef.current = onOpenRoom;
 
   const uid = String(currentUser?.uid || "");
-  // Only real accounts have a stable Firebase UID to receive call invitations
-  // (guests and the local-admin shell never qualify).
-  // The Firebase account is enough to receive a ring. Requiring the separately
-  // loaded social profile created a startup race: the subscription was absent
-  // until a page refresh even though the user was already authenticated.
   const ready = !!uid && uid !== "admin_local_bypass";
-  // Normalized phone from the signed-in profile — matched (via canonical key)
-  // against the sender's typed/search phone, so address + identity always agree.
-  const myPhone =
-    (socialProfile as any)?.phoneNumber || socialProfile?.phone || "";
 
+  /** One merge point for every delivery path. Deduped by id; only answerable
+   *  calls within the TTL are shown — expired ones can never resurface. */
+  const mergeCalls = (incoming: WatchCall[]) => {
+    setRings((prev) => {
+      const now = Date.now();
+      const byId = new Map(prev.map((call) => [call.id, call]));
+      for (const call of incoming) {
+        if (!isAnswerableWatchCallStatus(call.status)) {
+          byId.delete(call.id); // any transition removes the ring everywhere
+          continue;
+        }
+        const age = now - new Date(call.startedAt || call.createdAt || "").getTime();
+        if (age >= WATCH_CALL_TTL_MS) {
+          byId.delete(call.id);
+          continue;
+        }
+        byId.set(call.id, call);
+      }
+      return [...byId.values()];
+    });
+  };
+
+  const replaceCalls = (incoming: WatchCall[]) => {
+    const now = Date.now();
+    setRings(
+      incoming.filter((call) =>
+        isAnswerableWatchCallStatus(call.status) &&
+        now - new Date(call.startedAt || call.createdAt || "").getTime() < WATCH_CALL_TTL_MS,
+      ),
+    );
+  };
+
+  // Path 1: instant server push.
+  useEffect(() => {
+    if (!ready) return;
+    void ensureCallSignaling(uid);
+    return onCallEvent((event) => {
+      if (event.type === "watch_call:ringing") {
+        mergeCalls([wireToCall(event.call)]);
+      } else if (event.type === "watch_call:state_sync") {
+        replaceCalls((event.incoming || []).map(wireToCall));
+      } else if (
+        event.type === "watch_call:accepted" ||
+        event.type === "watch_call:declined" ||
+        event.type === "watch_call:cancelled" ||
+        event.type === "watch_call:expired" ||
+        event.type === "watch_call:ended"
+      ) {
+        // Any non-ringing transition removes the ring immediately — including
+        // a call accepted on ANOTHER device of this account.
+        mergeCalls([wireToCall(event.call)]);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, uid]);
+
+  // Paths 2+3: bounded safety-net (REST poll 20s + Firestore snapshots).
   useEffect(() => {
     if (!ready) return;
     return subscribeWatchCalls(
-      { uid, phone: myPhone },
-      (calls) => {
-        const now = Date.now();
-        const live = calls.filter((call) => {
-          const age = now - new Date(call.startedAt).getTime();
-          if (age >= WATCH_CALL_TTL_MS) {
-            // Caller disconnected / abandoned the ring — expire it quietly.
-            void expireWatchCallIfStale(call).catch(() => {});
-            return false;
-          }
-          return true;
-        });
-        // Snapshot IDs already deduplicate rings. Mutating a ref inside a state
-        // updater loses new rings when StrictMode evaluates that updater twice.
-        setRings(live);
-      },
+      { uid, phone: (socialProfile as any)?.phoneNumber || socialProfile?.phone || "" },
+      (calls) => mergeCalls(calls),
       () => {},
     );
-  }, [ready, uid, myPhone]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, uid]);
 
   // Safety net: rings still on screen that outlive the TTL are dismissed.
   useEffect(() => {
     const iv = window.setInterval(() => {
       setRings((prev) =>
-        prev.filter((c) => Date.now() - new Date(c.startedAt).getTime() < WATCH_CALL_TTL_MS),
+        prev.filter(
+          (c) =>
+            Date.now() - new Date(c.startedAt || c.createdAt || "").getTime() <
+            WATCH_CALL_TTL_MS,
+        ),
       );
     }, 20_000);
     return () => window.clearInterval(iv);
@@ -91,11 +135,11 @@ const WatchCallNotification: React.FC<{
     setBusyId(call.id);
     setActionError(null);
     try {
-      const acceptedCall = {
-        ...call,
-        connectionId: call.connectionId || call.id,
-      };
-      await respondToWatchCall(
+      const acceptedCall = { ...call, connectionId: call.connectionId || call.id };
+      // SERVER-CONFIRMED accept: the response carries the canonical
+      // call/connection/roomId from the store. The room opens ONLY after this
+      // succeeds — never on an unconfirmed local guess.
+      const confirmed = await respondToWatchCall(
         acceptedCall.id,
         acceptedCall.connectionId,
         "accepted",
@@ -107,16 +151,16 @@ const WatchCallNotification: React.FC<{
             (socialProfile as any)?.avatarUrl || socialProfile?.avatar || null,
         },
       );
-      // The underlying friend connection is now accepted — open the exact
-      // shared private room immediately using the deterministic connection id.
-      onOpenRoom?.(acceptedCall);
+      const roomCall: WatchCall = confirmed?.call
+        ? { ...acceptedCall, ...confirmed.call, connectionId: confirmed.connectionId }
+        : acceptedCall;
+      setRings((prev) => prev.filter((c) => c.id !== call.id));
+      onOpenRoomRef.current?.(roomCall);
       window.dispatchEvent(
-        new CustomEvent("cinemachat:watch-call-accepted", {
-          detail: acceptedCall,
-        }),
+        new CustomEvent("cinemachat:watch-call-accepted", { detail: roomCall }),
       );
-    } catch {
-      setActionError("پەسەندکردنی بانگهێشتی پەیوەندی سەرکەوتوو نەبوو — دووبارە هەوڵبەرەوە");
+    } catch (err) {
+      setActionError(describeWatchCallError(err));
     } finally {
       setBusyId(null);
     }
@@ -127,9 +171,10 @@ const WatchCallNotification: React.FC<{
     setBusyId(call.id);
     setActionError(null);
     try {
-      await respondToWatchCall(call.id, call.connectionId, "declined");
-    } catch {
-      setActionError("ڕەتکردنەوەی بانگهێشتی پەیوەندی سەرکەوتوو نەبوو — دووبارە هەوڵبەرەوە");
+      await respondToWatchCall(call.id, call.connectionId || call.id, "declined");
+      setRings((prev) => prev.filter((c) => c.id !== call.id));
+    } catch (err) {
+      setActionError(describeWatchCallError(err));
     } finally {
       setBusyId(null);
     }

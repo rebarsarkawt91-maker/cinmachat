@@ -19,11 +19,14 @@ export const resolveWhatsAppUrl = (
 interface WhatsAppFloatButtonProps {
   groupLink?: string;
   directNumberUrl?: string;
+  /** Opens CinemaChat's saved-friends directory; independent of WhatsApp. */
+  onFriends?: () => void;
 }
 
 export const WhatsAppFloatButton: React.FC<WhatsAppFloatButtonProps> = ({
   groupLink,
   directNumberUrl,
+  onFriends,
 }) => {
   const [phase, setPhase] = useState<"idle" | "tooltip" | "modal">("idle");
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -58,6 +61,20 @@ export const WhatsAppFloatButton: React.FC<WhatsAppFloatButtonProps> = ({
 
   return (
     <>
+      {onFriends && (
+        <motion.button
+          type="button"
+          onClick={onFriends}
+          initial={{ scale: 0, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          whileHover={{ scale: 1.1 }}
+          className="fixed bottom-[4.8rem] left-6 z-50 w-11 h-11 rounded-full bg-[#111318] border border-emerald-500/45 text-emerald-400 flex items-center justify-center shadow-2xl shadow-emerald-500/20 cursor-pointer"
+          aria-label="My Friends"
+          title="My Friends"
+        >
+          <Users className="w-5 h-5" />
+        </motion.button>
+      )}
       <motion.button
         onClick={handleClick}
         initial={{ scale: 0, opacity: 0 }}

@@ -6727,6 +6727,32 @@ export default function App() {
   const [movies, setMovies] = useState<Movie[]>(initialMovieCatalogRef.current);
   const [isLoading, setIsLoading] = useState(initialMovieCatalogRef.current.length === 0);
 
+  // Strict Welcome-screen deadline (Problem 6): the full-screen loader may only
+  // ever show for WELCOME_MAX_MS. Whatever is still pending after that — a hung
+  // Firestore first snapshot, a cold backend, slow auth hydration — must not
+  // hold the page hostage: the shell renders, and if the catalog is still empty
+  // a small recoverable banner replaces the indefinite loader. Background
+  // loads keep working and fill the grid whenever they arrive; an already
+  // visible catalog is never cleared by a refresh. A warm cache bypasses the
+  // loader entirely (isLoading starts false above).
+  const WELCOME_MAX_MS = 6_000;
+  const moviesCountRef = useRef(movies.length);
+  moviesCountRef.current = movies.length;
+  useEffect(() => {
+    if (!isLoading) return;
+    const timer = window.setTimeout(() => {
+      setIsLoading(false);
+      if (moviesCountRef.current === 0) {
+        setErrorMsg(
+          (prev) =>
+            prev ||
+            "هەندێک داتا بە هێواشی لەبار دەکرێن — لیستی فیلمەکان بە خۆکاری نوێ دەبێتەوە",
+        );
+      }
+    }, WELCOME_MAX_MS);
+    return () => window.clearTimeout(timer);
+  }, [isLoading]);
+
   useEffect(() => {
     cacheMovieCatalog(movies);
   }, [movies]);
@@ -6745,6 +6771,7 @@ export default function App() {
   const [showCinemaChatRoom, setShowCinemaChatRoom] = useState(false);
   // The CinemaChat private Friend → Connect modal (the card's main entry).
   const [showFriendConnect, setShowFriendConnect] = useState(false);
+  const [openFriendsFromFloat, setOpenFriendsFromFloat] = useState(false);
   // Always keep the active private room identity at the app root so a call
   // accept can immediately reopen the same room on the receiver side without a
   // second click or a fuzzy connection match.
@@ -13447,8 +13474,10 @@ export default function App() {
           >
             <FriendConnectRoom
               open={showFriendConnect}
+              openFriendsInitially={openFriendsFromFloat}
               onClose={() => {
                 setShowFriendConnect(false);
+                setOpenFriendsFromFloat(false);
                 setActiveRoomId(null);
                 setAutoConnectConnectionId(null);
                 setFriendConnectJoinCall(null);
@@ -16218,7 +16247,14 @@ const trailerId = movie.trailerUrl
 
       {/* Point 15/20: Global Floating WhatsApp Button — rendered on every view,
           never gated behind build-time env vars. */}
-      <WhatsAppFloatButton groupLink={whatsappGroupLink} directNumberUrl={whatsappDirectUrl} />
+      <WhatsAppFloatButton
+        groupLink={whatsappGroupLink}
+        directNumberUrl={whatsappDirectUrl}
+        onFriends={() => {
+          setOpenFriendsFromFloat(true);
+          setShowFriendConnect(true);
+        }}
+      />
 
       <footer className="official-footer"> {/* Main Footer */}
         <div className="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-20 relative z-10">

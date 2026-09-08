@@ -12,6 +12,8 @@
     "lint": "tsc --noEmit",
     "test:subtitles": "node --test features/subtitles/subtitleGenerator.test.cjs",
     "test:hero": "node --test features/hero/heroConfig.test.cjs",
+    "test:watchcall": "npx tsx --test watchCallStore.test.ts",
+    "test:sweep": "npx tsx --test src/lib/privateChatSweep.test.ts",
     "check:video": "node scripts/video-load-check.mjs"
   },
   "dependencies": {

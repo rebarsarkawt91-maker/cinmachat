@@ -21,6 +21,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   BellRing,
+  Maximize2,
 } from "lucide-react";
 import {
   createFriendConnection,
@@ -34,10 +35,18 @@ import {
   sendWatchCallInvitation,
   cancelWatchCall,
   respondToWatchCall,
+  endWatchSession,
+  fetchActiveWatchSession,
+  describeWatchCallError,
   friendPairKey,
   maskInvitePhone,
   WATCH_CALL_TTL_MS,
+  isAnswerableWatchCallStatus,
 } from "../../services/friendConnect";
+import {
+  ensureCallSignaling,
+  onCallEvent,
+} from "../../services/callSignaling";
 import type {
   ContactSearchResult,
   FriendConnection,
@@ -49,6 +58,8 @@ import type { PrivateChatMessage, MovieSyncPayload } from "../../services/privat
 import { resolveMovieSourceUrl } from "../../services/cinemaChat";
 import type { AccountReadiness } from "../../services/accountReadiness";
 import { getYTId, loadYouTubeAPI } from "../../utils/youtube";
+import ImmersiveShieldedPlayer from "../Player/ImmersiveShieldedPlayer";
+import { db, doc, onSnapshot, updateDoc } from "../../lib/firebase";
 
 // ---------------------------------------------------------------------------
 // Friend → Connect private 1-to-1 flow (replaces the old general chat flow).
@@ -80,6 +91,8 @@ import { getYTId, loadYouTubeAPI } from "../../utils/youtube";
 
 interface FriendConnectRoomProps {
   open: boolean;
+  /** Opens the saved-friends directory immediately from the floating button. */
+  openFriendsInitially?: boolean;
   onClose: () => void;
   myUid: string;
   myName: string;
@@ -136,9 +149,32 @@ const generateClientId = (): string =>
     ? crypto.randomUUID()
     : `m_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
+const MOVIE_MESSAGE_PREFIX = "__cinemachat_movie__:";
+
+// Posters are display-only. Some catalog records contain a whole base64 image,
+// which must not be sent in a bounded real-time playback command.
+const syncableMovieImage = (value: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  const image = value.trim();
+  if (!image || image.startsWith("data:") || image.length > 2048) return undefined;
+  return image;
+};
+
+const movieFromMessage = (text: string): SyncedMovie | null => {
+  if (!text.startsWith(MOVIE_MESSAGE_PREFIX)) return null;
+  try {
+    const movie = JSON.parse(text.slice(MOVIE_MESSAGE_PREFIX.length));
+    if (!movie?.id || !movie?.title || !movie?.url) return null;
+    return movie as SyncedMovie;
+  } catch {
+    return null;
+  }
+};
+
 export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   const {
     open,
+    openFriendsInitially = false,
     onClose,
     myUid: myUidProp,
     myName: myNameProp,
@@ -170,9 +206,13 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
 
   // --- Watch-together movie sync (real-time relay over the private-chat socket) ---
   const [roomMovie, setRoomMovie] = useState<SyncedMovie | null>(null);
+  const roomMovieRef = useRef<SyncedMovie | null>(null);
+  roomMovieRef.current = roomMovie;
   const movieYoutubeRef = useRef<any>(null);
   const movieEmbedRef = useRef<HTMLIFrameElement | null>(null);
   const [moviePlaying, setMoviePlaying] = useState(false);
+  const moviePlayingRef = useRef(false);
+  moviePlayingRef.current = moviePlaying;
   const [movieTime, setMovieTime] = useState(0);
   const movieTimeRef = useRef(0);
   movieTimeRef.current = movieTime;
@@ -182,9 +222,22 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   const [movieCatalog, setMovieCatalog] = useState<any[] | null>(null);
   const [movieCatLoading, setMovieCatLoading] = useState(false);
   const movieVideoRef = useRef<HTMLVideoElement | null>(null);
+  const movieFrameRef = useRef<HTMLDivElement | null>(null);
   const movieSeqRef = useRef(0);
-  const lastRemoteSeqRef = useRef(0);
+  const pendingMovieSyncRef = useRef<MovieSyncPayload | null>(null);
+  // A missed play/pause/seek action that is held until the server's authoritative
+  // movieState replay arrives on the reconnected socket (so a stale local
+  // snapshot can never resurrect an old movie on the peer).
+  const resyncAfterJoinedRef = useRef<MovieSyncPayload | null>(null);
+  const remotePlaybackRef = useRef(false);
   const pendingSeekRef = useRef<number | null>(null);
+  // Player readiness gate for the current source. Play/seek commands must wait
+  // until the actual player is mounted and the source can be decoded — driving
+  // a bare element (or a YouTube/embed that is still booting) is exactly what
+  // produced a permanent black frame on the receiving side.
+  const [moviePlayerState, setMoviePlayerState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const moviePlayerStateRef = useRef<"idle" | "loading" | "ready" | "error">("idle");
+  moviePlayerStateRef.current = moviePlayerState;
   const movieCatFetchedRef = useRef(false);
 
   // "Call Invitation" (watch-together ring) state for the found peer. The ring
@@ -192,6 +245,12 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   // caller's own doc id + live status here so the card can show Ringing → done.
   const [activeCall, setActiveCall] = useState<WatchCall | null>(null);
   const [callBusy, setCallBusy] = useState(false);
+  // Authoritative caller-side state machine completion: a ring nobody answered
+  // within WATCH_CALL_TTL_MS is cancelled (idempotent server write) and the
+  // card drops back to a usable state with an explicit "expired" message —
+  // the outgoing call can never hang in "pending" forever. The flag is bound
+  // to the EXPIRED call's id, so any later (new) call id never shows it.
+  const [expiredCallId, setExpiredCallId] = useState<string | null>(null);
 
   // Deterministic join state (receiver side after answering a "Call
   // Invitation" ring): the accepted call's live doc + whether the join has
@@ -204,8 +263,21 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   // All connections involving me (both directions) — the real-time source of
   // truth for incoming asks + status transitions.
   const [connections, setConnections] = useState<FriendConnection[]>([]);
+  const [friendsOpen, setFriendsOpen] = useState(false);
+  const [friendPresence, setFriendPresence] = useState<Record<string, boolean>>({});
+  const [presenceVisible, setPresenceVisible] = useState(true);
+  const [presenceBusy, setPresenceBusy] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
+  useEffect(() => {
+    if (open && openFriendsInitially) setFriendsOpen(true);
+  }, [open, openFriendsInitially]);
   const manualReturnToSearchRef = useRef(false);
+
+  // SERVER-AUTHORITATIVE session (watch-call store): a FriendConnection built
+  // from the server's accepted push/REST response. Under a Firestore outage
+  // (429) the `connections` snapshot never arrives — THIS is what lets both
+  // peers open the shared chat anyway, with the exact server identity.
+  const [storeConn, setStoreConn] = useState<FriendConnection | null>(null);
 
   // In-modal incoming "Call Invitation" rings (mirror of the global banner):
   // the room shows its own prominent Accept/Reject card on Step 1 / Step 2 so a
@@ -239,13 +311,18 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   const voicePeerRef = useRef<RTCPeerConnection | null>(null);
   const voiceStreamRef = useRef<MediaStream | null>(null);
   const voiceAudioRef = useRef<HTMLAudioElement | null>(null);
+  const pendingVoiceIceRef = useRef<RTCIceCandidateInit[]>([]);
   const handleVoiceSignalRef = useRef<(payload: { kind: "offer" | "answer" | "ice"; data: any }) => Promise<void>>(async () => {});
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // ---- derived state -------------------------------------------------------
+  // Firestore snapshot first (works normally); the server-store connection
+  // takes over when Firestore is unavailable (quota-dead) — the ids agree.
   const activeConn = useMemo(
-    () => connections.find((c) => c.id === activeId) ?? null,
-    [connections, activeId],
+    () =>
+      connections.find((c) => c.id === activeId) ??
+      (storeConn && storeConn.id === activeId ? storeConn : null),
+    [connections, activeId, storeConn],
   );
 
   // Live connection for the peer that is CURRENTLY on the found friend card,
@@ -275,10 +352,11 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   );
   const inChat = !!activeConn && activeConn.status === "accepted";
   const peerOf = useCallback(
-    (conn: FriendConnection | null): { name: string; code: string; avatar?: string } => {
-      if (!conn) return { name: "", code: "" };
+    (conn: FriendConnection | null): { uid: string; name: string; code: string; avatar?: string } => {
+      if (!conn) return { uid: "", name: "", code: "" };
       const peerIsRequester = conn.requesterUid === myUid;
       return {
+        uid: peerIsRequester ? conn.targetUid : conn.requesterUid,
         name: peerIsRequester ? conn.targetName : conn.requesterName,
         code: peerIsRequester ? conn.targetCode : conn.requesterCode,
         avatar: peerIsRequester ? conn.targetAvatar || undefined : conn.requesterAvatar || undefined,
@@ -333,15 +411,24 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
       const peer = await ensureVoicePeer();
       if (payload.kind === "offer") {
         await peer.setRemoteDescription(payload.data);
+        for (const candidate of pendingVoiceIceRef.current.splice(0)) {
+          await peer.addIceCandidate(candidate);
+        }
         const answer = await peer.createAnswer();
         await peer.setLocalDescription(answer);
         clientRef.current?.sendVoiceSignal({ kind: "answer", data: answer });
       } else if (payload.kind === "answer") {
         await peer.setRemoteDescription(payload.data);
+        for (const candidate of pendingVoiceIceRef.current.splice(0)) {
+          await peer.addIceCandidate(candidate);
+        }
       } else if (payload.kind === "ice" && payload.data) {
-        await peer.addIceCandidate(payload.data);
+        // ICE can arrive before the offer/answer on fast local networks. Queue
+        // it until a remote description exists instead of failing the call.
+        if (!peer.remoteDescription) pendingVoiceIceRef.current.push(payload.data);
+        else await peer.addIceCandidate(payload.data);
       }
-      setVoiceState("connecting");
+      if (peer.connectionState !== "connected") setVoiceState("connecting");
     } catch {
       setVoiceState("error");
     }
@@ -362,6 +449,46 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     return unsub;
   }, [open, myUid]);
 
+  // A friend list is built only from accepted relationships. Presence is a
+  // display preference: hidden users look offline to friends while their real
+  // authentication/session state remains untouched.
+  const acceptedFriends = useMemo(
+    () => connections.filter((connection) => connection.status === "accepted"),
+    [connections],
+  );
+
+  useEffect(() => {
+    if (!open || !myUid) return;
+    const ownUnsub = onSnapshot(doc(db, "users", myUid), (snap) => {
+      setPresenceVisible(snap.data()?.friendPresenceVisibility !== "offline");
+    }, () => {});
+    const peerUnsubs = acceptedFriends.map((connection) => {
+      const peerUid = connection.requesterUid === myUid ? connection.targetUid : connection.requesterUid;
+      return onSnapshot(doc(db, "users", peerUid), (snap) => {
+        const data = snap.data();
+        const online = !!data?.isOnline && data?.friendPresenceVisibility !== "offline";
+        setFriendPresence((current) => ({ ...current, [peerUid]: online }));
+      }, () => {});
+    });
+    return () => {
+      ownUnsub();
+      peerUnsubs.forEach((unsub) => unsub());
+    };
+  }, [open, myUid, acceptedFriends]);
+
+  const setFriendPresenceVisibility = useCallback(async (visible: boolean) => {
+    if (!myUid || presenceBusy) return;
+    setPresenceBusy(true);
+    try {
+      await updateDoc(doc(db, "users", myUid), {
+        friendPresenceVisibility: visible ? "online" : "offline",
+      });
+      setPresenceVisible(visible);
+    } finally {
+      setPresenceBusy(false);
+    }
+  }, [myUid, presenceBusy]);
+
   // Live incoming "Call Invitation" rings, so an in-modal Accept/Reject card can
   // answer a call WITHOUT the global banner. uid-only keys always match (the
   // sender stamps target.uid into toKeys). Ringing calls past the TTL are
@@ -380,6 +507,143 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     );
   }, [open, myUid]);
 
+  // ── Server-authoritative call events (instant, Firestore-independent) ──
+  // One subscription drives BOTH sides: the caller advances out of "Ringing"
+  // and into the shared chat on `accepted`; the receiver lands in the same
+  // room; reject/cancel/expiry clear every UI surface; `ended` drops a peer
+  // who left. Refs keep the handler current without resubscribing.
+  const activeIdRef = useRef<string | null>(null);
+  activeIdRef.current = activeId;
+  const activeCallRef = useRef<WatchCall | null>(null);
+  activeCallRef.current = activeCall;
+
+  useEffect(() => {
+    if (!open || !myUid) return;
+    void ensureCallSignaling(myUid);
+
+    /** Build the local accepted connection from the server's canonical call
+     *  payload (works with NO Firestore snapshot available). */
+    const connectionFromServerCall = (call: any): FriendConnection => {
+      const iAmCaller = call.fromId === myUid;
+      return {
+        id: String(call.connectionId || call.callId),
+        kind: "friend",
+        participants: [call.fromId, call.toId].sort(),
+        requesterUid: call.fromId,
+        requesterName: call.fromName,
+        requesterCode: call.fromCode,
+        requesterAvatar: call.fromAvatar ?? null,
+        targetUid: call.toId,
+        targetName: call.toName,
+        targetCode: call.toCode,
+        targetAvatar: call.toAvatar ?? null,
+        status: "accepted",
+        createdAt: call.createdAt || new Date().toISOString(),
+        acceptedAt: new Date().toISOString(),
+      };
+    };
+
+    const enterSharedRoom = (call: any) => {
+      const conn = connectionFromServerCall(call);
+      manualReturnToSearchRef.current = false;
+      setStoreConn(conn);
+      setActiveId(conn.id);
+      setFound(null);
+      setFoundConn(null);
+      setSearchStatus("idle");
+      setSearchError(null);
+      setJoinConsumed(true);
+      setLocalJoinCallId(null);
+      setLocalJoinConnId(null);
+      setActiveCall(null);
+      setExpiredCallId(null);
+      setIncomingCalls((prev) => prev.filter((c) => c.id !== call.callId));
+      onAutoConnectConsumedRef.current?.();
+    };
+
+    return onCallEvent((event) => {
+      if (event.type === "watch_call:state_sync") {
+        const sync: any = event;
+        setIncomingCalls(
+          (sync.incoming || []).filter(
+            (c: any) => Date.now() - new Date(c.startedAt || c.createdAt).getTime() < WATCH_CALL_TTL_MS,
+          ),
+        );
+        const active = sync.activeSession;
+        if (
+          active?.connection &&
+          !activeIdRef.current &&
+          !manualReturnToSearchRef.current
+        ) {
+          setStoreConn(connectionFromServerCall(active.call));
+          setActiveId(active.connection.connectionId || active.connection.id);
+          setJoinConsumed(true);
+        }
+        // An outgoing ring that vanished from the server's live list resolved
+        // while we were disconnected — reflect its final state.
+        const mine = (sync.outgoing || []).find(
+          (c: any) => c.callId === activeCallRef.current?.id,
+        );
+        if (activeCallRef.current && !mine && isAnswerableWatchCallStatus(activeCallRef.current.status)) {
+          setActiveCall((current) =>
+            current ? { ...current, status: "ended" } : current,
+          );
+        }
+        return;
+      }
+
+      const call: any = (event as any).call || {};
+
+      if (event.type === "watch_call:accepted") {
+        if (call.fromId !== myUid && call.toId !== myUid) return;
+        enterSharedRoom(call);
+        return;
+      }
+
+      if (event.type === "watch_call:declined") {
+        setIncomingCalls((prev) => prev.filter((c) => c.id !== call.callId));
+        if (call.fromId === myUid) {
+          setActiveCall((current) =>
+            current?.id === call.callId ? { ...current, status: "declined" } : current,
+          );
+        }
+        return;
+      }
+
+      if (event.type === "watch_call:cancelled") {
+        setIncomingCalls((prev) => prev.filter((c) => c.id !== call.callId));
+        if (call.fromId === myUid) {
+          setActiveCall((current) =>
+            current?.id === call.callId ? { ...current, status: "ended" } : current,
+          );
+        }
+        return;
+      }
+
+      if (event.type === "watch_call:expired") {
+        setIncomingCalls((prev) => prev.filter((c) => c.id !== call.callId));
+        if (call.fromId === myUid) {
+          setActiveCall((current) =>
+            current?.id === call.callId ? { ...current, status: "ended" } : current,
+          );
+          setExpiredCallId(call.callId);
+        }
+        return;
+      }
+
+      if (event.type === "watch_call:ended") {
+        if (activeIdRef.current && call.connectionId === activeIdRef.current) {
+          // The peer (or the server) ended the live session — leave cleanly.
+          tearDownClient(false);
+          setActiveId(null);
+          setStoreConn(null);
+        }
+        return;
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, myUid]);
+
   // Live status of OUR outgoing "Call Invitation" ring (doc-level listener —
   // no composite index needed, and answers/declines update in real time).
   const activeCallId = activeCall?.id ?? null;
@@ -392,6 +656,31 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     );
     return unsub;
   }, [open, activeCallId]);
+
+  // Ring expiry (CALLER side): when our ring is still answerable after the
+  // TTL, cancel it and surface the timeout instead of ringing forever. The
+  // timer is armed against the call's own startedAt so a remount mid-ring
+  // keeps the original deadline; the server's authoritative sweep + push is
+  // the primary expiry path — this local timer is the same deadline applied
+  // optimistically for instant UI feedback.
+  useEffect(() => {
+    if (!activeCall || !isAnswerableWatchCallStatus(activeCall.status)) return;
+    const elapsed = Date.now() - new Date(activeCall.startedAt).getTime();
+    const remaining = Math.max(0, WATCH_CALL_TTL_MS - elapsed);
+    const timer = window.setTimeout(() => {
+      // Double-check inside the timer: the accept/decline may have landed
+      // while we waited. Only a still-ringing call expires.
+      setActiveCall((current) => {
+        if (current?.id === activeCall.id && isAnswerableWatchCallStatus(current.status)) {
+          void cancelWatchCall(current.id).catch(() => {});
+          setExpiredCallId(current.id);
+          return { ...current, status: "ended" };
+        }
+        return current;
+      });
+    }, remaining);
+    return () => window.clearTimeout(timer);
+  }, [activeCall]);
 
   // A "Call Invitation" the peer accepted streams its invitation doc to
   // status === "accepted". THAT explicit answer is the only auto-advance off
@@ -477,6 +766,87 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     onAutoConnectConsumedRef.current?.();
   }, [open, activeRoomIdProp, joinConnId, connections, joinConsumed]);
 
+  // Session restore after a page refresh / remount (Problem 3, scenario 18).
+  // The accepted connection id is kept in sessionStorage (tab-scoped, survives
+  // refresh, dies with the tab). The pointer is only EVER honored after the
+  // live Firestore snapshot confirms the pair is still "accepted" for this
+  // account (participant-gated rules), so a stale/ended session can neither
+  // restore nor leak anyone else's room.
+  const watchSessionKey = myUid ? `cinemachat:watch-session:${myUid}` : null;
+  const restoreConnIdRef = useRef<string | null>(null);
+  const [restoreChecked, setRestoreChecked] = useState(false);
+
+  const persistWatchSession = useCallback(
+    (connectionId: string) => {
+      if (!watchSessionKey) return;
+      try {
+        sessionStorage.setItem(
+          watchSessionKey,
+          JSON.stringify({ connectionId, at: Date.now() }),
+        );
+      } catch {
+        /* storage unavailable (private mode) — live join still works */
+      }
+    },
+    [watchSessionKey],
+  );
+
+  const clearWatchSession = useCallback(() => {
+    if (!watchSessionKey) return;
+    try {
+      sessionStorage.removeItem(watchSessionKey);
+    } catch {
+      /* nothing to clear */
+    }
+  }, [watchSessionKey]);
+
+  // Persist the accepted session id the first time a chat becomes active (both
+  // call-accept and manual friend-accept paths land here).
+  const persistedConnIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (activeConn?.status !== "accepted" || !activeConn.id) return;
+    if (persistedConnIdRef.current === activeConn.id) return;
+    persistedConnIdRef.current = activeConn.id;
+    persistWatchSession(activeConn.id);
+  }, [activeConn, persistWatchSession]);
+
+  useEffect(() => {
+    if (!open || restoreChecked) return;
+    // Already inside a session, or a deterministic join owns this open.
+    if (activeId || joinCallId) {
+      setRestoreChecked(true);
+      return;
+    }
+    try {
+      const raw = watchSessionKey ? sessionStorage.getItem(watchSessionKey) : null;
+      if (raw) {
+        const saved = JSON.parse(raw) as { connectionId?: string };
+        if (saved?.connectionId) restoreConnIdRef.current = saved.connectionId;
+      }
+    } catch {
+      clearWatchSession();
+    }
+    setRestoreChecked(true);
+  }, [open, restoreChecked, activeId, joinCallId, watchSessionKey, clearWatchSession]);
+
+  useEffect(() => {
+    if (!open || !restoreConnIdRef.current) return;
+    if (manualReturnToSearchRef.current || activeId || joinCallId) return;
+    const conn = connections.find((c) => c.id === restoreConnIdRef.current);
+    if (!conn) return; // snapshot not settled yet
+    if (conn.status !== "accepted") {
+      // The saved session is no longer valid — drop the pointer quietly.
+      clearWatchSession();
+      restoreConnIdRef.current = null;
+      return;
+    }
+    restoreConnIdRef.current = null;
+    setActiveId(conn.id);
+    setSearchStatus("idle");
+    setFound(null);
+    setFoundConn(null);
+  }, [open, connections, activeId, joinCallId, clearWatchSession]);
+
   // Fresh 1-to-1 chat → start watch-together state clean (preserved across
   // close/re-open of the SAME connection so a paused pair resumes where it was).
   const lastConnIdRef = useRef<string | null>(null);
@@ -492,8 +862,10 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     setMoviePickerOpen(false);
     setMovieQuery("");
     movieSeqRef.current = 0;
-    lastRemoteSeqRef.current = 0;
+    lastRemoteSeqBySenderRef.current = new Map();
+    lastRemoteUpdatedAtBySenderRef.current = new Map();
     pendingSeekRef.current = null;
+    setMoviePlayerState("idle");
   }, [activeConn?.id]);
 
   // If the active connection is closed (rejected/cancelled), drop it back to
@@ -542,6 +914,17 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
         // this socket. Otherwise an early click is silently dropped.
         setChatConnecting(false);
         setSessionEnded(false);
+        setPeerOnline(event.peerOnline === true);
+        // A reconnected socket must not immediately re-emit its own (possibly
+        // stale) snapshot — the server's authoritative movieState replay arrives
+        // as a `movie` event right after `joined`. A missed ACTION is deferred
+        // and flushed once that replay lands (see the `movie` branch below) so
+        // it can never resurrect an old movie on the peer.
+        const pendingAction = pendingMovieSyncRef.current;
+        pendingMovieSyncRef.current = null;
+        if (event.peerOnline === true && pendingAction) {
+          resyncAfterJoinedRef.current = pendingAction;
+        }
       } else if (event.type === "message") {
         if (event.ack) {
           // Own optimistic message confirmed by the server.
@@ -559,10 +942,33 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
         }
       } else if (event.type === "presence") {
         setPeerOnline(event.online);
+      } else if (event.type === "heartbeat_ack" && typeof event.peerOnline === "boolean") {
+        setPeerOnline(event.peerOnline);
       } else if (event.type === "typing") {
         setPeerTyping(event.typing);
       } else if (event.type === "movie") {
-        handleRemoteMovieRef.current(event.payload);
+        handleRemoteMovieRef.current(event.payload, event.uid);
+        const resync = resyncAfterJoinedRef.current;
+        if (resync) {
+          resyncAfterJoinedRef.current = null;
+          emitMovieSync({
+            movie: event.payload.movie,
+            playing: resync.playing,
+            time: resync.time,
+            seek: resync.seek,
+          });
+        }
+      } else if (event.type === "movie_invite") {
+        const text = `${MOVIE_MESSAGE_PREFIX}${JSON.stringify(event.payload)}`;
+        if (event.ack) {
+          setMessages((prev) => prev.map((m) =>
+            m.clientId === event.clientId ? { ...m, confirmed: true } : m,
+          ));
+        } else {
+          setMessages((prev) => prev.some((m) => m.clientId === event.clientId)
+            ? prev
+            : [...prev, { clientId: event.clientId, senderId: event.uid, text, ts: Date.now(), mine: false, confirmed: true }]);
+        }
       } else if (event.type === "voice_signal") {
         void handleVoiceSignalRef.current(event.payload);
       } else if (event.type === "session_closed") {
@@ -604,6 +1010,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
       voicePeerRef.current = null;
       voiceStreamRef.current?.getTracks().forEach((track) => track.stop());
       voiceStreamRef.current = null;
+      pendingVoiceIceRef.current = [];
       if (voiceAudioRef.current) voiceAudioRef.current.srcObject = null;
     };
   }, [open, inChat, activeConn?.id, activeConn?.status]);
@@ -617,6 +1024,30 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   useEffect(() => {
     if (!open) tearDownClient(false);
   }, [open, tearDownClient]);
+
+  // Stale-state reset on close (Problem 5): any transient search/call state is
+  // dropped so reopening always renders the CURRENT server state — no ghost
+  // found card, no resurrected ring, no stale join queue. A VALID accepted
+  // session (activeId) is intentionally PRESERVED: closing the modal must
+  // never destroy the shared room the user is still in.
+  useEffect(() => {
+    if (open) return;
+    setActiveCall(null);
+    setExpiredCallId(null);
+    setJoinCall(null);
+    setLocalJoinCallId(null);
+    setLocalJoinConnId(null);
+    setJoinConsumed(false);
+    setJoinError(null);
+    setFound(null);
+    setFoundConn(null);
+    setInput("");
+    setSearchStatus("idle");
+    setSearchError(null);
+    manualReturnToSearchRef.current = false;
+    setRestoreChecked(false);
+    restoreConnIdRef.current = null;
+  }, [open]);
 
   // ---- handlers ------------------------------------------------------------
 
@@ -642,7 +1073,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     // re-submit). The found card persists until Cancel or full text deletion.
     if (!raw || searchStatus === "searching" || searchStatus === "found") return;
     // A ring still active while searching another peer must not linger.
-    if (activeCall?.status === "calling") void cancelWatchCall(activeCall.id).catch(() => {});
+    if (isAnswerableWatchCallStatus(activeCall?.status)) void cancelWatchCall(activeCall.id).catch(() => {});
     setActiveCall(null);
     setFound(null);
     setFoundConn(null);
@@ -681,7 +1112,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   }, [input, myUid, searchStatus, activeCall]);
 
   const chooseAnother = useCallback(() => {
-    if (activeCall?.status === "calling") void cancelWatchCall(activeCall.id).catch(() => {});
+    if (isAnswerableWatchCallStatus(activeCall?.status)) void cancelWatchCall(activeCall.id).catch(() => {});
     setActiveCall(null);
     setFound(null);
     setFoundConn(null);
@@ -704,7 +1135,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
         target: found,
       });
       // Stop any ringing call so the recipient is not left ringing forever.
-      if (activeCall?.status === "calling") void cancelWatchCall(activeCall.id).catch(() => {});
+      if (isAnswerableWatchCallStatus(activeCall?.status)) void cancelWatchCall(activeCall.id).catch(() => {});
       setActiveCall(null);
       setActiveId(id);
       setSearchStatus("idle");
@@ -722,20 +1153,20 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   const handleCallInvitation = useCallback(async () => {
     if (!found || callBusy) return;
     manualReturnToSearchRef.current = false;
-    if (activeCall?.status === "calling") return;
+    if (activeCall && isAnswerableWatchCallStatus(activeCall.status)) return;
     if (!requireAccount("بۆ ناردنی بانگهێشتی پەیوەندی پێویستە ئەکاونتێکی هەبێت")) return;
     setCallBusy(true);
     setSearchError(null);
     try {
-      const { callId, connectionId } = await sendWatchCallInvitation({
+      const { callId, connectionId, roomId: serverRoomId } = await sendWatchCallInvitation({
         requesterUid: myUid,
         requesterName: myName,
         requesterCode: myCode,
         requesterAvatar: myAvatar || null,
         target: found,
       });
-      // Provisional "calling" state — the doc-level listener streams the real
-      // invitation doc (answered/declined) right after creation.
+      // Provisional "calling" state — the server pushes the REAL transition
+      // (accepted/declined/expired) over the signaling socket right after.
       setActiveCall({
         id: callId,
         kind: "watchcall",
@@ -748,24 +1179,26 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
         toName: found.name,
         toCode: found.uniqueCode,
         connectionId,
+        roomId: serverRoomId || connectionId,
         startedAt: new Date().toISOString(),
         createdAt: new Date().toISOString(),
-      });
-    } catch {
-      setSearchError("ناردنی بانگهێشتی پەیوەندی سەرکەوتوو نەبوو؛ دووبارە هەوڵ بدە");
+      } as WatchCall);
+    } catch (err) {
+      // ONE safe category per failure class — never a fake "Ringing".
+      setSearchError(describeWatchCallError(err));
     } finally {
       setCallBusy(false);
     }
   }, [found, callBusy, activeCall, myUid, myName, myCode, myAvatar, requireAccount]);
 
   const handleCancelCall = useCallback(async () => {
-    if (!activeCall || activeCall.status !== "calling") return;
+    if (!activeCall || !isAnswerableWatchCallStatus(activeCall.status)) return;
     setCallBusy(true);
     try {
       await cancelWatchCall(activeCall.id);
       setActiveCall((c) => (c ? { ...c, status: "ended" } : c));
-    } catch {
-      setSearchError("ڕاگرتنی بانگهێشتی پەیوەندی سەرکەوتوو نەبوو؛ دووبارە هەوڵ بدە");
+    } catch (err) {
+      setSearchError(describeWatchCallError(err));
     } finally {
       setCallBusy(false);
     }
@@ -785,22 +1218,52 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
       setJoinError(null);
       try {
         const connId = call.connectionId || call.id;
-        await respondToWatchCall(call.id, connId, "accepted", {
+        // SERVER-CONFIRMED accept: only after the store transition succeeds
+        // does the room open — with the canonical ids from the response.
+        const confirmed = await respondToWatchCall(call.id, connId, "accepted", {
           uid: myUid,
           name: myName,
           code: myCode,
           avatar: myAvatar,
         });
-        // Queue the deterministic join (call doc + pair) — clear any lingering
-        // found card so the receiver is never stranded on the search step.
+        const finalConnId = confirmed?.connectionId || connId;
+        // Enter the shared room directly from the server's canonical answer
+        // (the accepted socket push lands separately and is idempotent).
         setJoinConsumed(false);
         setLocalJoinCallId(call.id);
-        setLocalJoinConnId(connId);
-        setFound(null);
-        setFoundConn(null);
-        setSearchStatus("idle");
-      } catch {
-        setJoinError("پەسەندکردنی بانگهێشتی پەیوەندی سەرکەوتوو نەبوو — دووبارە هەوڵبەرەوە");
+        setLocalJoinConnId(finalConnId);
+        if (confirmed?.call) {
+          setStoreConn({
+            id: finalConnId,
+            kind: "friend",
+            participants: [confirmed.call.fromId, confirmed.call.toId].sort(),
+            requesterUid: confirmed.call.fromId,
+            requesterName: confirmed.call.fromName,
+            requesterCode: confirmed.call.fromCode,
+            requesterAvatar: confirmed.call.fromAvatar ?? null,
+            targetUid: confirmed.call.toId,
+            targetName: confirmed.call.toName,
+            targetCode: confirmed.call.toCode,
+            targetAvatar: confirmed.call.toAvatar ?? null,
+            status: "accepted",
+            createdAt: confirmed.call.createdAt || new Date().toISOString(),
+            acceptedAt: new Date().toISOString(),
+          });
+          setActiveId(finalConnId);
+          setFound(null);
+          setFoundConn(null);
+          setSearchStatus("idle");
+          setJoinConsumed(true);
+          setLocalJoinCallId(null);
+          setLocalJoinConnId(null);
+        } else {
+          setFound(null);
+          setFoundConn(null);
+          setSearchStatus("idle");
+        }
+        setIncomingCalls((prev) => prev.filter((c) => c.id !== call.id));
+      } catch (err) {
+        setJoinError(describeWatchCallError(err));
       } finally {
         setJoinBusy(false);
       }
@@ -814,6 +1277,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
       setJoinBusy(true);
       try {
         await respondToWatchCall(call.id, call.connectionId || call.id, "declined");
+        setIncomingCalls((prev) => prev.filter((c) => c.id !== call.id));
       } catch {
         /* best-effort decline */
       } finally {
@@ -883,6 +1347,19 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     clientRef.current.sendTyping(false);
   }, [newMessage, myUid, peerOnline]);
 
+  const sendMovieMessage = useCallback((movie: SyncedMovie) => {
+    if (!clientRef.current || !peerOnline) return;
+    const text = `${MOVIE_MESSAGE_PREFIX}${JSON.stringify(movie)}`;
+    const clientId = generateClientId();
+    setMessages((prev) => [
+      ...prev,
+      { clientId, senderId: myUid, text, ts: Date.now(), mine: true, confirmed: false },
+    ]);
+    if (!clientRef.current.sendMovieInvite(movie, clientId)) {
+      setMessages((prev) => prev.filter((message) => message.clientId !== clientId));
+    }
+  }, [myUid, peerOnline]);
+
   const handleTyping = useCallback(
     (typing: boolean) => {
       clientRef.current?.sendTyping(typing);
@@ -891,9 +1368,15 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   );
 
   const handleLeave = useCallback(() => {
+    // Tell the server store the session ended BEFORE tearing down locally —
+    // the peer's socket push drops them out of the chat consistently, and the
+    // call can never be "restored" by a later refresh.
+    if (activeConn?.id) void endWatchSession(activeConn.id);
     tearDownClient(true);
     setActiveId(null);
-  }, [tearDownClient]);
+    setStoreConn(null);
+    clearWatchSession();
+  }, [tearDownClient, clearWatchSession, activeConn]);
 
   const returnToFriendSearch = useCallback(() => {
     // Leaving an ephemeral 1-to-1 session must release both sockets before a
@@ -902,6 +1385,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     tearDownClient(true);
     setActiveId(null);
     setActiveCall(null);
+    setExpiredCallId(null);
     setFound(null);
     setFoundConn(null);
     setSearchStatus("idle");
@@ -909,7 +1393,28 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     setInput("");
     setRoomMovie(null);
     setMoviePickerOpen(false);
-  }, [tearDownClient]);
+    clearWatchSession();
+  }, [tearDownClient, clearWatchSession]);
+
+  // Back action for the lower step navigation (Problem 5): one visible control
+  // that always lands on the previous valid stage — CONNECT → FRIEND goes back
+  // a step, CHAT/MOVIE → FRIEND leaves the live session first (the accepted
+  // friendship record itself is kept, so the pair can always re-open chat).
+  const handleStepBack = useCallback(() => {
+    if (roomMovie) {
+      setMoviePlaying(false);
+      setRoomMovie(null);
+      return;
+    }
+    if (inChat) {
+      returnToFriendSearch();
+      return;
+    }
+    if (activeConn?.status === "pending") {
+      setActiveId(null);
+      setSearchError(null);
+    }
+  }, [roomMovie, inChat, activeConn, returnToFriendSearch]);
 
   const maskedContact = useMemo(() => {
     if (!found) return "";
@@ -1076,11 +1581,66 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     );
   };
 
+  const selectSavedFriend = (connection: FriendConnection) => {
+    const peer = peerOf(connection);
+    setFound({ uid: peer.uid, name: peer.name, uniqueCode: peer.code, avatarUrl: peer.avatar || undefined });
+    setFoundConn(connection);
+    setInput(peer.code || peer.name);
+    setSearchError(null);
+    setSearchStatus("found");
+    setFriendsOpen(false);
+  };
+
+  const renderFriendsDirectory = () => {
+    if (!friendsOpen) return null;
+    return (
+      <div className="mb-4 rounded-2xl border border-emerald-500/25 bg-emerald-500/5 p-3" dir="rtl">
+        <div className="flex items-center justify-between gap-3 pb-2 border-b border-white/10">
+          <div>
+            <p className="text-sm font-black text-white kurdish-text">هاوڕێکانم</p>
+            <p className="text-[10px] text-gray-400 kurdish-text">هەڵبژێرە بۆ کردنەوەی ڕاستەوخۆی چات</p>
+          </div>
+          <button type="button" onClick={() => void setFriendPresenceVisibility(!presenceVisible)} disabled={presenceBusy}
+            className={`px-3 py-2 rounded-xl border text-[10px] font-black kurdish-text transition-all disabled:opacity-50 ${presenceVisible ? "border-emerald-500/30 bg-emerald-500/15 text-emerald-300" : "border-gray-500/30 bg-white/5 text-gray-400"}`}>
+            {presenceVisible ? "لەسەر هێڵم" : "دەرەهێڵم"}
+          </button>
+        </div>
+        <div className="mt-2 max-h-52 overflow-y-auto custom-scrollbar space-y-2">
+          {acceptedFriends.length === 0 ? (
+            <p className="py-5 text-center text-[11px] text-gray-500 kurdish-text">هێشتا هیچ هاوڕێیەکت نییە.</p>
+          ) : acceptedFriends.map((connection) => {
+            const peer = peerOf(connection);
+            const online = !!friendPresence[peer.uid];
+            return (
+              <div key={connection.id} className="flex items-center gap-2 rounded-xl bg-black/25 border border-white/5 p-2">
+                <button type="button" onClick={() => selectSavedFriend(connection)} className="flex min-w-0 flex-1 items-center gap-2 text-right">
+                  <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${online ? "bg-emerald-400" : "bg-gray-600"}`} />
+                  <span className="min-w-0">
+                    <span className="block truncate text-xs font-black text-white kurdish-text">{peer.name}</span>
+                    <span className={`block text-[9px] ${online ? "text-emerald-300" : "text-gray-500"}`}>{online ? "لەسەر هێڵ" : "دەرەهێڵ"}</span>
+                  </span>
+                </button>
+                <button type="button" title="سڕینەوەی هاوڕێ" onClick={async () => {
+                  if (nextBusy) return;
+                  setNextBusy(true);
+                  try { await cancelFriendConnection(connection.id); } finally { setNextBusy(false); }
+                }} className="w-8 h-8 rounded-lg text-red-300 hover:bg-red-500/15 flex items-center justify-center">
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
   const renderFriendStep = () => (
     <div dir="rtl">
       {renderIncomingCallCard()}
       {renderIncomingSection()}
       {renderOutgoingSection()}
+      {renderFriendsDirectory()}
 
       <div className="flex items-center justify-between gap-3 mb-4">
         <div>
@@ -1089,7 +1649,10 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
             بە ژمارەی مۆبایل یان کۆدی CC-ID، هەژماری هاوڕێکەت بدۆزەرەوە.
           </p>
         </div>
-        <Users className="w-5 h-5 text-brand-primary flex-shrink-0" />
+        <button type="button" onClick={() => setFriendsOpen((current) => !current)} className="px-3 py-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-[10px] font-black kurdish-text flex items-center gap-1.5">
+          <Users className="w-4 h-4" />
+          هاوڕێکانم ({acceptedFriends.length})
+        </button>
       </div>
 
       <div className="grid grid-cols-1 gap-2 mb-3">
@@ -1213,7 +1776,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
           {/* Call Invitation — instant real-time watch-together ring to this
               friend (surfaced globally by WatchCallNotification on their side) */}
           <div className="mb-3">
-            {activeCall?.status === "calling" ? (
+            {isAnswerableWatchCallStatus(activeCall?.status) ? (
               <div className="flex items-center gap-2">
                 <button
                   type="button"
@@ -1257,7 +1820,9 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
                 <AlertCircle className="w-3.5 h-3.5 shrink-0" />
                 {activeCall.status === "declined"
                   ? "بانگهێشتی پەیوەندی ڕەتکرایەوە — دووبارە هەوڵ بدە"
-                  : "بانگهێشتی پەیوەندی ڕاگیرا"}
+                  : expiredCallId === activeCall.id
+                    ? "بانگهێشتەکە وەڵام نەدرایەوە (بەسەرچوو) — دووبارە هەوڵ بدەوە"
+                    : "بانگهێشتی پەیوەندی ڕاگیرا"}
               </p>
             )}
           </div>
@@ -1399,6 +1964,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     movie?: SyncedMovie | null;
     playing: boolean;
     time: number;
+    seek?: boolean;
   }) => {
     movieSeqRef.current += 1;
     const payload: MovieSyncPayload = {
@@ -1407,9 +1973,22 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
       time: patch.time,
       seq: movieSeqRef.current,
       updatedAt: Date.now(),
+      ...(patch.seek ? { seek: true } : {}),
     };
     setMovieTime(patch.time);
-    clientRef.current?.sendMovie(payload);
+    if (!clientRef.current?.sendMovie(payload)) {
+      pendingMovieSyncRef.current = payload;
+    } else {
+      pendingMovieSyncRef.current = null;
+    }
+  };
+
+  const activateSharedMovie = (movie: SyncedMovie) => {
+    remotePlaybackRef.current = false;
+    setRoomMovie(movie);
+    pendingSeekRef.current = 0;
+    setMoviePlaying(true);
+    emitMovieSync({ movie, playing: true, time: 0 });
   };
 
   const selectMovie = (m: any) => {
@@ -1418,14 +1997,18 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     const synced: SyncedMovie = {
       id: String(m.id || url),
       title: m.title || "بێ ناونیشان",
-      image: m.image || undefined,
+      image: syncableMovieImage(m.image),
       url,
     };
-    setRoomMovie(synced);
     setMoviePickerOpen(false);
-    pendingSeekRef.current = 0;
-    setMoviePlaying(true);
-    emitMovieSync({ movie: synced, playing: true, time: 0 });
+    sendMovieMessage(synced);
+  };
+
+  const handleFullscreen = () => {
+    const target = movieFrameRef.current;
+    if (!target) return;
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void target.requestFullscreen?.();
   };
 
   const handleTogglePlay = () => {
@@ -1433,7 +2016,10 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     const v = movieVideoRef.current;
     const yt = movieYoutubeRef.current;
     const next = !moviePlaying;
-    if (movieEmbedRef.current) postEmbedPlayback(next ? "play" : "pause", movieTime);
+    remotePlaybackRef.current = false;
+    yt?.unMute?.();
+    if (v) v.muted = false;
+    if (getEmbedFrame()) postEmbedPlayback(next ? "play" : "pause", movieTime);
     setMoviePlaying(next);
     const time = yt && typeof yt.getCurrentTime === "function" ? yt.getCurrentTime() : v?.currentTime || 0;
     emitMovieSync({ movie: undefined, playing: next, time });
@@ -1442,7 +2028,16 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   const handleSeek = (time: number) => {
     const v = movieVideoRef.current;
     const yt = movieYoutubeRef.current;
-    if ((!v && !yt) || !roomMovie) return;
+    if ((!v && !yt && !getEmbedFrame()) || !roomMovie) return;
+    // Player not mounted/decodable yet: hold the target and apply it in the
+    // ready handler (onLoadedMetadata / YT onReady). The peer already received
+    // the command; the local side must not act on a stale element.
+    if (moviePlayerStateRef.current !== "ready") {
+      pendingSeekRef.current = Math.max(0, Number(time) || 0);
+      setMovieTime(Math.max(0, Number(time) || 0));
+      emitMovieSync({ movie: undefined, playing: moviePlaying, time: Math.max(0, Number(time) || 0), seek: true });
+      return;
+    }
     const ytDuration = yt && typeof yt.getDuration === "function" ? yt.getDuration() : 0;
     const max = ytDuration || (v?.duration && isFinite(v.duration) ? v.duration : 0);
     const next = Math.max(0, max ? Math.min(time, max) : time);
@@ -1455,17 +2050,19 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
         if (movieYoutubeRef.current === yt) yt.seekTo(next, true);
       }, 350);
     }
-    else if (movieEmbedRef.current) postEmbedPlayback("seek", next);
+    else if (getEmbedFrame()) postEmbedPlayback("seek", next);
     else if (v) v.currentTime = next;
     setMovieTime(next);
-    emitMovieSync({ movie: undefined, playing: moviePlaying, time: next });
+    // Explicit user seek: flagged so the peer applies it immediately instead
+    // of only converging on a >4s drift.
+    emitMovieSync({ movie: undefined, playing: moviePlaying, time: next, seek: true });
   };
 
   const handleSeekBy = (delta: number) => {
     const v = movieVideoRef.current;
     const yt = movieYoutubeRef.current;
-    if ((!v && !yt) || !roomMovie) return;
-    const current = yt && typeof yt.getCurrentTime === "function" ? yt.getCurrentTime() : v?.currentTime || 0;
+    if ((!v && !yt && !getEmbedFrame()) || !roomMovie) return;
+    const current = yt && typeof yt.getCurrentTime === "function" ? yt.getCurrentTime() : v?.currentTime || movieTimeRef.current;
     handleSeek(current + delta);
   };
 
@@ -1501,16 +2098,45 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
   };
 
   // Peer relay: apply their movie selection / play / pause / seek. Sequence
-  // numbers guard against out-of-order arrival; the playhead only snaps when a
-  // meaningful gap exists so pulses never fight a local in-progress seek.
-  const handleRemoteMovie = (payload: MovieSyncPayload) => {
+  // numbers are tracked PER SENDER (each side counts its own emits from 0, so
+  // a shared counter wrongly dropped the peer's legitimate updates once the
+  // other side had counted higher). Explicit seeks always apply immediately;
+  // ambient pulses only snap the playhead when a meaningful gap exists so
+  // they never fight a local in-progress seek.
+  const lastRemoteSeqBySenderRef = useRef<Map<string, number>>(new Map());
+  // Monotonic EMIT timestamp per sender, tracked alongside the seq high-water.
+  // A same-movie payload is only dropped when BOTH are stale: after a peer's
+  // reconnect its seq restarts at 0 but its fresh emit carries a NEW updatedAt,
+  // so re-selecting the SAME movie must apply instead of stalling until the seq
+  // crawls past the old high-water. Server heartbeat replays keep the ORIGINAL
+  // updatedAt, so they are still dropped as stale.
+  const lastRemoteUpdatedAtBySenderRef = useRef<Map<string, number>>(new Map());
+  const handleRemoteMovie = (payload: MovieSyncPayload, fromUid?: string) => {
     if (!payload || !payload.movie) return;
-    if (typeof payload.seq === "number" && payload.seq <= lastRemoteSeqRef.current) return;
-    lastRemoteSeqRef.current = payload.seq ?? lastRemoteSeqRef.current;
+    const senderKey = String(fromUid || "peer");
+    // Sequence numbers only dedupe AMBIENT pulses for the SAME movie. A payload
+    // that names a DIFFERENT movie is authoritative and must always apply —
+    // after either side's counter reset (tab refresh/reconnect), the peer may
+    // hold a high "last seen" seq while the sender restarts from 0. Dropping it
+    // there left the peer on the previous movie / a black frame. Server replays
+    // also carry the ORIGINAL emit seq, so they must not be gated this way.
+    const sameMovie =
+      !!roomMovie && roomMovie.id === payload.movie.id && roomMovie.url === payload.movie.url;
+    if (typeof payload.seq === "number") {
+      const lastSeen = lastRemoteSeqBySenderRef.current.get(senderKey) ?? -1;
+      const lastSeenAt = lastRemoteUpdatedAtBySenderRef.current.get(senderKey) ?? -1;
+      const seqFresh = payload.seq > lastSeen;
+      const emittedAt = Number(payload.updatedAt) || 0;
+      if (sameMovie && !seqFresh && emittedAt <= lastSeenAt) return;
+      if (seqFresh) lastRemoteSeqBySenderRef.current.set(senderKey, payload.seq);
+      if (emittedAt > lastSeenAt) lastRemoteUpdatedAtBySenderRef.current.set(senderKey, emittedAt);
+    }
+    const explicitSeek = payload.seek === true;
     const v = movieVideoRef.current;
     const yt = movieYoutubeRef.current;
     const target = Number(payload.time) || 0;
-    if (!roomMovie || roomMovie.id !== payload.movie.id || roomMovie.url !== payload.movie.url) {
+    remotePlaybackRef.current = true;
+    if (!sameMovie) {
       pendingSeekRef.current = target;
       setRoomMovie(payload.movie);
       setMoviePlaying(payload.playing);
@@ -1519,27 +2145,33 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
       return;
     }
     setMoviePlaying(payload.playing);
-    if (v && (!v.duration || !isFinite(v.duration) || Math.abs(v.currentTime - target) > 4)) {
+    const shouldSnap = explicitSeek
+      || (v && (!v.duration || !isFinite(v.duration) || Math.abs(v.currentTime - target) > 4));
+    if (v && shouldSnap) {
       v.currentTime = Math.max(0, Math.min(target, v.duration || target));
     }
-    if (yt && typeof yt.getCurrentTime === "function" && Math.abs(yt.getCurrentTime() - target) > 4) {
+    if (yt && typeof yt.getCurrentTime === "function"
+        && (explicitSeek || Math.abs(yt.getCurrentTime() - target) > 4)) {
       yt.seekTo(target, true);
     }
-    if (movieEmbedRef.current) {
+    if (getEmbedFrame()) {
       postEmbedPlayback("seek", target);
       postEmbedPlayback(payload.playing ? "play" : "pause", target);
     }
   };
   // Latest-version handler so the socket onEvent closure never goes stale.
-  const handleRemoteMovieRef = useRef<(p: MovieSyncPayload) => void>(() => {});
+  const handleRemoteMovieRef = useRef<(p: MovieSyncPayload, fromUid?: string) => void>(() => {});
   handleRemoteMovieRef.current = handleRemoteMovie;
 
   // YouTube URLs need the IFrame API; assigning an embed URL to <video src>
   // creates an element but can never decode or control the movie.
   const roomYoutubeId = roomMovie ? getYTId(roomMovie.url) : null;
   const roomGenericEmbed = !!roomMovie && !roomYoutubeId && /\/embed\//i.test(roomMovie.url);
+  const getEmbedFrame = (): HTMLIFrameElement | null =>
+    movieEmbedRef.current || document.getElementById("friend-connect-embed-player") as HTMLIFrameElement | null;
   const postEmbedPlayback = (action: "play" | "pause" | "seek", time: number) => {
-    const target = movieEmbedRef.current?.contentWindow;
+    const frame = getEmbedFrame();
+    const target = frame?.contentWindow;
     if (!target) return;
     const commands = action === "seek"
       ? [
@@ -1560,48 +2192,147 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
       return;
     }
     let cancelled = false;
-    void loadYouTubeAPI().then(() => {
-      if (cancelled) return;
-      movieYoutubeRef.current = new (window as any).YT.Player("friend-connect-yt-player", {
-        videoId: roomYoutubeId,
-        playerVars: { autoplay: 0, controls: 0, playsinline: 1, enablejsapi: 1, origin: window.location.origin },
-        events: {
-          onReady: (event: any) => {
-            const duration = Number(event.target.getDuration?.()) || 0;
-            if (duration) setMovieDuration(duration);
-            const target = pendingSeekRef.current;
-            if (target != null) event.target.seekTo(target, true);
-            pendingSeekRef.current = null;
-            if (moviePlaying) event.target.playVideo();
-          },
-        },
+    let readyTimer: number | null = null;
+    if (moviePlayerStateRef.current !== "error") setMoviePlayerState("loading");
+    void loadYouTubeAPI()
+      .then(() => {
+        if (cancelled) return;
+        readyTimer = window.setTimeout(() => {
+          if (movieYoutubeRef.current) {
+            setMoviePlaying(false);
+            setMoviePlayerState("error");
+          }
+        }, 20_000);
+        try {
+          movieYoutubeRef.current = new (window as any).YT.Player("friend-connect-yt-player", {
+            videoId: roomYoutubeId,
+            // Muted autoplay is allowed for the receiving participant.  They can
+            // then unmute from the shared control bar without seeing a black frame.
+            playerVars: { autoplay: 1, mute: 1, controls: 0, playsinline: 1, enablejsapi: 1, origin: window.location.origin },
+            events: {
+              onReady: (event: any) => {
+                if (cancelled) return;
+                if (readyTimer !== null) { window.clearTimeout(readyTimer); readyTimer = null; }
+                const duration = Number(event.target.getDuration?.()) || 0;
+                if (duration) setMovieDuration(duration);
+                const target = pendingSeekRef.current;
+                if (target != null) event.target.seekTo(target, true);
+                pendingSeekRef.current = null;
+                // Gate lifted: apply the latest synced command (may have arrived
+                // while the API was still booting) — never act on stale state.
+                setMoviePlayerState("ready");
+                drivePlayback();
+              },
+              onError: () => {
+                if (cancelled) return;
+                if (readyTimer !== null) { window.clearTimeout(readyTimer); readyTimer = null; }
+                setMoviePlaying(false);
+                setMoviePlayerState("error");
+              },
+            },
+          });
+        } catch {
+          if (!cancelled) {
+            setMoviePlaying(false);
+            setMoviePlayerState("error");
+          }
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setMoviePlaying(false);
+          setMoviePlayerState("error");
+        }
       });
-    });
     return () => {
       cancelled = true;
+      if (readyTimer !== null) window.clearTimeout(readyTimer);
       if (movieYoutubeRef.current?.destroy) movieYoutubeRef.current.destroy();
       movieYoutubeRef.current = null;
     };
   }, [roomYoutubeId]);
 
-  // Drive the <video> element from the synced playback state. Autoplay may be
-  // blocked without a user gesture — then the peer keeps playing and the user
-  // just taps Play locally.
+  // Every movie source change tears the previous player down (the <video>
+  // remounts via its key, the YouTube effect destroys the YT.Player, the embed
+  // iframe remounts) and re-arms the readiness gate — a stale player must never
+  // claim "ready" for the NEW source.
   useEffect(() => {
+    if (!roomMovie) {
+      setMoviePlayerState("idle");
+      return;
+    }
+    setMoviePlayerState("loading");
+    setMovieDuration(0);
+  }, [roomMovie?.id, roomMovie?.url]);
+
+  // Single point that turns the synced playback state into real player
+  // commands — used by the effect below AND by every ready handler so a command
+  // that arrived before the player was mounted is applied the moment it is
+  // (instead of being fired into a black frame).
+  const drivePlayback = () => {
+    if (moviePlayerStateRef.current !== "ready") return;
     const v = movieVideoRef.current;
     const yt = movieYoutubeRef.current;
-    if (!roomMovie) return;
+    if (!roomMovieRef.current) return;
     if (yt) {
-      if (moviePlaying) yt.playVideo?.();
+      if (moviePlayingRef.current) {
+        if (remotePlaybackRef.current) yt.mute?.();
+        yt.playVideo?.();
+      }
       else yt.pauseVideo?.();
-    } else if (movieEmbedRef.current) {
-      postEmbedPlayback(moviePlaying ? "play" : "pause", movieTime);
-    } else if (v && moviePlaying) {
-      void v.play().catch(() => setMoviePlaying(false));
+    } else if (getEmbedFrame()) {
+      postEmbedPlayback(moviePlayingRef.current ? "play" : "pause", movieTimeRef.current);
+    } else if (v && moviePlayingRef.current) {
+      void v.play().catch(() => {
+        v.muted = true;
+        void v.play().catch(() => setMoviePlaying(false));
+      });
     } else {
       v?.pause();
     }
-  }, [moviePlaying, roomMovie?.url]);
+  };
+
+  // Drive the mounted player from the synced playback state. Re-runs when the
+  // readiness gate lifts so a queued play/pause applies exactly once the source
+  // can actually decode. Autoplay may still be blocked without a user gesture —
+  // then the peer keeps playing and the user just taps Play locally.
+  useEffect(() => {
+    drivePlayback();
+  }, [moviePlaying, roomMovie?.url, moviePlayerState]);
+
+  // Generic <iframe> embed readiness: the shielded player owns the iframe, so
+  // lift the gate when its element fires `load` (or fail after a bounded wait
+  // instead of leaving a permanent black frame).
+  useEffect(() => {
+    if (!roomMovie || !roomGenericEmbed) return;
+    let cancelled = false;
+    const readyTimer = window.setTimeout(() => {
+      if (!cancelled) {
+        setMoviePlaying(false);
+        setMoviePlayerState("error");
+      }
+    }, 20_000);
+    const onLoad = () => {
+      if (!cancelled) {
+        window.clearTimeout(readyTimer);
+        setMoviePlayerState("ready");
+        drivePlayback();
+      }
+    };
+    const iv = window.setInterval(() => {
+      const frame = getEmbedFrame();
+      if (!frame) return;
+      frame.addEventListener("load", onLoad, { once: true });
+      window.clearInterval(iv);
+    }, 150);
+    return () => {
+      cancelled = true;
+      window.clearInterval(iv);
+      window.clearTimeout(readyTimer);
+      const frame = getEmbedFrame();
+      if (frame) frame.removeEventListener("load", onLoad);
+    };
+  }, [roomMovie?.url, roomGenericEmbed]);
 
   // Mirror the playhead into UI state and, while playing, push a periodic
   // position pulse to the peer so both sides stay converged without spamming
@@ -1611,7 +2342,7 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
     const iv = window.setInterval(() => {
       const v = movieVideoRef.current;
       const yt = movieYoutubeRef.current;
-      const embed = movieEmbedRef.current;
+      const embed = getEmbedFrame();
       if (!v && !yt && !embed) return;
       const current = yt && typeof yt.getCurrentTime === "function"
         ? yt.getCurrentTime()
@@ -1680,19 +2411,15 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
           <div className="rounded-2xl bg-black/40 border border-white/10 overflow-hidden">
             {roomMovie ? (
               <>
-                <div className="relative aspect-video bg-black/70">
+                <div ref={movieFrameRef} className="relative aspect-video bg-black overflow-hidden">
                   {roomYoutubeId ? (
                     <div id="friend-connect-yt-player" className="w-full h-full" />
                   ) : roomGenericEmbed ? (
-                    <iframe
+                    <ImmersiveShieldedPlayer
                       key={`${roomMovie.id}__${roomMovie.url}`}
-                      ref={movieEmbedRef}
-                      src={roomMovie.url}
+                      url={roomMovie.url}
+                      iframeId="friend-connect-embed-player"
                       title={roomMovie.title}
-                      allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
-                      allowFullScreen
-                      referrerPolicy="origin"
-                      className="w-full h-full border-0"
                     />
                   ) : <video
                     key={`${roomMovie.id}__${roomMovie.url}`}
@@ -1710,13 +2437,38 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
                         e.currentTarget.currentTime = Math.max(0, Math.min(t, d || t));
                         pendingSeekRef.current = null;
                       }
+                      // Gate lifted: apply the awaited play/seek intent now that
+                      // the source reports real metadata (never a black frame).
+                      setMoviePlayerState("ready");
+                      drivePlayback();
+                    }}
+                    onCanPlay={() => {
+                      setMoviePlayerState((prev) => (prev === "loading" ? "ready" : prev));
+                      drivePlayback();
                     }}
                     onDurationChange={(e) => {
                       const d = e.currentTarget.duration;
                       if (d && isFinite(d)) setMovieDuration(d);
                     }}
+                    onError={() => {
+                      setMoviePlaying(false);
+                      setMoviePlayerState("error");
+                    }}
                   />}
-                  {!moviePlaying && (
+                  {moviePlayerState === "loading" && (
+                    <div className="absolute inset-0 flex items-center justify-center gap-2 bg-black/70">
+                      <Loader2 className="w-6 h-6 animate-spin text-brand-primary" />
+                      <span className="text-[11px] font-bold text-white kurdish-text">بار دەکرێت...</span>
+                    </div>
+                  )}
+                  {moviePlayerState === "error" && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 bg-black/85 text-center">
+                      <AlertCircle className="w-8 h-8 text-amber-400" />
+                      <p className="text-[11px] font-bold text-white kurdish-text">سەرچاوەی فیلمەکە نەکرایەوە</p>
+                      <p className="text-[10px] text-gray-400 kurdish-text break-all">{roomMovie.title}</p>
+                    </div>
+                  )}
+                  {!moviePlaying && moviePlayerState !== "error" && (
                     <button
                       type="button"
                       onClick={handleTogglePlay}
@@ -1726,6 +2478,13 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
                       <Play className="w-6 h-6 ml-0.5" />
                     </button>
                   )}
+                  <div className="absolute top-0 inset-x-0 p-2.5 flex items-center justify-between gap-3 pointer-events-none bg-gradient-to-b from-black/85 to-transparent">
+                    <div className="min-w-0">
+                      <p className="text-[8px] font-black tracking-[0.22em] text-brand-primary uppercase">CinemaChat Pro Player</p>
+                      <p className="text-[11px] font-bold text-white truncate kurdish-text">{roomMovie.title}</p>
+                    </div>
+                    <span className="px-2 py-1 rounded-full bg-black/60 border border-white/10 text-[8px] font-black text-brand-primary">WATCH TOGETHER</span>
+                  </div>
                 </div>
                 <div className="px-3 pt-2.5 flex items-center gap-2">
                   <div className="min-w-0 flex-1">
@@ -1778,6 +2537,14 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
                       className="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 flex items-center justify-center transition-all"
                     >
                       <Film className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleFullscreen}
+                      title="پڕکردنەوەی شاشە"
+                      className="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 flex items-center justify-center transition-all"
+                    >
+                      <Maximize2 className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
@@ -1895,22 +2662,31 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
               {chatError}
             </div>
           )}
-          {messages.map((msg) => (
-            <div
-              key={msg.clientId}
-              className={`flex ${msg.mine ? "justify-start flex-row-reverse" : "justify-start"}`}
-            >
-              <div
-                className={`max-w-[78%] px-4 py-2.5 rounded-2xl text-[13px] leading-relaxed break-words ${
-                  msg.mine
-                    ? "bg-brand-primary/90 text-white rounded-tr-sm"
-                    : "bg-white/10 text-gray-100 rounded-tl-sm"
-                }`}
-              >
-                {msg.text}
+          {messages.map((msg) => {
+            const sharedMovie = movieFromMessage(msg.text);
+            return (
+              <div key={msg.clientId} className={`flex ${msg.mine ? "justify-start flex-row-reverse" : "justify-start"}`}>
+                {sharedMovie ? (
+                  <div className={`max-w-[82%] rounded-2xl border overflow-hidden ${msg.mine ? "border-red-500/30 bg-red-500/10" : "border-white/10 bg-white/5"}`}>
+                    {sharedMovie.image && <img src={sharedMovie.image} alt={sharedMovie.title} className="w-full h-24 object-cover" />}
+                    <div className="p-3 flex items-center gap-3">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-black text-white truncate kurdish-text">{sharedMovie.title}</p>
+                        <p className="text-[9px] text-gray-400 mt-1 kurdish-text">فیلمێکی هاوبەش</p>
+                      </div>
+                      <button type="button" onClick={() => activateSharedMovie(sharedMovie)} className="w-10 h-10 rounded-xl bg-brand-primary hover:bg-red-700 text-white flex items-center justify-center" title="کردنەوەی فیلم">
+                        <Play className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className={`max-w-[78%] px-4 py-2.5 rounded-2xl text-[13px] leading-relaxed break-words ${msg.mine ? "bg-brand-primary/90 text-white rounded-tr-sm" : "bg-white/10 text-gray-100 rounded-tl-sm"}`}>
+                    {msg.text}
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
           {peerTyping && (
             <div className="flex justify-start">
               <div className="px-4 py-2.5 rounded-2xl bg-white/10 text-gray-300 text-[11px] kurdish-text">
@@ -1922,6 +2698,15 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
         </div>
 
         <div className="pt-3 border-t border-white/10 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={openMoviePicker}
+            disabled={sessionEnded || chatConnecting || !peerOnline}
+            title="ناردنی فیلم"
+            className="w-11 h-11 rounded-2xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/30 text-amber-300 flex items-center justify-center transition-all disabled:opacity-50 flex-shrink-0"
+          >
+            <Film className="w-4 h-4" />
+          </button>
           <input
             value={newMessage}
             onChange={(e) => {
@@ -1966,6 +2751,10 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
 
   if (!open) return null;
 
+  // Live step for the footer indicator + Back visibility (computed once so the
+  // nav buttons and the step chips always agree).
+  const stepNum = inChat && roomMovie ? 4 : inChat ? 3 : activeConn ? 2 : 1;
+
   return createPortal(
     <div className="fixed inset-0 z-[110] flex items-center justify-center p-3 md:p-6">
       <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={onClose} />
@@ -1999,19 +2788,29 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
 
         <div className="flex-1 overflow-y-auto p-5 custom-scrollbar min-h-0">{renderContent()}</div>
 
-        {/* Step indicator — 1 FRIEND → 2 CONNECT → 3 CHAT → 4 MOVIE */}
+        {/* Step indicator — 1 FRIEND → 2 CONNECT → 3 CHAT → 4 MOVIE, with a
+            visible Back action whenever the user is past Step 1 */}
         <div className="px-5 py-3 bg-black/30 border-t border-white/10 flex-shrink-0">
-          <div className="grid grid-cols-4 gap-2">
+          <div className="flex items-center gap-2">
+            {stepNum >= 2 && (
+              <button
+                type="button"
+                onClick={openMoviePicker}
+                disabled={!inChat || stepNum >= 4}
+                title="گەڕانەوە بۆ هەنگاوی پێشوو"
+                className="px-3 h-9 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 text-[10px] font-black kurdish-text flex items-center gap-1.5 transition-all flex-shrink-0"
+              >
+                <ChevronsLeft className="w-4 h-4" />
+                <span className="hidden sm:inline">پێشەوە</span>
+              </button>
+            )}
+            <div className="grid grid-cols-4 gap-2 flex-1">
             {[
               { n: 1, label: "Friend" },
               { n: 2, label: "Connect" },
               { n: 3, label: "Chat" },
               { n: 4, label: "Movie" },
             ].map((step) => {
-              // Readiness gate bypassed: the indicator always reflects the
-              // live step, starting at Step 1 (friend search) on open — even
-              // for guests / incomplete profiles.
-              const stepNum = inChat && roomMovie ? 4 : inChat ? 3 : activeConn ? 2 : 1;
               const active = step.n === stepNum;
               const done = step.n < stepNum;
               return (
@@ -2036,6 +2835,16 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
                 </button>
               );
             })}
+            </div>
+            <button
+              type="button"
+              onClick={handleStepBack}
+              disabled={stepNum <= 1}
+              title="هەنگاوی دواتر"
+              className="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 flex items-center justify-center transition-all disabled:opacity-30 flex-shrink-0"
+            >
+              <ChevronsRight className="w-4 h-4" />
+            </button>
           </div>
         </div>
       </div>

@@ -91,7 +91,9 @@ const FriendPresenceNotification: React.FC = () => {
             doc(db, "users", peerUid),
             (snap) => {
               const data = snap.data();
-              const isOnline = !!data?.isOnline;
+              // Users may choose to appear offline to friends without signing
+              // out; honor that visibility preference for notifications too.
+              const isOnline = !!data?.isOnline && data?.friendPresenceVisibility !== "offline";
               const prev = presenceRef.current[peerUid];
               // The first snapshot is the baseline — only real transitions toast.
               if (prev !== undefined && prev !== isOnline) {
