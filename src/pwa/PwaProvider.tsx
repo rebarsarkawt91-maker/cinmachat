@@ -7,6 +7,7 @@ interface BeforeInstallPromptEvent extends Event {
 }
 
 type InstallResult = "installed" | "dismissed" | "ios-help" | "unavailable";
+type InstallPlatform = "ios" | "android";
 
 interface PwaContextValue {
   canInstall: boolean;
@@ -16,6 +17,7 @@ interface PwaContextValue {
   updateReady: boolean;
   notificationPermission: NotificationPermission | "unsupported";
   install(): Promise<InstallResult>;
+  choosePlatform(platform: InstallPlatform): Promise<InstallResult>;
   closeIosHelp(): void;
   requestNotifications(): Promise<NotificationPermission | "unsupported">;
   applyUpdate(): Promise<void>;
@@ -28,6 +30,9 @@ const UPDATE_CHECK_MS = 30 * 60 * 1000;
 export function PwaProvider({ children }: { children: React.ReactNode }) {
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [showIosHelp, setShowIosHelp] = useState(false);
+  const [showPlatformChooser, setShowPlatformChooser] = useState(false);
+  const [selectedPlatform, setSelectedPlatform] = useState<InstallPlatform | null>(null);
+  const [linkCopied, setLinkCopied] = useState(false);
   const [updateReady, setUpdateReady] = useState(false);
   const [sensitiveActivity, setSensitiveActivityState] = useState(false);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(
@@ -36,7 +41,9 @@ export function PwaProvider({ children }: { children: React.ReactNode }) {
   const sensitiveRef = useRef(false);
   const updateSWRef = useRef<((reloadPage?: boolean) => Promise<void>) | null>(null);
   const registrationRef = useRef<ServiceWorkerRegistration | null>(null);
-  const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent) ||
+    (/macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+  const isSafari = /^((?!chrome|crios|fxios|edgios|opios|android).)*safari/i.test(navigator.userAgent);
   const isStandalone = window.matchMedia("(display-mode: standalone)").matches ||
     (navigator as Navigator & { standalone?: boolean }).standalone === true;
   const [isInstalled, setIsInstalled] = useState(isStandalone);
@@ -100,16 +107,34 @@ export function PwaProvider({ children }: { children: React.ReactNode }) {
 
   const install = useCallback(async (): Promise<InstallResult> => {
     if (isStandalone) return "installed";
-    if (installPrompt) {
+    setSelectedPlatform(null);
+    setShowPlatformChooser(true);
+    return "unavailable";
+  }, [isStandalone]);
+
+  const choosePlatform = useCallback(async (platform: InstallPlatform): Promise<InstallResult> => {
+    setShowPlatformChooser(false);
+    setSelectedPlatform(platform);
+    if (platform === "android" && installPrompt) {
       await installPrompt.prompt();
       const choice = await installPrompt.userChoice;
       setInstallPrompt(null);
       return choice.outcome === "accepted" ? "installed" : "dismissed";
     }
     setShowIosHelp(true);
-    if (isIos) return "ios-help";
+    if (platform === "ios") return "ios-help";
     return "unavailable";
-  }, [installPrompt, isIos, isStandalone]);
+  }, [installPrompt]);
+
+  const copyCurrentUrl = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setLinkCopied(true);
+      window.setTimeout(() => setLinkCopied(false), 2500);
+    } catch {
+      // Clipboard may be denied; the visible URL can still be copied manually.
+    }
+  }, []);
 
   const requestNotifications = useCallback(async () => {
     if (typeof Notification === "undefined") return "unsupported" as const;
@@ -126,22 +151,47 @@ export function PwaProvider({ children }: { children: React.ReactNode }) {
     updateReady,
     notificationPermission,
     install,
+    choosePlatform,
     closeIosHelp: () => setShowIosHelp(false),
     requestNotifications,
     applyUpdate,
     setSensitiveActivity,
-  }), [applyUpdate, install, installPrompt, isInstalled, isIos, notificationPermission, requestNotifications, setSensitiveActivity, showIosHelp, updateReady]);
+  }), [applyUpdate, choosePlatform, install, installPrompt, isInstalled, isIos, notificationPermission, requestNotifications, setSensitiveActivity, showIosHelp, updateReady]);
 
   return (
     <PwaContext.Provider value={value}>
       {children}
+      {showPlatformChooser && (
+        <div className="fixed inset-0 z-[100000] grid place-items-center bg-black/75 p-5" role="dialog" aria-modal="true" dir="rtl">
+          <div className="w-full max-w-sm rounded-3xl border border-white/10 bg-[#111318] p-6 text-right shadow-2xl">
+            <h2 className="text-lg font-black text-white">جۆری مۆبایلەکەت هەڵبژێرە</h2>
+            <p className="mt-2 text-sm leading-7 text-gray-400">ڕێگای دامەزراندن بە پێی سیستەمی مۆبایلەکەت پیشان دەدرێت.</p>
+            <div className="mt-5 grid grid-cols-2 gap-3">
+              <button type="button" onClick={() => void choosePlatform("ios")} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-5 text-center transition hover:border-red-500/60 hover:bg-red-500/10">
+                <span className="block text-2xl"></span><span className="mt-2 block text-sm font-black text-white">iOS / iPhone</span>
+              </button>
+              <button type="button" onClick={() => void choosePlatform("android")} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-5 text-center transition hover:border-emerald-500/60 hover:bg-emerald-500/10">
+                <span className="block text-2xl">●</span><span className="mt-2 block text-sm font-black text-white">Android</span>
+              </button>
+            </div>
+            <button type="button" onClick={() => setShowPlatformChooser(false)} className="mt-4 w-full rounded-xl border border-white/10 px-4 py-3 text-xs font-bold text-gray-400">داخستن</button>
+          </div>
+        </div>
+      )}
       {showIosHelp && (
         <div className="fixed inset-0 z-[100000] grid place-items-center bg-black/75 p-5" role="dialog" aria-modal="true" dir="rtl">
           <div className="w-full max-w-sm rounded-3xl border border-white/10 bg-[#111318] p-6 text-right shadow-2xl">
             <h2 className="text-lg font-black text-white">زیادکردنی CinemaChat بۆ سەر شاشە</h2>
-            <p className="mt-3 text-sm leading-7 text-gray-300">
-              {isIos ? <>لە Safari دوگمەی Share بکەوە، پاشان <b>Add to Home Screen</b> هەڵبژێرە.</> : <>لە menu ـی براوزەر <b>Install app</b> یان <b>Add to Home screen</b> هەڵبژێرە.</>}
-            </p>
+            {selectedPlatform === "ios" ? (
+              <>
+                <p className="mt-3 text-sm leading-7 text-gray-300">
+                  {isSafari ? <>لە خوارەوە دوگمەی <b>Share ⬆</b> بکە، پاشان <b>Add to Home Screen</b> هەڵبژێرە و <b>Add</b> بکە.</> : <>iPhone تەنها لە <b>Safari</b> ڕێگەی دامەزراندنی Home Screen دەدات. لینکەکە کۆپی بکە و لە Safari بیکەرەوە.</>}
+                </p>
+                {!isSafari && <button type="button" onClick={() => void copyCurrentUrl()} className="mt-4 w-full rounded-xl border border-sky-500/40 bg-sky-500/10 px-4 py-3 text-sm font-black text-sky-300">{linkCopied ? "لینک کۆپی کرا" : "کۆپیکردنی لینک بۆ Safari"}</button>}
+              </>
+            ) : (
+              <p className="mt-3 text-sm leading-7 text-gray-300">لە Chrome دوگمەی <b>Install app</b> یان <b>Add to Home screen</b> لە menu هەڵبژێرە.</p>
+            )}
             <div className="mt-5 flex gap-2">
               <button type="button" onClick={() => setShowIosHelp(false)} className="flex-1 rounded-xl bg-[#e50914] px-4 py-3 text-sm font-black text-white">تێگەیشتم</button>
               {notificationPermission === "default" && (
