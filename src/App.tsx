@@ -90,7 +90,6 @@ import { motion, AnimatePresence } from "motion/react";
 import { Plyr } from "plyr-react";
 import { UsersIcon } from "lucide-react";
 import "plyr-react/plyr.css";
-import { GoogleGenAI } from "@google/genai";
 import ImmersiveShieldedPlayer from "./components/Player/ImmersiveShieldedPlayer";
 import { SUBTITLE_SYNC_LEAD_S } from "./hooks/useSubtitleManager";
 import YouTubeResilientPlayer from "./components/Player/YouTubeResilientPlayer";
@@ -758,12 +757,6 @@ class RoomErrorBoundary extends React.Component<any, any> {
     );
   }
 }
-
-const getAI = () => {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return null;
-  return new GoogleGenAI({ apiKey });
-};
 
 // Dynamic genre icons: known genres get a themed icon, any genre added later
 // by an admin falls back to the generic Film icon.
@@ -13255,7 +13248,6 @@ export default function App() {
                       onToggleFavorite={handleToggleFavorite}
                       onToggleLike={handleToggleLike}
                       onEdit={isPrimaryOwner ? setMovieBeingEdited : undefined}
-                      eager={idx < 6}
                     />
                   );
 

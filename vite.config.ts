@@ -42,7 +42,18 @@ export default defineConfig(({mode}) => {
           ],
         },
         injectManifest: {
-          globPatterns: ['**/*.{js,css,html,png,svg,woff2}'],
+          // Cache only the public shell needed to start the site offline.
+          // Pre-caching every lazy admin/analytics chunk competed with the
+          // YouTube hero request on first mobile visits and delayed playback.
+          globPatterns: [
+            'index.html',
+            'offline.html',
+            'manifest.webmanifest',
+            'pwa/*.{png,svg}',
+            'assets/index-*.{js,css}',
+            'assets/HeroVideoPlayer-*.js',
+            'assets/workbox-window*.js',
+          ],
           globIgnores: ['**/*.mp4', '**/*.webm', '**/*.m3u8', '**/catalog-fallback.json'],
           // The existing application entry bundle is ~4.5 MB. Cache that
           // shell for offline startup, while the explicit ignores still keep
