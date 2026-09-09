@@ -13,9 +13,8 @@ try {
     const buttons = await page.locator('button[aria-label="دابەزاندنی ئەپ"]').count();
     if (buttons !== 3) throw new Error(`Expected 3 install entry points at ${viewport.width}px, found ${buttons}`);
     await page.locator('button[aria-label="دابەزاندنی ئەپ"]').first().click();
-    await page.getByText("iOS / iPhone", { exact: true }).waitFor();
-    await page.getByText("Android", { exact: true }).waitFor();
-    await page.getByRole("button", { name: "داخستن" }).click();
+    await page.getByRole("heading", { name: "زیادکردنی CinemaChat بۆ سەر شاشە" }).waitFor();
+    await page.getByRole("button", { name: "تێگەیشتم" }).click();
     counts.push({ width: viewport.width, buttons });
     if (viewport.width !== 1440) await page.close();
   }

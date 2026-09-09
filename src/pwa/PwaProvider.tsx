@@ -7,7 +7,6 @@ interface BeforeInstallPromptEvent extends Event {
 }
 
 type InstallResult = "installed" | "dismissed" | "ios-help" | "unavailable";
-type InstallPlatform = "ios" | "android";
 
 interface PwaContextValue {
   canInstall: boolean;
@@ -17,7 +16,6 @@ interface PwaContextValue {
   updateReady: boolean;
   notificationPermission: NotificationPermission | "unsupported";
   install(): Promise<InstallResult>;
-  choosePlatform(platform: InstallPlatform): Promise<InstallResult>;
   closeIosHelp(): void;
   requestNotifications(): Promise<NotificationPermission | "unsupported">;
   applyUpdate(): Promise<void>;
@@ -30,8 +28,7 @@ const UPDATE_CHECK_MS = 30 * 60 * 1000;
 export function PwaProvider({ children }: { children: React.ReactNode }) {
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [showIosHelp, setShowIosHelp] = useState(false);
-  const [showPlatformChooser, setShowPlatformChooser] = useState(false);
-  const [selectedPlatform, setSelectedPlatform] = useState<InstallPlatform | null>(null);
+  const [helpPlatform, setHelpPlatform] = useState<"ios" | "android">("android");
   const [linkCopied, setLinkCopied] = useState(false);
   const [updateReady, setUpdateReady] = useState(false);
   const [sensitiveActivity, setSensitiveActivityState] = useState(false);
@@ -107,24 +104,18 @@ export function PwaProvider({ children }: { children: React.ReactNode }) {
 
   const install = useCallback(async (): Promise<InstallResult> => {
     if (isStandalone) return "installed";
-    setSelectedPlatform(null);
-    setShowPlatformChooser(true);
-    return "unavailable";
-  }, [isStandalone]);
-
-  const choosePlatform = useCallback(async (platform: InstallPlatform): Promise<InstallResult> => {
-    setShowPlatformChooser(false);
-    setSelectedPlatform(platform);
-    if (platform === "android" && installPrompt) {
+    // Android/Chromium must receive the native prompt from this same user
+    // gesture. Adding an intermediate platform chooser breaks that contract.
+    if (installPrompt) {
       await installPrompt.prompt();
       const choice = await installPrompt.userChoice;
       setInstallPrompt(null);
       return choice.outcome === "accepted" ? "installed" : "dismissed";
     }
+    setHelpPlatform(isIos ? "ios" : "android");
     setShowIosHelp(true);
-    if (platform === "ios") return "ios-help";
-    return "unavailable";
-  }, [installPrompt]);
+    return isIos ? "ios-help" : "unavailable";
+  }, [installPrompt, isIos, isStandalone]);
 
   const copyCurrentUrl = useCallback(async () => {
     try {
@@ -151,42 +142,31 @@ export function PwaProvider({ children }: { children: React.ReactNode }) {
     updateReady,
     notificationPermission,
     install,
-    choosePlatform,
     closeIosHelp: () => setShowIosHelp(false),
     requestNotifications,
     applyUpdate,
     setSensitiveActivity,
-  }), [applyUpdate, choosePlatform, install, installPrompt, isInstalled, isIos, notificationPermission, requestNotifications, setSensitiveActivity, showIosHelp, updateReady]);
+  }), [applyUpdate, install, installPrompt, isInstalled, isIos, notificationPermission, requestNotifications, setSensitiveActivity, showIosHelp, updateReady]);
 
   return (
     <PwaContext.Provider value={value}>
       {children}
-      {showPlatformChooser && (
-        <div className="fixed inset-0 z-[100000] grid place-items-center bg-black/75 p-5" role="dialog" aria-modal="true" dir="rtl">
-          <div className="w-full max-w-sm rounded-3xl border border-white/10 bg-[#111318] p-6 text-right shadow-2xl">
-            <h2 className="text-lg font-black text-white">جۆری مۆبایلەکەت هەڵبژێرە</h2>
-            <p className="mt-2 text-sm leading-7 text-gray-400">ڕێگای دامەزراندن بە پێی سیستەمی مۆبایلەکەت پیشان دەدرێت.</p>
-            <div className="mt-5 grid grid-cols-2 gap-3">
-              <button type="button" onClick={() => void choosePlatform("ios")} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-5 text-center transition hover:border-red-500/60 hover:bg-red-500/10">
-                <span className="block text-2xl"></span><span className="mt-2 block text-sm font-black text-white">iOS / iPhone</span>
-              </button>
-              <button type="button" onClick={() => void choosePlatform("android")} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-5 text-center transition hover:border-emerald-500/60 hover:bg-emerald-500/10">
-                <span className="block text-2xl">●</span><span className="mt-2 block text-sm font-black text-white">Android</span>
-              </button>
-            </div>
-            <button type="button" onClick={() => setShowPlatformChooser(false)} className="mt-4 w-full rounded-xl border border-white/10 px-4 py-3 text-xs font-bold text-gray-400">داخستن</button>
-          </div>
-        </div>
-      )}
       {showIosHelp && (
         <div className="fixed inset-0 z-[100000] grid place-items-center bg-black/75 p-5" role="dialog" aria-modal="true" dir="rtl">
           <div className="w-full max-w-sm rounded-3xl border border-white/10 bg-[#111318] p-6 text-right shadow-2xl">
             <h2 className="text-lg font-black text-white">زیادکردنی CinemaChat بۆ سەر شاشە</h2>
-            {selectedPlatform === "ios" ? (
+            {helpPlatform === "ios" ? (
               <>
                 <p className="mt-3 text-sm leading-7 text-gray-300">
-                  {isSafari ? <>لە خوارەوە دوگمەی <b>Share ⬆</b> بکە، پاشان <b>Add to Home Screen</b> هەڵبژێرە و <b>Add</b> بکە.</> : <>iPhone تەنها لە <b>Safari</b> ڕێگەی دامەزراندنی Home Screen دەدات. لینکەکە کۆپی بکە و لە Safari بیکەرەوە.</>}
+                  {isSafari ? <>Safari ئامادەیە؛ ئەم سێ هەنگاوە جێبەجێ بکە:</> : <>iPhone تەنها لە <b>Safari</b> دامەزراندنی Home Screen بەباشی پشتگیری دەکات. لینکەکە کۆپی بکە و لە Safari بیکەرەوە.</>}
                 </p>
+                {isSafari && (
+                  <ol className="mt-4 space-y-2 text-sm text-gray-200">
+                    <li className="rounded-xl bg-white/5 p-3"><b className="text-red-400">١.</b> دوگمەی <b>Share ⬆</b> لە خوارەوە بکە.</li>
+                    <li className="rounded-xl bg-white/5 p-3"><b className="text-red-400">٢.</b> <b>Add to Home Screen</b> هەڵبژێرە.</li>
+                    <li className="rounded-xl bg-white/5 p-3"><b className="text-red-400">٣.</b> دوگمەی <b>Add</b> بکە.</li>
+                  </ol>
+                )}
                 {!isSafari && <button type="button" onClick={() => void copyCurrentUrl()} className="mt-4 w-full rounded-xl border border-sky-500/40 bg-sky-500/10 px-4 py-3 text-sm font-black text-sky-300">{linkCopied ? "لینک کۆپی کرا" : "کۆپیکردنی لینک بۆ Safari"}</button>}
               </>
             ) : (
