@@ -8,6 +8,9 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="CinemaChat" />
+    <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/pwa/icon-192.png" />
+    <link rel="shortcut icon" href="/favicon-48.png" />
     <link rel="apple-touch-icon" href="/pwa/apple-touch-icon.png" />
     <meta name="google-site-verification" content="NZ02gH2r2ThhE_zk34RXj7Wl0k7742r1dZer2b9Bviw" />
     <title>CinamaChat - نوێترین فیلم و زنجیرەکان بە کوردی</title>
@@ -17,6 +20,35 @@
     <link rel="preconnect" href="https://i.ytimg.com">
     <link rel="dns-prefetch" href="https://www.youtube.com">
     <link rel="dns-prefetch" href="https://i.ytimg.com">
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "WebSite",
+            "@id": "https://www.cinamachat.com/#website",
+            "url": "https://www.cinamachat.com/",
+            "name": "CinemaChat",
+            "alternateName": ["CinamaChat", "سینەما چات"],
+            "inLanguage": "ckb"
+          },
+          {
+            "@type": "Organization",
+            "@id": "https://www.cinamachat.com/#organization",
+            "url": "https://www.cinamachat.com/",
+            "name": "CinemaChat",
+            "alternateName": "سینەما چات",
+            "logo": {
+              "@type": "ImageObject",
+              "url": "https://www.cinamachat.com/pwa/icon-512.png",
+              "contentUrl": "https://www.cinamachat.com/pwa/icon-512.png",
+              "width": 512,
+              "height": 512
+            }
+          }
+        ]
+      }
+    </script>
   </head>
   <body class="bg-black">
     <div id="root"></div>
