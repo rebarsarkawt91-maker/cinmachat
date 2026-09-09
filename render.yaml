@@ -22,3 +22,12 @@ services:
       # Do NOT commit the secret here.
       - key: FIREBASE_SERVICE_ACCOUNT
         sync: false
+      # Web Push (VAPID) — required for the notifications system. The PRIVATE key
+      # must never reach the client or be committed. Generate locally with:
+      #   npx web-push generate-vapid-keys --json
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        sync: false

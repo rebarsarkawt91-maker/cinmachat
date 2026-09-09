@@ -4,6 +4,7 @@ import App from './App.tsx';
 import './index.css';
 import { SocialAuthProvider } from './context/SocialAuthContext.tsx';
 import { PwaProvider } from './pwa/PwaProvider.tsx';
+import { PushProvider } from './pwa/PushProvider.tsx';
 
 declare global {
   interface Window {
@@ -37,7 +38,9 @@ window.addEventListener('unhandledrejection', (event) => {
     <StrictMode>
       <PwaProvider>
         <SocialAuthProvider>
-          <App />
+          <PushProvider>
+            <App />
+          </PushProvider>
         </SocialAuthProvider>
       </PwaProvider>
     </StrictMode>,

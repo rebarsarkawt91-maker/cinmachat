@@ -35,6 +35,10 @@ import { execFile } from 'node:child_process';
 import os from 'node:os';
 import { privateSessionSweepable } from './src/lib/privateChatSweep';
 import { registerRoomSubtitleRoutes } from './features/room-subtitles/routes';
+import { PushService } from './features/push/service';
+import { registerPushRoutes } from './features/push/routes';
+import { FirestorePushStore } from './features/push/store';
+import { ensureVapidConfig, webPushSenderAdapter } from './features/push/config';
 import * as XLSX from 'xlsx';
 import {
   WatchCallStore,
@@ -10752,6 +10756,10 @@ async function startServer() {
     db.manualMovies.push(newMovie);
     await addAuditLog(db, adminName, "Post Movie", `فیلمی نوێ زیادکرا: "${newMovie.title}"`);
     await saveDB(db);
+    // Web push: automatically notify subscribers about the new movie. Runs
+    // only after the successful production write, is idempotent per movie id,
+    // and never blocks or fails the publish response.
+    void pushService.notifyPublishedMovie(newMovie);
     // Add to cache while preventing duplicates
     setMoviesCache(prev => [newMovie, ...prev.filter(m => m.id !== newMovie.id)]);
 
@@ -10863,6 +10871,8 @@ async function startServer() {
 
       db.manualMovies.push(newMovie);
       await saveDB(db);
+      // Web push: automatic new-movie notification (idempotent per movie id).
+      void pushService.notifyPublishedMovie(newMovie);
       setMoviesCache(prev => [newMovie, ...prev.filter(m => m.id !== newMovie.id)]);
 
       // Background Kurdish subtitle pipeline (same fire-and-forget contract as
@@ -13217,6 +13227,21 @@ let videoDownloaded = false;
       if (err?.status === 401 || err?.status === 503) return respondAuthError(res, err);
       return res.status(err?.status || 500).json({ error: err?.message || 'active-session lookup failed' });
     }
+  });
+
+  // --- Web Push Notifications (VAPID + Firestore-backed subscriptions) ---
+  // Registered before the /api/* 404 catcher so all five endpoints resolve.
+  const pushVapidConfig = ensureVapidConfig();
+  const pushService = new PushService(
+    new FirestorePushStore(() => firebaseAdminApp),
+    pushVapidConfig,
+    webPushSenderAdapter,
+  );
+  registerPushRoutes(app, {
+    pushService,
+    verifyToken: verifyFirebaseIdToken,
+    onAdminSend: (adminName, outcome) =>
+      addAuditLog(db, adminName, "Send Push Announcement", `نۆتیفیکەیشن بۆ ${outcome.delivered} ئامێر نێردرا`),
   });
 
   app.all('/api/*', (req, res, next) => {

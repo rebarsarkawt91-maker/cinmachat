@@ -14,6 +14,16 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Web Push subscriptions + delivery log. Written/examined exclusively by
+    // the Admin SDK (endpoints verify Firebase tokens server-side); the client
+    // never reads these collections directly.
+    match /pushSubscriptions/{docId} {
+      allow read, write: if false;
+    }
+    match /pushNotificationLog/{docId} {
+      allow read, write: if false;
+    }
+
     // --- Primitives ---
     function isSignedIn() {
       return request.auth != null;

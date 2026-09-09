@@ -14,11 +14,13 @@
     "test:hero": "node --test features/hero/heroConfig.test.cjs",
     "test:watchcall": "npx tsx --test watchCallStore.test.ts",
     "test:sweep": "npx tsx --test src/lib/privateChatSweep.test.ts",
+    "test:push": "npx tsx --test features/push/store.test.ts features/push/service.test.ts features/push/routes.test.ts features/push/shared.test.ts features/push/iosCompatibility.test.ts",
     "check:video": "node scripts/video-load-check.mjs"
   },
   "dependencies": {
     "@google/genai": "^1.51.0",
     "@tailwindcss/vite": "^4.1.14",
+    "@types/web-push": "^3.6.4",
     "@vitejs/plugin-react": "^5.0.4",
     "agora-rtc-sdk-ng": "^4.24.3",
     "bcryptjs": "^3.0.3",
@@ -42,6 +44,7 @@
     "react-dom": "^18.2.0",
     "react-player": "^3.4.0",
     "vite": "^6.2.0",
+    "web-push": "^3.6.7",
     "ws": "^8.21.1",
     "xlsx": "^0.18.5",
     "youtube-captions": "^1.0.2"

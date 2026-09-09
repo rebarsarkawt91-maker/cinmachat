@@ -256,6 +256,7 @@ import FriendPresenceNotification from "./components/Social/FriendPresenceNotifi
 import RoomSubtitleOverlay from "./components/Player/RoomSubtitleOverlay";
 import RoomSubtitleSelector from "./components/Player/RoomSubtitleSelector";
 import { PwaInstallButton } from "./components/Pwa/PwaInstallButton";
+import { PushBellButton } from "./components/Pwa/PushBellButton";
 import { usePwaInstall } from "./pwa/PwaProvider";
 
 import { 
@@ -16329,6 +16330,7 @@ const trailerId = movie.trailerUrl
         }}
       />
       <PwaInstallButton variant="floating" />
+      <PushBellButton />
 
       <footer className="official-footer"> {/* Main Footer */}
         <div className="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-20 relative z-10">
