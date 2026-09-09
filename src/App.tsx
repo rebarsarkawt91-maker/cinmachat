@@ -11683,20 +11683,40 @@ export default function App() {
     };
 
     try {
-      const tasks: Promise<any>[] = [api.getMovies()];
-      if (!firestoreEnrichmentDoneRef.current) {
-        firestoreEnrichmentDoneRef.current = true;
-        tasks.push(
-          getDocs(query(collection(realDb, "movies"), orderBy("createdAt", "desc"), limit(200))),
-        );
-      }
-      const [serverResult, firestoreResult] = await Promise.allSettled(tasks);
+      // Render the lightweight API catalog as soon as it arrives. Previously we
+      // waited for the first Firestore read (which can contain large base64
+      // posters) before showing an already-ready API response. On a cold mobile
+      // visit that unnecessarily kept the skeleton visible for several seconds.
+      const serverPromise = api.getMovies();
+      const shouldEnrichFromFirestore = !firestoreEnrichmentDoneRef.current;
+      if (shouldEnrichFromFirestore) firestoreEnrichmentDoneRef.current = true;
+
+      const serverResult = await Promise.resolve(serverPromise)
+        .then((value) => ({ status: "fulfilled" as const, value }))
+        .catch((reason) => ({ status: "rejected" as const, reason }));
       const serverMovies =
         serverResult.status === "fulfilled" && Array.isArray(serverResult.value)
           ? serverResult.value.filter((m: any) => m && m.id !== "hero-promo")
           : [];
+
+      if (serverMovies.length > 0) {
+        applyMovies(serverMovies);
+        setErrorMsg(null);
+        releaseLoading();
+      }
+
+      // Firestore remains the durable enrichment/fallback, but no longer blocks
+      // or competes with the API catalog during first paint.
+      const firestorePromise = shouldEnrichFromFirestore
+        ? getDocs(query(collection(realDb, "movies"), orderBy("createdAt", "desc"), limit(200)))
+        : null;
+      const firestoreResult = firestorePromise
+        ? await Promise.resolve(firestorePromise)
+            .then((value) => ({ status: "fulfilled" as const, value }))
+            .catch((reason) => ({ status: "rejected" as const, reason }))
+        : null;
       const firestoreMovies: any[] = [];
-      if (firestoreResult && firestoreResult.status === "fulfilled") {
+      if (firestoreResult?.status === "fulfilled") {
         firestoreResult.value.forEach((doc) =>
           firestoreMovies.push({ ...doc.data(), id: doc.id }),
         );
@@ -11899,12 +11919,19 @@ export default function App() {
   // can never clear or collapse the grid.
   useEffect(() => {
     let cancelled = false;
+    let unsub: (() => void) | null = null;
     const moviesRef = collection(realDb, "movies");
     const q = query(moviesRef, orderBy("createdAt", "desc"), limit(200));
 
-    const unsub = onSnapshot(
-      q,
-      (snapshot) => {
+    // Give the small API/config requests the network first. Firestore movie
+    // documents can include megabytes of inline poster data, so opening this
+    // listener during the critical render path delayed the hero and cards on
+    // mobile. Real-time updates still start shortly after the initial paint.
+    const startTimer = window.setTimeout(() => {
+      if (cancelled) return;
+      unsub = onSnapshot(
+        q,
+        (snapshot) => {
         if (cancelled) return;
         const firestoreMovies: any[] = [];
         snapshot.forEach((doc) =>
@@ -11940,16 +11967,18 @@ export default function App() {
           setErrorMsg(null);
         }
         setIsLoading(false);
-      },
-      (fsErr) => {
-        console.warn("[Movies] Firestore real-time listener failed:", fsErr);
-        fetchMovies(); // fall back to one-shot reads
-      },
-    );
+        },
+        (fsErr) => {
+          console.warn("[Movies] Firestore real-time listener failed:", fsErr);
+          fetchMovies(); // fall back to one-shot reads
+        },
+      );
+    }, 2_500);
 
     return () => {
       cancelled = true;
-      unsub();
+      window.clearTimeout(startTimer);
+      unsub?.();
     };
   }, []);
 
