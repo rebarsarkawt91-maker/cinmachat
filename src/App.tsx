@@ -1035,32 +1035,29 @@ const popOutPlayer = (url: string | undefined) => {
   }
 };
 
-// Returns the first available playable URL from a movie.
-// Priority: embedUrl (explicitly embed-formatted) > videoUrl > source-specific fields > streamingUrl (raw) > external_link > externalMovieLink.
-// embedUrl is intentionally first because the server explicitly computes it as the embed-ready version,
-// while streamingUrl retains the raw user input (e.g. "watch?v=" instead of "embed/").
-//
-// IMDb title/video URLs are valid Step 4 iframe playback sources.
+const firstValidMovieUrl = (...values: unknown[]): string | null => {
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const url = value.trim();
+    if (url && isValidHttpUrl(url)) return url;
+  }
+  return null;
+};
+
+// Canonical player priority shared by card clicks and selected-movie changes.
 function getMovieSourceUrl(movie: any): string | null {
   if (!movie) return null;
-  const candidates = [
-    movie.embedUrl,
-    movie.videoUrl,
+  return firstValidMovieUrl(
+    movie.streamingUrl,
     movie.hdtodayUrl,
     movie.vidsrcUrl,
+    movie.youtubeMovieUrl,
     movie.vidmolyUrl,
     movie.streamwishUrl,
     movie.fileLrunUrl,
-    movie.youtubeMovieUrl,
-    movie.otherVideoUrl,
-    movie.streamingUrl,
-    movie.external_link,
-    movie.externalMovieLink,
-  ];
-  for (const url of candidates) {
-    if (typeof url === 'string' && url) return url;
-  }
-  return null;
+    movie.embedUrl,
+    movie.videoUrl,
+  );
 }
 
 // Scans EVERY source field of a movie for a YouTube link. Posted movies often
@@ -8816,40 +8813,27 @@ export default function App() {
   // mounts after the user presses the dedicated Play button inside the details
   // panel, so details and player are never both active foreground layers.
 
-  // Card click: open ONLY the details panel. The player stays closed and is
-  // not mounted or initialized (no autoplay, no iframe, no view counting).
+  // Card click: external destinations open in the system browser; playable
+  // sources stay inside CinemaChat's modal. Invalid/empty records do nothing,
+  // so no blank or broken tab can be created.
   const openMovieDetails = useCallback(
     (movie: Movie) => {
+      const externalUrl = firstValidMovieUrl(movie.external_link, movie.externalMovieLink);
+      if (externalUrl) {
+        window.open(externalUrl, "_blank", "noopener,noreferrer");
+        return;
+      }
+
+      if (!getMovieSourceUrl(movie)) return;
+
       // Remember the opener element so focus returns to the card on close.
       if (document.activeElement instanceof HTMLElement) {
         movieReturnFocusRef.current = document.activeElement;
       }
-      // Capture the homepage's scroll position BEFORE the modal mounts so we
-      // can restore it exactly when the modal closes.
-      if (savedPageScrollRef.current === null) {
-        savedPageScrollRef.current = window.scrollY;
-      }
-      setSelectedMovie(movie);
-      setActiveServerUrl(getMovieSourceUrl(movie));
-      setIsMovieDetailsOpen(true);
-      setShowPlayer(false);
-      // Pre-load the saved resume point (continue-watching) so the FIRST
-      // explicit Play resumes where the user left off instead of starting over
-      // from 0s. It is consumed once the player actually mounts.
-      try {
-        const local = JSON.parse(
-          localStorage.getItem("cinemachat_continue_watching") || "{}",
-        );
-        const saved = local[movie.id];
-        resumeTimeRef.current =
-          saved && typeof saved.progress === "number" && saved.progress >= 5
-            ? saved.progress
-            : 0;
-      } catch {
-        resumeTimeRef.current = 0;
-      }
+      setIsMovieDetailsOpen(false);
+      openMovie(movie);
     },
-    [],
+    [openMovie],
   );
 
   // Explicit "Play / Watch Movie" — the only action that opens the player from
