@@ -3,6 +3,7 @@ import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
 import { SocialAuthProvider } from './context/SocialAuthContext.tsx';
+import { PwaProvider } from './pwa/PwaProvider.tsx';
 
 declare global {
   interface Window {
@@ -34,9 +35,11 @@ window.addEventListener('unhandledrejection', (event) => {
 
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
-      <SocialAuthProvider>
-        <App />
-      </SocialAuthProvider>
+      <PwaProvider>
+        <SocialAuthProvider>
+          <App />
+        </SocialAuthProvider>
+      </PwaProvider>
     </StrictMode>,
   );
 }

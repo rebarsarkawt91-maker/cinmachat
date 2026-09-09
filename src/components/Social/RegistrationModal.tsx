@@ -366,48 +366,62 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
 
       if (isLogin) {
         const loginIdentifier = formData.phone.trim();
+        const hasPassword = (formData.password || "").length > 0;
 
-        // Try CC-ID login first (covers "CC-CC-####", "CC-####", bare "####")
-        const res = await fetch("/api/auth/login-by-id", {
+        // CC-ID login (covers "CC-CC-####", "CC-####", bare "####"). Always
+        // attempted, but when a password is typed the phone/username password
+        // login runs IN PARALLEL so the user pays the slower of the two
+        // round-trips — not their sum (previously a phone login waited for a
+        // guaranteed-to-fail CC-ID lookup first, adding ~1s to every login).
+        const idLogin = fetch("/api/auth/login-by-id", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ uniqueCode: loginIdentifier })
-        });
+        })
+          .then(async (res) => ({ ok: res.ok, data: await res.json().catch(() => null) }))
+          .catch(() => ({ ok: false, data: null }));
 
-        if (res.ok) {
-          const data = await res.json();
-          if (data.success && data.customToken) {
-            await signInWithCustomToken(auth, data.customToken);
+        let mobileLogin: Promise<{ ok: boolean; data: any } | null> | null = null;
+        if (hasPassword) {
+          mobileLogin = fetch("/api/auth/login-mobile", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              phone: loginIdentifier,
+              username: loginIdentifier,
+              password: formData.password
+            })
+          })
+            .then(async (res) => ({ ok: res.ok, data: await res.json().catch(() => ({})) }))
+            .catch(() => null);
+        }
+
+        const idResult = await idLogin;
+        if (idResult.ok && idResult.data?.success && idResult.data.customToken) {
+          await signInWithCustomToken(auth, idResult.data.customToken);
+          completeAuth();
+          return;
+        }
+
+        if (mobileLogin) {
+          const mobile = await mobileLogin;
+          if (mobile && mobile.ok && mobile.data?.success && mobile.data.customToken) {
+            await signInWithCustomToken(auth, mobile.data.customToken);
             completeAuth();
             return;
           }
-        }
-
-        // Password login with the user's Phone Number OR Username. The server
-        // validates the identifier, compares the bcrypt hash of the stored
-        // password and mints a custom token for the SAME account UID. Sending
-        // both fields keeps it a single round-trip (phone is checked first,
-        // username second); there is no fake-email fallback and no conflicting
-        // auth loop.
-        const mobileRes = await fetch("/api/auth/login-mobile", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            phone: loginIdentifier,
-            username: loginIdentifier,
-            password: formData.password
-          })
-        });
-        const mobileData = await mobileRes.json().catch(() => ({}));
-        if (!mobileRes.ok || !mobileData.success || !mobileData.customToken) {
           throw new Error(
-            (mobileData && typeof mobileData.error === "string" && mobileData.error) ||
+            (mobile?.data && typeof mobile.data.error === "string" && mobile.data.error) ||
               "ژمارە مۆبایل یان پاسۆردەکە دروست نییە.",
           );
         }
-        await signInWithCustomToken(auth, mobileData.customToken);
-        completeAuth();
-        return;
+
+        // No password typed: the CC-ID path was the only option — surface its
+        // readable server error (e.g. unknown ID code).
+        throw new Error(
+          (idResult.data && typeof idResult.data.error === "string" && idResult.data.error) ||
+            "کێدی ID یان ژمارە مۆبایل و پاسۆرد پێویستە.",
+        );
       } else {
         // Registration (email OR mobile): validate locally with readable Kurdish
         // messages and focus the invalid field, then let the server enforce the

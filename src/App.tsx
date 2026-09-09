@@ -148,6 +148,12 @@ import type { CinemaChatParticipant } from "./services/cinemaChat";
 const MOVIE_CATALOG_CACHE_KEY = "cinemachat:movie-catalog:v1";
 const MOVIE_CATALOG_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
+// Inline base64 image (a "data:" URL). Firestore movie docs still carry these
+// as the durable poster copy; the API server materializes them into small
+// /uploads URLs, so base64 blobs must never win a merge against those URLs.
+const isDataUrl = (value: any): boolean =>
+  typeof value === "string" && value.startsWith("data:");
+
 const readCachedMovieCatalog = (): Movie[] => {
   if (typeof window === "undefined") return [];
   try {
@@ -249,6 +255,8 @@ import MovieEditModal from "./components/Admin/MovieEditModal";
 import FriendPresenceNotification from "./components/Social/FriendPresenceNotification";
 import RoomSubtitleOverlay from "./components/Player/RoomSubtitleOverlay";
 import RoomSubtitleSelector from "./components/Player/RoomSubtitleSelector";
+import { PwaInstallButton } from "./components/Pwa/PwaInstallButton";
+import { usePwaInstall } from "./pwa/PwaProvider";
 
 import { 
   db, 
@@ -6715,6 +6723,7 @@ const DramaRoomGallery = ({ rooms, onOpenRoom, liveViewersMap, ratingsMap }: any
 };
 
 export default function App() {
+  const { setSensitiveActivity } = usePwaInstall();
   const { t: tr } = useI18n();
 
   const [activeTab, setActiveTab] = useState("all");
@@ -6873,6 +6882,14 @@ export default function App() {
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [trendingSearches, setTrendingSearches] = useState<{ term: string; count: number }[]>([]);
   const [sortBy, setSortBy] = useState<"recent" | "trending" | "live">("recent");
+
+  // PWA shortcuts enter the existing catalog controls instead of creating a
+  // second routing or filtering system.
+  useEffect(() => {
+    const shortcut = new URLSearchParams(window.location.search).get("pwa");
+    if (shortcut === "latest") setActiveTab("New Releases");
+    if (shortcut === "trending") setSortBy("trending");
+  }, []);
 
   // Continue-watching store (movieId -> { progress, duration, updatedAt }).
   const [continueWatchingStore, setContinueWatchingStore] = useState<
@@ -10967,6 +10984,20 @@ export default function App() {
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [showVipModal, setShowVipModal] = useState(false);
   const [showDirectMessagesModal, setShowDirectMessagesModal] = useState(false);
+
+  // Do not activate a waiting service worker while a player, shared room,
+  // private connection, or admin workflow may contain unsaved/live state.
+  useEffect(() => {
+    setSensitiveActivity(Boolean(
+      showPlayer ||
+      showCinemaChatRoom ||
+      showFriendConnect ||
+      showAdminPanel ||
+      showCinemaWindowModal ||
+      activeSyncGroup
+    ));
+    return () => setSensitiveActivity(false);
+  }, [activeSyncGroup, setSensitiveActivity, showAdminPanel, showCinemaChatRoom, showCinemaWindowModal, showFriendConnect, showPlayer]);
   const [adminUsername, setAdminUsername] = useState("");
   const [adminPassword, setAdminPassword] = useState("");
   const [showAdminPassword, setShowAdminPassword] = useState(false);
@@ -11625,10 +11656,13 @@ export default function App() {
   // (which would double Firestore reads and force duplicate grid re-renders).
   const moviesFetchInFlightRef = useRef(false);
 
-  // Fetch the durable Firestore movie catalog, enriched (never replaced) by the
-  // server list. The server's /api/movies may return a partial payload (e.g.
-  // only the hero-promo placeholder), so server data is used strictly as extra
-  // entries and can never shrink the grid. Firestore is the source of truth.
+  // Fetch the movie catalog from the backend, which already merges the durable
+  // Firestore collection server-side (boot + every 5 minutes + right after each
+  // admin post) and serves materialized /uploads poster URLs instead of inline
+  // base64. The direct Firestore one-shot read runs ONLY on the first fetch
+  // (mount) as an enrichment/fallback — the periodic polls must not re-pull
+  // ~1MB of base64 posters from Firestore on every refresh.
+  const firestoreEnrichmentDoneRef = useRef(false);
   const fetchMovies = async () => {
     if (moviesFetchInFlightRef.current) return;
     moviesFetchInFlightRef.current = true;
@@ -11640,25 +11674,35 @@ export default function App() {
     };
 
     try {
-      const moviesRef = collection(realDb, "movies");
-      // Start both sources together. Firestore owns the catalog; the backend
-      // only enriches it and has a short timeout in api.getMovies().
-      const [serverResult, firestoreResult] = await Promise.allSettled([
-        api.getMovies(),
-        getDocs(query(moviesRef, orderBy("createdAt", "desc"), limit(200))),
-      ]);
+      const tasks: Promise<any>[] = [api.getMovies()];
+      if (!firestoreEnrichmentDoneRef.current) {
+        firestoreEnrichmentDoneRef.current = true;
+        tasks.push(
+          getDocs(query(collection(realDb, "movies"), orderBy("createdAt", "desc"), limit(200))),
+        );
+      }
+      const [serverResult, firestoreResult] = await Promise.allSettled(tasks);
       const serverMovies =
         serverResult.status === "fulfilled" && Array.isArray(serverResult.value)
           ? serverResult.value.filter((m: any) => m && m.id !== "hero-promo")
           : [];
       const firestoreMovies: any[] = [];
-      if (firestoreResult.status === "fulfilled") {
+      if (firestoreResult && firestoreResult.status === "fulfilled") {
         firestoreResult.value.forEach((doc) =>
           firestoreMovies.push({ ...doc.data(), id: doc.id }),
         );
       }
 
-      const merged = mergeMovieLists(firestoreMovies, serverMovies);
+      // Server list wins id conflicts: it IS the Firestore catalog merged with
+      // locally-managed entries, already carrying small poster URLs. Raw
+      // Firestore docs (with base64 posters) only fill ids the server does not
+      // know yet — e.g. a brand-new post inside the 5-minute server sync
+      // window, or right after a Render redeploy wiped its local db.json.
+      const serverIds = new Set(serverMovies.map((m: any) => m.id));
+      const firestoreExtras = firestoreMovies.filter(
+        (m: any) => m && m.id && !serverIds.has(m.id),
+      );
+      const merged = mergeMovieLists(serverMovies, firestoreExtras);
       if (merged.length > 0) {
         applyMovies(merged);
         setErrorMsg(null);
@@ -11862,11 +11906,28 @@ export default function App() {
         // and must never replace the usable API/static catalog already shown.
         const durableMovies = firestoreMovies.filter((movie) => movie.id !== "hero-promo");
         if (durableMovies.length > 0) {
-          setMovies((previous) =>
-            mergeMovieLists(durableMovies, previous).filter(
+          setMovies((previous) => {
+            // Firestore docs still carry inline base64 posters (the durable
+            // copy). Never let that heavy payload overwrite the materialized
+            // /uploads URL already served by /api/movies for the same movie.
+            const prevById = new Map(previous.map((m: any) => [m.id, m]));
+            const patched = durableMovies.map((movie: any) => {
+              const known = prevById.get(movie.id);
+              if (!known) return movie;
+              const image =
+                isDataUrl(movie.image) && !isDataUrl(known.image) ? known.image : movie.image;
+              const posterUrl =
+                isDataUrl(movie.posterUrl) && !isDataUrl(known.posterUrl)
+                  ? known.posterUrl
+                  : movie.posterUrl;
+              return image === movie.image && posterUrl === movie.posterUrl
+                ? movie
+                : { ...movie, image, posterUrl };
+            });
+            return mergeMovieLists(patched, previous).filter(
               (movie: any) => !deletedMovieIdsRef.current.has(movie.id),
-            ),
-          );
+            );
+          });
           setErrorMsg(null);
         }
         setIsLoading(false);
@@ -12880,7 +12941,11 @@ export default function App() {
 
 
             {/* Smart Search Section */}
-            <div className="max-w-7xl mx-auto px-8 mt-16 mb-8 text-center">
+            <div className="relative max-w-7xl mx-auto px-8 mt-16 mb-8 text-center">
+              <PwaInstallButton
+                variant="search"
+                className="mb-5 lg:absolute lg:right-8 lg:top-0 lg:mb-0"
+              />
               <h2 className="text-3xl font-black kurdish-text mb-2">
                 {tr("searchFilter")}
               </h2>
@@ -16263,6 +16328,7 @@ const trailerId = movie.trailerUrl
           setShowFriendConnect(true);
         }}
       />
+      <PwaInstallButton variant="floating" />
 
       <footer className="official-footer"> {/* Main Footer */}
         <div className="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-20 relative z-10">
@@ -16412,6 +16478,7 @@ const trailerId = movie.trailerUrl
               >
                 <Mail className="w-5 h-5" />
               </a>
+              <PwaInstallButton variant="footer" />
               <div className="px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-[10px] font-black text-gray-500 uppercase tracking-widest">
                 Safe Platform
               </div>

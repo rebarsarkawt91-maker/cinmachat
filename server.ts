@@ -8,7 +8,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { Readable } from 'node:stream';
 import fs from 'node:fs/promises';
-import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync } from 'node:fs';
 import crypto from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 import bcrypt from 'bcryptjs';
@@ -2554,6 +2554,39 @@ const decodeStoredUrl = (url: any): any => {
     .replace(/&gt;/gi, '>');
 };
 
+// Inline base64 posters are the #1 payload killer for /api/movies (~100KB per
+// movie embedded in the JSON, ~2MB total). Materialize each data-URL ONCE per
+// server boot into a content-hashed file under /uploads (already statically
+// served) and hand clients the tiny URL instead. The base64 stays untouched in
+// Firestore/db.json as the durable source — Render's ephemeral filesystem can
+// wipe /uploads on redeploy, and the materializer simply rewrites the files
+// from the stored base64 on the next boot.
+const materializedPosterUrls = new Map<string, string>();
+const materializePosterAsset = (value: any): any => {
+  if (typeof value !== 'string' || !value.startsWith('data:')) {
+    return decodeStoredUrl(value);
+  }
+  const match = /^data:image\/(png|jpeg|jpg|webp|gif);base64,(.+)$/i.exec(value);
+  if (!match) return value; // non-image/unknown data-url: pass through untouched
+  const [, mime, base64] = match;
+  const cached = materializedPosterUrls.get(base64);
+  if (cached) return cached;
+  try {
+    const hash = crypto.createHash('sha1').update(base64).digest('hex').slice(0, 20);
+    const ext = /png/i.test(mime) ? 'png' : /webp/i.test(mime) ? 'webp' : /gif/i.test(mime) ? 'gif' : 'jpg';
+    const fileName = `poster-${hash}.${ext}`;
+    const uploadsDir = path.join(process.cwd(), 'uploads');
+    mkdirSync(uploadsDir, { recursive: true });
+    const filePath = path.join(uploadsDir, fileName);
+    if (!existsSync(filePath)) writeFileSync(filePath, Buffer.from(base64, 'base64'));
+    const url = `/uploads/${fileName}`;
+    materializedPosterUrls.set(base64, url);
+    return url;
+  } catch {
+    return value; // filesystem failure: keep the inline data-url working
+  }
+};
+
 // Merge the local manual movies with the Firestore catalog into one list.
 // Firestore entries win on id conflicts because Firestore is the durable,
 // admin-controlled source of truth.
@@ -4274,6 +4307,10 @@ async function startServer() {
     const trendingScore = computeTrendingScore(movie);
     return {
       ...movie,
+      // Base64 data-URLs never leave the server: every list endpoint hands
+      // clients the materialized /uploads URL (tiny, cacheable, immutable).
+      image: materializePosterAsset(movie?.image),
+      posterUrl: materializePosterAsset(movie?.posterUrl),
       liveViewers: sessions ? sessions.size : 0,
       likes: Number(movie?.likes) || 0,
       views: getViewsCount(id),
@@ -7954,11 +7991,15 @@ async function startServer() {
     }
 
     where(field: string, op: string, value: any): any {
-      return {
+      const self = this;
+      // Chainable query stub: limit() is a no-op re-wrap so callers can use
+      // the same fluent shape as the real Firestore SDK.
+      const query: any = {
+        limit: () => query,
         get: async () => {
           let matched: any[] = [];
-          if (this.colName === 'users') {
-            matched = this.serverDb.users?.filter((u: any) => {
+          if (self.colName === 'users') {
+            matched = self.serverDb.users?.filter((u: any) => {
               let val = u[field];
               // Handle case-insensitive uniqueCode lookup
               if (field === 'uniqueCode' && typeof val === 'string' && typeof value === 'string') {
@@ -7976,18 +8017,21 @@ async function startServer() {
             docs: matched.map(m => ({
               id: m.uid || m.uniqueCode || 'unknown',
               data: () => m,
-              ref: new MockFirestoreDoc(this.colName, m.uid || m.uniqueCode || 'unknown', this.serverDb)
+              ref: new MockFirestoreDoc(self.colName, m.uid || m.uniqueCode || 'unknown', self.serverDb)
             })),
             forEach: (cb: any) => {
               matched.forEach(m => cb({
                 id: m.uid || m.uniqueCode || 'unknown',
                 data: () => m,
-                ref: new MockFirestoreDoc(this.colName, m.uid || m.uniqueCode || 'unknown', this.serverDb)
+                ref: new MockFirestoreDoc(self.colName, m.uid || m.uniqueCode || 'unknown', self.serverDb)
               }));
-            }
+            },
+            empty: matched.length === 0,
+            size: matched.length
           };
         }
       };
+      return query;
     }
 
     async get() {
@@ -8391,18 +8435,6 @@ async function startServer() {
     }
 
     try {
-      const adminDb = getAdminDb();
-      if (!adminDb) {
-        console.error("Firestore Admin database not available during login-by-id query");
-        return res.status(500).json({ success: false, error: 'Database not available' });
-      }
-
-      const adminAuth = getAdminAuthService();
-      if (!adminAuth) {
-        console.error("Firebase Admin Auth service not available during login-by-id query");
-        return res.status(500).json({ success: false, error: 'Auth service not available' });
-      }
-
       // 1. Normalize uniqueCode
       let cleanInput = uniqueCode.replace(/[\s\s]+/g, '').replace(/\s/g, '').toUpperCase();
       // Replace duplicate dashes
@@ -8412,41 +8444,70 @@ async function startServer() {
 
       console.log(`[ID Auth] Looking up uniqueCode. Raw: "${uniqueCode}", Clean: "${cleanInput}"`);
 
-      // 2. Database Lookup
-      const usersRef = adminDb.collection('users'); // Uses MockFirestoreCollection
-      let querySnapshot = await usersRef.where('uniqueCode', '==', cleanInput).get();
+      // 2. Database Lookup — real Firestore when Admin credentials exist
+      // (production / local service-account .env); MockFirestore only as the
+      // emulator/dev fallback. Lookup variants: cleaned input, raw
+      // trimmed-upper, and the CC- prefix re-added when the user omitted it.
+      const upperTrimmed = uniqueCode.trim().toUpperCase();
+      let normalizedNoPrefix = cleanInput;
+      if (cleanInput.startsWith('CC-')) {
+        normalizedNoPrefix = cleanInput.substring(3);
+      }
+      const candidates: string[] = [cleanInput];
+      if (upperTrimmed !== cleanInput) candidates.push(upperTrimmed);
+      const withPrefix = 'CC-' + normalizedNoPrefix;
+      if (!candidates.includes(withPrefix)) candidates.push(withPrefix);
 
-      // If not found, try lookup with original trimmed upper
-      if (querySnapshot.empty) {
-        const upperTrimmed = uniqueCode.trim().toUpperCase();
-        if (upperTrimmed !== cleanInput) {
-          querySnapshot = await usersRef.where('uniqueCode', '==', upperTrimmed).get();
+      let uid: string | null = null;
+      let userData: any = null;
+
+      const adminApp = initializeFirebaseAdmin();
+      if (adminApp) {
+        const usersCol = admin.firestore(adminApp).collection('users');
+        try {
+          // Single bounded round-trip: all lookup variants in one `in` query
+          // (max 10 values allowed) instead of one query per candidate.
+          const snap = await usersCol.where('uniqueCode', 'in', candidates).limit(1).get();
+          if (!snap.empty) {
+            uid = snap.docs[0].id;
+            userData = snap.docs[0].data();
+          }
+        } catch (fsErr: any) {
+          console.warn(`[ID Auth] Firestore lookup failed for "${cleanInput}":`, fsErr?.message || fsErr);
+        }
+      } else {
+        const adminDb = getAdminDb();
+        if (!adminDb) {
+          console.error("Firestore Admin database not available during login-by-id query");
+          return res.status(500).json({ success: false, error: 'Database not available' });
+        }
+        const adminAuth = getAdminAuthService();
+        if (!adminAuth) {
+          console.error("Firebase Admin Auth service not available during login-by-id query");
+          return res.status(500).json({ success: false, error: 'Auth service not available' });
+        }
+        const usersRef = adminDb.collection('users'); // Uses MockFirestoreCollection
+        for (const candidate of candidates) {
+          const querySnapshot = await usersRef.where('uniqueCode', '==', candidate).get();
+          if (querySnapshot && !querySnapshot.empty) {
+            const userDoc = querySnapshot.docs[0];
+            uid = userDoc.id;
+            userData = userDoc.data();
+            break;
+          }
         }
       }
 
-      // If still empty, check if they typed without 'CC-' prefix
-      if (querySnapshot.empty) {
-        let normalizedNoPrefix = cleanInput;
-        if (cleanInput.startsWith('CC-')) {
-          normalizedNoPrefix = cleanInput.substring(3);
-        }
-        querySnapshot = await usersRef.where('uniqueCode', '==', 'CC-' + normalizedNoPrefix).get();
-      }
-
-      if (querySnapshot.empty) {
+      if (!uid || !userData) {
         console.warn(`[ID Auth] User not found for code: "${uniqueCode}"`);
         return res.status(404).json({ success: false, error: 'ئەم کێدی ID-یە هەڵەیە، تکایە جارێکی تر هەوڵ بدە' });
       }
 
-      const userDoc = querySnapshot.docs[0];
-      const userData = userDoc.data();
-      const uid = userDoc.id;
-
       // Create custom token (real Firebase Admin token when available, mock fallback otherwise)
       const customToken =
-        firebaseAdminApp && uid
-          ? await admin.auth(firebaseAdminApp).createCustomToken(uid)
-          : await adminAuth.createCustomToken(uid);
+        adminApp
+          ? await admin.auth(adminApp).createCustomToken(uid)
+          : await getAdminAuthService()!.createCustomToken(uid);
 
       console.log(`[ID Auth] Successfully authenticated user: ${userData.name || uid} via uniqueCode: ${userData.uniqueCode}`);
 
@@ -13169,7 +13230,12 @@ let videoDownloaded = false;
     });
   });
 
-  app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
+  app.use('/uploads', express.static(path.join(process.cwd(), 'uploads'), {
+    // Filenames are content-hashed (poster-<sha1>.<ext>), so a given URL can
+    // never change bytes: browsers may cache them for a month without revalidating.
+    maxAge: '30d',
+    immutable: true,
+  }));
 
   // Create the HTTP server before Vite so development HMR can share this exact
   // listener. `hmr: { port: 0 }` in middleware mode falls back to Vite's
