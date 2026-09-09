@@ -4,6 +4,14 @@
  * Owns the full bell state machine, the device push subscription lifecycle and
  * the preferences panel wiring. It deliberately does NOT auto-request
  * permission: every prompt/subscription happens inside a direct user gesture.
+ *
+ * Guest flow: clicking the bell never asks for permission. It records a
+ * pendingPushEnable intent and opens the app's EXISTING registration/login
+ * modal. After a successful sign-in the provider consumes the intent, opens
+ * the preferences panel, and lets the user enable notifications with another
+ * clear click. Cancelling registration clears the intent; logout clears any
+ * stale intent so state never leaks across accounts.
+ *
  * On logout/account change the device is fully detached (browser subscription
  * removed + server record deleted), then rehydrated on the next sign-in.
  */
@@ -40,10 +48,20 @@ interface PushContextValue {
   masterEnabled: boolean;
   ioSGuideRequired: boolean;
   awaitingSignIn: boolean;
+  pendingPushEnable: boolean;
   toast: string | null;
   handleBellClick: () => void;
+  /** Opens the panel (authenticated) — never requests permission on its own. */
   openPanel: () => void;
   closePanel: () => void;
+  /** Persists the app-supplied registration opener (the "خۆتۆمارکردن" entry). */
+  registerRequestAccountHandler: (handler: (() => void) | undefined) => void;
+  /** Cleanly cancels the guest→auth intent (called when registration closes). */
+  cancelPendingEnable: () => void;
+  /** Re-opens the guest panel CTA; also usable by AuthModals to resume intent. */
+  requestRegistration: () => void;
+  /** Requests permission + subscribes; only reachable via a click in the panel. */
+  enableNotifications: () => void;
   updatePreference: (key: keyof PushPreferences, value: boolean) => void;
   toggleMaster: (enabled: boolean) => void;
   disablePush: () => void;
@@ -61,6 +79,7 @@ export function PushProvider({ children }: { children: React.ReactNode }) {
   const [subscribed, setSubscribed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
+  const [pendingPushEnable, setPendingPushEnable] = useState(false);
   const [preferences, setPreferences] = useState<PushPreferences>({ ...DEFAULT_PREFERENCES });
   const [masterEnabled, setMasterEnabledState] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
@@ -85,6 +104,9 @@ export function PushProvider({ children }: { children: React.ReactNode }) {
   const toastTimerRef = useRef<number | null>(null);
   const userRef = useRef(currentUser);
   userRef.current = currentUser;
+  const pendingEnableRef = useRef(false);
+  const requestAccountHandlerRef = useRef<(() => void) | undefined>(undefined);
+  const prevSignedInRef = useRef<boolean>(Boolean(currentUser && currentUser.uid !== "admin_local_bypass"));
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -204,28 +226,43 @@ export function PushProvider({ children }: { children: React.ReactNode }) {
   const openPanel = useCallback(() => setPanelOpen(true), []);
   const closePanel = useCallback(() => setPanelOpen(false), []);
 
-  const handleBellClick = useCallback(() => {
-    const state = deriveBellState({
-      supported: pushSupported,
-      permission,
-      subscribed,
-      busy,
-      iOSInstalledPwa: standalone,
-    });
-    if (state === "busy") return;
+  const registerRequestAccountHandler = useCallback((handler: (() => void) | undefined) => {
+    requestAccountHandlerRef.current = handler;
+  }, []);
 
+  const cancelPendingEnable = useCallback(() => {
+    pendingEnableRef.current = false;
+    setPendingPushEnable(false);
+  }, []);
+
+  // Guest bell click: record the enable intent and open the EXISTING
+  // registration/login modal (set up by App). No notification even asked.
+  const requestRegistration = useCallback(() => {
+    pendingEnableRef.current = true;
+    setPendingPushEnable(true);
+    requestAccountHandlerRef.current?.();
+  }, []);
+
+  const handleBellClick = useCallback(() => {
+    if (busy) return;
     const user = userRef.current;
-    if (!user || user.uid === "admin_local_bypass") {
-      openPanel();
+    const signedIn = Boolean(user && user.uid !== "admin_local_bypass");
+    if (!signedIn) {
+      requestRegistration();
       return;
     }
-    if (ioSGuideRequired || state === "denied" || state === "unsupported" || state === "subscribed") {
-      if (state === "subscribed") openPanel();
-      else openPanel();
+    openPanel();
+  }, [busy, openPanel, requestRegistration]);
+
+  // Permission request + subscription. Only ever reachable from a clear click
+  // on the enable action INSIDE the preferences panel (a fresh user gesture).
+  const enableNotifications = useCallback(() => {
+    const user = userRef.current;
+    const signedIn = Boolean(user && user.uid !== "admin_local_bypass");
+    if (!signedIn) {
+      requestRegistration();
       return;
     }
-    // default / granted — subscribe. When permission is still "default" the
-    // prompt must fire inside this same user gesture before any await.
     if (typeof Notification !== "undefined" && Notification.permission === "default") {
       setBusy(true);
       void Notification.requestPermission().then((result) => {
@@ -239,7 +276,23 @@ export function PushProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     void subscribeDevice(user);
-  }, [busy, ioSGuideRequired, permission, pushSupported, showToast, standalone, subscribed]);
+  }, [requestRegistration, showToast, subscribeDevice]);
+
+  // Consume the pending guest→auth intent. When a guest clicks the bell then
+  // completes registration/login, drop the intent and open the preferences
+  // panel so they can enable notifications with one more explicit click.
+  // Runs exactly once per null→signed-in transition.
+  useEffect(() => {
+    if (authLoading) return;
+    const nowSignedIn = Boolean(currentUser && currentUser.uid !== "admin_local_bypass");
+    const wasSignedIn = prevSignedInRef.current;
+    prevSignedInRef.current = nowSignedIn;
+    if (nowSignedIn && !wasSignedIn && pendingEnableRef.current) {
+      pendingEnableRef.current = false;
+      setPendingPushEnable(false);
+      openPanel();
+    }
+  }, [authLoading, currentUser?.uid, openPanel]);
 
   const patchPreferences = useCallback(
     async (nextPreferences: PushPreferences) => {
@@ -306,10 +359,17 @@ export function PushProvider({ children }: { children: React.ReactNode }) {
   }, [busy, showToast]);
 
   // Detach on logout: remove the server record AND the browser subscription so
-  // no device data survives an account switch.
+  // no device data survives an account switch. Any pending enable-intent is
+  // also cleared so a later login is never hijacked by a stale guest intent.
   useEffect(() => {
     if (authLoading) return;
-    if (!currentUser && activeSubRef.current) void disablePush();
+    if (!currentUser) {
+      if (pendingEnableRef.current) {
+        pendingEnableRef.current = false;
+        setPendingPushEnable(false);
+      }
+      if (activeSubRef.current) void disablePush();
+    }
   }, [authLoading, currentUser, disablePush]);
 
   const bell = deriveBellState({
@@ -331,10 +391,15 @@ export function PushProvider({ children }: { children: React.ReactNode }) {
       masterEnabled,
       ioSGuideRequired,
       awaitingSignIn: !currentUser,
+      pendingPushEnable,
       toast,
       handleBellClick,
       openPanel,
       closePanel,
+      registerRequestAccountHandler,
+      cancelPendingEnable,
+      requestRegistration,
+      enableNotifications,
       updatePreference,
       toggleMaster,
       disablePush,
@@ -349,10 +414,15 @@ export function PushProvider({ children }: { children: React.ReactNode }) {
       masterEnabled,
       ioSGuideRequired,
       currentUser,
+      pendingPushEnable,
       toast,
       handleBellClick,
       openPanel,
       closePanel,
+      registerRequestAccountHandler,
+      cancelPendingEnable,
+      requestRegistration,
+      enableNotifications,
       updatePreference,
       toggleMaster,
       disablePush,

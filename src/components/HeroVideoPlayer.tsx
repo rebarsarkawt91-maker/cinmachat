@@ -1009,7 +1009,10 @@ const HeroVideoPlayer: React.FC<{
           )}
         </AnimatePresence>
 
-        <div className="absolute top-4 right-6 md:right-12 z-40 flex items-center gap-1.5 md:gap-3 pointer-events-none">
+        {/* One continuous 13-control rail: these nine hero controls sit
+            directly above the four existing global controls (bell, install,
+            friends and WhatsApp). Actions and IDs stay unchanged. */}
+        <div className="fixed bottom-[14.2rem] left-6 z-[48] flex max-h-[calc(100dvh-15.2rem)] w-11 flex-col-reverse items-center gap-2 overflow-y-auto no-scrollbar pointer-events-none">
           <div
             className="pointer-events-none flex items-center gap-1.5 p-2 md:p-3 bg-black/50 border border-white/10 rounded-xl md:rounded-2xl backdrop-blur-md shadow-lg"
             title="بینەری ئۆنلاین لە ماڵپەڕ"
@@ -1074,7 +1077,7 @@ const HeroVideoPlayer: React.FC<{
             {/* Vertical slider popup (opens DOWNWARD from the icon) */}
             {volumePopupOpen && (
               <div
-                className="absolute top-full mt-2 left-1/2 -translate-x-1/2 z-[80] flex flex-col items-center gap-2 p-3 rounded-2xl bg-black/90 backdrop-blur-md border border-white/10 shadow-2xl select-none"
+                className="fixed bottom-[14.2rem] left-[4.75rem] z-[80] flex flex-col items-center gap-2 p-3 rounded-2xl bg-black/90 backdrop-blur-md border border-white/10 shadow-2xl select-none"
                 onMouseEnter={() => {
                   if (volumeCloseTimerRef.current) {
                     clearTimeout(volumeCloseTimerRef.current);

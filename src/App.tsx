@@ -257,7 +257,9 @@ import RoomSubtitleOverlay from "./components/Player/RoomSubtitleOverlay";
 import RoomSubtitleSelector from "./components/Player/RoomSubtitleSelector";
 import { PwaInstallButton } from "./components/Pwa/PwaInstallButton";
 import { PushBellButton } from "./components/Pwa/PushBellButton";
+import { SocialReelsSection } from "./components/Movie/SocialReelsSection";
 import { usePwaInstall } from "./pwa/PwaProvider";
+import { usePush } from "./pwa/PushProvider";
 
 import { 
   db, 
@@ -6870,7 +6872,9 @@ export default function App() {
   const [userRatingsMap, setUserRatingsMap] = useState<Record<string, number>>({});
 
   // Smart-search UI state: title/genre/AI modes, suggestion chips and history.
-  const [searchMode, setSearchMode] = useState<"title" | "genre" | "ai">("title");
+  // AI is the primary presentation; title and genre search remain available
+  // through the same compact mode switcher without losing any old behavior.
+  const [searchMode, setSearchMode] = useState<"title" | "genre" | "ai">("ai");
   const [selectedGenres, setSelectedGenres] = useState<string[]>([]);
   const [aiQuery, setAiQuery] = useState("");
   const [aiResults, setAiResults] = useState<Movie[] | null>(null);
@@ -8381,6 +8385,10 @@ export default function App() {
     accountReadiness,
     refreshProfile,
   } = useSocialAuth();
+  // Push provider: lets us clear the guest bell→registration intent when the
+  // auth modal is genuinely cancelled (never on a successful sign-in) and
+  // wire the existing self-registration opener to the bell.
+  const { cancelPendingEnable } = usePush();
   const [showSocialModal, setShowSocialModal] = useState(false);
   const [modalMode, setModalMode] = useState<"landing" | "login" | "signup">("landing");
   const [showCompleteAccount, setShowCompleteAccount] = useState(false);
@@ -12942,20 +12950,10 @@ export default function App() {
 
 
             {/* Smart Search Section */}
-            <div className="relative max-w-7xl mx-auto px-8 mt-16 mb-8 text-center">
-              <PwaInstallButton
-                variant="search"
-                className="mb-5 lg:absolute lg:right-8 lg:top-0 lg:mb-0"
-              />
-              <h2 className="text-3xl font-black kurdish-text mb-2">
-                {tr("searchFilter")}
-              </h2>
-              <p className="text-sm text-gray-500 kurdish-text mb-8">
-                بە ناو، پۆلێن یان بە وەسف بگەڕێ — پێشنیار و مێژووی ڕاستەقینە
-              </p>
+            <div className="relative max-w-5xl mx-auto px-5 md:px-8 mt-4 mb-8 text-center">
 
               {/* Search mode tabs */}
-              <div className="flex justify-center gap-2 mb-8 flex-wrap">
+              <div className="flex justify-center gap-2 mb-5 flex-wrap">
                 {(
                   [
                     { id: "title", label: "ناونیشان", icon: Search },
@@ -12982,7 +12980,7 @@ export default function App() {
               </div>
 
               {/* Genre filter dropdowns — replaced the old horizontal category chips */}
-              <div className="flex flex-wrap items-center justify-center gap-4 mb-8">
+              <div className="flex flex-wrap items-center justify-center gap-4 mb-5">
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-black text-gray-400 kurdish-text">
                     پۆلێنی فیلمەکان
@@ -13136,10 +13134,12 @@ export default function App() {
               )}
 
               {searchMode === "ai" && (
-                <div className="max-w-2xl mx-auto">
-                  <div className="relative">
-                    <textarea
-                      rows={3}
+                <div className="mx-auto max-w-4xl rounded-[1.75rem] border border-brand-primary/35 bg-[#0d0f13]/95 p-3 shadow-2xl shadow-red-950/15 md:p-4">
+                  <div className="flex flex-col gap-3 sm:flex-row-reverse">
+                    <div className="relative min-w-0 flex-1">
+                      <Sparkles className="absolute right-5 top-1/2 h-5 w-5 -translate-y-1/2 text-brand-primary" />
+                      <input
+                      type="text"
                       value={aiQuery}
                       onChange={(e) => setAiQuery(e.target.value)}
                       onKeyDown={(e) => {
@@ -13148,22 +13148,23 @@ export default function App() {
                           runAiSearch();
                         }
                       }}
-                      placeholder="بە وەسف بگەڕێ — نموونە: فیلمێکی خەمبار لەبارەی سەفەری کات یان فیلمێکی کۆری لەبارەی زۆمبی"
-                      className="w-full bg-white/5 border border-white/10 rounded-2xl py-4 px-6 kurdish-text focus:outline-none focus:border-brand-primary focus:bg-white/10 transition-all resize-none text-right"
+                      placeholder="بۆ نموونە: فیلمێکی ترسناکم دەوێت"
+                      className="h-14 w-full rounded-2xl border border-white/10 bg-white/5 py-3 pr-14 pl-5 text-right kurdish-text transition-all focus:border-brand-primary focus:bg-white/10 focus:outline-none"
                     />
+                    </div>
+                    <button
+                      onClick={runAiSearch}
+                      disabled={aiLoading || !aiQuery.trim()}
+                      className="flex h-14 shrink-0 items-center justify-center gap-2 rounded-2xl bg-brand-primary px-7 text-sm font-black text-white transition-all hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-40 kurdish-text sm:min-w-36"
+                    >
+                      {aiLoading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Search className="h-4 w-4" />
+                      )}
+                      {aiLoading ? "ئەی ئای بیردەکاتەوە..." : "گەڕان"}
+                    </button>
                   </div>
-                  <button
-                    onClick={runAiSearch}
-                    disabled={aiLoading || !aiQuery.trim()}
-                    className="mt-3 px-8 py-3 bg-gradient-to-r from-purple-500 to-indigo-500 text-white rounded-2xl font-black kurdish-text text-sm hover:opacity-90 transition-all disabled:opacity-40 flex items-center justify-center gap-2 mx-auto"
-                  >
-                    {aiLoading ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <Sparkles className="w-4 h-4" />
-                    )}
-                    {aiLoading ? "ئەگەڕێت..." : "AI بگەڕێ"}
-                  </button>
                   {(aiMeta.keywords.length > 0 ||
                     aiMeta.genres.length > 0 ||
                     aiMeta.titles.length > 0) && (
@@ -13192,6 +13193,32 @@ export default function App() {
                           {k}
                         </span>
                       ))}
+                    </div>
+                  )}
+                  {aiResults !== null && !aiLoading && (
+                    <div
+                      role="status"
+                      aria-live="polite"
+                      className="mt-4 rounded-2xl border border-brand-primary/25 bg-[#111318] px-5 py-4 text-right shadow-lg shadow-black/20"
+                    >
+                      <div className="flex items-start gap-3">
+                        <Sparkles className="mt-0.5 h-5 w-5 shrink-0 text-brand-primary" />
+                        <div className="min-w-0">
+                          <p className="text-sm font-black text-white kurdish-text">
+                            {aiResults.length > 0
+                              ? `${aiResults.length} پێشنیاری گونجاوم بۆ دۆزیتەوە`
+                              : "هیچ فیلمێکی گونجاو لە کەتەلۆگەکەدا نەدۆزرایەوە"}
+                          </p>
+                          {aiResults.length > 0 && (
+                            <p className="mt-1 line-clamp-2 text-xs leading-6 text-gray-400 kurdish-text">
+                              {aiResults
+                                .slice(0, 4)
+                                .map((movie) => movie.title)
+                                .join(" • ")}
+                            </p>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   )}
                   {aiResults !== null && !aiLoading && (
@@ -13231,6 +13258,14 @@ export default function App() {
                 ))}
               </div>
             </div>
+
+            {/* Social reels are additive: existing search, hero and movie-card
+                behavior remain the source of truth. */}
+            <SocialReelsSection
+              movies={publicMovies}
+              youtubeUrl={config.youtubeUrl}
+              facebookUrl={config.facebookUrl}
+            />
 
             {/* Movie Grid Section */}
             <div className="max-w-7xl mx-auto px-8 pb-32">
@@ -16330,7 +16365,16 @@ const trailerId = movie.trailerUrl
         }}
       />
       <PwaInstallButton variant="floating" />
-      <PushBellButton />
+      <PushBellButton
+        onRequestAccount={() => {
+          // Reuses the exact entry point of the existing "خۆتۆمارکردن" buttons
+          // (same as the CinemaChat room self-registration handlers): keep the
+          // user on the page so the bell can continue its notification intent.
+          setAuthFlowReturn(true);
+          setModalMode("signup");
+          setShowSocialModal(true);
+        }}
+      />
 
       <footer className="official-footer"> {/* Main Footer */}
         <div className="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-20 relative z-10">
@@ -16518,14 +16562,20 @@ const trailerId = movie.trailerUrl
         isOpen={showSocialModal}
         initialMode={modalMode}
         onClose={() => {
+          // A genuine cancel still has authFlowReturn true here: a successful
+          // sign-in already ran onAuthSuccess which reset it before onClose
+          // (see RegistrationModal.completeAuth order). Only then do we drop
+          // the pending bell→registration intent.
+          if (authFlowReturn) cancelPendingEnable();
           setShowSocialModal(false);
           setAuthFlowReturn(false);
         }}
         onAuthSuccess={
           authFlowReturn
             ? () => {
-                // Returning to the CinemaChat flow: stay on the page so the
-                // Friend→Connect room re-evaluates readiness and continues.
+                // Returning to the same page (bell already set the intent):
+                // PushProvider consumes pendingPushEnable and opens the
+                // preferences panel on the null→signed-in transition.
                 setShowSocialModal(false);
                 setAuthFlowReturn(false);
               }

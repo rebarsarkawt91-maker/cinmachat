@@ -1,13 +1,17 @@
 /**
  * CinemaChat floating push-notification bell + preferences panel.
  *
- * Rendered as a fixed horizontal sibling of the floating install button and
- * only when the browser actually supports Web Push. It never auto-prompts:
- * the panel explains the state and every subscribe call runs inside the user
- * gesture triggered by the bell itself.
+ * Rendered as a fixed vertical-stack sibling directly ABOVE the floating
+ * install button (same horizontal center, left-6). It never auto-prompts:
+ *
+ *  - Guests: bell click records the enable intent and opens the app's EXISTING
+ *    registration/login modal (no permission question, no panel).
+ *  - Signed-in users: bell click opens the preferences panel; the enable action
+ *    lives inside it and every subscribe call runs in that explicit second
+ *    click.
  */
 
-import React, { useId } from "react";
+import React, { useEffect, useId } from "react";
 import { Bell, BellRing, Loader2, X } from "lucide-react";
 import { usePush } from "../../pwa/PushProvider";
 import { PUSH_PREFERENCE_KEYS, type PushPreferences } from "../../lib/webPushShared";
@@ -17,6 +21,11 @@ const PREFERENCE_LABELS: Record<keyof PushPreferences, string> = {
   newTrailers: "ترەیلەری نوێ",
   announcements: "ئاگاداری تایبەت",
 };
+
+interface PushBellButtonProps {
+  /** Opens the existing self-registration modal (App's "خۆتۆمارکردن" entry). */
+  onRequestAccount?: () => void;
+}
 
 function Switch({
   label,
@@ -57,12 +66,11 @@ function Switch({
   );
 }
 
-export function PushBellButton() {
+export function PushBellButton({ onRequestAccount }: PushBellButtonProps) {
   const {
     bell,
     pushSupported,
     panelOpen,
-    openPanel,
     closePanel,
     preferences,
     masterEnabled,
@@ -74,8 +82,17 @@ export function PushBellButton() {
     toggleMaster,
     disablePush,
     handleBellClick,
+    enableNotifications,
+    requestRegistration,
+    registerRequestAccountHandler,
   } = usePush();
   const panelId = useId();
+
+  // Hand the App-provided registration opener to the provider so a guest bell
+  // click can trigger the same modal the "خۆتۆمارکردن" buttons use.
+  useEffect(() => {
+    registerRequestAccountHandler(onRequestAccount);
+  }, [onRequestAccount, registerRequestAccountHandler]);
 
   if (!pushSupported) return null;
 
@@ -96,7 +113,7 @@ export function PushBellButton() {
         aria-expanded={panelOpen}
         aria-controls={panelId}
         title={label}
-        className={`fixed bottom-[7.9rem] left-[4.5rem] z-50 inline-flex h-11 w-11 items-center justify-center rounded-full border shadow-xl shadow-red-950/30 transition hover:bg-opacity-90 ${
+        className={`fixed bottom-[11.05rem] left-6 z-50 inline-flex h-11 w-11 items-center justify-center rounded-full border shadow-xl shadow-red-950/30 transition hover:bg-opacity-90 ${
           isActive
             ? "border-emerald-500/50 bg-emerald-600 text-white"
             : "border-red-500/45 bg-[#15171c] text-white hover:border-red-400 hover:bg-red-600"
@@ -138,12 +155,18 @@ export function PushBellButton() {
 
             <div className="mt-4 space-y-3">
               {awaitingSignIn && (
-                <p className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 text-sm leading-7 text-gray-300">
-                  بچۆ ژوورەوە بۆ چالاککردنی نۆتیفیکەیشنەکانی
-                  <b className="mx-1 text-white">فیلمی نوێ</b>،
-                  <b className="mx-1 text-white">ترەیلەری نوێ</b> و
-                  <b className="mx-1 text-white">ئاگاداری تایبەت</b>.
-                </p>
+                <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4">
+                  <p className="text-sm leading-7 text-gray-300">
+                    بۆ چالاککردنی نۆتیفیکەیشن، سەرەتا خۆت تۆمار بکە یان بچۆ ژوورەوە.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={requestRegistration}
+                    className="mt-3 w-full rounded-2xl bg-[#e50914] px-4 py-3 text-sm font-black text-white transition hover:bg-red-600"
+                  >
+                    خۆتۆمارکردن
+                  </button>
+                </div>
               )}
 
               {!awaitingSignIn && ioSGuideRequired && (
@@ -173,7 +196,7 @@ export function PushBellButton() {
                   </p>
                   <button
                     type="button"
-                    onClick={handleBellClick}
+                    onClick={enableNotifications}
                     className="w-full rounded-2xl bg-[#e50914] px-4 py-3 text-sm font-black text-white transition hover:bg-red-600"
                   >
                     چالاککردنی نۆتیفیکەیشن

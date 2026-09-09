@@ -179,10 +179,14 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({ isOpen, on
   // After a SUCCESSFUL sign-in/registration the flow either returns to the
   // caller (CinemaChat) via onAuthSuccess or reloads to "/" (default, keeps the
   // auth state re-established on the current page). Never do both.
+  //
+  // onAuthSuccess runs BEFORE onClose on purpose: callers (App) use it to mark
+  // the success path so their onClose handler can distinguish "genuine cancel"
+  // from "success then tidy-up" (e.g. clearing a pending notification intent).
   const completeAuth = React.useCallback(() => {
+    onAuthSuccess?.();
     onClose();
-    if (onAuthSuccess) onAuthSuccess();
-    else navigateToHome();
+    if (!onAuthSuccess) navigateToHome();
   }, [onClose, onAuthSuccess]);
 
   const handleDirectIdLogin = async (codeToSubmit: string) => {
