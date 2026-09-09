@@ -39,6 +39,8 @@ export interface MovieCardProps {
   onToggleLike: (movie: Movie) => void;
   /** Owner-only catalog editor. Omitted for every non-owner session. */
   onEdit?: (movie: Movie) => void;
+  /** Prioritize posters in the first visible catalog row. */
+  eager?: boolean;
 }
 
 /** Formats large counts like 12400 -> "12.4K". */
@@ -146,6 +148,7 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
   onToggleFavorite,
   onToggleLike,
   onEdit,
+  eager = false,
 }) => {
   const duration = movie.duration || "";
   const year = movie.year || "";
@@ -206,7 +209,8 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
       <div className="relative aspect-[2/3] rounded-2xl overflow-hidden bg-[#0b0b0d] ring-1 ring-white/10 shadow-[0_8px_30px_rgba(0,0,0,0.55)] transition-all duration-300 group-hover:-translate-y-1.5 group-hover:ring-brand-primary/60 group-hover:shadow-[0_22px_60px_-15px_rgba(229,9,20,0.45)]">
         <img
           src={movie.image || FALLBACK_POSTER}
-          loading="lazy"
+          loading={eager ? "eager" : "lazy"}
+          fetchPriority={eager ? "high" : "auto"}
           decoding="async"
           referrerPolicy="no-referrer"
           onError={(e) => {

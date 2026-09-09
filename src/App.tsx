@@ -11668,10 +11668,8 @@ export default function App() {
   // Fetch the movie catalog from the backend, which already merges the durable
   // Firestore collection server-side (boot + every 5 minutes + right after each
   // admin post) and serves materialized /uploads poster URLs instead of inline
-  // base64. The direct Firestore one-shot read runs ONLY on the first fetch
-  // (mount) as an enrichment/fallback — the periodic polls must not re-pull
-  // ~1MB of base64 posters from Firestore on every refresh.
-  const firestoreEnrichmentDoneRef = useRef(false);
+  // base64. The browser therefore avoids downloading the same heavy Firestore
+  // documents a second time during page startup.
   const fetchMovies = async () => {
     if (moviesFetchInFlightRef.current) return;
     moviesFetchInFlightRef.current = true;
@@ -11683,57 +11681,16 @@ export default function App() {
     };
 
     try {
-      // Render the lightweight API catalog as soon as it arrives. Previously we
-      // waited for the first Firestore read (which can contain large base64
-      // posters) before showing an already-ready API response. On a cold mobile
-      // visit that unnecessarily kept the skeleton visible for several seconds.
-      const serverPromise = api.getMovies();
-      const shouldEnrichFromFirestore = !firestoreEnrichmentDoneRef.current;
-      if (shouldEnrichFromFirestore) firestoreEnrichmentDoneRef.current = true;
-
-      const serverResult = await Promise.resolve(serverPromise)
-        .then((value) => ({ status: "fulfilled" as const, value }))
-        .catch((reason) => ({ status: "rejected" as const, reason }));
-      const serverMovies =
-        serverResult.status === "fulfilled" && Array.isArray(serverResult.value)
-          ? serverResult.value.filter((m: any) => m && m.id !== "hero-promo")
-          : [];
-
+      // The backend already merges the durable Firestore catalog into one
+      // lightweight response. Rendering that single authoritative list avoids
+      // a second multi-megabyte browser read that used to reorder cards a few
+      // seconds after first paint.
+      const results = await api.getMovies();
+      const serverMovies = Array.isArray(results)
+        ? results.filter((m: any) => m && m.id !== "hero-promo")
+        : [];
       if (serverMovies.length > 0) {
         applyMovies(serverMovies);
-        setErrorMsg(null);
-        releaseLoading();
-      }
-
-      // Firestore remains the durable enrichment/fallback, but no longer blocks
-      // or competes with the API catalog during first paint.
-      const firestorePromise = shouldEnrichFromFirestore
-        ? getDocs(query(collection(realDb, "movies"), orderBy("createdAt", "desc"), limit(200)))
-        : null;
-      const firestoreResult = firestorePromise
-        ? await Promise.resolve(firestorePromise)
-            .then((value) => ({ status: "fulfilled" as const, value }))
-            .catch((reason) => ({ status: "rejected" as const, reason }))
-        : null;
-      const firestoreMovies: any[] = [];
-      if (firestoreResult?.status === "fulfilled") {
-        firestoreResult.value.forEach((doc) =>
-          firestoreMovies.push({ ...doc.data(), id: doc.id }),
-        );
-      }
-
-      // Server list wins id conflicts: it IS the Firestore catalog merged with
-      // locally-managed entries, already carrying small poster URLs. Raw
-      // Firestore docs (with base64 posters) only fill ids the server does not
-      // know yet — e.g. a brand-new post inside the 5-minute server sync
-      // window, or right after a Render redeploy wiped its local db.json.
-      const serverIds = new Set(serverMovies.map((m: any) => m.id));
-      const firestoreExtras = firestoreMovies.filter(
-        (m: any) => m && m.id && !serverIds.has(m.id),
-      );
-      const merged = mergeMovieLists(serverMovies, firestoreExtras);
-      if (merged.length > 0) {
-        applyMovies(merged);
         setErrorMsg(null);
       }
       releaseLoading();
@@ -11914,71 +11871,56 @@ export default function App() {
     );
   };
 
-  // Real-time Firestore listener: the durable source of truth for the movie
-  // grid. Mounted once, never unmounts, and only ever ADDS/updates state — it
-  // can never clear or collapse the grid.
+  // Keep durable movie updates live without competing with the critical API
+  // request. Existing cards retain their order, so a snapshot cannot reshuffle
+  // the grid after the user has started browsing; genuinely new movies are
+  // prepended and changed fields are patched in place.
   useEffect(() => {
     let cancelled = false;
-    let unsub: (() => void) | null = null;
-    const moviesRef = collection(realDb, "movies");
-    const q = query(moviesRef, orderBy("createdAt", "desc"), limit(200));
-
-    // Give the small API/config requests the network first. Firestore movie
-    // documents can include megabytes of inline poster data, so opening this
-    // listener during the critical render path delayed the hero and cards on
-    // mobile. Real-time updates still start shortly after the initial paint.
+    let unsubscribe: (() => void) | null = null;
     const startTimer = window.setTimeout(() => {
       if (cancelled) return;
-      unsub = onSnapshot(
+      const q = query(collection(realDb, "movies"), orderBy("createdAt", "desc"), limit(200));
+      unsubscribe = onSnapshot(
         q,
         (snapshot) => {
-        if (cancelled) return;
-        const firestoreMovies: any[] = [];
-        snapshot.forEach((doc) =>
-          firestoreMovies.push({ ...doc.data(), id: doc.id }),
-        );
-        // Firestore can temporarily return only the synthetic hero document
-        // while its free-tier quota is exhausted. That document is not a card
-        // and must never replace the usable API/static catalog already shown.
-        const durableMovies = firestoreMovies.filter((movie) => movie.id !== "hero-promo");
-        if (durableMovies.length > 0) {
+          if (cancelled) return;
+          const incoming: any[] = [];
+          snapshot.forEach((entry) => incoming.push({ ...entry.data(), id: entry.id }));
+          const durable = incoming.filter(
+            (movie) => movie?.id && movie.id !== "hero-promo" && !deletedMovieIdsRef.current.has(movie.id),
+          );
+          if (durable.length === 0) return;
+
           setMovies((previous) => {
-            // Firestore docs still carry inline base64 posters (the durable
-            // copy). Never let that heavy payload overwrite the materialized
-            // /uploads URL already served by /api/movies for the same movie.
-            const prevById = new Map(previous.map((m: any) => [m.id, m]));
-            const patched = durableMovies.map((movie: any) => {
-              const known = prevById.get(movie.id);
-              if (!known) return movie;
-              const image =
-                isDataUrl(movie.image) && !isDataUrl(known.image) ? known.image : movie.image;
-              const posterUrl =
-                isDataUrl(movie.posterUrl) && !isDataUrl(known.posterUrl)
-                  ? known.posterUrl
-                  : movie.posterUrl;
-              return image === movie.image && posterUrl === movie.posterUrl
-                ? movie
-                : { ...movie, image, posterUrl };
+            const incomingById = new Map(durable.map((movie) => [movie.id, movie]));
+            const previousIds = new Set(previous.map((movie: any) => movie.id));
+            const newMovies = durable.filter((movie) => !previousIds.has(movie.id));
+            const patchedExisting = previous.map((known: any) => {
+              const fresh = incomingById.get(known.id);
+              if (!fresh) return known;
+              return {
+                ...known,
+                ...fresh,
+                image: isDataUrl(fresh.image) && !isDataUrl(known.image) ? known.image : fresh.image,
+                posterUrl:
+                  isDataUrl(fresh.posterUrl) && !isDataUrl(known.posterUrl)
+                    ? known.posterUrl
+                    : fresh.posterUrl,
+              };
             });
-            return mergeMovieLists(patched, previous).filter(
-              (movie: any) => !deletedMovieIdsRef.current.has(movie.id),
-            );
+            return [...newMovies, ...patchedExisting];
           });
           setErrorMsg(null);
-        }
-        setIsLoading(false);
         },
-        (fsErr) => {
-          console.warn("[Movies] Firestore real-time listener failed:", fsErr);
-          fetchMovies(); // fall back to one-shot reads
-        },
+        (error) => console.warn("[Movies] Firestore live update failed:", error),
       );
-    }, 2_500);
+    }, 8_000);
 
     return () => {
       cancelled = true;
       window.clearTimeout(startTimer);
-      unsub?.();
+      unsubscribe?.();
     };
   }, []);
 
@@ -13313,6 +13255,7 @@ export default function App() {
                       onToggleFavorite={handleToggleFavorite}
                       onToggleLike={handleToggleLike}
                       onEdit={isPrimaryOwner ? setMovieBeingEdited : undefined}
+                      eager={idx < 6}
                     />
                   );
 
