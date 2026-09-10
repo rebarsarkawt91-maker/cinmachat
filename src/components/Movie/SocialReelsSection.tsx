@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, ExternalLink, Facebook, Play, Youtube } from "lucide-react";
+import { ChevronLeft, ChevronRight, Edit3, ExternalLink, Facebook, Loader2, Play, Save, X, Youtube } from "lucide-react";
 import type { Movie } from "../../types";
 
 type ReelPlatform = "youtube" | "facebook";
@@ -8,6 +8,7 @@ interface SocialReelsSectionProps {
   movies: Movie[];
   youtubeUrl?: string;
   facebookUrl?: string;
+  onSaveReel?: (movie: Movie, url: string) => Promise<void>;
 }
 
 const isUsableUrl = (value?: string) => {
@@ -40,8 +41,14 @@ export function SocialReelsSection({
   movies,
   youtubeUrl,
   facebookUrl,
+  onSaveReel,
 }: SocialReelsSectionProps) {
   const [platform, setPlatform] = useState<ReelPlatform>("youtube");
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorMovieId, setEditorMovieId] = useState("");
+  const [editorUrl, setEditorUrl] = useState("");
+  const [editorSaving, setEditorSaving] = useState(false);
+  const [editorError, setEditorError] = useState("");
   const railRef = React.useRef<HTMLDivElement>(null);
 
   const reels = useMemo(
@@ -63,6 +70,44 @@ export function SocialReelsSection({
   const scroll = (direction: number) => {
     railRef.current?.scrollBy({ left: direction * 520, behavior: "smooth" });
   };
+  const openEditor = () => {
+    const first = movies[0];
+    setEditorMovieId(first?.id || "");
+    setEditorUrl(first ? reelUrlFor(first) : "");
+    setEditorError("");
+    setEditorOpen(true);
+  };
+  const chooseEditorMovie = (movieId: string) => {
+    const movie = movies.find((item) => item.id === movieId);
+    setEditorMovieId(movieId);
+    setEditorUrl(movie ? reelUrlFor(movie) : "");
+    setEditorError("");
+  };
+  const saveEditor = async () => {
+    const movie = movies.find((item) => item.id === editorMovieId);
+    const url = editorUrl.trim();
+    if (!movie || !isUsableUrl(url)) {
+      setEditorError("تکایە فیلمێک و لینکێکی دروست هەڵبژێرە");
+      return;
+    }
+    const validPlatform = platform === "youtube"
+      ? /youtube\.com|youtu\.be/i.test(url)
+      : /facebook\.com|fb\.watch/i.test(url);
+    if (!validPlatform) {
+      setEditorError(platform === "youtube" ? "لینکی یوتیوب دابنێ" : "لینکی فەیسبووک دابنێ");
+      return;
+    }
+    setEditorSaving(true);
+    setEditorError("");
+    try {
+      await onSaveReel?.(movie, url);
+      setEditorOpen(false);
+    } catch (error) {
+      setEditorError(error instanceof Error ? error.message : "پاشەکەوتکردن سەرکەوتوو نەبوو");
+    } finally {
+      setEditorSaving(false);
+    }
+  };
 
   return (
     <section
@@ -80,6 +125,18 @@ export function SocialReelsSection({
             ڕیڵ و ڤیدیۆکانی سینەما چات
           </h2>
 
+          <div className="flex items-center gap-3">
+          {onSaveReel && (
+            <button
+              type="button"
+              onClick={openEditor}
+              className="flex items-center gap-1 rounded-md border border-red-500/70 bg-black/80 px-2.5 py-1.5 text-[10px] font-black text-white shadow-lg transition-colors hover:bg-red-600"
+              aria-label="دەستکاریکردنی ڕیڵەکان"
+            >
+              <Edit3 className="h-3.5 w-3.5" />
+              EDIT
+            </button>
+          )}
           <div className="flex rounded-full border border-brand-primary/40 bg-white/[0.04] p-1" role="tablist">
             {(
               [
@@ -103,6 +160,7 @@ export function SocialReelsSection({
                 {tab.label}
               </button>
             ))}
+          </div>
           </div>
         </div>
 
@@ -168,6 +226,39 @@ export function SocialReelsSection({
           </div>
         )}
       </div>
+
+      {editorOpen && onSaveReel && (
+        <div className="fixed inset-0 z-[100000] grid place-items-center bg-black/80 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="دەستکاریکردنی ڕیڵەکان">
+          <div className="w-full max-w-lg rounded-3xl border border-red-500/30 bg-[#111318] p-5 text-right shadow-2xl md:p-6">
+            <div className="flex items-center justify-between gap-4">
+              <h3 className="text-lg font-black text-white kurdish-text">زیادکردنی لینکی ڕیڵ</h3>
+              <button type="button" onClick={() => setEditorOpen(false)} className="rounded-full border border-white/10 p-2 text-gray-300 hover:bg-white/10" aria-label="داخستن">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <label className="mt-5 block text-xs font-black text-gray-300 kurdish-text">فیلم هەڵبژێرە</label>
+            <select value={editorMovieId} onChange={(event) => chooseEditorMovie(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/50 px-4 py-3 text-sm text-white outline-none focus:border-red-500">
+              {movies.map((movie) => <option key={movie.id} value={movie.id}>{movie.title}</option>)}
+            </select>
+            <label className="mt-4 block text-xs font-black text-gray-300 kurdish-text">
+              {platform === "youtube" ? "لینکی ڤیدیۆی یوتیوب" : "لینکی ڕیڵی فەیسبووک"}
+            </label>
+            <input
+              type="url"
+              value={editorUrl}
+              onChange={(event) => setEditorUrl(event.target.value)}
+              placeholder={platform === "youtube" ? "https://youtu.be/..." : "https://www.facebook.com/reel/..."}
+              className="mt-2 w-full rounded-xl border border-white/10 bg-black/50 px-4 py-3 text-left text-sm text-white outline-none focus:border-red-500"
+              dir="ltr"
+            />
+            {editorError && <p className="mt-3 text-xs font-bold text-red-400 kurdish-text">{editorError}</p>}
+            <button type="button" onClick={() => void saveEditor()} disabled={editorSaving || !editorMovieId} className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-red-600 px-4 py-3 text-sm font-black text-white hover:bg-red-700 disabled:opacity-50 kurdish-text">
+              {editorSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              {editorSaving ? "پاشەکەوت دەکرێت..." : "پاشەکەوتکردن"}
+            </button>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
