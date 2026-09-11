@@ -170,6 +170,28 @@ service cloud.firestore {
       allow delete: if genreId != '_meta';
     }
 
+    // --- Reels Collection (ڕیڵ و ڤیدیۆکانی سینەما چات) ---
+    // Standalone reel links, decoupled from movies. Public read so every
+    // visitor renders the shelf live; validated public writes (same pattern as
+    // genres: admin login is localStorage-based and anonymous auth is disabled,
+    // so any request.auth gate would DENY every write). Doc ids are
+    // deterministic (yt-<videoId> / lnk-<url tail>) so re-adding a link is
+    // idempotent; '_meta' is the reserved seed marker and can never be deleted.
+    function isValidReel(data) {
+      return data.get('url', '') is string
+        && data.get('url', '').size() > 0 && data.get('url', '').size() <= 500
+        && data.get('platform', '') is string
+        && data.get('platform', '').size() > 0 && data.get('platform', '').size() <= 20
+        && (data.get('createdBy', null) == null || data.get('createdBy', '') is string)
+        && (data.get('createdAt', null) == null || data.get('createdAt', null) is timestamp);
+    }
+
+    match /reels/{reelId} {
+      allow read: if true;
+      allow create, update: if isValidReel(incoming());
+      allow delete: if reelId != '_meta';
+    }
+
     // --- System Check Collection ---
     match /system_check/{docId} {
       allow read, write: if true;

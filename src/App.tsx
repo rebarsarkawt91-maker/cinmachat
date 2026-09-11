@@ -13223,28 +13223,7 @@ export default function App() {
               movies={publicMovies}
               youtubeUrl={config.youtubeUrl}
               facebookUrl={config.facebookUrl}
-              onSaveReel={
-                isPrimaryOwner
-                  ? async (movie, url) => {
-                      await handleSaveMovieEdit({
-                        ...movie,
-                        trailerUrl: url,
-                        trailerLink: "",
-                      });
-                    }
-                  : undefined
-              }
-              onRemoveReel={
-                isPrimaryOwner
-                  ? async (movie, url) => {
-                      await handleSaveMovieEdit({
-                        ...movie,
-                        trailerUrl: movie.trailerUrl === url ? "" : movie.trailerUrl,
-                        trailerLink: movie.trailerLink === url ? "" : movie.trailerLink,
-                      });
-                    }
-                  : undefined
-              }
+              canManage={isPrimaryOwner}
             />
 
             {/* Movie Grid Section */}
