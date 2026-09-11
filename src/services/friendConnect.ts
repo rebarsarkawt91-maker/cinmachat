@@ -83,6 +83,14 @@ export const classifyContactInput = (raw: string): ContactKind =>
 export const normalizeEmailInput = (raw: string): string =>
   String(raw || "").trim().toLowerCase().replace(/\s+/g, "");
 
+/** Convert Kurdish/Arabic numerals to ASCII without changing the rest of the
+ * search text. This keeps CC-IDs and phone formatting intact while making the
+ * value shown and submitted by the UI consistent. */
+export const normalizeFriendSearchDigits = (raw: string): string =>
+  String(raw || "")
+    .replace(/[٠-٩]/g, (digit) => String("٠١٢٣٤٥٦٧٨٩".indexOf(digit)))
+    .replace(/[۰-۹]/g, (digit) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(digit)));
+
 /** Pair key: lexicographically sorted UIDs joined by "__". One connection per
  *  unordered pair — duplicate invitations are impossible at the data layer. */
 export const friendPairKey = (uidA: string, uidB: string): string =>
@@ -95,7 +103,7 @@ export const friendPairKey = (uidA: string, uidB: string): string =>
  *  agree regardless of formatting. */
 export const canonicalPhoneKey = (phone?: string | null): string => {
   if (!phone) return "";
-  let digits = String(phone).replace(/\D/g, "");
+  let digits = normalizeInvitePhoneInput(String(phone)).replace(/\D/g, "");
   if (digits.startsWith("964")) digits = digits.slice(3);
   while (digits.startsWith("0")) digits = digits.slice(1);
   return digits;
@@ -281,7 +289,7 @@ export const clearLookupCache = (): void => {
 export const searchAccountByCCIdOrContact = async (
   raw: string,
 ): Promise<ContactSearchResult | null> => {
-  const trimmed = String(raw || "").trim();
+  const trimmed = normalizeFriendSearchDigits(raw).trim();
   if (!trimmed) return null;
 
   // Email addresses are NOT used for friend pairing — reject immediately.

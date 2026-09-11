@@ -29,6 +29,7 @@ import {
   cancelFriendConnection,
   getFriendConnectionBetween,
   searchAccountByCCIdOrContact,
+  normalizeFriendSearchDigits,
   subscribeConnectionsForUser,
   subscribeWatchCall,
   subscribeWatchCalls,
@@ -1689,12 +1690,13 @@ export const FriendConnectRoom: React.FC<FriendConnectRoomProps> = (props) => {
         <input
           value={input}
           onChange={(e) => {
-            setInput(e.target.value);
+            const normalizedValue = normalizeFriendSearchDigits(e.target.value);
+            setInput(normalizedValue);
             // STRICT persistence: an onChange/typing event NEVER hides a found
             // card. The only dismissal paths are the explicit "پاشگەزبوونەوە"
             // Cancel, "هاوڕێیەکی تر" (choose another), گەڕان advancing, or the
             // user deleting the entire search text (back to the idle box).
-            if (e.target.value.trim() === "") {
+            if (normalizedValue.trim() === "") {
               if (searchStatus !== "idle") {
                 setSearchStatus("idle");
                 setSearchError(null);
