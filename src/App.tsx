@@ -13234,6 +13234,17 @@ export default function App() {
                     }
                   : undefined
               }
+              onRemoveReel={
+                isPrimaryOwner
+                  ? async (movie, url) => {
+                      await handleSaveMovieEdit({
+                        ...movie,
+                        trailerUrl: movie.trailerUrl === url ? "" : movie.trailerUrl,
+                        trailerLink: movie.trailerLink === url ? "" : movie.trailerLink,
+                      });
+                    }
+                  : undefined
+              }
             />
 
             {/* Movie Grid Section */}

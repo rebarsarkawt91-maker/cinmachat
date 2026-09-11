@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Edit3, ExternalLink, Facebook, Loader2, Play, Save, X, Youtube } from "lucide-react";
+import { ChevronLeft, ChevronRight, Edit3, ExternalLink, Facebook, Loader2, Play, Save, Trash2, X, Youtube } from "lucide-react";
 import type { Movie } from "../../types";
 
 type ReelPlatform = "youtube" | "facebook";
@@ -9,6 +9,7 @@ interface SocialReelsSectionProps {
   youtubeUrl?: string;
   facebookUrl?: string;
   onSaveReel?: (movie: Movie, url: string) => Promise<void>;
+  onRemoveReel?: (movie: Movie, url: string) => Promise<void>;
 }
 
 const isUsableUrl = (value?: string) => {
@@ -42,6 +43,7 @@ export function SocialReelsSection({
   youtubeUrl,
   facebookUrl,
   onSaveReel,
+  onRemoveReel,
 }: SocialReelsSectionProps) {
   const [platform, setPlatform] = useState<ReelPlatform>("youtube");
   const [editorOpen, setEditorOpen] = useState(false);
@@ -49,6 +51,7 @@ export function SocialReelsSection({
   const [editorUrl, setEditorUrl] = useState("");
   const [editorSaving, setEditorSaving] = useState(false);
   const [editorError, setEditorError] = useState("");
+  const [removingId, setRemovingId] = useState("");
   const railRef = React.useRef<HTMLDivElement>(null);
 
   const reels = useMemo(
@@ -76,6 +79,16 @@ export function SocialReelsSection({
     setEditorUrl(first ? reelUrlFor(first) : "");
     setEditorError("");
     setEditorOpen(true);
+  };
+  const removeReel = async (movie: Movie, url: string) => {
+    if (!onRemoveReel || removingId) return;
+    if (!confirm(`ئایا دڵنیایت لە سڕینەوەی ڕیڵی "${movie.title}"؟`)) return;
+    setRemovingId(movie.id);
+    try {
+      await onRemoveReel(movie, url);
+    } finally {
+      setRemovingId("");
+    }
   };
   const chooseEditorMovie = (movieId: string) => {
     const movie = movies.find((item) => item.id === movieId);
@@ -171,32 +184,64 @@ export function SocialReelsSection({
                 const id = youtubeId(url);
                 const image = id ? `https://img.youtube.com/vi/${id}/hqdefault.jpg` : movie.image;
                 return (
-                  <a
+                  <div
                     key={`${platform}-${movie.id}`}
-                    href={url}
-                    target="_blank"
-                    rel="noopener noreferrer"
                     className="group relative aspect-video w-[78vw] max-w-[270px] shrink-0 snap-start overflow-hidden rounded-2xl border border-white/10 bg-[#111318] sm:w-[310px]"
-                    aria-label={`${movie.title} — ${platform === "youtube" ? "یوتیوب" : "فەیسبووک"}`}
                   >
-                    <img
-                      src={image || undefined}
-                      alt=""
-                      loading="lazy"
-                      decoding="async"
-                      className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
+                    {id ? (
+                      <iframe
+                        src={`https://www.youtube-nocookie.com/embed/${id}?autoplay=1&mute=1&controls=0&loop=1&playlist=${id}&playsinline=1&modestbranding=1&rel=0&iv_load_policy=3`}
+                        title={movie.title}
+                        loading="lazy"
+                        allow="autoplay; encrypted-media"
+                        referrerPolicy="strict-origin-when-cross-origin"
+                        className="pointer-events-none absolute inset-0 h-full w-full"
+                      />
+                    ) : (
+                      <img
+                        src={image || undefined}
+                        alt=""
+                        loading="lazy"
+                        decoding="async"
+                        className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
+                      />
+                    )}
+                    <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/20 to-transparent" />
+                    <a
+                      href={url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="absolute inset-0 z-10"
+                      aria-label={`${movie.title} — ${platform === "youtube" ? "یوتیوب" : "فەیسبووک"}`}
                     />
-                    <div className="absolute inset-0 bg-gradient-to-t from-black via-black/10 to-transparent" />
-                    <span className="absolute inset-0 m-auto flex h-11 w-11 items-center justify-center rounded-full border border-white/30 bg-black/65 text-white backdrop-blur-sm transition group-hover:scale-110 group-hover:bg-brand-primary">
-                      <Play className="h-5 w-5 fill-current" />
-                    </span>
-                    <div className="absolute inset-x-0 bottom-0 flex items-end justify-between gap-3 p-3">
+                    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex items-end justify-between gap-3 p-3">
                       <span className="line-clamp-1 text-right text-sm font-black text-white kurdish-text">
                         {movie.title}
                       </span>
-                      <PlatformIcon className="h-4 w-4 shrink-0 text-brand-primary" />
+                      {onRemoveReel ? (
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            void removeReel(movie, url);
+                          }}
+                          disabled={removingId === movie.id}
+                          className="pointer-events-auto flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-red-500/60 bg-black/80 text-red-400 shadow-lg transition-colors hover:bg-red-600 hover:text-white disabled:opacity-60"
+                          aria-label={`سڕینەوەی ڕیڵی ${movie.title}`}
+                          title="سڕینەوەی ڕیڵ"
+                        >
+                          {removingId === movie.id ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Trash2 className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                      ) : (
+                        <PlatformIcon className="pointer-events-none h-4 w-4 shrink-0 text-brand-primary" />
+                      )}
                     </div>
-                  </a>
+                  </div>
                 );
               })}
             </div>
