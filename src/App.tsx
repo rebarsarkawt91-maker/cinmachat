@@ -8819,21 +8819,21 @@ export default function App() {
   const openMovieDetails = useCallback(
     (movie: Movie) => {
       const externalUrl = firstValidMovieUrl(movie.external_link, movie.externalMovieLink);
-      if (externalUrl) {
-        window.open(externalUrl, "_blank", "noopener,noreferrer");
-        return;
-      }
-
-      if (!getMovieSourceUrl(movie)) return;
+      if (!getMovieSourceUrl(movie) && !externalUrl) return;
 
       // Remember the opener element so focus returns to the card on close.
       if (document.activeElement instanceof HTMLElement) {
         movieReturnFocusRef.current = document.activeElement;
       }
-      setIsMovieDetailsOpen(false);
-      openMovie(movie);
+      if (savedPageScrollRef.current === null) {
+        savedPageScrollRef.current = window.scrollY;
+      }
+      setSelectedMovie(movie);
+      setActiveServerUrl(getMovieSourceUrl(movie));
+      setShowPlayer(false);
+      setIsMovieDetailsOpen(true);
     },
-    [openMovie],
+    [],
   );
 
   // Explicit "Play / Watch Movie" — the only action that opens the player from
@@ -8841,6 +8841,16 @@ export default function App() {
   // ever the active foreground layer.
   const playSelectedMovie = useCallback(() => {
     if (!selectedMovie) return;
+    const sourceUrl = getMovieSourceUrl(selectedMovie);
+    if (!sourceUrl) {
+      const externalUrl = firstValidMovieUrl(
+        selectedMovie.external_link,
+        selectedMovie.externalMovieLink,
+      );
+      if (externalUrl) window.open(externalUrl, "_blank", "noopener,noreferrer");
+      return;
+    }
+    setActiveServerUrl(sourceUrl);
     setIsMovieDetailsOpen(false);
     setShowPlayer(true);
   }, [selectedMovie]);
@@ -13660,7 +13670,7 @@ export default function App() {
               initial={{ scale: 0.9, y: 20 }}
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.9, y: 20 }}
-              className={`relative w-full ${showPlayer ? "fixed inset-0 m-0 max-w-none h-full rounded-none z-[1000] overflow-hidden" : "max-w-3xl rounded-3xl max-h-[90vh] border border-white/5 shadow-[0_0_100px_rgba(0,0,0,1)] overflow-y-auto custom-scrollbar"} bg-[#141414] transition-all duration-500`} // Dynamic styling for player mode
+              className={`relative w-full ${showPlayer ? "fixed inset-0 m-0 max-w-none h-full rounded-none z-[1000] overflow-hidden" : "max-w-6xl min-h-[82vh] max-h-[92vh] rounded-3xl border border-white/10 shadow-[0_0_120px_rgba(0,0,0,1)] overflow-y-auto custom-scrollbar"} bg-[#070709] transition-all duration-500`} // Dynamic styling for player mode
             >
               <button
                 type="button"
@@ -13671,17 +13681,17 @@ export default function App() {
                     setActiveSyncGroup(null);
                   }
                 }}
-                className={`${showPlayer ? "absolute top-4 right-4" : "sticky top-3 mt-3 mr-3 ml-auto w-fit"} z-[60] p-2 bg-black/60 hover:bg-red-600 rounded-full text-white transition-all backdrop-blur-md border border-white/10 scale-90 md:scale-100`}
+                className="absolute top-4 right-4 z-[60] p-2 bg-black/60 hover:bg-red-600 rounded-full text-white transition-all backdrop-blur-md border border-white/10 scale-90 md:scale-100"
               >
                 <X className="w-5 h-5" />
               </button>
 
               <div
-                className={`flex flex-col ${showPlayer ? "h-full bg-black" : "md:flex-row"}`} // Layout for player vs details
+                className={`flex flex-col ${showPlayer ? "h-full bg-black" : "relative isolate min-h-[82vh] overflow-hidden"}`} // Layout for player vs details
               >
                 <div
                   ref={modalPlayerRef}
-                  className={`${showPlayer ? "w-full h-full relative bg-black shadow-2xl aspect-video md:aspect-[21/9]" : "w-full md:w-72 lg:w-80 flex-shrink-0 relative bg-black shadow-2xl aspect-[2/3] md:aspect-auto md:min-h-[440px] max-h-[45vh] md:max-h-none"}`}
+                  className={`${showPlayer ? "w-full h-full relative bg-black shadow-2xl aspect-video md:aspect-[21/9]" : "absolute inset-0 h-full w-full bg-black"}`}
                   onPointerDown={onPlayerPointerDown}
                   onPointerMove={onPlayerPointerMove}
                   onPointerUp={onPlayerPointerUp}
@@ -14486,10 +14496,26 @@ export default function App() {
                           <Clapperboard className="w-14 h-14 text-white/20" />
                         </div>
                       )} {/* Poster / Fallback Placeholder */}
+                      {!showPlayer && (
+                        <>
+                          <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-black via-black/75 to-black/10" />
+                          <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black via-transparent to-black/85" />
+                          <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center justify-between gap-4 px-6 py-5 md:px-9">
+                            <span className="text-xs md:text-sm font-black tracking-[0.28em] text-white drop-shadow-lg">
+                              CINAMACHAT.COM
+                            </span>
+                            <span className="max-w-[52vw] truncate pr-10 text-[10px] md:text-xs font-bold text-white/80 kurdish-text drop-shadow-lg">
+                              {selectedMovie.title}
+                            </span>
+                          </div>
+                        </>
+                      )}
                       {/* Playback source required — shown when activeServerUrl is null
                           (e.g., all sources are IMDb metadata-only URLs or legacy
                           invalid records). Displays Sorani error + WhatsApp CTA. */}
-                      {!activeServerUrl && !getMovieSourceUrl(selectedMovie) && (
+                      {!activeServerUrl &&
+                        !getMovieSourceUrl(selectedMovie) &&
+                        !firstValidMovieUrl(selectedMovie.external_link, selectedMovie.externalMovieLink) && (
                         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm z-20 gap-3">
                           <div className="w-14 h-14 rounded-full bg-red-500/10 flex items-center justify-center mb-2">
                             <AlertCircle className="w-7 h-7 text-red-500" />
@@ -14513,18 +14539,13 @@ export default function App() {
                           )}
                         </div>
                       )}
-                      {getMovieSourceUrl(selectedMovie) && (
+                      {(getMovieSourceUrl(selectedMovie) ||
+                        firstValidMovieUrl(selectedMovie.external_link, selectedMovie.externalMovieLink)) && (
                         <button
                           type="button"
                           aria-label={`Play ${selectedMovie.title}`}
-                          onClick={() => {
-                            if (config.playerMode === "popup") {
-                              popOutPlayer(getMovieSourceUrl(selectedMovie));
-                            } else {
-                              playSelectedMovie();
-                            }
-                          }}
-                          className="absolute inset-0 m-auto w-20 h-20 bg-brand-primary/90 text-white rounded-full flex items-center justify-center hover:scale-110 transition-transform shadow-2xl z-20 group"
+                          onClick={playSelectedMovie}
+                          className="absolute inset-0 m-auto w-20 h-20 bg-brand-primary/90 text-white rounded-full flex items-center justify-center hover:scale-110 transition-transform shadow-2xl z-20 group md:hidden"
                         >
                           <Play className="w-10 h-10 fill-current group-hover:scale-110 transition-transform" />
                         </button> // Play Button on Poster
@@ -14534,7 +14555,7 @@ export default function App() {
                 </div>
 
                 {!showPlayer && (
-                  <div className="flex-1 p-5 md:p-8 flex flex-col justify-center bg-[#141414] min-w-0">
+                  <div className="relative z-30 mt-[34vh] flex min-w-0 flex-1 flex-col justify-end p-5 pt-12 md:mt-0 md:max-w-[68%] md:p-10 md:pt-28 lg:max-w-[62%] lg:p-12 bg-gradient-to-t from-black via-black/85 to-transparent md:bg-gradient-to-r md:from-black md:via-black/80 md:to-transparent">
                     <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
                       <div className="flex flex-wrap items-center gap-2">
                         {selectedMovie.isNetflixOriginal && (
@@ -14722,7 +14743,7 @@ export default function App() {
                       )} {/* External Link Info */}
 
                       {/* Point: Server Links (Dynamic Switching & Label Improvement) */}
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6">
+                      <div className="order-3 grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6">
                         {selectedMovie.hdtodayUrl && (
                           <button
                             onClick={() => {
@@ -14854,8 +14875,9 @@ export default function App() {
                           )}
                       </div>
 
-                      {getMovieSourceUrl(selectedMovie) && (
-                        <div className="flex gap-3">
+                      {(getMovieSourceUrl(selectedMovie) ||
+                        firstValidMovieUrl(selectedMovie.external_link, selectedMovie.externalMovieLink)) && (
+                        <div className="order-1 flex flex-wrap gap-3">
                           <button
                             type="button"
                             aria-label={`Play ${selectedMovie.title}`}
@@ -14868,29 +14890,25 @@ export default function App() {
                             </span>
                           </button> {/* Play / Watch Movie Button */}
 
-                          <button
-                            onClick={() => {
-                              if (activeServerUrl) {
-                                popOutPlayer(activeServerUrl);
-                              } else {
-                                popOutPlayer(getMovieSourceUrl(selectedMovie));
-                              }
-                            }}
-                            className="px-6 py-3 bg-white/5 border border-white/10 text-white rounded-xl font-black flex items-center justify-center gap-2 hover:bg-white/10 transition-all"
-                          >
-                            <ExternalLink className="w-5 h-5 text-blue-500" />
-                            <span className="text-sm kurdish-text whitespace-nowrap">
-                              پەنجەرەی دەرەکی
-                            </span>
-                          </button> {/* Popout Player Button */}
+                          {getMovieSourceUrl(selectedMovie) && (
+                            <button
+                              onClick={() => {
+                                popOutPlayer(activeServerUrl || getMovieSourceUrl(selectedMovie));
+                              }}
+                              className="px-6 py-3 bg-white/5 border border-white/10 text-white rounded-xl font-black flex items-center justify-center gap-2 hover:bg-white/10 transition-all"
+                            >
+                              <ExternalLink className="w-5 h-5 text-blue-500" />
+                              <span className="text-sm kurdish-text whitespace-nowrap">
+                                پەنجەرەی دەرەکی
+                              </span>
+                            </button>
+                          )} {/* Popout Player Button */}
 
                           {selectedMovie.trailerUrl && (
                             <button
                               onClick={() => {
-                                // Force show player and set embedUrl context to trailer if needed
-                                // For simplicity, we can just temporary swap the embedUrl if we had a state for it
-                                // But here we can just alert or open in new tab if we don't want to overcomplicate modal state
-                                window.open(selectedMovie.trailerUrl, "_blank");
+                                setActiveServerUrl(selectedMovie.trailerUrl || null);
+                                setShowPlayer(true);
                               }}
                               className="px-6 py-3 bg-white/5 border border-white/10 text-white rounded-xl font-black flex items-center justify-center gap-2 hover:bg-white/10 transition-all"
                             >
