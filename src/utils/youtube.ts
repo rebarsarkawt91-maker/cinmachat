@@ -4,7 +4,10 @@ export function loadYouTubeAPI(): Promise<void> {
   if (ytApiPromise) return ytApiPromise;
 
   ytApiPromise = new Promise((resolve) => {
-    if ((window as any).YT?.Player) {
+    const isReady = () =>
+      !!(window as any).YT?.Player && (window as any).YT?.loaded === 1;
+
+    if (isReady()) {
       resolve();
       return;
     }
@@ -26,7 +29,7 @@ export function loadYouTubeAPI(): Promise<void> {
 
     // Fallback: if API already loaded but callback missed
     const checkInterval = setInterval(() => {
-      if ((window as any).YT?.Player) {
+      if (isReady()) {
         clearInterval(checkInterval);
         resolve();
       }

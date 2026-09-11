@@ -642,6 +642,7 @@ const HeroVideoPlayer: React.FC<{
   const playlistKey = playlistIds.join("|");
   useEffect(() => {
     let cancelled = false;
+    let playerRetryTimer: ReturnType<typeof setTimeout> | null = null;
     // React StrictMode simulates an unmount/remount in development; the
     // dispose flag must be re-armed on every setup pass.
     disposedRef.current = false;
@@ -716,6 +717,46 @@ const HeroVideoPlayer: React.FC<{
       // instance, its current video id, and state transitions directly.
       (window as any).__heroPlayer = playerRef.current;
 
+      playerRetryTimer = setTimeout(() => {
+        if (
+          cancelled ||
+          disposedRef.current ||
+          !playerRef.current ||
+          document.querySelector("#hero-yt-player iframe")
+        ) {
+          return;
+        }
+        try {
+          playerRef.current.destroy();
+        } catch (_) {}
+        playerRef.current = new YTT.Player("hero-yt-player", {
+          videoId: playlistIds[0],
+          height: "100%",
+          width: "100%",
+          playerVars: {
+            autoplay: 1,
+            mute: 1,
+            controls: 0,
+            showinfo: 0,
+            rel: 0,
+            modestbranding: 1,
+            iv_load_policy: 3,
+            fs: 0,
+            disablekb: 1,
+            playsinline: 1,
+            enablejsapi: 1,
+            origin: window.location.origin,
+            hl: "en",
+          },
+          events: {
+            onReady: (event: any) => handleOnReadyRef.current(event),
+            onStateChange: (event: any) => handleStateChangeRef.current(event),
+            onError: () => handleErrorRef.current(),
+          },
+        });
+        (window as any).__heroPlayer = playerRef.current;
+      }, 500);
+
       // Belt-and-suspenders: explicitly tell the fresh player to start
       // unmuted at full volume BEFORE playback begins (re-enforced in
       // onReady the moment the API reports the player ready).
@@ -726,6 +767,7 @@ const HeroVideoPlayer: React.FC<{
 
     return () => {
       cancelled = true;
+      if (playerRetryTimer) clearTimeout(playerRetryTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playlistKey]);
