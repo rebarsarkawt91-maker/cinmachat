@@ -10,6 +10,7 @@ import {
   Sparkles,
   TrendingUp,
   Edit3,
+  Trash2,
 } from "lucide-react";
 import type { Movie } from "../../types";
 
@@ -39,6 +40,8 @@ export interface MovieCardProps {
   onToggleLike: (movie: Movie) => void;
   /** Owner-only catalog editor. Omitted for every non-owner session. */
   onEdit?: (movie: Movie) => void;
+  /** Owner-only permanent deletion action. Omitted for non-owner sessions. */
+  onDelete?: (movie: Movie) => void;
 }
 
 /** Formats large counts like 12400 -> "12.4K". */
@@ -146,6 +149,7 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
   onToggleFavorite,
   onToggleLike,
   onEdit,
+  onDelete,
 }) => {
   const duration = movie.duration || "";
   const year = movie.year || "";
@@ -179,6 +183,12 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
     e.preventDefault();
     e.stopPropagation();
     onEdit?.(movie);
+  };
+
+  const handleDelete = (e: React.MouseEvent | React.KeyboardEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onDelete?.(movie);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -221,6 +231,21 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
         {/* Dark bottom gradient (premium card signature) */}
         <div className="absolute inset-x-0 bottom-0 h-[70%] bg-gradient-to-t from-black via-black/75 to-transparent pointer-events-none" />
         <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-black to-transparent pointer-events-none" />
+
+        {onDelete && (
+          <button
+            type="button"
+            onClick={handleDelete}
+            onKeyDown={handleActionKeyDown}
+            className="absolute bottom-2 left-2 z-30 flex items-center gap-1 rounded-md border border-red-500/80 bg-black/90 px-2 py-1 text-[9px] font-black text-white shadow-lg backdrop-blur-md transition-colors hover:bg-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+            aria-label={`Delete ${movie.title}`}
+            title="سڕینەوەی یەکجاری فیلم"
+          >
+            <Trash2 className="h-3 w-3" aria-hidden="true" />
+            <span>DELETE</span>
+            <span className="kurdish-text">سڕینەوە</span>
+          </button>
+        )}
 
         {/* Top-left live stack */}
         <div className="absolute top-2 left-2 flex flex-col items-start gap-1.5 z-10">

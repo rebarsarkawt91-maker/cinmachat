@@ -13243,6 +13243,7 @@ export default function App() {
                       onToggleFavorite={handleToggleFavorite}
                       onToggleLike={handleToggleLike}
                       onEdit={isPrimaryOwner ? setMovieBeingEdited : undefined}
+                      onDelete={isPrimaryOwner ? handleDeleteMovie : undefined}
                     />
                   );
 
@@ -13388,6 +13389,7 @@ export default function App() {
                             onToggleFavorite={handleToggleFavorite}
                             onToggleLike={handleToggleLike}
                             onEdit={isPrimaryOwner ? setMovieBeingEdited : undefined}
+                            onDelete={isPrimaryOwner ? handleDeleteMovie : undefined}
                           />
                         </div>
                       ))}
@@ -13424,6 +13426,7 @@ export default function App() {
                               onToggleFavorite={handleToggleFavorite}
                               onToggleLike={handleToggleLike}
                               onEdit={isPrimaryOwner ? setMovieBeingEdited : undefined}
+                              onDelete={isPrimaryOwner ? handleDeleteMovie : undefined}
                             />
                             {/* Real resume progress bar */}
                             <div className="mt-2 h-1.5 w-full bg-white/10 rounded-full overflow-hidden">
@@ -15082,6 +15085,7 @@ export default function App() {
                               onToggleFavorite={handleToggleFavorite}
                               onToggleLike={handleToggleLike}
                               onEdit={isPrimaryOwner ? setMovieBeingEdited : undefined}
+                              onDelete={isPrimaryOwner ? handleDeleteMovie : undefined}
                             />
                           </div>
                         ))} {/* Similar Movies List */}

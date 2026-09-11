@@ -10427,6 +10427,22 @@ async function startServer() {
       return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! کارمەند (Staff) ناتوانێت فیلمەکان بسڕێتەوە.' });
     }
 
+    // Delete the durable Firestore movie document on the trusted server first.
+    // This is idempotent, so it is safe when the client already removed it. A
+    // Firestore failure stops the operation before any server state is changed.
+    const movieAdminApp = initializeFirebaseAdmin();
+    if (movieAdminApp) {
+      try {
+        await admin.firestore(movieAdminApp).collection('movies').doc(id).delete();
+      } catch (error) {
+        console.error('[DeleteMovie] Firestore delete failed:', error);
+        return res.status(503).json({
+          success: false,
+          error: 'نەتوانرا فیلمەکە لە بنکەدراوە بسڕدرێتەوە؛ تکایە دووبارە هەوڵبدەرەوە',
+        });
+      }
+    }
+
     const targetMovie = db.manualMovies.find((m: any) => m.id === id);
     const movieTitle = targetMovie ? targetMovie.title : id;
 
@@ -10437,6 +10453,32 @@ async function startServer() {
 
     // Remove from manual movies if applicable
     db.manualMovies = db.manualMovies.filter((m: any) => m.id !== id);
+
+    // Remove every server-side record keyed by, or referring to, this movie.
+    // The deletedIds tombstone above is intentionally retained so a stale
+    // upstream catalog can never re-import the deleted post.
+    if (db.ratings) delete db.ratings[id];
+    if (db.favoriteCounts) delete db.favoriteCounts[id];
+    if (db.viewsCounts) delete db.viewsCounts[id];
+    if (db.tagOverrides) delete db.tagOverrides[id];
+    for (const identity of Object.keys(db.favorites || {})) {
+      delete db.favorites[identity]?.[id];
+    }
+    for (const identity of Object.keys(db.continueWatching || {})) {
+      delete db.continueWatching[identity]?.[id];
+    }
+    for (const user of db.users || []) {
+      if (Array.isArray(user.favorites)) {
+        user.favorites = user.favorites.filter((movieId: string) => movieId !== id);
+      }
+    }
+    for (const key of Object.keys(db.subtitleJobs || {})) {
+      if (key === id || key.startsWith(`${id}:`)) delete db.subtitleJobs[key];
+    }
+    movieViewerSessions.delete(id);
+    for (const key of Array.from(countedViewSessions)) {
+      if (key.startsWith(`${id}:`)) countedViewSessions.delete(key);
+    }
 
     // Drop the in-memory Firestore mirror as well. /api/movies merges this
     // cache, so without this the deleted movie keeps leaking back to the client
