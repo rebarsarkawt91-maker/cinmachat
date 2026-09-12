@@ -2494,26 +2494,47 @@ const firestorePaymentsUrl = (query: string) =>
     FIREBASE_API_KEY
   )}${query}`;
 
-// One-shot read of the Firestore movies collection (capped at 300 docs — the
-// whole catalog is far below that). Returns plain movie objects keyed by doc id.
+// Read every document in the Firestore movies collection by following the
+// nextPageToken cursor until it is exhausted. Firestore's documents.list API
+// returns response *batches* and sets nextPageToken even when the batch is far
+// below pageSize — a single pageSize=300 call silently skips everything after
+// the first batch. That is exactly how Firestore-only movies (e.g. "tt32890033")
+// went permanently missing from the catalog: their doc ids sort after the
+// manual-* ids, so they landed on later pages that were never fetched. The loop
+// is bounded below so a pathological payload can never hang the boot sync.
 const loadFirestoreMovies = async (): Promise<any[]> => {
-  const res = await fetchWithTimeout(
-    firestoreMoviesUrl('&pageSize=300'),
-    { headers: { Accept: 'application/json' } },
-    12000
-  );
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = await res.json();
-  const docs = Array.isArray(data?.documents) ? data.documents : [];
-  return docs.map((doc: any) => {
-    const id = String((doc?.name || '').split('/').pop() || '');
-    const fields = (doc?.fields && typeof doc.fields === 'object') ? doc.fields : {};
-    const plain: Record<string, any> = {};
-    for (const [key, value] of Object.entries(fields)) {
-      plain[key] = firestoreValueToPlain(value);
+  const movies: any[] = [];
+  const seen = new Set<string>();
+  let pageToken: string | undefined;
+  for (let page = 0; page < 20; page++) {
+    const query =
+      `&pageSize=300` +
+      (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '');
+    const res = await fetchWithTimeout(
+      firestoreMoviesUrl(query),
+      { headers: { Accept: 'application/json' } },
+      12000
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const docs = Array.isArray(data?.documents) ? data.documents : [];
+    for (const doc of docs) {
+      const id = String((doc?.name || '').split('/').pop() || '');
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      const fields = (doc?.fields && typeof doc.fields === 'object') ? doc.fields : {};
+      const plain: Record<string, any> = {};
+      for (const [key, value] of Object.entries(fields)) {
+        plain[key] = firestoreValueToPlain(value);
+      }
+      movies.push({ ...plain, id });
     }
-    return { ...plain, id };
-  });
+    if (docs.length === 0) break;
+    const token = data?.nextPageToken;
+    if (typeof token !== 'string' || !token) break;
+    pageToken = token;
+  }
+  return movies;
 };
 
 // Mirror the Firestore catalog into the server cache. Purely additive: it can
@@ -2537,6 +2558,37 @@ const syncFirestoreMovies = async (deletedIds: string[] = []): Promise<void> => 
   } catch (err: any) {
     console.warn('[Movies] Firestore catalog sync failed:', err?.message || err);
   }
+};
+
+// First /api/movies must not race ahead of the boot-time Firestore mirror: the
+// sync runs concurrently with server startup, so without a gate the very first
+// request can serve a catalog that is missing Firestore-only movies — which then
+// pop in seconds later through the client's live listener (the "late card"
+// symptom). Only the first request(s) await the mirror; the wait is bounded by
+// a timeout, and a failed/absent sync simply falls back to the local manual list.
+const CATALOG_READY_TIMEOUT_MS = 8000;
+let catalogReadyPromise: Promise<void> | null = null;
+const waitForCatalogIfWarming = async (): Promise<void> => {
+  if (!catalogReadyPromise) return;
+  const pending = catalogReadyPromise;
+  catalogReadyPromise = null;
+  await Promise.race([
+    pending,
+    new Promise<void>((resolve) => setTimeout(resolve, CATALOG_READY_TIMEOUT_MS)),
+  ]);
+};
+
+// Stable secondary dedupe key: an IMDb id (tt…+digits) when a record carries one
+// on any recognized field, so the same film entered as both a local manual-*
+// entry and a Firestore tt* record never renders as two cards.
+const extractImdbId = (movie: any): string => {
+  const candidates = [movie?.imdbId, movie?.imdb_id, movie?.imdb, movie?.source, movie?.embedUrl];
+  for (const raw of candidates) {
+    if (typeof raw !== 'string') continue;
+    const match = /tt\d{6,10}/i.exec(raw);
+    if (match) return match[0];
+  }
+  return '';
 };
 
 // Stored URLs may arrive HTML-entity-encoded (e.g. "https:&#x2F;&#x2F;…?a=1&amp;b=2")
@@ -2607,7 +2659,34 @@ const mergeCatalogWithFirestore = (local: any[], deletedIds: string[] = []): any
   };
   for (const movie of local) store(movie);
   for (const movie of Object.values(firestoreMoviesCache)) store(movie);
-  return Array.from(merged.values());
+
+  // Collapse records that alias the same IMDb film under different ids. The
+  // Firestore (durable, admin-written) record wins over a local db.json
+  // duplicate; never the other way around.
+  const combined = Array.from(merged.values());
+  const firestoreIds = new Set(Object.keys(firestoreMoviesCache));
+  const imdbOwner = new Map<string, string>();
+  const dropIds = new Set<string>();
+  for (const movie of combined) {
+    const imdb = extractImdbId(movie);
+    if (!imdb) continue;
+    const owner = imdbOwner.get(imdb);
+    if (!owner) {
+      imdbOwner.set(imdb, movie.id);
+      continue;
+    }
+    const movieIsFirestore = firestoreIds.has(movie.id);
+    const ownerIsFirestore = firestoreIds.has(owner);
+    if (movieIsFirestore && !ownerIsFirestore) {
+      dropIds.add(owner);
+      imdbOwner.set(imdb, movie.id);
+    } else if (ownerIsFirestore && !movieIsFirestore) {
+      dropIds.add(movie.id);
+    } else {
+      dropIds.add(movie.id);
+    }
+  }
+  return combined.filter((m) => !m || !dropIds.has(m.id));
 };
 
 // ---------------------------------------------------------------------------
@@ -4421,9 +4500,14 @@ async function startServer() {
   }
 
   // Mirror the Firestore movie catalog into the server cache at boot so
-  // /api/movies can serve the full homepage instantly, then keep it fresh with
-  // a periodic re-sync (Firestore remains the durable source of truth).
-  syncFirestoreMovies(db.deletedIds);
+  // /api/movies can serve the full homepage instantly. The first request awaits
+  // this mirror (bounded) so Firestore-only movies are already in the very first
+  // usable response — no late card pop-in through the client's live listener.
+  catalogReadyPromise = syncFirestoreMovies(db.deletedIds);
+  // Boot network can be cold (fresh deploy/Render restart), so retry early
+  // instead of leaving /api/movies half-empty until the first 5-minute pass.
+  setTimeout(() => { syncFirestoreMovies(db.deletedIds); }, 15_000);
+  setTimeout(() => { syncFirestoreMovies(db.deletedIds); }, 60_000);
   setInterval(() => { syncFirestoreMovies(db.deletedIds); }, 5 * 60 * 1000);
 
   // Social Links updated for WhatsApp
@@ -11081,6 +11165,11 @@ async function startServer() {
       res.setHeader('Pragma', 'no-cache');
       res.setHeader('Expires', '0');
       res.setHeader('Surrogate-Control', 'no-store');
+
+      // Guarantee the first usable response already contains the full catalog
+      // (local manual list + Firestore mirror) instead of racing the boot-time
+      // sync. Subsequent requests skip this: it is memory-only after warming.
+      await waitForCatalogIfWarming();
 
       // Start from the local manual list and merge the Firestore catalog (the
       // durable store the admin panel writes to) so the homepage gets the full

@@ -11624,6 +11624,10 @@ export default function App() {
     return Array.from(map.values());
   };
 
+  // Set once the first catalog list has painted, so the live Firestore listener
+  // can start right after real data lands instead of waiting on a fixed delay.
+  const catalogPaintedRef = useRef(false);
+
   // Apply a list to `movies`: dedupe, drop tombstones, sanitize stored URLs,
   // sort newest-first. This only ever sets state from real data — it never
   // clears the grid.
@@ -11646,6 +11650,10 @@ export default function App() {
         });
     setMovies(normalized);
     cacheMovieCatalog(normalized as Movie[]);
+    // First catalog paint complete: the live Firestore listener may connect now
+    // so genuinely-new (Firestore-only) movies mount right after this list lands
+    // instead of popping in seconds later.
+    catalogPaintedRef.current = true;
   };
 
   // Guard so the 60s refresh poll can never overlap with an in-flight fetch
@@ -11859,14 +11867,18 @@ export default function App() {
   };
 
   // Keep durable movie updates live without competing with the critical API
-  // request. Existing cards retain their order, so a snapshot cannot reshuffle
-  // the grid after the user has started browsing; genuinely new movies are
-  // prepended and changed fields are patched in place.
+  // request: connect once the first catalog list has painted (the API "wins"
+  // the initial grid), so Firestore-only movies mount right after that list
+  // lands — not seconds later. Fall back to a 10s cap so a genuinely dead API
+  // never blocks the live listener. Existing cards retain their order, so a
+  // snapshot cannot reshuffle the grid after the user has started browsing;
+  // genuinely new movies are prepended and changed fields are patched in place.
   useEffect(() => {
     let cancelled = false;
     let unsubscribe: (() => void) | null = null;
-    const startTimer = window.setTimeout(() => {
-      if (cancelled) return;
+
+    const start = () => {
+      if (cancelled || unsubscribe) return;
       const q = query(collection(realDb, "movies"), orderBy("createdAt", "desc"), limit(200));
       unsubscribe = onSnapshot(
         q,
@@ -11902,11 +11914,24 @@ export default function App() {
         },
         (error) => console.warn("[Movies] Firestore live update failed:", error),
       );
-    }, 8_000);
+    };
+
+    const safetyTimer = window.setTimeout(() => {
+      start();
+    }, 10_000);
+    const poll = window.setInterval(() => {
+      if (cancelled) return;
+      if (catalogPaintedRef.current) {
+        window.clearTimeout(safetyTimer);
+        window.clearInterval(poll);
+        start();
+      }
+    }, 300);
 
     return () => {
       cancelled = true;
-      window.clearTimeout(startTimer);
+      window.clearTimeout(safetyTimer);
+      window.clearInterval(poll);
       unsubscribe?.();
     };
   }, []);
