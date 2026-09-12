@@ -2591,6 +2591,89 @@ const extractImdbId = (movie: any): string => {
   return '';
 };
 
+const firestoreReelsUrl = (query: string) =>
+  `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+    FIREBASE_PROJECT_ID
+  )}/databases/(default)/documents/reels?key=${encodeURIComponent(
+    FIREBASE_API_KEY
+  )}${query}`;
+
+// In-memory mirror of the Firestore reels collection (card metadata only: id,
+// url, platform). Populated at boot and refreshed periodically so /api/reels is
+// served from memory — no Firestore REST call and no per-reel network probing in
+// the list path. Live admin writes still reach the client through its own
+// Firestore subscription; this mirror only accelerates the initial shelf paint.
+let reelsCache: Record<string, { id: string; url: string; platform: string }> = {};
+
+// Read every document in the Firestore reels collection (page-aware for the same
+// reason as the movies list: the REST API returns batches and carries a
+// nextPageToken below pageSize). Returns plain reel card metadata only.
+const loadFirestoreReels = async (): Promise<any[]> => {
+  const reels: any[] = [];
+  const seen = new Set<string>();
+  let pageToken: string | undefined;
+  for (let page = 0; page < 20; page++) {
+    const query =
+      `&pageSize=300` +
+      (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '');
+    const res = await fetchWithTimeout(
+      firestoreReelsUrl(query),
+      { headers: { Accept: 'application/json' } },
+      12000
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const docs = Array.isArray(data?.documents) ? data.documents : [];
+    for (const doc of docs) {
+      const id = String((doc?.name || '').split('/').pop() || '');
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      const fields = (doc?.fields && typeof doc.fields === 'object') ? doc.fields : {};
+      const plain: Record<string, any> = {};
+      for (const [key, value] of Object.entries(fields)) {
+        plain[key] = firestoreValueToPlain(value);
+      }
+      if (id === '_meta') continue;
+      const url = String(plain.url || '');
+      if (!url) continue;
+      reels.push({ id, url, platform: plain.platform || 'youtube' });
+    }
+    if (docs.length === 0) break;
+    const token = data?.nextPageToken;
+    if (typeof token !== 'string' || !token) break;
+    pageToken = token;
+  }
+  return reels;
+};
+
+const syncFirestoreReels = async (): Promise<void> => {
+  try {
+    const remote = await loadFirestoreReels();
+    if (remote.length === 0) return;
+    const next: Record<string, { id: string; url: string; platform: string }> = {};
+    for (const reel of remote) {
+      if (reel && typeof reel.id === 'string' && reel.id) next[reel.id] = reel;
+    }
+    reelsCache = next;
+  } catch (err: any) {
+    console.warn('[Reels] Firestore sync failed:', err?.message || err);
+  }
+};
+
+// First /api/reels must not race the boot-time mirror either, otherwise the
+// shelf can paint empty on a cold start. Same bounded one-shot gate pattern as
+// the movie catalog.
+let reelsReadyPromise: Promise<void> | null = null;
+const waitForReelsIfWarming = async (): Promise<void> => {
+  if (!reelsReadyPromise) return;
+  const pending = reelsReadyPromise;
+  reelsReadyPromise = null;
+  await Promise.race([
+    pending,
+    new Promise<void>((resolve) => setTimeout(resolve, CATALOG_READY_TIMEOUT_MS)),
+  ]);
+};
+
 // Stored URLs may arrive HTML-entity-encoded (e.g. "https:&#x2F;&#x2F;…?a=1&amp;b=2")
 // when a URL was pasted from an HTML source or saved through a form. If left
 // raw, a browser resolves such a string to a malformed request like
@@ -4509,6 +4592,16 @@ async function startServer() {
   setTimeout(() => { syncFirestoreMovies(db.deletedIds); }, 15_000);
   setTimeout(() => { syncFirestoreMovies(db.deletedIds); }, 60_000);
   setInterval(() => { syncFirestoreMovies(db.deletedIds); }, 5 * 60 * 1000);
+
+  // Mirror the Firestore reels collection into memory the same way, so the
+  // "ڕیڵ و ڤیدیۆکانی سینەما چات" shelf paints from a fast cached /api/reels
+  // instead of waiting on the client-side Firestore Listen. The first request
+  // awaits this mirror (bounded); live admin edits still stream through the
+  // client's own reels subscription.
+  reelsReadyPromise = syncFirestoreReels();
+  setTimeout(() => { syncFirestoreReels(); }, 15_000);
+  setTimeout(() => { syncFirestoreReels(); }, 60_000);
+  setInterval(() => { syncFirestoreReels(); }, 5 * 60 * 1000);
 
   // Social Links updated for WhatsApp
   let socialLinks = {
@@ -11229,6 +11322,25 @@ async function startServer() {
       });
     } catch (err) {
       console.error('CRITICAL ERROR in /api/movies:', err);
+      res.status(500).json({ status: 'error', error: 'Internal Server Error' });
+    }
+  });
+
+  // Reels card metadata — served from the memory-cached mirror of the Firestore
+  // reels collection so the "ڕیڵ و ڤیدیۆکانی سینەما چات" shelf paints at the
+  // same time as the movie grid instead of waiting on the client Firestore
+  // Listen. Adjacent to but fully decoupled from the movie catalog.
+  app.get('/api/reels', async (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Surrogate-Control', 'no-store');
+    try {
+      // Bound the first request on a cold boot the same way /api/movies does.
+      await waitForReelsIfWarming();
+      res.json({ status: 'ok', results: Object.values(reelsCache) });
+    } catch (err) {
+      console.error('CRITICAL ERROR in /api/reels:', err);
       res.status(500).json({ status: 'error', error: 'Internal Server Error' });
     }
   });

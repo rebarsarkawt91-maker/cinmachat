@@ -89,6 +89,24 @@ export function subscribeReels(cb: (reels: Reel[]) => void): () => void {
   );
 }
 
+/**
+ * Fast initial feed: the server's memory-cached reels mirror (persisted card
+ * metadata, no media resolution). Lets the shelf paint the moment the page
+ * loads instead of waiting on the client-side Firestore Listen, which is slower
+ * to deliver its first snapshot. Falls back to [] when the endpoint is absent,
+ * leaving the live Firestore subscription as the source of truth.
+ */
+export async function fetchReelsFromServer(): Promise<Reel[]> {
+  try {
+    const res = await fetch("/api/reels");
+    if (!res.ok) return [];
+    const data = (await res.json()) as { status?: string; results?: Reel[] };
+    return Array.isArray(data?.results) ? data.results : [];
+  } catch {
+    return [];
+  }
+}
+
 /** Add (or idempotently refresh) a reel from a raw link. */
 export async function addReel(rawUrl: string): Promise<void> {
   const url = rawUrl.trim();

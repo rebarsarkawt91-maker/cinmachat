@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, ExternalLink, Facebook, Loader2, Save, Trash2, X, Youtube } from "lucide-react";
+import { ChevronLeft, ChevronRight, ExternalLink, Facebook, Loader2, Play, Save, Trash2, X, Youtube } from "lucide-react";
 import type { Movie } from "../../types";
 import {
   addReel,
+  fetchReelsFromServer,
   isUsableReelUrl,
   removeReel,
   reelPlatformOf,
@@ -23,6 +24,22 @@ interface SocialReelsSectionProps {
 
 const reelUrlFor = (movie: Movie) =>
   movie.trailerUrl || movie.trailerLink || movie.youtubeMovieUrl || "";
+
+// Merge two reel lists by id, preserving existing order. The server feed and the
+// live Firestore subscription may overlap; dedupe so no card renders twice.
+const mergeReelLists = (existing: Reel[], incoming: Reel[]): Reel[] => {
+  if (!incoming.length) return existing;
+  const byId = new Map<string, Reel>();
+  for (const reel of existing) byId.set(reel.id, reel);
+  let changed = false;
+  for (const reel of incoming) {
+    if (!byId.has(reel.id)) {
+      byId.set(reel.id, reel);
+      changed = true;
+    }
+  }
+  return changed ? Array.from(byId.values()) : existing;
+};
 
 /**
  * The social-reels shelf. Reels live in their own Firestore collection — the
@@ -48,6 +65,12 @@ export function SocialReelsSection({
   const [editorError, setEditorError] = useState("");
   const [removingId, setRemovingId] = useState("");
   const railRef = React.useRef<HTMLDivElement>(null);
+  // Reel ids whose heavy autoplay iframe has been created. Populated lazily by
+  // IntersectionObserver: the row paints lightweight thumbnails first, and the
+  // full player only mounts when a card is near/inside the viewport — so page
+  // startup never creates N autoplay YouTube players just to show the shelf.
+  const mountedReelsRef = React.useRef<Set<string>>(new Set());
+  const [mountedReels, setMountedReels] = useState<Set<string>>(() => new Set());
 
   useEffect(
     () =>
@@ -57,6 +80,20 @@ export function SocialReelsSection({
       }),
     [],
   );
+
+  // Fast initial feed from the server's cached reels mirror. Additive: it never
+  // clears live data or flips reelsLoaded, and an empty/missing response is
+  // harmless — the section simply keeps waiting on the live Firestore snapshot.
+  useEffect(() => {
+    let cancelled = false;
+    void fetchReelsFromServer().then((list) => {
+      if (cancelled) return;
+      setReels((prev) => mergeReelLists(prev, list));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // One-time import: when the standalone collection is still empty, copy the
   // trailer links that already exist on movie documents so the shelf survives
@@ -78,6 +115,37 @@ export function SocialReelsSection({
     () => reels.filter((reel) => reel.platform === platform),
     [reels, platform],
   );
+
+  // Mount the heavy autoplay player only for reels that are actually close to
+  // the viewport. Cards that have already mounted stay mounted (accumulate) so
+  // scrolling back and forth never tears down and recreates players.
+  useEffect(() => {
+    const rail = railRef.current;
+    if (!rail) return;
+    const cards = Array.from(rail.querySelectorAll<HTMLElement>("[data-reel-id]"));
+    if (cards.length === 0) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        let added = false;
+        const next = new Set(mountedReelsRef.current);
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const id = entry.target.getAttribute("data-reel-id");
+          if (id && !next.has(id)) {
+            next.add(id);
+            added = true;
+          }
+        }
+        if (added) {
+          mountedReelsRef.current = next;
+          setMountedReels(next);
+        }
+      },
+      { rootMargin: "300px 0px 300px 0px", threshold: 0.05 },
+    );
+    cards.forEach((card) => io.observe(card));
+    return () => io.disconnect();
+  }, [visibleReels, platform]);
 
   const channelUrl = platform === "youtube" ? youtubeUrl : facebookUrl;
   const PlatformIcon = platform === "youtube" ? Youtube : Facebook;
@@ -181,24 +249,49 @@ export function SocialReelsSection({
         {visibleReels.length > 0 ? (
           <div className="relative px-4 py-4 md:px-6">
             <div ref={railRef} className="flex snap-x snap-mandatory gap-3 overflow-x-auto no-scrollbar">
-              {visibleReels.map((reel) => {
+              {visibleReels.map((reel, index) => {
                 const id = youtubeIdOf(reel.url);
+                const playerMounted = id ? mountedReels.has(reel.id) : true;
                 return (
                   <div
                     key={reel.id}
+                    data-reel-id={reel.id}
                     className="group relative aspect-video w-[78vw] max-w-[270px] shrink-0 snap-start overflow-hidden rounded-2xl border border-white/10 bg-black sm:w-[310px]"
                   >
                     {id ? (
-                      <iframe
-                        src={`https://www.youtube-nocookie.com/embed/${id}?autoplay=1&mute=1&controls=0&loop=1&playlist=${id}&playsinline=1&rel=0&iv_load_policy=3&disablekb=1`}
-                        title=""
-                        loading="lazy"
-                        allow="autoplay; encrypted-media"
-                        referrerPolicy="strict-origin-when-cross-origin"
-                        tabIndex={-1}
-                        className="pointer-events-none absolute select-none"
-                        style={{ left: "-26%", top: "-37%", width: "160%", height: "160%", border: 0 }}
-                      />
+                      playerMounted ? (
+                        <iframe
+                          src={`https://www.youtube-nocookie.com/embed/${id}?autoplay=1&mute=1&controls=0&loop=1&playlist=${id}&playsinline=1&rel=0&iv_load_policy=3&disablekb=1`}
+                          title=""
+                          loading="lazy"
+                          allow="autoplay; encrypted-media"
+                          referrerPolicy="strict-origin-when-cross-origin"
+                          tabIndex={-1}
+                          className="pointer-events-none absolute select-none"
+                          style={{ left: "-26%", top: "-37%", width: "160%", height: "160%", border: 0 }}
+                        />
+                      ) : (
+                        <>
+                          <img
+                            src={`https://i.ytimg.com/vi/${id}/hqdefault.jpg`}
+                            alt=""
+                            loading={index < 4 ? "eager" : "lazy"}
+                            decoding="async"
+                            className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-90"
+                            onError={(event) => {
+                              event.currentTarget.style.display = "none";
+                            }}
+                          />
+                          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                            <span className="flex h-10 w-10 items-center justify-center rounded-full bg-black/45 text-white backdrop-blur-sm">
+                              <Play
+                                className="h-5 w-5 translate-x-[1px]"
+                                fill="currentColor"
+                              />
+                            </span>
+                          </div>
+                        </>
+                      )
                     ) : (
                       <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-gradient-to-br from-[#1a1030] via-[#0b0d14] to-black">
                         <Facebook className="h-10 w-10 text-[#1877F2]/70" />
