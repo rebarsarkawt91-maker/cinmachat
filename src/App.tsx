@@ -6132,9 +6132,12 @@ const CinemaWindowCard = ({ onOpen, room }: any) => {  const cardPreviewSourceUr
     })
       .then((response) => response.json())
       .then((data) => {
-        const streamUrl = Array.isArray(data?.streams) && typeof data.streams[0]?.url === "string"
-          ? data.streams[0].url
-          : "";
+        const streamUrl =
+          data?.ok === true &&
+          Array.isArray(data?.streams) &&
+          typeof data?.streams?.[0]?.url === "string"
+            ? data.streams[0].url
+            : "";
         if (!cancelled) {
           if (streamUrl) setDirectCardPreviewUrl(streamUrl);
           else setCardPreviewFailed(true);
@@ -10135,7 +10138,9 @@ export default function App() {
       .then((response) => response.json())
       .then((data) => {
         const streamUrl =
-          Array.isArray(data?.streams) && typeof data.streams[0]?.url === "string"
+          data?.ok === true &&
+          Array.isArray(data?.streams) &&
+          typeof data?.streams?.[0]?.url === "string"
             ? data.streams[0].url
             : "";
         if (!cancelled) {

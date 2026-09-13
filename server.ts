@@ -1693,10 +1693,14 @@ async function fetchYoutubeCaptionsViaYtDlp(
 // ---------------------------------------------------------------------------
 // Direct YouTube stream resolution (yt-dlp) — powers the player's fallback so
 // posted movies still play when YouTube blocks embedding (the "Playback ID"
-// error). yt-dlp already exists on the server (used for captions) and returns a
-// progressive MP4 URL that any <video> element can stream directly without CORS.
-// Results are cached in-memory (signed URLs stay valid for hours, so a 15-minute
-// cache is safe) to avoid hammering YouTube on every player mount.
+// error). yt-dlp returns a progressive MP4 URL that any <video> element can
+// stream directly without CORS. Results are cached in-memory (signed URLs stay
+// valid for hours, so a 15-minute cache is safe) to avoid hammering YouTube on
+// every player mount.
+//
+// The binary is NOT required: it is probed lazily (and at boot) across common
+// locations so the endpoint can report a clean 503 "resolver unavailable" when
+// the host genuinely lacks yt-dlp instead of leaking a confusing 4xx/5xx.
 // ---------------------------------------------------------------------------
 type DirectStreamInfo = {
   url: string;
@@ -1705,15 +1709,88 @@ type DirectStreamInfo = {
   formatId: string | null;
 };
 
+// Typed resolution failures. The /api/resolve-stream route maps each `code` to
+// an HTTP status so the client can distinguish "unsupported source" (422) from
+// "upstream provider failed" (502) from "resolver binary missing" (503) from
+// "upstream timeout" (504) — without exposing stack traces or filesystem paths.
+class StreamResolveError extends Error {
+  readonly code: string;
+  readonly statusCode: number;
+  constructor(code: string, message: string, statusCode: number) {
+    super(message);
+    this.name = 'StreamResolveError';
+    this.code = code;
+    this.statusCode = statusCode;
+  }
+}
+const streamResolveError = {
+  badRequest: (m: string) => new StreamResolveError('BAD_REQUEST', m, 400),
+  sourceUnsupported: (m: string) => new StreamResolveError('SOURCE_UNSUPPORTED', m, 422),
+  sourceUnresolvable: (m: string) => new StreamResolveError('SOURCE_UNRESOLVABLE', m, 422),
+  sourceNotFound: (m: string) => new StreamResolveError('SOURCE_NOT_FOUND', m, 422),
+  upstream: (m: string) => new StreamResolveError('UPSTREAM_FAILURE', m, 502),
+  resolverUnavailable: (m: string) => new StreamResolveError('RESOLVER_UNAVAILABLE', m, 503),
+  upstreamTimeout: (m: string) => new StreamResolveError('UPSTREAM_TIMEOUT', m, 504),
+};
+
 const ytStreamCache = new Map<string, { at: number; streams: DirectStreamInfo[] }>();
 const YT_STREAM_CACHE_TTL_MS = 15 * 60 * 1000;
 
+// Locations checked (in order) when looking for a usable yt-dlp. Includes the
+// bare binary name (PATH lookup), the repo working dir (Render's build command
+// drops a standalone copy here), a bin/ subdir, and the common pip --user
+// prefix. Windows-only builds add yt-dlp.exe to the local working dir.
+const streamResolverCandidates = (): string[] => {
+  const list: string[] = ['yt-dlp', 'yt-dlp.exe'];
+  const cwd = process.cwd();
+  list.push(path.join(cwd, 'yt-dlp'));
+  list.push(path.join(cwd, 'bin', 'yt-dlp'));
+  if (os.platform() === 'win32' || process.platform === 'win32') list.push(path.join(cwd, 'yt-dlp.exe'));
+  list.push('/usr/local/bin/yt-dlp');
+  list.push(path.join(os.homedir(), '.local', 'bin', 'yt-dlp'));
+  return Array.from(new Set(list));
+};
+
+let streamYtDlpPath: string | null = null;
+let streamYtDlpProbe: Promise<string | null> | null = null;
+
+// Locates a working yt-dlp once (cached). Never throws — a missing binary is a
+// valid state (reported as RESOLVER_UNAVAILABLE), not a server crash.
+async function findStreamResolver(): Promise<string | null> {
+  if (streamYtDlpPath) return streamYtDlpPath;
+  if (streamYtDlpProbe) return streamYtDlpProbe;
+  streamYtDlpProbe = (async () => {
+    for (const candidate of streamResolverCandidates()) {
+      try {
+        const { stdout } = await execFileText(candidate, ['--version'], { timeoutMs: 10000 });
+        if ((stdout || '').trim()) {
+          streamYtDlpPath = candidate;
+          return candidate;
+        }
+      } catch {
+        // candidate missing / not executable (or needs an interpreter that this
+        // host lacks) — try the next candidate
+      }
+    }
+    return null;
+  })().finally(() => {
+    streamYtDlpProbe = null;
+  });
+  return streamYtDlpProbe;
+}
+
 async function resolveYoutubeDirectStreams(videoId: string, forceRefresh = false): Promise<DirectStreamInfo[]> {
+  if (!videoId) throw streamResolveError.badRequest('Missing YouTube video id.');
+  if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) throw streamResolveError.badRequest('Invalid YouTube video id.');
+
   const cached = ytStreamCache.get(videoId);
   if (!forceRefresh && cached && Date.now() - cached.at < YT_STREAM_CACHE_TTL_MS) return cached.streams;
 
-  if (ytDlpAvailable === false) {
-    throw new Error('yt-dlp not available');
+  const binary = await findStreamResolver();
+  if (!binary) {
+    throw streamResolveError.resolverUnavailable(
+      'The video resolver is not installed on this server.',
+    );
   }
 
   const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
@@ -1733,32 +1810,215 @@ async function resolveYoutubeDirectStreams(videoId: string, forceRefresh = false
     watchUrl,
   ];
 
-  const { stdout } = await execFileText('yt-dlp', args, { timeoutMs: 60000 }).catch(
-    (error: any) => {
-      // Convert "binary not installed" into a message the route can detect (501).
-      if (error?.code === 'ENOENT' || error?.cause?.code === 'ENOENT') {
-        ytDlpAvailable = false;
-        throw new Error('yt-dlp not found on PATH');
-      }
-      throw error;
-    },
-  );
+  let stdout: string;
+  try {
+    const result = await execFileText(binary, args, { timeoutMs: 30000 });
+    stdout = result.stdout;
+  } catch (error: any) {
+    // Binary vanished (or its interpreter is missing on this host) → flip the
+    // probe cache to "unavailable" and report an outage, not a bad source.
+    if (error?.code === 'ENOENT' || error?.cause?.code === 'ENOENT') {
+      streamYtDlpPath = null;
+      throw streamResolveError.resolverUnavailable(
+        'The video resolver is not available on this server.',
+      );
+    }
+    if (error?.code === 'ETIMEDOUT' || error?.cause?.code === 'ETIMEDOUT' || error?.killed) {
+      throw streamResolveError.upstreamTimeout(
+        'The video provider took too long to respond.',
+      );
+    }
+    const detail = String(error?.stderr || error?.message || error || '');
+    if (/sign in|sign-in|bot|robot|captcha|too many requests|rate limit/i.test(detail)) {
+      throw streamResolveError.sourceUnresolvable(
+        'The video provider blocked this request from this network.',
+      );
+    }
+    if (/video unavailable|private video|removed|deleted|copyright|not available/i.test(detail)) {
+      throw streamResolveError.sourceNotFound(
+        'This video is no longer available.',
+      );
+    }
+    if (/HTTP Error (4\d\d|5\d\d)/i.test(detail)) {
+      throw streamResolveError.upstream('The video provider returned an error.');
+    }
+    throw streamResolveError.sourceUnresolvable(
+      'This video could not be resolved right now.',
+    );
+  }
+
   const lines = stdout
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter(Boolean);
-  if (!lines[0]) throw new Error('yt-dlp returned no stream URL');
+  if (!lines[0]) throw streamResolveError.sourceUnresolvable('No playable stream was found.');
 
   const [streamUrl, formatId, heightRaw, ext] = lines;
   const streams: DirectStreamInfo[] = [];
   if (streamUrl && /^https?:\/\//i.test(streamUrl)) {
-    const height = parseInt(heightRaw, 10) || null;
-    streams.push({ url: streamUrl, height, ext: ext || null, formatId: formatId || null });
+    // SSRF guard: the resolved stream must come from Google's own CDN hosts.
+    try {
+      const parsed = new URL(streamUrl);
+      if (/googlevideo\.com$/i.test(parsed.hostname) || /youtube\.com$/i.test(parsed.hostname)) {
+        const height = parseInt(heightRaw, 10) || null;
+        streams.push({ url: streamUrl, height, ext: ext || null, formatId: formatId || null });
+      }
+    } catch {
+      // not a valid URL — leave streams empty
+    }
   }
-  if (streams.length === 0) throw new Error('yt-dlp returned no playable stream');
+  if (streams.length === 0) throw streamResolveError.sourceUnresolvable('No playable stream was found.');
 
   ytStreamCache.set(videoId, { at: Date.now(), streams });
   return streams;
+}
+
+// ---------------------------------------------------------------------------
+// Server-side source classification (mirrors the client's classifySourceType
+// but keeps IMDb in its own bucket — metadata only, never playback).
+// ---------------------------------------------------------------------------
+type ServerSourceKind = 'youtube' | 'hls' | 'direct-video' | 'supported-embed' | 'imdb' | 'unsupported';
+
+function classifyServerSourceType(url: string): ServerSourceKind {
+  if (/imdb\.com\/(?:title|name|video|list|search)/i.test(url)) return 'imdb';
+  if (/youtube\.com|youtu\.be/i.test(url)) return 'youtube';
+  if (/\.m3u8(\?|#|$)/i.test(url)) return 'hls';
+  if (/\.(mp4|m4v|webm|ogv|ogg|mov)(\?|#|$)/i.test(url)) return 'direct-video';
+  if (/firebasestorage\.googleapis\.com|storage\.googleapis\.com/i.test(url)) return 'direct-video';
+  if (/hdtoday|vidcloud|vidmoly|molystream|streamwish|filelrun|filemoon|rabbitstream|kurdcinema|vidsrc|multiembed/i.test(url)) return 'supported-embed';
+  if (/\/embed\//i.test(url)) return 'supported-embed';
+  return 'unsupported';
+}
+
+// ---------------------------------------------------------------------------
+// SSRF-safe direct-media validation (used for HLS / direct-video entries).
+// HTTPS-only, bounded manual redirects, every hop hostname blocked if it is
+// private/loopback/link-local, HEAD preferred with a ranged-GET fallback, and a
+// content-type sanity check. Never downloads the whole file.
+// ---------------------------------------------------------------------------
+const SAFE_MEDIA_CONTENT_PREFIXES = [
+  'video/',
+  'audio/',
+  'application/x-mpegurl',
+  'application/vnd.apple.mpegurl',
+  'application/dash+xml',
+  'application/octet-stream',
+];
+
+function isPrivateHostname(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h === '::1' || h.endsWith('.localhost')) return true;
+  if (h === 'metadata.google.internal') return true;
+  if (/^127\./.test(h) || /^10\./.test(h) || /^0\./.test(h) || /^169\.254\./.test(h) || /^192\.168\./.test(h)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
+  return false;
+}
+
+function validateHostOf(parsed: URL): void {
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw streamResolveError.sourceUnsupported('Only http(s) media sources are supported.');
+  }
+  if (isPrivateHostname(parsed.hostname)) {
+    throw streamResolveError.sourceUnsupported('This source is not reachable from the server.');
+  }
+}
+
+// Single bounded media probe: manual redirect walk (max 5 hopa), then HEAD,
+// then a ranged GET when HEAD is refused. Returns the final content-type.
+async function probeMediaContentType(rawUrl: string): Promise<string> {
+  let current = rawUrl;
+  for (let hop = 0; hop <= 5; hop += 1) {
+    let parsed: URL;
+    try {
+      parsed = new URL(current);
+    } catch {
+      throw streamResolveError.badRequest('Invalid media url.');
+    }
+    validateHostOf(parsed);
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    try {
+      const headRes = await fetch(current, {
+        method: 'HEAD',
+        redirect: 'manual',
+        signal: controller.signal,
+        headers: { 'User-Agent': 'CinemaChat/1.0 StreamResolver', Accept: '*/*' },
+      });
+
+      if (headRes.status >= 300 && headRes.status < 400) {
+        const location = headRes.headers.get('location');
+        if (!location) throw streamResolveError.sourceUnresolvable('Redirect without a target.');
+        current = new URL(location, current).toString();
+        continue;
+      }
+
+      if (headRes.status === 405 || headRes.status === 501) {
+        // HEAD unsupported → ranged GET to sniff media type without downloading.
+        const getRes = await fetch(current, {
+          method: 'GET',
+          redirect: 'manual',
+          signal: controller.signal,
+          headers: {
+            'User-Agent': 'CinemaChat/1.0 StreamResolver',
+            Range: 'bytes=0-0',
+          },
+        });
+        if (getRes.status >= 300 && getRes.status < 400) {
+          const location = getRes.headers.get('location');
+          if (!location) throw streamResolveError.sourceUnresolvable('Redirect without a target.');
+          current = new URL(location, current).toString();
+          continue;
+        }
+        if (getRes.status >= 400) {
+          if (getRes.status === 404 || getRes.status === 410) {
+            throw streamResolveError.sourceNotFound('The media source no longer exists.');
+          }
+          throw streamResolveError.upstream(`The media provider returned HTTP ${getRes.status}.`);
+        }
+        return getRes.headers.get('content-type') || '';
+      }
+
+      if (headRes.status >= 400) {
+        if (headRes.status === 404 || headRes.status === 410) {
+          throw streamResolveError.sourceNotFound('The media source no longer exists.');
+        }
+        throw streamResolveError.upstream(`The media provider returned HTTP ${headRes.status}.`);
+      }
+
+      return headRes.headers.get('content-type') || '';
+    } catch (error: any) {
+      if (error instanceof StreamResolveError) throw error;
+      if (error?.name === 'AbortError') {
+        throw streamResolveError.upstreamTimeout('The media provider took too long to respond.');
+      }
+      throw streamResolveError.upstream('The media provider could not be reached.');
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw streamResolveError.upstream('Too many redirects from the media provider.');
+}
+
+function classifyMediaContentType(contentType: string): 'media' | 'webpage' | 'unknown' {
+  const ct = (contentType || '').toLowerCase();
+  if (!ct) return 'unknown';
+  if (ct.startsWith('text/html') || ct.startsWith('application/xhtml')) return 'webpage';
+  if (SAFE_MEDIA_CONTENT_PREFIXES.some((prefix) => ct.startsWith(prefix))) return 'media';
+  return 'unknown';
+}
+
+// Validates a direct/HLS media URL the way the admin source checker does:
+// HTTPS/SSRF-safe, bounded, content-type aware. Throws typed errors on failure.
+async function validateDirectMediaSource(rawUrl: string): Promise<void> {
+  const contentType = await probeMediaContentType(rawUrl);
+  const kind = classifyMediaContentType(contentType);
+  if (kind === 'webpage') {
+    throw streamResolveError.sourceUnsupported(
+      'This URL points to a web page, not to a media stream.',
+    );
+  }
+  // media or unknown content-type (some CDNs omit it) → acceptable
 }
 
 // Convert YouTube caption XML to SRT format.
@@ -6500,24 +6760,104 @@ async function startServer() {
     });
   });
 
-  // --- DIRECT YOUTUBE STREAM FALLBACK ---
-  // Resolves a YouTube URL into a direct progressive-MP4 stream (via yt-dlp) so
-  // the player can bypass YouTube's embed restrictions ("Playback ID" errors).
-  // Cached server-side for YT_STREAM_CACHE_TTL_MS; SSRF-safe because only real
-  // YouTube video IDs are ever handed to yt-dlp.
+  // --- STREAM RESOLUTION (source-classification first) ---
+  // Resolves only YouTube sources into a direct progressive-MP4 stream (yt-dlp)
+  // so the player can bypass YouTube's embed restrictions ("Playback ID" errors).
+  // Every other recognized source kind is returned as-is (HLS / direct / embed)
+  // after SSRF-safe validation, or rejected fast with a clear code. Status codes:
+  // 400 malformed, 422 valid-but-unsupported/unresolvable, 502 upstream failure,
+  // 503 resolver temporarily unavailable, 504 upstream timeout.
   app.post('/api/resolve-stream', async (req, res) => {
+    const fail = (status: number, code: string, message: string) =>
+      res.status(status).json({ ok: false, code, message });
+
     try {
-      const videoId = extractYoutubeVideoId(String((req.body as any)?.url || ''));
-      if (!videoId) {
-        return res.status(400).json({ ok: false, error: 'Invalid YouTube URL' });
+      const rawUrl = String((req.body as any)?.url || '').trim();
+      if (!rawUrl) return fail(400, 'BAD_REQUEST', 'Missing url.');
+
+      let parsed: URL;
+      try {
+        parsed = new URL(rawUrl);
+      } catch {
+        return fail(400, 'BAD_REQUEST', 'Malformed url.');
       }
-      const streams = await resolveYoutubeDirectStreams(videoId, Boolean((req.body as any)?.refresh));
-      res.json({ ok: true, videoId, streams, expiresIn: YT_STREAM_CACHE_TTL_MS });
-    } catch (err: any) {
-      const msg = err?.message || String(err);
-      const notFound = msg.includes('yt-dlp not found');
-      console.error(`[resolve-stream] ${msg}`);
-      res.status(notFound ? 501 : 422).json({ ok: false, error: msg });
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+        return fail(400, 'BAD_REQUEST', 'Only http(s) urls are supported.');
+      }
+
+      const kind = classifyServerSourceType(rawUrl);
+
+      // YouTube → dedicated direct-stream fallback (cached; only ever reaches
+      // yt-dlp, never the generic media probe).
+      if (kind === 'youtube') {
+        const videoId = extractYoutubeVideoId(rawUrl);
+        if (!videoId) return fail(400, 'BAD_REQUEST', 'Invalid YouTube url.');
+        const refresh = Boolean((req.body as any)?.refresh);
+        const streams = await resolveYoutubeDirectStreams(videoId, refresh);
+        return res.json({ ok: true, kind: 'youtube', videoId, streams, expiresIn: YT_STREAM_CACHE_TTL_MS });
+      }
+
+      // IMDb (and friends) → metadata only, never playback.
+      if (kind === 'imdb') {
+        return fail(
+          422,
+          'SOURCE_UNSUPPORTED',
+          'IMDb is metadata only and cannot be resolved as playback.',
+        );
+      }
+
+      // HLS → hand back the validated .m3u8 as a playable stream.
+      if (kind === 'hls') {
+        await validateDirectMediaSource(rawUrl);
+        return res.json({
+          ok: true,
+          kind: 'hls',
+          url: parsed.toString(),
+          streams: [{ url: parsed.toString(), height: null, ext: 'm3u8', formatId: null }],
+        });
+      }
+
+      // Direct MP4/WebM → hand back the validated file as a playable stream.
+      if (kind === 'direct-video') {
+        await validateDirectMediaSource(rawUrl);
+        return res.json({
+          ok: true,
+          kind: 'direct',
+          url: parsed.toString(),
+          streams: [{ url: parsed.toString(), height: null, ext: null, formatId: null }],
+        });
+      }
+
+      // Known embed providers → the app's own embed player is the provider path;
+      // no generic stream resolution needed.
+      if (kind === 'supported-embed') {
+        return res.json({ ok: true, kind: 'embed', url: parsed.toString() });
+      }
+
+      // Anything else → fail fast, do not retry unrelated resolvers.
+      return fail(422, 'SOURCE_UNSUPPORTED', 'This source type is not supported for playback.');
+    } catch (err) {
+      if (err instanceof StreamResolveError) {
+        return fail(err.statusCode, err.code, err.message);
+      }
+      console.error('[resolve-stream] unexpected error:', err instanceof Error ? err.message : err);
+      return fail(502, 'UPSTREAM_FAILURE', 'The source could not be resolved right now.');
+    }
+  });
+
+  // --- MEDIA RESOLVER CAPABILITY (safe) ---
+  // Booleans only — never exposes binary paths, credentials, or filesystem info.
+  app.get('/api/health/media', async (_req, res) => {
+    try {
+      const binary = await findStreamResolver();
+      res.json({
+        status: 'ok',
+        ytDlp: Boolean(binary),
+        youtubeDirectResolution: Boolean(binary),
+        time: new Date().toISOString(),
+      });
+    } catch {
+      res.json({ status: 'ok', ytDlp: false, youtubeDirectResolution: false, time: new Date().toISOString() });
     }
   });
 
@@ -13722,6 +14062,18 @@ let videoDownloaded = false;
     console.log('==================================================');
     console.log(`CinemaChat Server started on http://0.0.0.0:${PORT}`);
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    // Warm the stream-resolver capability probe (never throws): knowing early
+    // whether yt-dlp is present lets /api/resolve-stream answer fast instead of
+    // probing on the first blocked-embed request. Logged safely (boolean only).
+    findStreamResolver().then((binary) => {
+      console.log(
+        binary
+          ? '[Media Resolver] yt-dlp available — YouTube direct-stream fallback enabled.'
+          : '[Media Resolver] yt-dlp NOT found — YouTube direct-stream fallback reports 503.',
+      );
+    }).catch(() => {
+      console.log('[Media Resolver] probe failed — YouTube direct-stream fallback reports 503.');
+    });
     // Initialize the Firebase Admin SDK once at startup so a missing-credential
     // misconfiguration is logged immediately (not on the first profile request).
     // Returns null when unconfigured; profile endpoints then return 503 and the

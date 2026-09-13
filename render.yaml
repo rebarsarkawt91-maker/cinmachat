@@ -3,11 +3,17 @@ services:
     name: cinemachat-server
     env: node
     autoDeploy: true
+    # yt-dlp powers /api/resolve-stream (YouTube → direct MP4 fallback for
+    # blocked embeds). Every step is guarded so a missing python3/curl can
+    # never fail the deploy; the server then reports RESOLVER_UNAVAILABLE (503)
+    # until a binary is actually present. Multiple candidates are installed so
+    # the server's probe (yt-dlp / ./yt-dlp / ./bin/yt-dlp / /usr/local/bin/
+    # yt-dlp / ~/.local/bin/yt-dlp) can find one.
     buildCommand: >
       npm install && npm run build &&
-      (pip install yt-dlp 2>/dev/null || true) &&
-      (curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp 2>/dev/null && chmod +x /usr/local/bin/yt-dlp || true) &&
-      (curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o yt-dlp 2>/dev/null && chmod +x yt-dlp || true)
+      (python3 -m pip install --upgrade --user yt-dlp 2>/dev/null || python -m pip install --upgrade --user yt-dlp 2>/dev/null || pip3 install --upgrade --user yt-dlp 2>/dev/null || pip install --upgrade --user yt-dlp 2>/dev/null || true) &&
+      (curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ./bin/yt-dlp && chmod +x ./bin/yt-dlp 2>/dev/null || true) &&
+      (curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod +x /usr/local/bin/yt-dlp 2>/dev/null || true)
     startCommand: node dist/server.cjs
     envVars:
       - key: NODE_ENV

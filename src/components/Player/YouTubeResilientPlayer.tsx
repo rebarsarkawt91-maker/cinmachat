@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { getYTId } from "../../utils/youtube";
-import { api } from "../../services/api";
+import { directStreamErrorMessage } from "../../utils/directStream";
 import VideoLoadOverlay from "./VideoLoadOverlay";
 import {
   hasPlayableBuffer,
@@ -86,6 +86,8 @@ export default function YouTubeResilientPlayer({
   const [directVideoReloadKey, setDirectVideoReloadKey] = useState(0);
   // Bump to force a fresh iframe mount (auto-retry and Retry button).
   const [retryKey, setRetryKey] = useState(0);
+  // User-facing reason from /api/resolve-stream when direct playback is refused.
+  const [directErrorMessage, setDirectErrorMessage] = useState<string | null>(null);
 
   const poster = videoId
     ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`
@@ -107,6 +109,7 @@ export default function YouTubeResilientPlayer({
     setReconnecting(false);
     setResolving(false);
     setStreamUrl(null);
+    setDirectErrorMessage(null);
   }, [url, retryKey]);
 
   // A brand-new source always starts with a fresh retry budget.
@@ -191,7 +194,12 @@ export default function YouTubeResilientPlayer({
   }, [url, retryKey, streamUrl, videoId]);
 
   // Ask the server for a direct progressive-MP4 stream (cached) so we can play
-  // in a native <video>, bypassing YouTube embedding restrictions.
+  // in a native <video>, bypassing YouTube embedding restrictions. Uses plain
+  // status-aware fetch (no baseFetch backoff): the embed already stalled for
+  // 15s+ then auto-retried, so a definitive 400/422/502/503/504 from the app
+  // should surface to the user immediately instead of being hidden behind more
+  // retry loops. Only a network-level failure (proxy splash, dropped request)
+  // earns a single retry.
   const escalateToDirectStream = useCallback(async (forceRefresh = false) => {
     if (!videoId) {
       setStreamUrl(null);
@@ -199,34 +207,49 @@ export default function YouTubeResilientPlayer({
     }
     setResolving(true);
     setDirectVideoStatus("loading");
-    try {
-      // Same server used for /api/movies, /api/config, ... — same-origin path
-      // through Firebase 307 → Render, with cold-start retries handled here.
-      const res = await api.baseFetch(
-        "/api/resolve-stream",
-        {
-          method: "POST",
-          headers: { "Content-Type": "text/plain" },
-          body: JSON.stringify({ url, refresh: forceRefresh }),
-        },
-        2,
-      );
-      const streams = res?.streams;
+
+    const attempt = async (): Promise<{ ok: boolean; code?: string; streamUrl?: string }> => {
+      const res = await fetch("/api/resolve-stream", {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify({ url, refresh: forceRefresh }),
+      });
+      let data: any = null;
+      try {
+        data = await res.json();
+      } catch {
+        // non-JSON error page (cold-start splash / gateway) — treated as failure
+      }
       const first =
-        Array.isArray(streams) && typeof streams[0]?.url === "string"
-          ? streams[0]
-          : null;
-      if (first?.url) {
-        setStreamUrl(first.url);
+        data && typeof data?.streams?.[0]?.url === "string" ? data.streams[0] : undefined;
+      if (res.ok && data?.ok === true && first?.url) {
+        return { ok: true, code: data.code, streamUrl: first.url };
+      }
+      return { ok: false, code: data?.code };
+    };
+
+    try {
+      let result: { ok: boolean; code?: string; streamUrl?: string };
+      try {
+        result = await attempt();
+      } catch {
+        // Network-level failure only → one retry, then surface the error.
+        result = await attempt();
+      }
+      if (result.ok && result.streamUrl) {
+        setStreamUrl(result.streamUrl);
         setDirectVideoStatus("loading");
+        setDirectErrorMessage(null);
       } else {
         setStreamUrl(null);
         setDirectVideoStatus("error");
+        setDirectErrorMessage(directStreamErrorMessage(String(result.code || "")));
       }
     } catch (err) {
-      console.error("[YouTubeResilientPlayer] Direct stream resolve failed:", err);
+      console.error("[YouTubeResilientPlayer] Direct stream resolve failed:", url, err);
       setStreamUrl(null);
       setDirectVideoStatus("error");
+      setDirectErrorMessage(directStreamErrorMessage(""));
     } finally {
       setResolving(false);
     }
@@ -306,6 +329,7 @@ export default function YouTubeResilientPlayer({
   // Manual "Retry" from the error panel: start over with a fresh retry budget.
   const retryEmbed = () => {
     retryCountRef.current = 0;
+    setDirectErrorMessage(null);
     setRetryKey((k) => k + 1);
   };
 
@@ -395,7 +419,7 @@ export default function YouTubeResilientPlayer({
           <div className="absolute inset-0 bg-black/60" />
           <div className="relative z-10 flex flex-col items-center gap-4 max-w-sm">
             <p className="text-white font-bold kurdish-text text-sm">
-              Unable to load the video. Please try again later.
+              {directErrorMessage || "Unable to load the video. Please try again later."}
             </p>
             <button
               type="button"
