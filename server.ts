@@ -8,8 +8,9 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { Readable } from 'node:stream';
 import fs from 'node:fs/promises';
-import { readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync, createWriteStream } from 'node:fs';
 import crypto from 'node:crypto';
+import https from 'node:https';
 import { gunzipSync } from 'node:zlib';
 import bcrypt from 'bcryptjs';
 import net from 'node:net';
@@ -1821,6 +1822,100 @@ async function streamResolverHostDiagnostics(): Promise<{
   };
 }
 
+// Runtime self-heal: if /api/resolve-stream needs yt-dlp and none is installed,
+// install one at runtime using the tools this host actually has. Runs at most
+// once per process (guarded, never throws, never blocks capacity reporting).
+// 1) python3 → ensurepip → pip install --user yt-dlp  2) else download the
+// official self-contained yt-dlp_linux (bundles Python) into a probe target.
+let streamBootstrapCompleted = false;
+async function bootstrapStreamResolver(binary: string | null): Promise<string | null> {
+  if (binary) return binary;
+  if (streamBootstrapCompleted) return null;
+  streamBootstrapCompleted = true;
+
+  const isWin = os.platform() === 'win32' || process.platform === 'win32';
+  const cwd = process.cwd();
+  const binDir = path.join(cwd, 'bin');
+
+  // 1) pip route (uses the python3 the host already has).
+  try {
+    await execFileText('python3', ['-m', 'ensurepip', '--user'], { timeoutMs: 60000 });
+    const pip = await execFileText(
+      'python3',
+      ['-m', 'pip', 'install', '--user', '--upgrade', 'yt-dlp'],
+      { timeoutMs: 180000 },
+    );
+    if ((pip.stdout || '').includes('yt-dlp') || (await findStreamResolver())) {
+      const found = await findStreamResolver();
+      if (found) {
+        console.log(`[Media Resolver] bootstrapped via pip at ${streamResolverProbeTrack(found)}.`);
+        return found;
+      }
+    }
+  } catch (err: any) {
+    console.warn('[Media Resolver] pip bootstrap failed:', err?.message || err);
+  }
+
+  // 2) download the self-contained yt-dlp_linux binary into a probe target.
+  const asset = isWin ? 'yt-dlp.exe' : 'yt-dlp_linux';
+  const file = path.join(binDir, isWin ? 'yt-dlp.exe' : 'yt-dlp_linux');
+  try {
+    mkdirSync(binDir, { recursive: true });
+    await downloadResolverBinary(file, asset);
+    if (!isWin) await execFileText('/bin/chmod', ['+x', file], { timeoutMs: 5000 });
+    const found = await findStreamResolver();
+    if (found) {
+      console.log(`[Media Resolver] bootstrapped via download at ${streamResolverProbeTrack(found)}.`);
+      return found;
+    }
+  } catch (err: any) {
+    console.warn('[Media Resolver] download bootstrap failed:', err?.message || err);
+  }
+
+  return null;
+}
+
+// Downloads a yt-dlp release asset (self-contained binary or zipapp) via Node's
+// https, following GitHub's asset redirects. Promise-based so the process does
+// not exit mid-stream.
+function downloadResolverBinary(file: string, asset: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const url = `https://github.com/yt-dlp/yt-dlp/releases/latest/download/${encodeURIComponent(asset)}`;
+    let hops = 0;
+    const fetchAsset = (target: string) => {
+      const req = https.get(
+        target,
+        { headers: { 'user-agent': 'CinemaChat/1.0', accept: 'application/octet-stream' } },
+        (res) => {
+          if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            res.resume();
+            if (hops++ < 3) return fetchAsset(new URL(res.headers.location, target).toString());
+            return reject(new Error('Too many redirects.'));
+          }
+          if (!res.statusCode || res.statusCode >= 400) {
+            res.resume();
+            return reject(new Error(`Download failed with HTTP ${res.statusCode}.`));
+          }
+          const out = createWriteStream(file);
+          const timer = setTimeout(() => {
+            req.destroy();
+            reject(new Error('Download timed out.'));
+          }, 90000);
+          out.on('error', (err) => reject(err));
+          res.pipe(out);
+          out.on('finish', () => {
+            clearTimeout(timer);
+            resolve();
+          });
+        },
+      );
+      req.on('error', (err) => reject(err));
+      req.setTimeout(30000, () => req.destroy(new Error('Request timed out.')));
+    };
+    fetchAsset(url);
+  });
+}
+
 // Locates a working yt-dlp once (cached). Never throws — a missing binary is a
 // valid state (reported as RESOLVER_UNAVAILABLE), not a server crash.
 async function findStreamResolver(): Promise<string | null> {
@@ -1853,7 +1948,10 @@ async function resolveYoutubeDirectStreams(videoId: string, forceRefresh = false
   const cached = ytStreamCache.get(videoId);
   if (!forceRefresh && cached && Date.now() - cached.at < YT_STREAM_CACHE_TTL_MS) return cached.streams;
 
-  const binary = await findStreamResolver();
+  // Lazy bootstrap: if no resolver binary was found at startup, try to install
+  // one now (python3 is available on this host). Only runs once.
+  let binary = streamYtDlpPath || (await findStreamResolver());
+  if (!binary) binary = await bootstrapStreamResolver(binary);
   if (!binary) {
     throw streamResolveError.resolverUnavailable(
       'The video resolver is not installed on this server.',
@@ -14149,8 +14247,20 @@ let videoDownloaded = false;
       console.log(
         binary
           ? '[Media Resolver] yt-dlp available — YouTube direct-stream fallback enabled.'
-          : '[Media Resolver] yt-dlp NOT found — YouTube direct-stream fallback reports 503.',
+          : '[Media Resolver] yt-dlp NOT found — bootstrapping at runtime.',
       );
+      // If nothing was found, try a one-time install using the host's own tools
+      // (python3 → pip, else download a self-contained yt-dlp_linux), so the
+      // blocked-embed fallback is often already warm before first use.
+      if (!binary) {
+        void bootstrapStreamResolver(null).then((booted) => {
+          console.log(
+            booted
+              ? '[Media Resolver] runtime bootstrap succeeded (probe ready).'
+              : '[Media Resolver] runtime bootstrap failed — sharp 503 answers.',
+          );
+        });
+      }
     }).catch(() => {
       console.log('[Media Resolver] probe failed — YouTube direct-stream fallback reports 503.');
     });
