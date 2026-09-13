@@ -1744,8 +1744,12 @@ const streamResolverCandidates = (): string[] => {
   const list: string[] = ['yt-dlp', 'yt-dlp.exe'];
   const cwd = process.cwd();
   list.push(path.join(cwd, 'yt-dlp'));
+  // Self-contained Linux build (bundles Python — works without a system python3)
+  // plus the classic zipapp; either is placed by the install step.
+  list.push(path.join(cwd, 'bin', 'yt-dlp_linux'));
   list.push(path.join(cwd, 'bin', 'yt-dlp'));
   if (os.platform() === 'win32' || process.platform === 'win32') list.push(path.join(cwd, 'yt-dlp.exe'));
+  list.push('/usr/local/bin/yt-dlp_linux');
   list.push('/usr/local/bin/yt-dlp');
   list.push(path.join(os.homedir(), '.local', 'bin', 'yt-dlp'));
   return Array.from(new Set(list));
@@ -1759,11 +1763,62 @@ function streamResolverProbeTrack(binary: string | null): string | null {
   if (!binary) return null;
   if (binary === 'yt-dlp' || binary === 'yt-dlp.exe') return 'PATH';
   const cwd = process.cwd();
+  const home = os.homedir();
+  if (binary.startsWith(path.join(cwd, 'bin') + path.sep)) return 'bin';
+  if (binary.startsWith('/usr/local/bin/')) return 'usr-local';
+  if (binary.startsWith(path.join(home, '.local', 'bin'))) return 'user-local';
   if (binary === path.join(cwd, 'yt-dlp') || binary === path.join(cwd, 'yt-dlp.exe')) return 'cwd';
-  if (binary === path.join(cwd, 'bin', 'yt-dlp')) return 'bin';
-  if (binary === '/usr/local/bin/yt-dlp') return 'usr-local';
-  if (binary === path.join(os.homedir(), '.local', 'bin', 'yt-dlp')) return 'user-local';
   return 'other';
+}
+
+// Safe host-fact check used by /api/health/media to tell WHICH install target
+// is missing. Booleans only — no paths, no version strings, no credentials.
+async function streamResolverHostDiagnostics(): Promise<{
+  python3: boolean;
+  python: boolean;
+  pip: boolean;
+  files: { bin_linux: boolean; bin_zip: boolean; usrLocal: boolean; userLocal: boolean };
+}> {
+  const cwd = process.cwd();
+  const isWin = os.platform() === 'win32' || process.platform === 'win32';
+  const probeBin = async (cmd: string): Promise<boolean> => {
+    try {
+      if (!isWin) {
+        const r = await execFileText('/bin/sh', ['-c', `command -v ${cmd}`], { timeoutMs: 4000 });
+        return Boolean((r.stdout || '').trim());
+      }
+      const r = await execFileText(cmd, ['--version'], { timeoutMs: 4000 });
+      return Boolean((r.stdout || '').trim());
+    } catch {
+      return false;
+    }
+  };
+  const fileExists = (p: string): boolean => {
+    try {
+      return existsSync(p);
+    } catch {
+      return false;
+    }
+  };
+  const pip = await (async () => {
+    try {
+      const r = await execFileText('python3', ['-m', 'pip', '--version'], { timeoutMs: 4000 });
+      return Boolean((r.stdout || '').trim());
+    } catch {
+      return false;
+    }
+  })();
+  return {
+    python3: await probeBin('python3'),
+    python: await probeBin('python'),
+    pip,
+    files: {
+      bin_linux: fileExists(path.join(cwd, 'bin', 'yt-dlp_linux')),
+      bin_zip: fileExists(path.join(cwd, 'bin', 'yt-dlp')),
+      usrLocal: fileExists('/usr/local/bin/yt-dlp_linux') || fileExists('/usr/local/bin/yt-dlp'),
+      userLocal: fileExists(path.join(os.homedir(), '.local', 'bin', 'yt-dlp')),
+    },
+  };
 }
 
 // Locates a working yt-dlp once (cached). Never throws — a missing binary is a
@@ -6864,19 +6919,23 @@ async function startServer() {
   app.get('/api/health/media', async (_req, res) => {
     try {
       const binary = await findStreamResolver();
+      const env = await streamResolverHostDiagnostics();
       res.json({
         status: 'ok',
         ytDlp: Boolean(binary),
         youtubeDirectResolution: Boolean(binary),
         probe: streamResolverProbeTrack(binary),
+        env,
         time: new Date().toISOString(),
       });
     } catch {
+      const env = await streamResolverHostDiagnostics().catch(() => null);
       res.json({
         status: 'ok',
         ytDlp: false,
         youtubeDirectResolution: false,
         probe: null,
+        env,
         time: new Date().toISOString(),
       });
     }

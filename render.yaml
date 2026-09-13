@@ -4,18 +4,26 @@ services:
     env: node
     autoDeploy: true
     # yt-dlp powers /api/resolve-stream (YouTube → direct MP4 fallback for
-    # blocked embeds). Every step is guarded so a missing python3/curl can
-    # never fail the deploy; the server then reports RESOLVER_UNAVAILABLE (503)
-    # until a binary is actually present. Multiple candidates are installed so
-    # the server's probe (yt-dlp / ./yt-dlp / ./bin/yt-dlp / /usr/local/bin/
-    # yt-dlp / ~/.local/bin/yt-dlp) can find one.
+    # blocked embeds). The preferred artifact is yt-dlp_linux — the official
+    # PyInstaller build that BUNDLES Python, so it runs even when the host has
+    # no system python3/curl/wget. The zipapp + pip --user variants are tried as
+    # extras. Every step is guarded so it can never fail the deploy; the server
+    # then reports RESOLVER_UNAVAILABLE (503) and /api/health/media reports why
+    # (probe: null + env booleans) until a binary is actually present.
     buildCommand: >
       npm install && npm run build &&
-      (command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1 ||
-        (apt-get update -qq 2>/dev/null && apt-get install -y -qq python3 curl 2>/dev/null) || true) &&
-      (python3 -m pip install --upgrade --user yt-dlp 2>/dev/null || python -m pip install --upgrade --user yt-dlp 2>/dev/null || pip3 install --upgrade --user yt-dlp 2>/dev/null || pip install --upgrade --user yt-dlp 2>/dev/null || true) &&
-      (mkdir -p ./bin && curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ./bin/yt-dlp && chmod +x ./bin/yt-dlp 2>/dev/null || true) &&
-      (mkdir -p /usr/local/bin && curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod +x /usr/local/bin/yt-dlp 2>/dev/null || true)
+      (mkdir -p ./bin &&
+        (curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux -o ./bin/yt-dlp_linux 2>/dev/null ||
+          wget -q https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux -O ./bin/yt-dlp_linux 2>/dev/null ||
+          OUT=./bin/yt-dlp_linux node -e "const{get}=require('https'),{createWriteStream}=require('fs');const u='https://github.com/yt-dlp/yt-dlp/releases/latest/download/'+require('path').basename(process.env.OUT||'yt-dlp_linux');let n=0;const d=a=>get(a,{headers:{'user-agent':'node-yt'}},r=>{if(r.statusCode>=300&&r.statusCode<400&&r.headers.location&&n++<3)return d(new URL(r.headers.location,a).toString());const f=createWriteStream(process.env.OUT||'yt-dlp_linux');r.pipe(f);f.on('error',()=>{});r.on('error',()=>{})}).on('error',()=>{});d(u)" 2>/dev/null) &&
+        chmod +x ./bin/yt-dlp_linux 2>/dev/null || true) &&
+      (pip3 install --upgrade --user yt-dlp 2>/dev/null || pip install --upgrade --user yt-dlp 2>/dev/null ||
+        (python3 -m pip install --upgrade --user yt-dlp 2>/dev/null) || true) &&
+      (mkdir -p /usr/local/bin &&
+        (curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux -o /usr/local/bin/yt-dlp_linux 2>/dev/null ||
+          wget -q https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux -O /usr/local/bin/yt-dlp_linux 2>/dev/null ||
+          OUT=/usr/local/bin/yt-dlp_linux node -e "const{get}=require('https'),{createWriteStream}=require('fs');const u='https://github.com/yt-dlp/yt-dlp/releases/latest/download/'+require('path').basename(process.env.OUT||'yt-dlp_linux');let n=0;const d=a=>get(a,{headers:{'user-agent':'node-yt'}},r=>{if(r.statusCode>=300&&r.statusCode<400&&r.headers.location&&n++<3)return d(new URL(r.headers.location,a).toString());const f=createWriteStream(process.env.OUT||'yt-dlp_linux');r.pipe(f);f.on('error',()=>{});r.on('error',()=>{})}).on('error',()=>{});d(u)" 2>/dev/null) &&
+        chmod +x /usr/local/bin/yt-dlp_linux 2>/dev/null || true)
     startCommand: node dist/server.cjs
     envVars:
       - key: NODE_ENV
