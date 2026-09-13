@@ -11,9 +11,11 @@ services:
     # yt-dlp / ~/.local/bin/yt-dlp) can find one.
     buildCommand: >
       npm install && npm run build &&
+      (command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1 ||
+        (apt-get update -qq 2>/dev/null && apt-get install -y -qq python3 curl 2>/dev/null) || true) &&
       (python3 -m pip install --upgrade --user yt-dlp 2>/dev/null || python -m pip install --upgrade --user yt-dlp 2>/dev/null || pip3 install --upgrade --user yt-dlp 2>/dev/null || pip install --upgrade --user yt-dlp 2>/dev/null || true) &&
-      (curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ./bin/yt-dlp && chmod +x ./bin/yt-dlp 2>/dev/null || true) &&
-      (curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod +x /usr/local/bin/yt-dlp 2>/dev/null || true)
+      (mkdir -p ./bin && curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ./bin/yt-dlp && chmod +x ./bin/yt-dlp 2>/dev/null || true) &&
+      (mkdir -p /usr/local/bin && curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod +x /usr/local/bin/yt-dlp 2>/dev/null || true)
     startCommand: node dist/server.cjs
     envVars:
       - key: NODE_ENV

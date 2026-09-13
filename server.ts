@@ -1754,6 +1754,18 @@ const streamResolverCandidates = (): string[] => {
 let streamYtDlpPath: string | null = null;
 let streamYtDlpProbe: Promise<string | null> | null = null;
 
+// Coarse install-location label for health reporting (no absolute paths).
+function streamResolverProbeTrack(binary: string | null): string | null {
+  if (!binary) return null;
+  if (binary === 'yt-dlp' || binary === 'yt-dlp.exe') return 'PATH';
+  const cwd = process.cwd();
+  if (binary === path.join(cwd, 'yt-dlp') || binary === path.join(cwd, 'yt-dlp.exe')) return 'cwd';
+  if (binary === path.join(cwd, 'bin', 'yt-dlp')) return 'bin';
+  if (binary === '/usr/local/bin/yt-dlp') return 'usr-local';
+  if (binary === path.join(os.homedir(), '.local', 'bin', 'yt-dlp')) return 'user-local';
+  return 'other';
+}
+
 // Locates a working yt-dlp once (cached). Never throws — a missing binary is a
 // valid state (reported as RESOLVER_UNAVAILABLE), not a server crash.
 async function findStreamResolver(): Promise<string | null> {
@@ -6846,7 +6858,9 @@ async function startServer() {
   });
 
   // --- MEDIA RESOLVER CAPABILITY (safe) ---
-  // Booleans only — never exposes binary paths, credentials, or filesystem info.
+  // Booleans only — never exposes absolute paths, credentials, or fs layout.
+  // `probe` reports a coarse install location so a missing binary can be fixed
+  // from outside (does not leak the full candidate path).
   app.get('/api/health/media', async (_req, res) => {
     try {
       const binary = await findStreamResolver();
@@ -6854,10 +6868,17 @@ async function startServer() {
         status: 'ok',
         ytDlp: Boolean(binary),
         youtubeDirectResolution: Boolean(binary),
+        probe: streamResolverProbeTrack(binary),
         time: new Date().toISOString(),
       });
     } catch {
-      res.json({ status: 'ok', ytDlp: false, youtubeDirectResolution: false, time: new Date().toISOString() });
+      res.json({
+        status: 'ok',
+        ytDlp: false,
+        youtubeDirectResolution: false,
+        probe: null,
+        time: new Date().toISOString(),
+      });
     }
   });
 
