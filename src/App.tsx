@@ -107,6 +107,13 @@ import {
 } from "./services/genres";
 import type { Genre } from "./services/genres";
 import {
+  ALL_CATEGORY_KEY,
+  addMovieCategory,
+  movieMatchesCategory,
+  moviePrimaryCategories,
+  normalizeCategoryKey,
+} from "./services/movieCategories";
+import {
   getClientIp,
   syncSecurityProfile,
   markSecurityOffline,
@@ -240,13 +247,15 @@ import { CameHereRoom } from "./components/Social/CameHereRoom";
 import { BroadcastRoom } from "./components/Social/BroadcastRoom";
 import { BroadcastPreviewCard } from "./components/Social/BroadcastPreviewCard";
 import { DirectMessagesModal } from "./components/Social/DirectMessagesModal";
-import { WhatsAppFloatButton } from "./components/Social/WhatsAppFloatButton";
+import { WhatsAppFloatButton, resolveWhatsAppUrl } from "./components/Social/WhatsAppFloatButton";
 import { MovieCard, MovieCardSkeleton } from "./components/Movie/MovieCard";
 import {
   fuzzyMatchMovie,
   movieMatchesGenres,
   semanticScoreMovie,
+  directDescriptionScore,
   computeTrendingScore,
+  normalizeSearch,
 } from "./utils/search";
 import type { SemanticSignals } from "./utils/search";
 import UserActivityMonitor from "./components/Admin/UserActivityMonitor";
@@ -1136,6 +1145,203 @@ const CategoryDropdown = ({ value, onChange, categories, className }: any) => (
     )}
   </select>
 );
+
+// ---------------------------------------------------------------------------
+// Homepage movie-category chip row (the shared canonical category list).
+// Replaces the old filter dropdown: every category is a visible clickable
+// chip and one click filters the grid. The row scrolls horizontally and the
+// side arrows appear only when the chips overflow. The purple "+" is rendered
+// for admins only and opens a small add-category panel (Kurdish label +
+// English key/slug) that persists to Firestore through movieCategories.add.
+// ---------------------------------------------------------------------------
+const MovieCategoryRow = ({
+  categories,
+  activeTag,
+  onSelect,
+  isAdmin,
+}: {
+  categories: { name: string; tag: string }[];
+  activeTag: string;
+  onSelect: (tag: string) => void;
+  isAdmin: boolean;
+}) => {
+  const scrollRef = React.useRef<HTMLDivElement | null>(null);
+  const [canScroll, setCanScroll] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [newLabel, setNewLabel] = useState("");
+  const [newKey, setNewKey] = useState("");
+  const [addError, setAddError] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  const measure = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setCanScroll(el.scrollWidth > el.clientWidth + 8);
+  };
+  useEffect(() => {
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [categories.length, showAdd]);
+
+  // Direction-aware scroll: RTL rows overflow toward negative scrollLeft.
+  const scrollRow = (dir: 1 | -1) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const rtl = getComputedStyle(el).direction === "rtl";
+    el.scrollBy({
+      left: (rtl ? -1 : 1) * dir * Math.max(240, el.clientWidth * 0.7),
+      behavior: "smooth",
+    });
+  };
+
+  const chips = [{ name: "هەمووی (All)", tag: ALL_CATEGORY_KEY }, ...categories];
+
+  const handleAddCategory = async () => {
+    setAddError("");
+    setAdding(true);
+    try {
+      let adminName = "Admin";
+      try {
+        const saved = safeStorage.get("cinemachat_admin");
+        if (saved) adminName = JSON.parse(saved).username || "Admin";
+      } catch (e) {}
+      await addMovieCategory(newLabel, newKey, adminName);
+      setNewLabel("");
+      setNewKey("");
+      setShowAdd(false);
+      // The live genre subscriptions update this row, the admin Post-Movie
+      // form and the Edit-Movie modal instantly — no local copy to maintain.
+    } catch (e: any) {
+      setAddError(e?.message || "هەڵەیەک ڕوویدا لە زیادکردنی پۆلێن");
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  return (
+    <div className="w-full">
+      <div className="flex items-center gap-2">
+        {canScroll && (
+          <button
+            type="button"
+            onClick={() => scrollRow(1)}
+            aria-label="پۆلێنی داهاتوو"
+            className="shrink-0 w-8 h-8 rounded-full bg-white/5 border border-white/10 text-gray-300 hover:text-white hover:border-brand-primary/50 flex items-center justify-center transition-all"
+          >
+            <ChevronRight className="w-4 h-4" />
+          </button>
+        )}
+        <div
+          ref={scrollRef}
+          className="flex-1 min-w-0 flex items-center gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
+          {chips.map((c) => (
+            <button
+              key={c.tag}
+              type="button"
+              onClick={() => onSelect(c.tag)}
+              className={`shrink-0 px-4 py-2 rounded-full border text-xs font-black kurdish-text whitespace-nowrap transition-all ${
+                activeTag === c.tag
+                  ? "bg-brand-primary border-brand-primary text-white shadow-lg shadow-brand-primary/30"
+                  : "bg-white/5 border-white/10 text-gray-300 hover:text-white hover:border-white/30"
+              }`}
+            >
+              {c.name}
+            </button>
+          ))}
+        </div>
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={() => {
+              setShowAdd((v) => !v);
+              setAddError("");
+            }}
+            title="زیادکردنی پۆلێنی نوێ"
+            aria-label="زیادکردنی پۆلێنی نوێ"
+            className="shrink-0 w-9 h-9 rounded-full bg-purple-600 hover:bg-purple-500 text-white flex items-center justify-center border border-purple-400/40 shadow-lg shadow-purple-900/40 transition-all"
+          >
+            <Plus className="w-5 h-5" />
+          </button>
+        )}
+        {canScroll && (
+          <button
+            type="button"
+            onClick={() => scrollRow(-1)}
+            aria-label="پۆلێنی پێشوو"
+            className="shrink-0 w-8 h-8 rounded-full bg-white/5 border border-white/10 text-gray-300 hover:text-white hover:border-brand-primary/50 flex items-center justify-center transition-all"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+        )}
+      </div>
+
+      {isAdmin && showAdd && (
+        <div className="mt-3 p-4 rounded-2xl border border-purple-500/30 bg-purple-500/5 space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <input
+              type="text"
+              value={newLabel}
+              maxLength={50}
+              onChange={(e) => {
+                setNewLabel(e.target.value);
+                if (addError) setAddError("");
+              }}
+              placeholder="ناوی پۆلێن بە کوردی..."
+              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white kurdish-text outline-none focus:border-purple-500 transition-all text-xs"
+            />
+            <input
+              type="text"
+              value={newKey}
+              maxLength={50}
+              dir="ltr"
+              onChange={(e) => {
+                setNewKey(e.target.value);
+                if (addError) setAddError("");
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleAddCategory();
+              }}
+              placeholder="English key / slug (e.g. romance)"
+              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white outline-none focus:border-purple-500 transition-all text-xs"
+            />
+          </div>
+          {addError && (
+            <p className="text-xs font-bold text-red-400 kurdish-text">
+              {addError}
+            </p>
+          )}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setShowAdd(false);
+                setAddError("");
+              }}
+              className="px-4 py-2.5 rounded-xl border border-white/10 text-xs font-bold text-gray-300 hover:bg-white/10 kurdish-text transition-all"
+            >
+              پاشگەزبوونەوە
+            </button>
+            <button
+              type="button"
+              onClick={handleAddCategory}
+              disabled={adding || !newLabel.trim() || !newKey.trim()}
+              className="px-5 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-black kurdish-text flex items-center gap-2 transition-all disabled:opacity-50"
+            >
+              {adding ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Plus className="w-4 h-4" />
+              )}
+              زیادکردن
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
 
 const transformLink = (url: string, allowImdbSource = false) => {
   let normalized = decodeStoredUrl(url).trim();
@@ -2093,6 +2299,10 @@ const ContentModule = ({
                 onChange={(v: string) =>
                   setFormData({ ...formData, category: v })
                 }
+                categories={genreList.map((g) => ({
+                  value: g.tag,
+                  label: g.name,
+                }))}
               />
               <button
                 onClick={handlePublish}
@@ -2123,6 +2333,10 @@ const ContentModule = ({
                 onChange={(v: string) =>
                   setFormData({ ...formData, category: v })
                 }
+                categories={genreList.map((g) => ({
+                  value: g.tag,
+                  label: g.name,
+                }))}
               />
               <button
                 onClick={handlePublish}
@@ -2151,6 +2365,10 @@ const ContentModule = ({
                 onChange={(v: string) =>
                   setFormData({ ...formData, category: v })
                 }
+                categories={genreList.map((g) => ({
+                  value: g.tag,
+                  label: g.name,
+                }))}
               />
               <button
                 onClick={handlePublish}
@@ -6940,14 +7158,40 @@ export default function App() {
     return unsub;
   }, []);
 
+  // Legacy/unknown category chips discovered on existing movie records: a
+  // movie whose primary category is not in the Firestore genre list keeps its
+  // own chip so it stays reachable (old movies are never hidden or re-tagged).
+  const movieExtraCategories = useMemo(() => {
+    const seen = new Set<string>([ALL_CATEGORY_KEY]);
+    DEFAULT_GENRES.forEach((g) => seen.add(normalizeCategoryKey(g.tag)));
+    dynamicGenres.forEach((g) => seen.add(normalizeCategoryKey(g.tag)));
+    const extras: { name: string; tag: string }[] = [];
+    const pushed = new Set<string>();
+    for (const m of movies) {
+      for (const raw of moviePrimaryCategories(m)) {
+        const key = normalizeCategoryKey(raw);
+        if (seen.has(key) || pushed.has(key)) continue;
+        pushed.add(key);
+        extras.push({ name: raw, tag: raw });
+      }
+    }
+    return extras;
+  }, [movies, dynamicGenres]);
+
   // If the currently selected genre is deleted in the admin panel, fall back to
-  // the "all" view instead of leaving a dead filter active.
+  // the "all" view instead of leaving a dead filter active. Category chips
+  // derived from existing movie records (legacy/unknown categories) count as
+  // alive too, so an old movie's own category never resets the filter.
   useEffect(() => {
     if (!genresReady) return;
-    if (activeTab !== "all" && !dynamicGenres.some((g) => g.tag === activeTab)) {
+    if (
+      activeTab !== "all" &&
+      !dynamicGenres.some((g) => g.tag === activeTab) &&
+      !movieExtraCategories.some((c) => c.tag === activeTab)
+    ) {
       setActiveTab("all");
     }
-  }, [dynamicGenres, genresReady, activeTab]);
+  }, [dynamicGenres, movieExtraCategories, genresReady, activeTab]);
 
   const [autoPlay, setAutoPlay] = useState(false);
   const [isHeroMuted, setIsHeroMuted] = useState(false);
@@ -9446,6 +9690,25 @@ export default function App() {
 
   // AI semantic search: prefers the server's Gemini-ranked results, falls back
   // to a client-side semantic ranking over the catalog when offline.
+  // Fire a one-time-per-query server notification so the admin learns about
+  // movies viewers searched for but the catalog doesn't have yet.
+  const movieRequestNotifiedRef = useRef<string>("");
+  const notifyMovieRequest = useCallback((query: string) => {
+    const key = normalizeSearch(query);
+    if (!key || movieRequestNotifiedRef.current === key) return;
+    movieRequestNotifiedRef.current = key;
+    let from = "";
+    try {
+      const saved = safeStorage.get("cinemachat_admin");
+      if (saved) from = JSON.parse(saved).username || "";
+    } catch (e) {}
+    fetchApi("/api/movie-request", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, from }),
+    }).catch(() => {});
+  }, []);
+
   const runAiSearch = useCallback(async () => {
     const q = aiQuery.trim();
     if (!q || aiLoading) return;
@@ -9460,6 +9723,18 @@ export default function App() {
     });
     setAiLoading(true);
     setAiResults(null);
+    // Direct description/title match: when the pasted text is (or contains) an
+    // existing movie's description/title, its card shows immediately — before
+    // the AI round-trip — and stays at the top of the merged results.
+    const directMatches = movies
+      .map((m) => ({ m, s: directDescriptionScore(m, q) }))
+      .filter((x) => x.s > 0)
+      .sort((a, b) => b.s - a.s)
+      .map((x) => x.m);
+    if (directMatches.length > 0) {
+      setAiResults(directMatches.slice(0, 12));
+      setAiMeta({ keywords: [], genres: [], titles: [] });
+    }
     try {
       const res = await api.aiSearch(q);
       setAiMeta({
@@ -9467,25 +9742,36 @@ export default function App() {
         genres: res?.genres || [],
         titles: res?.titles || [],
       });
-      if (Array.isArray(res?.results) && res.results.length > 0) {
-        setAiResults(res.results);
+      const serverResults = Array.isArray(res?.results) ? res.results : [];
+      const directIds = new Set(directMatches.map((m) => m.id));
+      const merged = [
+        ...directMatches,
+        ...serverResults.filter((m: any) => m?.id && !directIds.has(m.id)),
+      ];
+      if (merged.length > 0) {
+        setAiResults(merged.slice(0, 12));
       } else {
         const signals = querySignals();
         const scored = movies
           .map((m) => ({ m, s: semanticScoreMovie(m, signals) }))
           .filter((x) => x.s > 0)
           .sort((a, b) => b.s - a.s);
-        setAiResults(scored.slice(0, 12).map((x) => x.m));
+        const fallback = scored.slice(0, 12).map((x) => x.m);
+        setAiResults(fallback);
+        if (fallback.length === 0) notifyMovieRequest(q);
       }
       submitSearchTerm(q);
     } catch (e) {
       const signals = querySignals();
+      const directIds = new Set(directMatches.map((m) => m.id));
       const scored = movies
         .map((m) => ({ m, s: semanticScoreMovie(m, signals) }))
-        .filter((x) => x.s > 0)
+        .filter((x) => x.s > 0 && !directIds.has(x.m.id))
         .sort((a, b) => b.s - a.s);
-      setAiResults(scored.slice(0, 12).map((x) => x.m));
+      const fallback = [...directMatches, ...scored.map((x) => x.m)].slice(0, 12);
+      setAiResults(fallback);
       setAiMeta({ keywords: [], genres: [], titles: [] });
+      if (fallback.length === 0) notifyMovieRequest(q);
       submitSearchTerm(q);
     } finally {
       setAiLoading(false);
@@ -11346,6 +11632,19 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
+  // WhatsApp suggestion link for "movie not found" smart searches — prefilled
+  // with the query when the site's WhatsApp is a direct wa.me number.
+  const whatsappRequestHref = useMemo(() => {
+    const base = resolveWhatsAppUrl(
+      config?.socialLinks?.whatsapp,
+      config?.socialLinks?.group,
+    );
+    const text = `سڵاو، فیلمی «${aiQuery || "..."}» پێشنیار دەکەم بۆ سینەما چات`;
+    return base.includes("wa.me")
+      ? `${base}?text=${encodeURIComponent(text)}`
+      : base;
+  }, [config, aiQuery]);
+
   // Fetch Config
   useEffect(() => {
     const fetchConfig = async () => {
@@ -11976,20 +12275,10 @@ export default function App() {
     }
 
     const tab = activeTab;
-    // Normalize both sides (trim + lowercase) exactly like the admin category
-    // dropdown matches, so a movie shown under a nav tab always carries the same
-    // normalized tag that its "پۆلێن" select displays (e.g. "New Releases" vs
-    // "new releases").
-    const activeKey = String(tab || "").trim().toLowerCase();
-    // The public listing never includes dramas assigned to a Drama Room.
-    let list = publicMovies.filter((movie) => {
-      const tags = Array.isArray(movie.tags)
-        ? movie.tags.map((t: string) => String(t).trim().toLowerCase())
-        : [];
-      const matchesTab =
-        activeKey === "all" || (tags.length > 0 && tags.includes(activeKey));
-      return matchesTab;
-    });
+    // Shared canonical matching: both sides normalized (trim + lowercase) and
+    // the record's own `category` field checked as a fallback, so legacy movies
+    // (" ئاکشن ", category-only records) still filter under the right chip.
+    let list = publicMovies.filter((movie) => movieMatchesCategory(movie, tab));
 
     if (searchMode === "genre") {
       if (selectedGenres.length > 0) {
@@ -12128,8 +12417,7 @@ export default function App() {
         if (adminName) headers["x-admin-username"] = adminName;
         await api.baseFetch(`/api/drama-rooms/${room.id}`, { method: "DELETE", headers }, 2);
         setSelectedDramaRoom((prev: any) => (prev?.id === room.id ? null : prev));
-        await refreshDramaRooms();
-      } catch (e) {
+        await refreshDramaRooms();      } catch (e) {
         console.warn("Failed to delete drama room:", e);
       }
     },
@@ -12153,22 +12441,44 @@ export default function App() {
     );
   }, [dramaRooms, dramaCategory, resolvedMovies]);
 
-  // Option lists for the two filter dropdowns that replaced the category chips.
-  const movieCatOptions = useMemo(
+  // Homepage category chips: the canonical Firestore list first, then any
+  // legacy/unknown categories found on existing movies so old records stay
+  // usable. "All" is added by the chip row itself (built-in, never persisted).
+  const homepageCategoryChips = useMemo(
     () => [
-      { value: "all", label: "هەمووی (All)" },
-      ...navGenres.map((g) => ({ value: g.tag, label: g.name })),
+      ...navGenres.map((g) => ({ name: g.name, tag: g.tag })),
+      ...movieExtraCategories,
     ],
-    [navGenres],
+    [navGenres, movieExtraCategories],
   );
 
-  const dramaCatOptions = useMemo(
-    () => [
-      { value: "all", label: "هەموو ژوورەکان (All Rooms)" },
-      ...navGenres.map((g) => ({ value: g.tag, label: g.name })),
-    ],
-    [navGenres],
-  );
+  // Options for the Admin Edit-Movie modal: live Firestore genres + built-in
+  // defaults + the edited movie's own category (an old record's unknown
+  // category must stay visible and selectable in the form).
+  const movieEditCategoryOptions = useMemo(() => {
+    const seen = new Set<string>([ALL_CATEGORY_KEY]);
+    const opts: { name: string; tag: string }[] = [];
+    const push = (name: string, tag: string) => {
+      const key = normalizeCategoryKey(tag);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      opts.push({ name, tag });
+    };
+    dynamicGenres.forEach((g) => push(g.name, g.tag));
+    DEFAULT_GENRES.forEach((g) => push(g.name, g.tag));
+    moviePrimaryCategories(movieBeingEdited).forEach((raw) => push(raw, raw));
+    return opts;
+  }, [dynamicGenres, movieBeingEdited]);
+
+  // Per-movie trailer auto-preview: when the details page opens and THIS movie
+  // carries its own YouTube trailerUrl (the dedicated post-form field — not the
+  // hero trailer, not mainTrailerUrl), the trailer plays muted+looped in place
+  // of the static poster so viewers see it before pressing Watch. Movies
+  // without a YouTube trailer keep the normal poster.
+  const trailerPreviewId =
+    selectedMovie && !showPlayer && selectedMovie.trailerUrl
+      ? extractYouTubeId(selectedMovie.trailerUrl)
+      : null;
 
   if (bannedFromSystem) {
     const blockTime = blockedAt || new Date();
@@ -12940,12 +13250,28 @@ export default function App() {
             {/* Smart Search Section */}
             <div className="relative max-w-5xl mx-auto px-5 md:px-8 mt-4 mb-8 text-center">
 
-              {/* Search mode tabs */}
-              <div className="flex justify-center gap-2 mb-5 flex-wrap">
+              {/* Movie category chip row — shared canonical category list.
+                  Replaces the old dropdowns: every category is visible, one
+                  click filters immediately, arrows scroll when needed, and
+                  the purple "+" (admins only) adds a persistent category. */}
+              <div className="flex flex-wrap items-center justify-center gap-4 mb-5">
+                <MovieCategoryRow
+                  categories={homepageCategoryChips}
+                  activeTag={activeTab}
+                  onSelect={(tag: string) => {
+                    setActiveTab(tag);
+                    setCurrentPage(1);
+                  }}
+                  isAdmin={systemVerified}
+                />
+              </div>
+
+              {/* Search mode buttons live in the same row as the search box
+                  they control (title/AI inputs render inline next to them). */}
+              <div className="flex flex-wrap items-center justify-center gap-2 mb-5">
                 {(
                   [
                     { id: "title", label: "ناونیشان", icon: Search },
-                    { id: "genre", label: "پۆلێن", icon: Layers },
                     { id: "ai", label: "گەڕانی زیرەک (AI)", icon: Sparkles },
                   ] as const
                 ).map((mode) => (
@@ -12965,38 +13291,9 @@ export default function App() {
                     {mode.label}
                   </button>
                 ))}
-              </div>
 
-              {/* Genre filter dropdowns — replaced the old horizontal category chips */}
-              <div className="flex flex-wrap items-center justify-center gap-4 mb-5">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-black text-gray-400 kurdish-text">
-                    پۆلێنی فیلمەکان
-                  </span>
-                  <CategoryDropdown
-                    value={activeTab}
-                    onChange={(v: string) => {
-                      setActiveTab(v);
-                      setCurrentPage(1);
-                    }}
-                    categories={movieCatOptions}
-                  />
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-black text-gray-400 kurdish-text">
-                    پۆلێنی دراماکان
-                  </span>
-                  <CategoryDropdown
-                    value={dramaCategory}
-                    onChange={setDramaCategory}
-                    categories={dramaCatOptions}
-                  />
-                </div>
-              </div>
-
-              {searchMode === "title" && (
-                <div className="max-w-2xl mx-auto">
-                  <div className="relative group">
+                {searchMode === "title" && (
+                  <div className="relative group flex-1 min-w-[220px] max-w-md text-right">
                     <Search className="absolute right-6 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500 group-focus-within:text-brand-primary" />
                     <input
                       type="text"
@@ -13044,7 +13341,44 @@ export default function App() {
                       </div>
                     )}
                   </div>
+                )}
 
+                {searchMode === "ai" && (
+                  <>
+                    <div className="relative flex-1 min-w-[220px] max-w-md text-right">
+                      <Sparkles className="absolute right-5 top-1/2 h-5 w-5 -translate-y-1/2 text-brand-primary" />
+                      <input
+                        type="text"
+                        value={aiQuery}
+                        onChange={(e) => setAiQuery(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && !e.shiftKey) {
+                            e.preventDefault();
+                            runAiSearch();
+                          }
+                        }}
+                        placeholder="بۆ نموونە: فیلمێکی ترسناکم دەوێت"
+                        className="w-full rounded-2xl border border-white/10 bg-white/5 py-4 pr-14 pl-5 kurdish-text transition-all focus:border-brand-primary focus:bg-white/10 focus:outline-none"
+                      />
+                    </div>
+                    <button
+                      onClick={runAiSearch}
+                      disabled={aiLoading || !aiQuery.trim()}
+                      className="flex shrink-0 items-center justify-center gap-2 rounded-2xl bg-brand-primary px-7 py-4 text-sm font-black text-white transition-all hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-40 kurdish-text"
+                    >
+                      {aiLoading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Search className="h-4 w-4" />
+                      )}
+                      {aiLoading ? "ئەی ئای بیردەکاتەوە..." : "گەڕان"}
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {searchMode === "title" && (
+                <div className="max-w-2xl mx-auto">
                   {/* Recent + trending search chips */}
                   {(recentSearches.length > 0 || trendingSearches.length > 0) && (
                     <div className="mt-4 flex flex-wrap justify-center gap-2">
@@ -13121,42 +13455,15 @@ export default function App() {
                 </div>
               )}
 
-              {searchMode === "ai" && (
+              {searchMode === "ai" &&
+                (aiResults !== null ||
+                  aiMeta.keywords.length > 0 ||
+                  aiMeta.genres.length > 0 ||
+                  aiMeta.titles.length > 0) && (
                 <div className="mx-auto max-w-4xl rounded-[1.75rem] border border-brand-primary/35 bg-[#0d0f13]/95 p-3 shadow-2xl shadow-red-950/15 md:p-4">
-                  <div className="flex flex-col gap-3 sm:flex-row-reverse">
-                    <div className="relative min-w-0 flex-1">
-                      <Sparkles className="absolute right-5 top-1/2 h-5 w-5 -translate-y-1/2 text-brand-primary" />
-                      <input
-                      type="text"
-                      value={aiQuery}
-                      onChange={(e) => setAiQuery(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey) {
-                          e.preventDefault();
-                          runAiSearch();
-                        }
-                      }}
-                      placeholder="بۆ نموونە: فیلمێکی ترسناکم دەوێت"
-                      className="h-14 w-full rounded-2xl border border-white/10 bg-white/5 py-3 pr-14 pl-5 text-right kurdish-text transition-all focus:border-brand-primary focus:bg-white/10 focus:outline-none"
-                    />
-                    </div>
-                    <button
-                      onClick={runAiSearch}
-                      disabled={aiLoading || !aiQuery.trim()}
-                      className="flex h-14 shrink-0 items-center justify-center gap-2 rounded-2xl bg-brand-primary px-7 text-sm font-black text-white transition-all hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-40 kurdish-text sm:min-w-36"
-                    >
-                      {aiLoading ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Search className="h-4 w-4" />
-                      )}
-                      {aiLoading ? "ئەی ئای بیردەکاتەوە..." : "گەڕان"}
-                    </button>
-                  </div>
                   {(aiMeta.keywords.length > 0 ||
                     aiMeta.genres.length > 0 ||
-                    aiMeta.titles.length > 0) && (
-                    <div className="mt-4 flex flex-wrap justify-center gap-2">
+                    aiMeta.titles.length > 0) && (                    <div className="mt-4 flex flex-wrap justify-center gap-2">
                       {aiMeta.titles.map((t) => (
                         <span
                           key={`t-${t}`}
@@ -13189,24 +13496,59 @@ export default function App() {
                       aria-live="polite"
                       className="mt-4 rounded-2xl border border-brand-primary/25 bg-[#111318] px-5 py-4 text-right shadow-lg shadow-black/20"
                     >
-                      <div className="flex items-start gap-3">
-                        <Sparkles className="mt-0.5 h-5 w-5 shrink-0 text-brand-primary" />
-                        <div className="min-w-0">
-                          <p className="text-sm font-black text-white kurdish-text">
-                            {aiResults.length > 0
-                              ? `${aiResults.length} پێشنیاری گونجاوم بۆ دۆزیتەوە`
-                              : "هیچ فیلمێکی گونجاو لە کەتەلۆگەکەدا نەدۆزرایەوە"}
-                          </p>
-                          {aiResults.length > 0 && (
-                            <p className="mt-1 line-clamp-2 text-xs leading-6 text-gray-400 kurdish-text">
-                              {aiResults
-                                .slice(0, 4)
-                                .map((movie) => movie.title)
-                                .join(" • ")}
+                      {aiResults.length > 0 ? (
+                        <div className="flex items-start gap-3">
+                          <Sparkles className="mt-0.5 h-5 w-5 shrink-0 text-brand-primary" />
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-black text-white kurdish-text">
+                              {`${aiResults.length} پێشنیاری گونجاوم بۆ دۆزیتەوە`}
                             </p>
-                          )}
+                            {/* Mini poster cards: click = open the movie directly */}
+                            <div className="mt-2 flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                              {aiResults.map((movie) => (
+                                <button
+                                  key={movie.id}
+                                  type="button"
+                                  onClick={() => openMovieDetails(movie)}
+                                  className="group shrink-0 w-20 text-right focus:outline-none"
+                                  title={movie.title}
+                                >
+                                  <div className="h-[7rem] w-20 overflow-hidden rounded-xl border border-white/10 bg-black/40 transition-all group-hover:border-brand-primary group-hover:shadow-lg group-hover:shadow-brand-primary/20">
+                                    <img
+                                      src={movie.image || (movie as any).posterUrl || ""}
+                                      alt={movie.title}
+                                      loading="lazy"
+                                      className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                                    />
+                                  </div>
+                                  <span className="mt-1 block line-clamp-1 text-[10px] font-bold text-gray-300 kurdish-text group-hover:text-white">
+                                    {movie.title}
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
                         </div>
-                      </div>
+                      ) : (
+                        <div className="text-center">
+                          <p className="text-sm font-black text-white kurdish-text">
+                            ببوورە، ئەم فیلمە لە سایتەکە نەدۆزرایەوە 😔
+                          </p>
+                          <p className="mt-1 text-xs leading-6 text-gray-400 kurdish-text">
+                            دەتوانیت بە واتسئەپ ئاگادارمان بکەیتەوە بۆ پێشنیارکردنی
+                            فیلمەکە — بە خێرایی هەوڵدەدەین بیخەینە سەر سایت
+                          </p>
+                          <a
+                            href={whatsappRequestHref}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mt-3 inline-flex items-center gap-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 px-5 py-2.5 text-xs font-black text-white transition-all kurdish-text"
+                          >
+                            <MessageCircle className="h-4 w-4" />
+                            پەیوەندی بە واتسئەپ بکە
+                          </a>
+                        </div>
+                      )}
                     </div>
                   )}
                   {aiResults !== null && !aiLoading && (
@@ -14499,7 +14841,18 @@ export default function App() {
                     </div>
                   ) : (
                     <div className="relative h-full w-full">
-                      {selectedMovie.image ? (
+                      {trailerPreviewId ? (
+                        <div className="absolute inset-0 flex items-center justify-center bg-black">
+                          <iframe
+                            src={`https://www.youtube.com/embed/${trailerPreviewId}?autoplay=1&mute=1&controls=0&loop=1&playlist=${trailerPreviewId}&playsinline=1&rel=0&modestbranding=1`}
+                            title={`${selectedMovie.title} — تریلەر`}
+                            allow="autoplay; encrypted-media; picture-in-picture"
+                            frameBorder="0"
+                            allowFullScreen
+                            className="aspect-video w-full max-w-sm"
+                          />
+                        </div>
+                      ) : selectedMovie.image ? (
                         <img
                           src={selectedMovie.image}
                           referrerPolicy="no-referrer"
@@ -14518,12 +14871,24 @@ export default function App() {
                       )} {/* Poster / Fallback Placeholder */}
                       {!showPlayer && (
                         <>
-                          <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-black via-black/75 to-black/10" />
-                          <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black via-transparent to-black/85" />
+                          {!trailerPreviewId && (
+                            <>
+                              <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-black via-black/75 to-black/10" />
+                              <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black via-transparent to-black/85" />
+                            </>
+                          )}
                           <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center justify-between gap-4 px-6 py-5 md:px-9">
-                            <span className="text-xs md:text-sm font-black tracking-[0.28em] text-white drop-shadow-lg">
-                              CINAMACHAT.COM
-                            </span>
+                            {trailerPreviewId && (
+                              <span className="flex items-center gap-1.5 rounded-md bg-brand-primary/90 px-2 py-1 text-[9px] md:text-[10px] font-black tracking-widest text-white shadow-lg">
+                                <Youtube className="w-3 h-3" />
+                                TRAILER • تریلەر
+                              </span>
+                            )}
+                            {!trailerPreviewId && (
+                              <span className="text-xs md:text-sm font-black tracking-[0.28em] text-white drop-shadow-lg">
+                                CINAMACHAT.COM
+                              </span>
+                            )}
                             <span className="max-w-[52vw] truncate pr-10 text-[10px] md:text-xs font-bold text-white/80 kurdish-text drop-shadow-lg">
                               {selectedMovie.title}
                             </span>
@@ -14534,6 +14899,7 @@ export default function App() {
                           (e.g., all sources are IMDb metadata-only URLs or legacy
                           invalid records). Displays Sorani error + WhatsApp CTA. */}
                       {!activeServerUrl &&
+                        !trailerPreviewId &&
                         !getMovieSourceUrl(selectedMovie) &&
                         !firstValidMovieUrl(selectedMovie.external_link, selectedMovie.externalMovieLink) && (
                         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm z-20 gap-3">
@@ -14565,7 +14931,7 @@ export default function App() {
                           type="button"
                           aria-label={`Play ${selectedMovie.title}`}
                           onClick={playSelectedMovie}
-                          className="absolute inset-0 m-auto w-20 h-20 bg-brand-primary/90 text-white rounded-full flex items-center justify-center hover:scale-110 transition-transform shadow-2xl z-20 group md:hidden"
+                          className={`absolute inset-0 m-auto w-20 h-20 bg-brand-primary/90 text-white rounded-full flex items-center justify-center hover:scale-110 transition-transform shadow-2xl z-20 group md:hidden ${trailerPreviewId ? "hidden" : ""}`}
                         >
                           <Play className="w-10 h-10 fill-current group-hover:scale-110 transition-transform" />
                         </button> // Play Button on Poster
@@ -15283,6 +15649,7 @@ export default function App() {
             movie={movieBeingEdited}
             onClose={() => setMovieBeingEdited(null)}
             onSave={handleSaveMovieEdit}
+            categories={movieEditCategoryOptions}
           />
         )}
       </AnimatePresence>

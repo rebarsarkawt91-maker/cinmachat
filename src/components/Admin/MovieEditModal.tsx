@@ -1,6 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Edit3, Loader2, Save, X } from "lucide-react";
 import type { Movie } from "../../types";
+import {
+  ALL_CATEGORY_KEY,
+  normalizeCategoryKey,
+} from "../../services/movieCategories";
 
 type EditableMovie = Movie & Record<string, any>;
 
@@ -8,6 +12,8 @@ interface MovieEditModalProps {
   movie: EditableMovie | null;
   onClose: () => void;
   onSave: (movie: EditableMovie) => Promise<void>;
+  /** Shared canonical category list (same source as the homepage chips). */
+  categories?: Array<{ name: string; tag: string }>;
 }
 
 const TEXT_FIELDS: Array<{ key: string; label: string; placeholder?: string }> = [
@@ -35,7 +41,12 @@ const TEXT_FIELDS: Array<{ key: string; label: string; placeholder?: string }> =
   { key: "externalMovieLink", label: "External Movie URL" },
 ];
 
-export default function MovieEditModal({ movie, onClose, onSave }: MovieEditModalProps) {
+export default function MovieEditModal({
+  movie,
+  onClose,
+  onSave,
+  categories = [],
+}: MovieEditModalProps) {
   const [draft, setDraft] = useState<EditableMovie | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -61,17 +72,41 @@ export default function MovieEditModal({ movie, onClose, onSave }: MovieEditModa
   const setField = (key: string, value: string) =>
     setDraft((current) => (current ? { ...current, [key]: value } : current));
 
+  // Category chips from the shared canonical list. If the movie's current
+  // category is a legacy/unknown value, it is appended so it stays visible
+  // and selectable instead of being silently lost.
+  const currentCategory = String(draft.category ?? "").trim();
+  const seenKeys = new Set<string>([ALL_CATEGORY_KEY]);
+  const categoryChips: Array<{ name: string; tag: string }> = [];
+  const pushChip = (name: string, tag: string) => {
+    const key = normalizeCategoryKey(tag);
+    if (!key || seenKeys.has(key)) return;
+    seenKeys.add(key);
+    categoryChips.push({ name, tag });
+  };
+  categories.forEach((c) => pushChip(c.name, c.tag));
+  if (currentCategory) pushChip(currentCategory, currentCategory);
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!canSave) return;
     setSaving(true);
     setError("");
     try {
+      const category = String(draft.category ?? "").trim();
       const tags = String(draft.tagsText || "")
         .split(",")
         .map((tag) => tag.trim())
         .filter(Boolean);
-      await onSave({ ...draft, tags, image: draft.posterUrl || "" });
+      // Keep the saved category in tags — homepage filtering matches tags
+      // (normalized), so the chip selection must land on the record itself.
+      if (
+        category &&
+        !tags.some((t) => t.toLowerCase() === category.toLowerCase())
+      ) {
+        tags.unshift(category);
+      }
+      await onSave({ ...draft, category, tags, image: draft.posterUrl || "" });
       onClose();
     } catch (err: any) {
       setError(err?.message || "پاشەکەوتکردن سەرکەوتوو نەبوو");
@@ -105,7 +140,32 @@ export default function MovieEditModal({ movie, onClose, onSave }: MovieEditModa
           ))}
           <label className="space-y-2 text-xs font-bold text-gray-300 kurdish-text">
             <span>پۆلێن</span>
-            <input value={String(draft.category ?? "")} onChange={(event) => setField("category", event.target.value)} className="w-full rounded-xl border border-white/10 bg-black/50 px-4 py-3 text-white outline-none focus:border-red-500" />
+            <div className="flex flex-wrap gap-2 max-h-40 overflow-y-auto rounded-xl border border-white/10 bg-black/50 p-3">
+              {categoryChips.map((c) => (
+                <button
+                  key={normalizeCategoryKey(c.tag)}
+                  type="button"
+                  onClick={() => setField("category", c.tag)}
+                  className={`rounded-full border px-3 py-1.5 text-[11px] font-black kurdish-text whitespace-nowrap transition-all ${
+                    normalizeCategoryKey(draft.category) ===
+                    normalizeCategoryKey(c.tag)
+                      ? "border-red-500 bg-red-600 text-white"
+                      : "border-white/10 bg-white/5 text-gray-300 hover:text-white hover:border-red-500/50"
+                  }`}
+                >
+                  {c.name}
+                </button>
+              ))}
+              {categoryChips.length === 0 && (
+                <input
+                  value={String(draft.category ?? "")}
+                  onChange={(event) =>
+                    setField("category", event.target.value)
+                  }
+                  className="w-full rounded-lg border border-white/10 bg-black/50 px-3 py-2 text-white outline-none focus:border-red-500"
+                />
+              )}
+            </div>
           </label>
           <label className="space-y-2 text-xs font-bold text-gray-300 kurdish-text">
             <span>تاگەکان (بە کۆما جیابکەرەوە)</span>

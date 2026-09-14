@@ -96,9 +96,43 @@ export interface SemanticSignals {
   titles: string[];
 }
 
-/** Score a movie against AI-extracted semantic signals (keywords/genres/titles). */
-export function semanticScoreMovie(movie: Movie, signals: SemanticSignals): number {
+/**
+ * Direct "pasted description" matching for smart search: when the query is a
+ * movie's description (or a text containing the movie's title/description),
+ * the exact movie must surface first — no AI round-trip needed. Returns a
+ * match score (0 = no direct match).
+ */
+export function directDescriptionScore(movie: Movie, query: string): number {
+  const q = normalizeSearch(query);
+  if (q.length < 12) return 0; // short queries are handled by fuzzy search
   const title = normalizeSearch(String(movie?.title || ""));
+  const description = normalizeSearch(String(movie?.description || ""));
+
+  // The site's own description / title pasted verbatim inside the query.
+  if (description.length >= 15 && q.includes(description)) return 100;
+  if (title.length >= 3 && q.includes(title)) return 95;
+
+  const qWords = new Set(q.split(" ").filter((w) => w.length >= 3));
+
+  // Every meaningful word of the title appears in the pasted text.
+  const titleWords = title.split(" ").filter((w) => w.length >= 3);
+  if (titleWords.length > 0 && titleWords.every((w) => qWords.has(w))) return 90;
+
+  // Word-overlap coverage: how much of the description appears in the query.
+  const descWords = new Set(description.split(" ").filter((w) => w.length >= 4));
+  if (descWords.size >= 5) {
+    let hits = 0;
+    descWords.forEach((w) => {
+      if (qWords.has(w)) hits++;
+    });
+    const coverage = hits / descWords.size;
+    if (coverage >= 0.55) return 60 + Math.round(coverage * 35);
+  }
+  return 0;
+}
+
+/** Score a movie against AI-extracted semantic signals (keywords/genres/titles). */
+export function semanticScoreMovie(movie: Movie, signals: SemanticSignals): number {  const title = normalizeSearch(String(movie?.title || ""));
   const description = normalizeSearch(String(movie?.description || ""));
   const tags = (Array.isArray(movie?.tags) ? movie.tags : [])
     .concat(movie?.category ? [movie.category] : [])

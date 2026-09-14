@@ -11406,6 +11406,16 @@ async function startServer() {
       return /^https?:\/\/\S+$/i.test(trimmed) ? trimmed : '';
     };
 
+    // Normalize category/tag values: trim + collapse inner whitespace, cap
+    // length, drop empties. Homepage category filtering compares normalized
+    // values, so consistent storage keeps old and new movies filterable.
+    const cleanCategoryValue = (value: unknown): string =>
+      typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').slice(0, 50) : '';
+    const normalizedCategory = cleanCategoryValue(category);
+    const normalizedTags = (Array.isArray(tags) ? tags.map(cleanCategoryValue) : [normalizedCategory])
+      .filter(Boolean)
+      .filter((tag, index, all) => all.indexOf(tag) === index);
+
     // VALIDATION: Detailed error reporting as requested
     if (!title) return res.status(400).json({ success: false, error: "ناونیشان پێویستە (Title is required)" });
     if (!category) return res.status(400).json({ success: false, error: "پۆلێن پێویستە (Category is required)" });
@@ -11463,8 +11473,8 @@ async function startServer() {
       quality: quality || 'HD',
       date: new Date().toISOString(),
       isNetflixOriginal: title?.toLowerCase().includes('netflix'),
-      tags: Array.isArray(tags) ? tags : [category || "هەمووی"],
-      category: category || "هەمووی",
+      tags: normalizedTags.length > 0 ? normalizedTags : ["هەمووی"],
+      category: normalizedCategory || "هەمووی",
       rating: rating || "",
       year: year || "",
       duration: typeof duration === 'string' ? duration.trim() : "",
@@ -12228,6 +12238,48 @@ async function startServer() {
     } catch (err: any) {
       console.error('[search/ai]', err?.message || err);
       res.status(500).json({ status: 'error', error: 'Internal server error' });
+    }
+  });
+
+  // --- MOVIE REQUEST (searched-but-not-found -> admin notification) ---
+  // When a viewer searches for a movie the catalog doesn't have, the client
+  // fires this once per query. Persists the request (deduped, with a count)
+  // and writes an entry into the admin audit log so the dashboard shows it.
+  app.post('/api/movie-request', async (req, res) => {
+    try {
+      const query = String((req.body as any)?.query || '').trim().slice(0, 200);
+      const from = String((req.body as any)?.from || '').trim().slice(0, 60);
+      if (!query) {
+        return res.status(400).json({ success: false, error: 'Query required' });
+      }
+      const key = normalizeSearch(query);
+      if (!db.movieRequests) db.movieRequests = [];
+      const existing = db.movieRequests.find((r: any) => r.key === key);
+      if (existing) {
+        existing.count = (existing.count || 1) + 1;
+        existing.lastRequestedAt = new Date().toISOString();
+      } else {
+        db.movieRequests.unshift({
+          key,
+          query,
+          from,
+          count: 1,
+          requestedAt: new Date().toISOString(),
+          lastRequestedAt: new Date().toISOString(),
+        });
+        if (db.movieRequests.length > 200) db.movieRequests.length = 200;
+      }
+      await addAuditLog(
+        db,
+        from || 'Viewer',
+        'Movie Request (فیلمی نەدۆزراو)',
+        `بینەر گەڕی بۆ «${query}» و فیلمەکە نەدۆزرایەوە — وەک پێشنیار تۆمارکرا`
+      );
+      await saveDB(db);
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error('[movie-request]', err?.message || err);
+      res.status(500).json({ success: false, error: 'Internal server error' });
     }
   });
 

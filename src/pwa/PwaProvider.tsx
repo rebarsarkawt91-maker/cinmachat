@@ -13,24 +13,26 @@ interface PwaContextValue {
   isInstalled: boolean;
   isIos: boolean;
   showIosHelp: boolean;
-  updateReady: boolean;
   notificationPermission: NotificationPermission | "unsupported";
   install(): Promise<InstallResult>;
   closeIosHelp(): void;
   requestNotifications(): Promise<NotificationPermission | "unsupported">;
-  applyUpdate(): Promise<void>;
   setSensitiveActivity(active: boolean): void;
 }
 
 const PwaContext = createContext<PwaContextValue | null>(null);
 const UPDATE_CHECK_MS = 30 * 60 * 1000;
+// Debounce window between silent auto-reloads. A fresh deploy produces exactly
+// one "need refresh" signal per page; this floor makes a pathological
+// byte-different sw.js impossible to turn into an infinite reload loop.
+const SILENT_UPDATE_MIN_MS = 60 * 1000;
 
 export function PwaProvider({ children }: { children: React.ReactNode }) {
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [showIosHelp, setShowIosHelp] = useState(false);
   const [helpPlatform, setHelpPlatform] = useState<"ios" | "android">("android");
   const [linkCopied, setLinkCopied] = useState(false);
-  const [updateReady, setUpdateReady] = useState(false);
+  const [pendingUpdate, setPendingUpdate] = useState(false);
   const [sensitiveActivity, setSensitiveActivityState] = useState(false);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(
     typeof Notification === "undefined" ? "unsupported" : Notification.permission,
@@ -38,6 +40,7 @@ export function PwaProvider({ children }: { children: React.ReactNode }) {
   const sensitiveRef = useRef(false);
   const updateSWRef = useRef<((reloadPage?: boolean) => Promise<void>) | null>(null);
   const registrationRef = useRef<ServiceWorkerRegistration | null>(null);
+  const lastSilentUpdateRef = useRef(0);
   const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent) ||
     (/macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
   const isSafari = /^((?!chrome|crios|fxios|edgios|opios|android).)*safari/i.test(navigator.userAgent);
@@ -50,12 +53,21 @@ export function PwaProvider({ children }: { children: React.ReactNode }) {
     setSensitiveActivityState(active);
   }, []);
 
-  const applyUpdate = useCallback(async () => {
+  // Silent, safe auto-update: when a newer service worker is installed and
+  // waiting, skip the waiting phase and reload — but never while live media is
+  // playing or a room/admin workflow holds state. Deferred updates are retried
+  // by the effect below the moment sensitive activity clears. No banner, no
+  // user interaction, and the debounce window keeps pathological byte-drifting
+  // sw.js files from causing reload loops.
+  const triggerSilentUpdate = useCallback(() => {
     if (sensitiveRef.current || !updateSWRef.current) return;
-    const version = registrationRef.current?.waiting?.scriptURL || "waiting";
-    if (sessionStorage.getItem("cinemachat:pwa-update") === version) return;
-    sessionStorage.setItem("cinemachat:pwa-update", version);
-    await updateSWRef.current(true);
+    const registration = registrationRef.current;
+    if (!registration?.waiting) return;
+    const now = Date.now();
+    if (now - lastSilentUpdateRef.current < SILENT_UPDATE_MIN_MS) return;
+    lastSilentUpdateRef.current = now;
+    setPendingUpdate(false);
+    void updateSWRef.current(true);
   }, []);
 
   useEffect(() => {
@@ -73,7 +85,7 @@ export function PwaProvider({ children }: { children: React.ReactNode }) {
     if ("serviceWorker" in navigator) {
       updateSWRef.current = registerSW({
         immediate: true,
-        onNeedRefresh: () => setUpdateReady(true),
+        onNeedRefresh: () => setPendingUpdate(true),
         onRegisteredSW: (_url, registration) => {
           if (!registration) return;
           registrationRef.current = registration;
@@ -99,8 +111,8 @@ export function PwaProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (updateReady && !sensitiveActivity) void applyUpdate();
-  }, [applyUpdate, sensitiveActivity, updateReady]);
+    if (pendingUpdate && !sensitiveActivity) triggerSilentUpdate();
+  }, [pendingUpdate, sensitiveActivity, triggerSilentUpdate]);
 
   const install = useCallback(async (): Promise<InstallResult> => {
     if (isStandalone) return "installed";
@@ -139,14 +151,12 @@ export function PwaProvider({ children }: { children: React.ReactNode }) {
     isInstalled,
     isIos,
     showIosHelp,
-    updateReady,
     notificationPermission,
     install,
     closeIosHelp: () => setShowIosHelp(false),
     requestNotifications,
-    applyUpdate,
     setSensitiveActivity,
-  }), [applyUpdate, install, installPrompt, isInstalled, isIos, notificationPermission, requestNotifications, setSensitiveActivity, showIosHelp, updateReady]);
+  }), [install, installPrompt, isInstalled, isIos, notificationPermission, requestNotifications, setSensitiveActivity, showIosHelp]);
 
   return (
     <PwaContext.Provider value={value}>
@@ -179,12 +189,6 @@ export function PwaProvider({ children }: { children: React.ReactNode }) {
               )}
             </div>
           </div>
-        </div>
-      )}
-      {updateReady && sensitiveActivity && (
-        <div className="fixed bottom-5 right-5 z-[100000] max-w-sm rounded-2xl border border-red-500/30 bg-[#111318] p-4 shadow-2xl" dir="rtl" role="status">
-          <p className="text-sm font-black text-white">وەشانی نوێ ئامادەیە</p>
-          <p className="mt-1 text-xs leading-6 text-gray-400">دوای داخستنی ڤیدۆ یان ژوورەکە نوێکردنەوە جێبەجێ دەبێت.</p>
         </div>
       )}
     </PwaContext.Provider>
