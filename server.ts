@@ -5110,6 +5110,7 @@ async function startServer() {
     '/api/rooms',
     '/api/tracker',
     '/api/config',
+    '/api/public-config',
     '/api/status',
     '/api/health',
     '/api/movies',
@@ -11668,6 +11669,29 @@ async function startServer() {
       instagramUrl: db.instagramUrl || 'https://www.instagram.com/',
       facebookUrl: db.facebookUrl || 'https://www.facebook.com/'
     });
+  });
+
+  // Public WhatsApp contact config. Served from RUNTIME env on every request so
+  // production stops depending on build-time VITE_* values — changing
+  // VITE_WHATSAPP_NUMBER / VITE_WHATSAPP_GROUP_LINK on Render takes effect on
+  // the next page load without a frontend rebuild. Only these two values are
+  // returned; never secrets or unrelated env vars. Both the VITE_-prefixed and
+  // plain keys are honoured so the existing Render env keeps working unchanged.
+  app.get('/api/public-config', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    const whatsappNumber = (
+      process.env.VITE_WHATSAPP_NUMBER ||
+      process.env.WHATSAPP_NUMBER ||
+      '9647701966649'
+    ).trim();
+    const whatsappGroupLink = (
+      process.env.VITE_WHATSAPP_GROUP_LINK ||
+      process.env.WHATSAPP_GROUP_LINK ||
+      'https://chat.whatsapp.com/DIwWkE5ZGuTYJrmODE0mI0'
+    ).trim();
+    res.json({ whatsappNumber, whatsappGroupLink });
   });
 
   app.post('/api/config', async (req, res) => {

@@ -11558,18 +11558,75 @@ export default function App() {
     facebookUrl: "https://www.facebook.com/",
   });
 
+  // Runtime WhatsApp contact config fetched from /api/public-config on mount,
+  // so production uses the CURRENT server env (VITE_WHATSAPP_* on Render)
+  // instead of values baked at build time. Falls back to the build-time env
+  // (local development) if the fetch is unavailable.
+  const [runtimeWhatsApp, setRuntimeWhatsApp] = useState<{
+    whatsappNumber?: string;
+    whatsappGroupLink?: string;
+  }>({});
+
   // Global Floating WhatsApp URLs — resolved separately so the floating button
   // can present both options (group link + direct number) to the user.
+  // Runtime values win; build-time env + Firestore config remain fallbacks.
+  const runtimeWhatsappNumber =
+    (runtimeWhatsApp.whatsappNumber || "").trim() ||
+    String(import.meta.env.VITE_WHATSAPP_NUMBER || "").trim();
+  const runtimeWhatsappGroupLink =
+    (runtimeWhatsApp.whatsappGroupLink || "").trim() ||
+    String(import.meta.env.VITE_WHATSAPP_GROUP_LINK || "").trim();
+
   const whatsappGroupLink =
-    import.meta.env.VITE_WHATSAPP_GROUP_LINK ||
+    runtimeWhatsappGroupLink ||
     config.socialLinks.group ||
     config.socialLinks.whatsapp ||
     "https://chat.whatsapp.com/DIwWkE5ZGuTYJrmODE0mI0";
 
   const whatsappDirectUrl =
-    import.meta.env.VITE_WHATSAPP_NUMBER
-      ? `https://wa.me/${String(import.meta.env.VITE_WHATSAPP_NUMBER).replace(/[^0-9]/g, "")}`
+    runtimeWhatsappNumber
+      ? `https://wa.me/${String(runtimeWhatsappNumber).replace(/[^0-9]/g, "")}`
       : "https://wa.me/9647701966649";
+
+  // Fetch the runtime WhatsApp contact config once on mount.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchApi("/api/public-config");
+        if (!res.ok) {
+          throw new Error(`Server returned ${res.status}: ${res.statusText}`);
+        }
+        const data = await res.json();
+        if (
+          !cancelled &&
+          data &&
+          typeof data === "object" &&
+          (typeof (data as any).whatsappNumber === "string" ||
+            typeof (data as any).whatsappGroupLink === "string")
+        ) {
+          setRuntimeWhatsApp({
+            whatsappNumber:
+              typeof (data as any).whatsappNumber === "string"
+                ? (data as any).whatsappNumber
+                : undefined,
+            whatsappGroupLink:
+              typeof (data as any).whatsappGroupLink === "string"
+                ? (data as any).whatsappGroupLink
+                : undefined,
+          });
+        }
+      } catch (e) {
+        console.warn(
+          "[WhatsApp] Runtime config fetch failed — using build-time fallback:",
+          e,
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Silent Access Control / Route Guard for Module 17 and Staff permissions
   useEffect(() => {
@@ -14912,9 +14969,9 @@ export default function App() {
                           <p className="text-xs text-zinc-400 kurdish-text max-w-[240px] text-center">
                             تکایە سەرچاوەی ڤیدیۆکە بنووسە یان پەیوەندیمان پێوە بکە.
                           </p>
-                          {import.meta.env.VITE_WHATSAPP_NUMBER && (
+                          {runtimeWhatsappNumber && (
                             <a
-                              href={`https://wa.me/${import.meta.env.VITE_WHATSAPP_NUMBER}?text=${encodeURIComponent("پەیوەندی بکە بۆ: " + selectedMovie.title)}`}
+                              href={`https://wa.me/${runtimeWhatsappNumber}?text=${encodeURIComponent("پەیوەندی بکە بۆ: " + selectedMovie.title)}`}
                               target="_blank"
                               rel="noreferrer"
                               className="mt-1 px-5 py-2 bg-[#25D366] hover:bg-[#128C7E] text-white font-bold rounded-full text-sm transition-all flex items-center gap-2"
@@ -15040,11 +15097,11 @@ export default function App() {
                         </button>
                       </div>
                       {(selectedMovie.whatsappLink ||
-                        import.meta.env.VITE_WHATSAPP_NUMBER) && (
+                        runtimeWhatsappNumber) && (
                         <a
                           href={
                             selectedMovie.whatsappLink ||
-                            `https://wa.me/${import.meta.env.VITE_WHATSAPP_NUMBER}?text=${encodeURIComponent("I want to watch this movie: " + selectedMovie.title)}`
+                            `https://wa.me/${runtimeWhatsappNumber}?text=${encodeURIComponent("I want to watch this movie: " + selectedMovie.title)}`
                           }
                           target="_blank"
                           rel="noreferrer"
@@ -15399,8 +15456,8 @@ export default function App() {
                           onClick={() => {
                             const link =
                               selectedMovie.whatsappLink ||
-                              (import.meta.env.VITE_WHATSAPP_NUMBER
-                                ? `https://wa.me/${import.meta.env.VITE_WHATSAPP_NUMBER}?text=${encodeURIComponent("I want to watch this movie: " + selectedMovie.title + " " + window.location.href)}`
+                              (runtimeWhatsappNumber
+                                ? `https://wa.me/${runtimeWhatsappNumber}?text=${encodeURIComponent("I want to watch this movie: " + selectedMovie.title + " " + window.location.href)}`
                                 : null);
                             if (link) {
                               window.open(link, "_blank");
@@ -16765,12 +16822,12 @@ const trailerId = movie.trailerUrl
               زنجیرە جیهانییەکان بە بەرزترین کوالێتی و بە بێ بەرامبەر.
             </p>
             <div className="flex gap-3"> {/* Social Media Links */}
-              {(import.meta.env.VITE_WHATSAPP_NUMBER ||
-                import.meta.env.VITE_WHATSAPP_GROUP_LINK) && (
+              {(runtimeWhatsappNumber ||
+                runtimeWhatsappGroupLink) && (
                 <a
                   href={
-                    import.meta.env.VITE_WHATSAPP_GROUP_LINK ||
-                    `https://wa.me/${import.meta.env.VITE_WHATSAPP_NUMBER}`
+                    runtimeWhatsappGroupLink ||
+                    `https://wa.me/${runtimeWhatsappNumber}`
                   }
                   target="_blank"
                   rel="noreferrer"
