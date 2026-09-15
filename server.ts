@@ -2296,10 +2296,14 @@ const INITIAL_DB = {
   heroConfig: {
     // CANONICAL MODEL: explicit slots + revision. heroVideoUrl/heroPlaylist are
     // DERIVED views (see deriveHeroView) — never store them as source of truth.
-    video1: null as { url: string; videoId: string } | null,
-    video2: null as { url: string; videoId: string } | null,
-    heroRevision: 0,
-    updatedAt: null as string | null
+    // Release fallback mirrors the currently approved production hero. It is
+    // used only while Firestore cannot be read (for example, exhausted quota);
+    // a reachable canonical Firestore document still replaces it verbatim,
+    // including an intentional clear.
+    video1: { url: 'https://youtu.be/m08TxIsFTRI', videoId: 'm08TxIsFTRI' },
+    video2: { url: 'https://youtu.be/WVDNqc3TUVQ', videoId: 'WVDNqc3TUVQ' },
+    heroRevision: 'release-2026-09-15',
+    updatedAt: '2026-09-15T00:00:00.000Z'
   },
   syncGroups: {
     "global_room_official": {
@@ -2622,6 +2626,28 @@ const firestoreDocUrl = (docPath: string, query: string) =>
 // Load the persisted per-movie view counts. Returns {} when the doc has never
 // been written (e.g. first deploy) so boot can proceed with the local seed.
 const loadMovieViewsFromFirestore = async (): Promise<Record<string, number>> => {
+  const adminApp = initializeFirebaseAdmin();
+  if (adminApp) {
+    try {
+      const snap = await Promise.race([
+        admin.firestore(adminApp).doc(MOVIE_VIEWS_DOC).get(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Admin Firestore view-count read timed out')), 8000),
+        ),
+      ]);
+      if (!snap.exists) return {};
+      const raw = snap.data()?.counts;
+      if (!raw || typeof raw !== 'object') return {};
+      const counts: Record<string, number> = {};
+      for (const [key, value] of Object.entries(raw)) {
+        const n = Number(value);
+        if (Number.isFinite(n) && n >= 0) counts[key] = n;
+      }
+      return counts;
+    } catch (err: any) {
+      console.warn('[views] Admin Firestore read failed; trying REST fallback:', err?.message || err);
+    }
+  }
   const res = await fetchWithTimeout(
     firestoreDocUrl(MOVIE_VIEWS_DOC, ''),
     { headers: { Accept: 'application/json' } },
@@ -2690,6 +2716,20 @@ const HERO_FIRESTORE_DISABLED = process.env.HERO_DISABLE_FIRESTORE === '1';
 
 const loadHeroConfigFromFirestore = async (): Promise<Record<string, any> | null> => {
   if (HERO_FIRESTORE_DISABLED) return null;
+  const adminApp = initializeFirebaseAdmin();
+  if (adminApp) {
+    try {
+      const snap = await Promise.race([
+        admin.firestore(adminApp).doc(HERO_CONFIG_DOC).get(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Admin Firestore hero read timed out')), 8000),
+        ),
+      ]);
+      return snap.exists ? (snap.data() || null) : null;
+    } catch (err: any) {
+      console.warn('[hero] Admin Firestore read failed; trying REST fallback:', err?.message || err);
+    }
+  }
   const res = await fetchWithTimeout(
     firestoreDocUrl(HERO_CONFIG_DOC, ''),
     { headers: { Accept: 'application/json' } },
@@ -2928,6 +2968,25 @@ const firestorePaymentsUrl = (query: string) =>
 // manual-* ids, so they landed on later pages that were never fetched. The loop
 // is bounded below so a pathological payload can never hang the boot sync.
 const loadFirestoreMovies = async (): Promise<any[]> => {
+  // Production already has an authenticated Admin SDK. Prefer it so catalog
+  // hydration cannot be broken by a stale/misconfigured public web API key in
+  // the host environment. Keep the REST reader as a fallback for local setups
+  // that intentionally run without Admin credentials.
+  const adminApp = initializeFirebaseAdmin();
+  if (adminApp) {
+    try {
+      const snapshot = await Promise.race([
+        admin.firestore(adminApp).collection('movies').get(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Admin Firestore movie read timed out')), 12000),
+        ),
+      ]);
+      return snapshot.docs.map((entry) => ({ ...entry.data(), id: entry.id }));
+    } catch (err: any) {
+      console.warn('[Movies] Admin Firestore read failed; trying REST fallback:', err?.message || err);
+    }
+  }
+
   const movies: any[] = [];
   const seen = new Set<string>();
   let pageToken: string | undefined;
@@ -3034,6 +3093,31 @@ let reelsCache: Record<string, { id: string; url: string; platform: string }> = 
 // reason as the movies list: the REST API returns batches and carries a
 // nextPageToken below pageSize). Returns plain reel card metadata only.
 const loadFirestoreReels = async (): Promise<any[]> => {
+  const adminApp = initializeFirebaseAdmin();
+  if (adminApp) {
+    try {
+      const snapshot = await Promise.race([
+        admin.firestore(adminApp).collection('reels').get(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Admin Firestore reels read timed out')), 12000),
+        ),
+      ]);
+      return snapshot.docs
+        .filter((entry) => entry.id !== '_meta')
+        .map((entry) => {
+          const data = entry.data();
+          return {
+            id: entry.id,
+            url: String(data?.url || ''),
+            platform: String(data?.platform || 'youtube'),
+          };
+        })
+        .filter((entry) => entry.url);
+    } catch (err: any) {
+      console.warn('[Reels] Admin Firestore read failed; trying REST fallback:', err?.message || err);
+    }
+  }
+
   const reels: any[] = [];
   const seen = new Set<string>();
   let pageToken: string | undefined;
