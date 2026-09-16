@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Edit3, Loader2, Save, X } from "lucide-react";
+import { Edit3, Loader2, Save, X, Youtube } from "lucide-react";
 import type { Movie } from "../../types";
 import {
   ALL_CATEGORY_KEY,
@@ -27,7 +27,6 @@ const TEXT_FIELDS: Array<{ key: string; label: string; placeholder?: string }> =
   { key: "fileLrunUrl", label: "FileLrun URL" },
   { key: "youtubeMovieUrl", label: "YouTube Movie URL" },
   { key: "otherVideoUrl", label: "لینکی ڤیدیۆی تر" },
-  { key: "trailerUrl", label: "Trailer URL" },
   { key: "mainTrailerUrl", label: "Main Trailer URL" },
   { key: "subtitleUrl", label: "ژێرنووسی سەرچاوە (VTT/SRT URL)" },
   { key: "kurdishSubtitleUrl", label: "Kurdish VTT URL (کوردی سۆرانی)" },
@@ -166,6 +165,19 @@ export default function MovieEditModal({
                 />
               )}
             </div>
+          </label>
+          <label className="space-y-2 text-xs font-bold kurdish-text md:col-span-2 rounded-xl border-2 border-red-500/60 bg-red-500/10 p-3">
+            <span className="flex items-center gap-2 text-red-300">
+              <Youtube className="h-4 w-4" />
+              ترایلەر فیلمەکان
+            </span>
+            <input
+              value={String(draft.trailerUrl ?? "")}
+              onChange={(event) => setField("trailerUrl", event.target.value)}
+              dir="ltr"
+              placeholder="لینکی یوتوبی ترایلەری ئەم فیلمە تەنها لێرە دابنێ..."
+              className="w-full rounded-xl border border-red-500/50 bg-black/60 px-4 py-3 text-white outline-none focus:border-red-400"
+            />
           </label>
           <label className="space-y-2 text-xs font-bold text-gray-300 kurdish-text">
             <span>تاگەکان (بە کۆما جیابکەرەوە)</span>

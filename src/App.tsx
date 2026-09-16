@@ -7089,6 +7089,9 @@ export default function App() {
   const [selectedGenres, setSelectedGenres] = useState<string[]>([]);
   const [aiQuery, setAiQuery] = useState("");
   const [aiResults, setAiResults] = useState<Movie[] | null>(null);
+  // When the query names a SPECIFIC movie that is not in the catalog
+  // ("فیلمی fall2 دەوێت"), this holds its name so the apology shows it.
+  const [aiNotFoundTitle, setAiNotFoundTitle] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiMeta, setAiMeta] = useState<{
     keywords: string[];
@@ -9723,6 +9726,7 @@ export default function App() {
     });
     setAiLoading(true);
     setAiResults(null);
+    setAiNotFoundTitle(null);
     // Direct description/title match: when the pasted text is (or contains) an
     // existing movie's description/title, its card shows immediately — before
     // the AI round-trip — and stays at the top of the merged results.
@@ -9735,6 +9739,36 @@ export default function App() {
       setAiResults(directMatches.slice(0, 12));
       setAiMeta({ keywords: [], genres: [], titles: [] });
     }
+    // Named-movie requests ("فیلمی fall2 دەوێت"): when the user asks for a
+    // SPECIFIC title, the result must be THAT movie or the apology — never
+    // unrelated fuzzy suggestions. Genre words (ترسناکم...) are excluded so
+    // genre wishes keep their normal suggestion behavior.
+    const namedPattern = q.match(
+      /(?:فیلمی|فیلمێکی|درامای|زنجیرەی)\s+([^\s].*?)(?:\s+(?:دەوێت|دەوێ|پێویستمە|پێویستە|هەیە|بێت))?\s*$/i,
+    );
+    const genreWords = new Set<string>(
+      DEFAULT_GENRES.flatMap((g) => [normalizeSearch(g.tag), normalizeSearch(g.name)]),
+    );
+    const isGenreWord = (t: string) => {
+      const nt = normalizeSearch(t);
+      if (!nt) return false;
+      for (const gw of genreWords) {
+        if (nt.startsWith(gw) || gw.startsWith(nt)) return true;
+      }
+      return false;
+    };
+    const requestedTitle = namedPattern ? namedPattern[1].trim() : "";
+    const namedRequest =
+      requestedTitle.length >= 2 &&
+      !isGenreWord(requestedTitle) &&
+      !/^(نموونە|بۆ نموونە)/i.test(requestedTitle);
+    const namedFound =
+      namedRequest &&
+      movies.some(
+        (m) =>
+          directDescriptionScore(m, requestedTitle) > 0 ||
+          fuzzyMatchMovie(m, requestedTitle) >= 50,
+      );
     try {
       const res = await api.aiSearch(q);
       setAiMeta({
@@ -9748,6 +9782,23 @@ export default function App() {
         ...directMatches,
         ...serverResults.filter((m: any) => m?.id && !directIds.has(m.id)),
       ];
+      // Named request that the catalog does not have → apology, no suggestions.
+      if (
+        namedRequest &&
+        !namedFound &&
+        !merged.some((m: any) =>
+          normalizeSearch(String(m?.title || "")).includes(
+            normalizeSearch(requestedTitle),
+          ),
+        )
+      ) {
+        setAiResults([]);
+        setAiNotFoundTitle(requestedTitle);
+        setAiMeta({ keywords: [], genres: [], titles: [] });
+        notifyMovieRequest(q);
+        submitSearchTerm(q);
+        return;
+      }
       if (merged.length > 0) {
         setAiResults(merged.slice(0, 12));
       } else {
@@ -9769,6 +9820,15 @@ export default function App() {
         .filter((x) => x.s > 0 && !directIds.has(x.m.id))
         .sort((a, b) => b.s - a.s);
       const fallback = [...directMatches, ...scored.map((x) => x.m)].slice(0, 12);
+      // Named request offline: same apology rule as the online path.
+      if (namedRequest && !namedFound) {
+        setAiResults([]);
+        setAiNotFoundTitle(requestedTitle);
+        setAiMeta({ keywords: [], genres: [], titles: [] });
+        notifyMovieRequest(q);
+        submitSearchTerm(q);
+        return;
+      }
       setAiResults(fallback);
       setAiMeta({ keywords: [], genres: [], titles: [] });
       if (fallback.length === 0) notifyMovieRequest(q);
@@ -12536,6 +12596,13 @@ export default function App() {
     selectedMovie && !showPlayer && selectedMovie.trailerUrl
       ? extractYouTubeId(selectedMovie.trailerUrl)
       : null;
+  const trailerPreviewWrapRef = useRef<HTMLDivElement | null>(null);
+
+  // While the movie-details trailer plays, mute the hero/main video so the
+  // two soundtracks never mix. Hero stays muted afterwards (no auto-restore).
+  useEffect(() => {
+    if (trailerPreviewId) setIsHeroMuted(true);
+  }, [trailerPreviewId]);
 
   if (bannedFromSystem) {
     const blockTime = blockedAt || new Date();
@@ -13589,11 +13656,14 @@ export default function App() {
                       ) : (
                         <div className="text-center">
                           <p className="text-sm font-black text-white kurdish-text">
-                            ببوورە، ئەم فیلمە لە سایتەکە نەدۆزرایەوە 😔
+                            {aiNotFoundTitle
+                              ? `داوای لێبوردن ئەکەین 🙏 فیلمی «${aiNotFoundTitle}» ئێستا لە سایتەکە نیە`
+                              : "ببوورە، ئەم فیلمە لە سایتەکە نەدۆزرایەوە 😔"}
                           </p>
                           <p className="mt-1 text-xs leading-6 text-gray-400 kurdish-text">
-                            دەتوانیت بە واتسئەپ ئاگادارمان بکەیتەوە بۆ پێشنیارکردنی
-                            فیلمەکە — بە خێرایی هەوڵدەدەین بیخەینە سەر سایت
+                            تکایە بە دوگمەی واتسئەپ لە لای ڕاستی وێبسایتەکەوە
+                            ئاگادارمان بکەرەوە — تا هەڵبدەین بۆ زیادکردنی
+                            فیلمەکە
                           </p>
                           <a
                             href={whatsappRequestHref}
@@ -14898,18 +14968,7 @@ export default function App() {
                     </div>
                   ) : (
                     <div className="relative h-full w-full">
-                      {trailerPreviewId ? (
-                        <div className="absolute inset-0 flex items-center justify-center bg-black">
-                          <iframe
-                            src={`https://www.youtube.com/embed/${trailerPreviewId}?autoplay=1&mute=1&controls=0&loop=1&playlist=${trailerPreviewId}&playsinline=1&rel=0&modestbranding=1`}
-                            title={`${selectedMovie.title} — تریلەر`}
-                            allow="autoplay; encrypted-media; picture-in-picture"
-                            frameBorder="0"
-                            allowFullScreen
-                            className="aspect-video w-full max-w-sm"
-                          />
-                        </div>
-                      ) : selectedMovie.image ? (
+                      {selectedMovie.image ? (
                         <img
                           src={selectedMovie.image}
                           referrerPolicy="no-referrer"
@@ -14928,24 +14987,12 @@ export default function App() {
                       )} {/* Poster / Fallback Placeholder */}
                       {!showPlayer && (
                         <>
-                          {!trailerPreviewId && (
-                            <>
-                              <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-black via-black/75 to-black/10" />
-                              <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black via-transparent to-black/85" />
-                            </>
-                          )}
+                          <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-black via-black/75 to-black/10" />
+                          <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black via-transparent to-black/85" />
                           <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center justify-between gap-4 px-6 py-5 md:px-9">
-                            {trailerPreviewId && (
-                              <span className="flex items-center gap-1.5 rounded-md bg-brand-primary/90 px-2 py-1 text-[9px] md:text-[10px] font-black tracking-widest text-white shadow-lg">
-                                <Youtube className="w-3 h-3" />
-                                TRAILER • تریلەر
-                              </span>
-                            )}
-                            {!trailerPreviewId && (
-                              <span className="text-xs md:text-sm font-black tracking-[0.28em] text-white drop-shadow-lg">
-                                CINAMACHAT.COM
-                              </span>
-                            )}
+                            <span className="text-xs md:text-sm font-black tracking-[0.28em] text-white drop-shadow-lg">
+                              CINAMACHAT.COM
+                            </span>
                             <span className="max-w-[52vw] truncate pr-10 text-[10px] md:text-xs font-bold text-white/80 kurdish-text drop-shadow-lg">
                               {selectedMovie.title}
                             </span>
@@ -14956,7 +15003,6 @@ export default function App() {
                           (e.g., all sources are IMDb metadata-only URLs or legacy
                           invalid records). Displays Sorani error + WhatsApp CTA. */}
                       {!activeServerUrl &&
-                        !trailerPreviewId &&
                         !getMovieSourceUrl(selectedMovie) &&
                         !firstValidMovieUrl(selectedMovie.external_link, selectedMovie.externalMovieLink) && (
                         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm z-20 gap-3">
@@ -14988,7 +15034,7 @@ export default function App() {
                           type="button"
                           aria-label={`Play ${selectedMovie.title}`}
                           onClick={playSelectedMovie}
-                          className={`absolute inset-0 m-auto w-20 h-20 bg-brand-primary/90 text-white rounded-full flex items-center justify-center hover:scale-110 transition-transform shadow-2xl z-20 group md:hidden ${trailerPreviewId ? "hidden" : ""}`}
+                          className="absolute inset-0 m-auto w-20 h-20 bg-brand-primary/90 text-white rounded-full flex items-center justify-center hover:scale-110 transition-transform shadow-2xl z-20 group md:hidden"
                         >
                           <Play className="w-10 h-10 fill-current group-hover:scale-110 transition-transform" />
                         </button> // Play Button on Poster
@@ -15116,6 +15162,52 @@ export default function App() {
                     <h2 className="text-2xl md:text-4xl font-black mb-4 kurdish-text leading-tight">
                       {selectedMovie.title}
                     </h2>
+
+                    {/* Mini trailer preview (this movie's own trailerUrl): small
+                        16:9 player WITH SOUND + autoplay, right under the title
+                        and above every other text (tags/rating/description).
+                        All YouTube chrome is hidden (controls=0 + click-through
+                        iframe) — the ONLY control is our own fullscreen button,
+                        which fullscreens just this trailer and nothing else. */}
+                    {trailerPreviewId && (
+                      <div className="mb-5 w-56 shrink-0 sm:w-64 md:w-80">
+                        <span className="mb-1 flex items-center gap-1.5 text-[9px] font-black tracking-widest text-brand-primary">
+                          <Youtube className="w-3 h-3" />
+                          TRAILER • تریلەر
+                        </span>
+                        <div
+                          ref={trailerPreviewWrapRef}
+                          className="relative aspect-video w-full overflow-hidden rounded-xl border border-white/10 bg-black shadow-lg"
+                        >
+                          <iframe
+                            src={`https://www.youtube.com/embed/${trailerPreviewId}?autoplay=1&loop=1&playlist=${trailerPreviewId}&playsinline=1&rel=0&modestbranding=1&controls=0&disablekb=1&iv_load_policy=3&fs=0`}
+                            title={`${selectedMovie.title} — تریلەر`}
+                            allow="autoplay; encrypted-media; picture-in-picture"
+                            frameBorder="0"
+                            allowFullScreen
+                            tabIndex={-1}
+                            className="pointer-events-none absolute inset-0 h-full w-full"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const wrap = trailerPreviewWrapRef.current;
+                              if (!wrap) return;
+                              if (document.fullscreenElement) {
+                                document.exitFullscreen().catch(() => {});
+                              } else {
+                                wrap.requestFullscreen?.().catch(() => {});
+                              }
+                            }}
+                            aria-label="گەورەکردنی ترایلەر (Fullscreen)"
+                            title="گەورەکردنی شاشە بۆ ترایلەر"
+                            className="absolute bottom-1.5 left-1.5 z-10 rounded-md bg-black/70 p-1.5 text-white/90 backdrop-blur transition-colors hover:bg-black/90 hover:text-white"
+                          >
+                            <Maximize className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                     <div className="flex flex-wrap gap-2 mb-5">
                       {selectedMovie.tags.map((tag) => (
