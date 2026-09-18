@@ -14238,7 +14238,7 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[200] flex items-center justify-center p-4 md:p-8"
+            className="fixed inset-0 z-[100100] flex items-center justify-center p-4 md:p-8"
           >
             <div
               className="absolute inset-0 bg-black/90 backdrop-blur-xl"
