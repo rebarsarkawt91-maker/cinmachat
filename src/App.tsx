@@ -153,6 +153,38 @@ import type { CinemaChatParticipant } from "./services/cinemaChat";
 
 const MOVIE_CATALOG_CACHE_KEY = "cinemachat:movie-catalog:v1";
 const MOVIE_CATALOG_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const DELETED_MOVIE_IDS_CACHE_KEY = "cinemachat:deleted-movie-ids:v1";
+// One-time cleanup for the explicitly retired test card that shipped in an
+// older offline catalog. This prevents an existing PWA/browser cache from
+// reviving it before the refreshed fallback file arrives.
+const RETIRED_MOVIE_IDS = new Set(["manual-1789312564413"]);
+
+const readDeletedMovieIds = (): Set<string> => {
+  const ids = new Set(RETIRED_MOVIE_IDS);
+  if (typeof window === "undefined") return ids;
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem(DELETED_MOVIE_IDS_CACHE_KEY) || "[]",
+    );
+    if (Array.isArray(parsed)) {
+      parsed.forEach((id: unknown) => {
+        if (typeof id === "string" && id) ids.add(id);
+      });
+    }
+    return ids;
+  } catch {
+    return ids;
+  }
+};
+
+const cacheDeletedMovieIds = (ids: Set<string>) => {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(DELETED_MOVIE_IDS_CACHE_KEY, JSON.stringify([...ids]));
+  } catch {
+    // Storage can be unavailable in private mode; Firestore remains canonical.
+  }
+};
 
 // Inline base64 image (a "data:" URL). Firestore movie docs still carry these
 // as the durable poster copy; the API server materializes them into small
@@ -174,7 +206,10 @@ const readCachedMovieCatalog = (): Movie[] => {
       localStorage.removeItem(MOVIE_CATALOG_CACHE_KEY);
       return [];
     }
-    return cached.movies.filter((movie: any) => movie && movie.id);
+    const deletedIds = readDeletedMovieIds();
+    return cached.movies.filter(
+      (movie: any) => movie && movie.id && !deletedIds.has(movie.id),
+    );
   } catch {
     localStorage.removeItem(MOVIE_CATALOG_CACHE_KEY);
     return [];
@@ -7023,11 +7058,14 @@ export default function App() {
     return ids;
   }, [dramaRooms]);
 
-  // Public catalog = every post EXCEPT dramas currently assigned to a Drama
-  // Room. Assigned dramas stay permanently stored and remain reachable through
-  // their room; they never mix with normal movies in the public listing.
+  // Public catalog contains films only. Drama posts remain stored in `movies`
+  // for Drama Rooms, but never mix into the homepage or all-films listing,
+  // whether or not they have already been assigned to a room.
   const publicMovies = useMemo(
-    () => movies.filter((m: any) => !assignedDramaIds.has(m.id)),
+    () =>
+      movies.filter(
+        (m: any) => !isDramaMovie(m) && !assignedDramaIds.has(m.id),
+      ),
     [movies, assignedDramaIds],
   );
 
@@ -7115,11 +7153,10 @@ export default function App() {
     Record<string, { progress: number; duration: number; updatedAt: number }>
   >({});
 
-  // Tombstone guard for deleted movies. Keeps a deleted movie out of the UI
-  // instantly (optimistic removal) AND stops the 60s /api/movies poll or the
-  // Firestore fallback from resurrecting it while the server delete is in
-  // flight, or if the server is unreachable at delete time.
-  const deletedMovieIdsRef = useRef<Set<string>>(new Set());
+  // Durable browser tombstones keep a confirmed deletion out of cached and
+  // fallback catalogs after refresh. A failed delete removes its temporary
+  // tombstone again, so unsuccessful actions never hide a valid movie.
+  const deletedMovieIdsRef = useRef<Set<string>>(readDeletedMovieIds());
 
   // Bulk-select state for Section 6 (Movie Management): ids of the movies the
   // admin has ticked for batch deletion. Cleared after a successful bulk delete
@@ -12193,13 +12230,16 @@ export default function App() {
         setActiveServerUrl(null);
       }
       if (movieBeingEdited?.id === movie.id) setMovieBeingEdited(null);
-      deletedMovieIdsRef.current.delete(movie.id);
+      // Keep confirmed tombstones across refreshes. This is required when the
+      // offline catalog fallback still has an older copy of the deleted movie.
+      cacheDeletedMovieIds(deletedMovieIdsRef.current);
       return true;
     } catch (error) {
       console.error("[DeleteMovie] Permanent delete failed:", error);
       // Release the tombstone because the server did not confirm deletion;
       // fetchMovies can now restore the authoritative record.
       deletedMovieIdsRef.current.delete(movie.id);
+      cacheDeletedMovieIds(deletedMovieIdsRef.current);
       return false;
     }
   };
