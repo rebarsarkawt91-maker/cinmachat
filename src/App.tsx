@@ -4691,6 +4691,58 @@ const WhatsAppAutomationModule = () => {
   const [isTesting, setIsTesting] = React.useState(false);
   const [testResult, setTestResult] = React.useState<{ type: "success" | "error"; text: string } | null>(null);
 
+  // Public WhatsApp contact (mobile number + movie-request group link) — the
+  // same values every WhatsApp button on the site uses via /api/public-config.
+  const [contactNumber, setContactNumber] = React.useState("");
+  const [contactGroup, setContactGroup] = React.useState("");
+  const [isSavingContact, setIsSavingContact] = React.useState(false);
+  const [contactMsg, setContactMsg] = React.useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/public-config");
+        if (!res.ok) return;
+        const data = await res.json();
+        setContactNumber(typeof data.whatsappNumber === "string" ? data.whatsappNumber : "");
+        setContactGroup(typeof data.whatsappGroupLink === "string" ? data.whatsappGroupLink : "");
+      } catch {}
+    })();
+  }, []);
+
+  const handleSaveContact = async () => {
+    const number = contactNumber.replace(/[^0-9]/g, "");
+    const group = contactGroup.trim();
+    if (!number && !group) {
+      setContactMsg({ type: "error", text: "تکایە ژمارەی مۆبایل یان لینکی گروپ بنووسە" });
+      return;
+    }
+    setIsSavingContact(true);
+    setContactMsg(null);
+    try {
+      let adminName = "admin";
+      try {
+        adminName = JSON.parse(localStorage.getItem("cinemachat_admin") || "{}").username || "admin";
+      } catch {}
+      const res = await fetch("/api/admin/whatsapp-contact", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ number, groupLink: group, adminName })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setContactMsg({ type: "success", text: "بە سەرکەوتوویی جێگیرکرا ✓ — دوگمەکانی واتسئەپی سایت ئێستا ئەم زانیاریانە بەکاردەهێنن" });
+        window.dispatchEvent(new Event("cinemachat:whatsapp-updated"));
+      } else {
+        setContactMsg({ type: "error", text: data.error || "پاشەکەوتکردن سەرکەوتوو نەبوو" });
+      }
+    } catch {
+      setContactMsg({ type: "error", text: "ناتوانرێت لەگەڵ ڕاژەکار لێکبدرێت" });
+    } finally {
+      setIsSavingContact(false);
+    }
+  };
+
   const handleTestWebhook = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!testUrl || !testTitle) {
@@ -4739,6 +4791,55 @@ const WhatsAppAutomationModule = () => {
         </p>
       </div>
 
+      <div className="bg-white/5 border border-green-500/20 p-6 rounded-2xl space-y-4">
+        <h4 className="text-white font-bold text-sm kurdish-text">ژمارەی مۆبایل و گروپی داواکردنی فیلم (Contact Settings)</h4>
+        <p className="text-[11px] text-gray-500 kurdish-text leading-relaxed">
+          ئەم زانیاریانە بۆ هەموو دوگمەکانی واتسئەپی وێبسایتەکە بەکاردەهێنرێن — دوگمەی واتسئەپی سایت و ناردنی داواکردنی فیلم لە گەڕانی زیرەک (AI).
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-1">
+            <label className="text-[10px] text-gray-400 kurdish-text">ژمارەی مۆبایلی واتسئەپ (WhatsApp Number)</label>
+            <input
+              type="text"
+              dir="ltr"
+              inputMode="tel"
+              value={contactNumber}
+              onChange={(e) => setContactNumber(e.target.value)}
+              placeholder="009647701966649"
+              className="w-full bg-black/40 border border-white/5 rounded-xl px-4 py-2.5 text-xs text-white text-left font-mono"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] text-gray-400 kurdish-text">لینکی گروپی داواکردنی فیلم (Group Link)</label>
+            <input
+              type="text"
+              dir="ltr"
+              value={contactGroup}
+              onChange={(e) => setContactGroup(e.target.value)}
+              placeholder="https://chat.whatsapp.com/..."
+              className="w-full bg-black/40 border border-white/5 rounded-xl px-4 py-2.5 text-xs text-white text-left font-mono"
+            />
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={handleSaveContact}
+          disabled={isSavingContact}
+          className="w-full md:w-auto px-8 py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-xl font-black text-xs kurdish-text transition-all active:scale-95 disabled:opacity-50 flex items-center justify-center gap-1.5 cursor-pointer"
+        >
+          {isSavingContact ? "خەریکی جێگیرکردنە..." : "جێگیرکردن ✓"}
+        </button>
+        {contactMsg && (
+          <div className={`p-3 rounded-xl text-xs kurdish-text border ${
+            contactMsg.type === "success"
+              ? "bg-green-500/10 border-green-500/20 text-green-400"
+              : "bg-red-500/10 border-red-500/20 text-red-400"
+          }`}>
+            {contactMsg.text}
+          </div>
+        )}
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="bg-white/5 border border-white/5 p-6 rounded-2xl space-y-4">
           <h4 className="text-white font-bold text-sm kurdish-text">زانیاریەکانی وێبهووک (Webhook Info)</h4>
@@ -4753,7 +4854,7 @@ const WhatsAppAutomationModule = () => {
             </div>
             <div className="flex justify-between border-b border-white/5 pb-2">
               <span className="text-gray-400 font-medium">ژمارەی ئەدمین (Admin Number)</span>
-              <span className="font-mono text-gray-300">9647701966649</span>
+              <span className="font-mono text-gray-300">{contactNumber || "9647701966649"}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400 font-medium">مۆد (Mode)</span>
@@ -5794,6 +5895,47 @@ const isDramaMovie = (m: any) => {
   return /(?:دراما|ئەڵقە|ئه‌ڵقه|episode|\bep\.?\s*\d+)/iu.test(
     String(m?.title || ""),
   );
+};
+
+// Production can temporarily return zero Drama Rooms when the Firestore quota
+// is exhausted. Rebuild only the known legacy series from their episode cards
+// so those cards remain inside a room instead of leaking back into Films.
+const buildFallbackDramaRooms = (movies: Movie[]) => {
+  const groups = new Map<string, { title: string; movies: Movie[] }>();
+  for (const movie of movies) {
+    if (!movie?.id || !isDramaMovie(movie)) continue;
+    const title = String(movie.title || "");
+    const normalized = title.toLowerCase();
+    let key = "";
+    let roomTitle = "";
+    if (/یوسف|yousuf|yusuf/.test(normalized)) {
+      key = "prophet-yusuf";
+      roomTitle = "پێغەمبەر یوسف";
+    } else if (/ستایش|setayesh/.test(normalized)) {
+      key = "setayesh";
+      roomTitle = "ستایش";
+    } else if (/blind/.test(normalized)) {
+      key = "blind";
+      roomTitle = "BLIND";
+    } else {
+      key = `legacy-${movie.id}`;
+      roomTitle = title;
+    }
+    const group = groups.get(key) || { title: roomTitle, movies: [] };
+    group.movies.push(movie);
+    groups.set(key, group);
+  }
+
+  return Array.from(groups.entries()).map(([key, group]) => ({
+    id: `fallback-${key}`,
+    title: group.title,
+    description: "دراماکان و ئەڵقەکانی ئەم ژوورە",
+    coverUrl: group.movies.find((movie) => movie.image)?.image || "",
+    dramas: group.movies.map((movie) => movie.id),
+    createdAt: "",
+    updatedAt: "",
+    isFallback: true,
+  }));
 };
 
 const normalizeDramaHubText = (value: any) =>
@@ -11705,10 +11847,12 @@ export default function App() {
       ? `https://wa.me/${String(runtimeWhatsappNumber).replace(/[^0-9]/g, "")}`
       : "https://wa.me/9647701966649";
 
-  // Fetch the runtime WhatsApp contact config once on mount.
+  // Fetch the runtime WhatsApp contact config on mount AND whenever the admin
+  // Module-18 panel saves new contact details — so every WhatsApp button
+  // (float button + smart-search movie request) follows the new values live.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    const load = async () => {
       try {
         const res = await fetchApi("/api/public-config");
         if (!res.ok) {
@@ -11739,9 +11883,12 @@ export default function App() {
           e,
         );
       }
-    })();
+    };
+    load();
+    window.addEventListener("cinemachat:whatsapp-updated", load);
     return () => {
       cancelled = true;
+      window.removeEventListener("cinemachat:whatsapp-updated", load);
     };
   }, []);
 
@@ -11810,14 +11957,14 @@ export default function App() {
   // with the query when the site's WhatsApp is a direct wa.me number.
   const whatsappRequestHref = useMemo(() => {
     const base = resolveWhatsAppUrl(
-      config?.socialLinks?.whatsapp,
-      config?.socialLinks?.group,
+      runtimeWhatsappNumber || config?.socialLinks?.whatsapp,
+      runtimeWhatsappGroupLink || config?.socialLinks?.group,
     );
     const text = `سڵاو، فیلمی «${aiQuery || "..."}» پێشنیار دەکەم بۆ سینەما چات`;
     return base.includes("wa.me")
       ? `${base}?text=${encodeURIComponent(text)}`
       : base;
-  }, [config, aiQuery]);
+  }, [config, aiQuery, runtimeWhatsappNumber, runtimeWhatsappGroupLink]);
 
   // Fetch Config
   useEffect(() => {
@@ -12568,10 +12715,11 @@ export default function App() {
 
   // Load the drama rooms once on mount (server-persisted in db.dramaRooms).
   const refreshDramaRooms = useCallback(async () => {
+    const fallbackRooms = buildFallbackDramaRooms(movies);
     try {
       const data = await api.baseFetch("/api/drama-rooms", {}, 2);
       const rooms = Array.isArray(data?.rooms) ? data.rooms : [];
-      setDramaRooms(rooms);
+      setDramaRooms(rooms.length > 0 ? rooms : fallbackRooms);
       // Seed room viewer counts from the server snapshot so badges render
       // instantly; the 30s /api/drama-rooms/live poll keeps them fresh.
       setRoomLiveViewers((prev) => {
@@ -12601,8 +12749,11 @@ export default function App() {
       });
     } catch (e) {
       console.warn("Failed to load drama rooms:", e);
+      setDramaRooms((previous) =>
+        previous.length > 0 ? previous : fallbackRooms,
+      );
     }
-  }, []);
+  }, [movies]);
 
   useEffect(() => {
     refreshDramaRooms();

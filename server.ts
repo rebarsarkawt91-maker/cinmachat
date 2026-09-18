@@ -2676,6 +2676,73 @@ const saveMovieViewsToFirestore = (counts: Record<string, number>): void => {
     );
 };
 
+// ── WhatsApp contact config (Firestore-durable) ────────────────────────────
+// The admin Module-18 panel saves the public WhatsApp number + movie-request
+// group link here. db.json alone is ephemeral on Render, so the values are
+// mirrored to the `config/whatsappContact` Firestore doc (rules allow it) and
+// re-hydrated at boot — same pattern as hero config / movie views.
+const WHATSAPP_CONTACT_DOC = 'config/whatsappContact';
+
+// Digits only with leading zeros stripped: "009647701966649" and
+// "+964 770 196 6649" both become "9647701966649" (the wa.me format).
+const normalizeWhatsAppNumber = (value: unknown): string =>
+  String(value || '')
+    .replace(/[^0-9]/g, '')
+    .replace(/^0+/, '');
+
+let whatsappContact: { number: string; groupLink: string } = { number: '', groupLink: '' };
+
+const loadWhatsAppContactFromFirestore = async (): Promise<{
+  number: string;
+  groupLink: string;
+} | null> => {
+  try {
+    const res = await fetchWithTimeout(
+      firestoreDocUrl(WHATSAPP_CONTACT_DOC, ''),
+      { headers: { Accept: 'application/json' } },
+      8000
+    );
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const fields = data?.fields || {};
+    const number = normalizeWhatsAppNumber(fields.number?.stringValue);
+    const groupLink = String(fields.groupLink?.stringValue || '').trim();
+    if (!number && !groupLink) return null;
+    return { number, groupLink };
+  } catch (err: any) {
+    console.warn('[whatsapp-contact] Firestore read failed:', err?.message || err);
+    return null;
+  }
+};
+
+const saveWhatsAppContactToFirestore = (number: string, groupLink: string): void => {
+  fetchWithTimeout(
+    firestoreDocUrl(
+      WHATSAPP_CONTACT_DOC,
+      '&updateMask.fieldPaths=number&updateMask.fieldPaths=groupLink&updateMask.fieldPaths=updatedAt'
+    ),
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fields: {
+          number: { stringValue: number },
+          groupLink: { stringValue: groupLink },
+          updatedAt: { stringValue: new Date().toISOString() }
+        }
+      })
+    },
+    8000
+  )
+    .then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    })
+    .catch((err: any) =>
+      console.warn('[whatsapp-contact] Firestore write-through failed:', err?.message || err)
+    );
+};
+
 // ── Hero Config Firestore persistence ──────────────────────────────────────
 // On Render the local db.json is wiped on every restart. Hero config must be
 // persisted to and rehydrated from Firestore so it survives deploys.
@@ -5011,6 +5078,26 @@ async function startServer() {
     }
   } catch (err: any) {
     console.warn('[DB] Could not load hero config from Firestore:', err?.message || err);
+  }
+
+  // Restore the admin-saved WhatsApp contact (number + movie-request group
+  // link). db.json copy first, then the authoritative Firestore doc wins.
+  try {
+    const savedLocal = (db as any).whatsappContact || {};
+    whatsappContact = {
+      number: normalizeWhatsAppNumber(savedLocal.number),
+      groupLink: String(savedLocal.groupLink || '').trim()
+    };
+    const savedRemote = await loadWhatsAppContactFromFirestore();
+    if (savedRemote) {
+      if (savedRemote.number) whatsappContact.number = savedRemote.number;
+      if (savedRemote.groupLink) whatsappContact.groupLink = savedRemote.groupLink;
+    }
+    if (whatsappContact.number || whatsappContact.groupLink) {
+      console.log('[DB] Restored WhatsApp contact config from Firestore:', whatsappContact.number || '(no number)', '|', whatsappContact.groupLink || '(no group)');
+    }
+  } catch (err: any) {
+    console.warn('[DB] Could not load WhatsApp contact config:', err?.message || err);
   }
 
   // Mirror the Firestore movie catalog into the server cache at boot so
@@ -11536,7 +11623,7 @@ async function startServer() {
     try {
       const { sender, text, secret } = req.body;
       const webhookSecret = process.env.WHATSAPP_WEBHOOK_SECRET || 'Cinemachat_Secure_2024';
-      const adminNumber = process.env.WHATSAPP_ADMIN_NUMBER || '9647701966649';
+      const adminNumber = process.env.WHATSAPP_ADMIN_NUMBER || whatsappContact.number || '9647701966649';
       // 2. Security Check: Admin number enforcement (handling with/without +)
       const normalizedSender = String(sender).replace(/\D/g, '');
       const normalizedAdmin = adminNumber.replace(/\D/g, '');
@@ -11678,27 +11765,51 @@ async function startServer() {
     });
   });
 
-  // Public WhatsApp contact config. Served from RUNTIME env on every request so
-  // production stops depending on build-time VITE_* values — changing
-  // VITE_WHATSAPP_NUMBER / VITE_WHATSAPP_GROUP_LINK on Render takes effect on
-  // the next page load without a frontend rebuild. Only these two values are
-  // returned; never secrets or unrelated env vars. Both the VITE_-prefixed and
-  // plain keys are honoured so the existing Render env keeps working unchanged.
+  // Public WhatsApp contact config. The admin-saved durable value (Module-18
+  // panel) wins; RUNTIME env is the fallback so changing
+  // VITE_WHATSAPP_NUMBER / VITE_WHATSAPP_GROUP_LINK on Render still works
+  // without a frontend rebuild when nothing was saved from the panel.
+  // Only these two values are returned; never secrets or unrelated env vars.
   app.get('/api/public-config', (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
     const whatsappNumber = (
+      whatsappContact.number ||
       process.env.VITE_WHATSAPP_NUMBER ||
       process.env.WHATSAPP_NUMBER ||
       '9647701966649'
     ).trim();
     const whatsappGroupLink = (
+      whatsappContact.groupLink ||
       process.env.VITE_WHATSAPP_GROUP_LINK ||
       process.env.WHATSAPP_GROUP_LINK ||
       'https://chat.whatsapp.com/DIwWkE5ZGuTYJrmODE0mI0'
     ).trim();
     res.json({ whatsappNumber, whatsappGroupLink });
+  });
+
+  // Admin save of the public WhatsApp contact (Module-18 panel): direct
+  // mobile number + movie-request group link. Digits-only number, https-only
+  // group link; persisted to db.json AND the durable Firestore doc, then every
+  // WhatsApp button on the site (float button, smart-search movie-request
+  // apology) follows it via /api/public-config.
+  app.post('/api/admin/whatsapp-contact', async (req, res) => {
+    const { number, groupLink, adminName } = req.body || {};
+    const cleanNumber = normalizeWhatsAppNumber(number);
+    const cleanGroup = String(groupLink || '').trim();
+    if (!cleanNumber && !cleanGroup) {
+      return res.status(400).json({ error: 'ژمارەی مۆبایل یان لینکی گروپ پێویستە' });
+    }
+    if (cleanGroup && !/^https:\/\/(chat\.whatsapp\.com|wa\.me)\//i.test(cleanGroup)) {
+      return res.status(400).json({ error: 'لینکی گروپی واتسئەپ دەبێت بە https://chat.whatsapp.com/... دەست پێبکات' });
+    }
+    whatsappContact = { number: cleanNumber, groupLink: cleanGroup };
+    (db as any).whatsappContact = { ...whatsappContact };
+    await addAuditLog(db, adminName || 'admin', "WhatsApp Contact", `ژمارە: ${cleanNumber || '—'} | گروپ: ${cleanGroup || '—'}`);
+    await saveDB(db);
+    saveWhatsAppContactToFirestore(cleanNumber, cleanGroup);
+    res.json({ success: true, whatsappNumber: cleanNumber, whatsappGroupLink: cleanGroup });
   });
 
   app.post('/api/config', async (req, res) => {
