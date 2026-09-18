@@ -12177,9 +12177,15 @@ export default function App() {
       if (payload?.firestoreDeleted !== true && !clientFirestoreDeleted) {
         throw new Error("Firestore deletion was not confirmed");
       }
-      setMovies((previous) =>
-        previous.filter((entry: any) => entry.id !== movie.id),
-      );
+      setMovies((previous) => {
+        const nextMovies = previous.filter(
+          (entry: any) => entry.id !== movie.id,
+        );
+        // Persist the removal immediately. Otherwise a fast refresh can hydrate
+        // the catalog from the stale local cache and resurrect a deleted card.
+        cacheMovieCatalog(nextMovies as Movie[]);
+        return nextMovies;
+      });
       if (selectedMovie?.id === movie.id) {
         setIsMovieDetailsOpen(false);
         setShowPlayer(false);
