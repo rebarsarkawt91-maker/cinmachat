@@ -11114,7 +11114,9 @@ async function startServer() {
 
   app.delete('/api/admin/movies/:id', async (req, res) => {
     const { id } = req.params;
-    const adminName = (req.query.adminName || req.body.adminName || "Admin") as string;
+    const adminName = String(
+      req.headers['x-admin-username'] || req.query.adminName || req.body?.adminName || "Admin"
+    );
 
     const adminRecord = db.admins.find((a: any) => a.username?.toLowerCase() === adminName?.trim().toLowerCase());
     const requesterRole = adminRecord?.role || (OWNER_USERNAMES.includes(adminName?.trim().toLowerCase()) ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
@@ -11125,17 +11127,16 @@ async function startServer() {
 
     // Delete the durable Firestore movie document on the trusted server first.
     // This is idempotent, so it is safe when the client already removed it. A
-    // Firestore failure stops the operation before any server state is changed.
+    // credential-less server still clears its mirrors and lets the authorized
+    // client confirm the Firestore deletion before reporting UI success.
     const movieAdminApp = initializeFirebaseAdmin();
+    let firestoreDeleted = false;
     if (movieAdminApp) {
       try {
         await admin.firestore(movieAdminApp).collection('movies').doc(id).delete();
+        firestoreDeleted = true;
       } catch (error) {
         console.error('[DeleteMovie] Firestore delete failed:', error);
-        return res.status(503).json({
-          success: false,
-          error: 'نەتوانرا فیلمەکە لە بنکەدراوە بسڕدرێتەوە؛ تکایە دووبارە هەوڵبدەرەوە',
-        });
       }
     }
 
@@ -11186,7 +11187,7 @@ async function startServer() {
     await saveDB(db);
     setMoviesCache(prev => prev.filter(m => m.id !== id));
 
-    res.json({ success: true });
+    res.json({ success: true, firestoreDeleted });
   });
 
   // Full movie editor. This route is intentionally owner-only even though

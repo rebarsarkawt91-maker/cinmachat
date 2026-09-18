@@ -115,7 +115,7 @@ export default function MovieEditModal({
   };
 
   return (
-    <div className="fixed inset-0 z-[900] flex items-center justify-center bg-black/90 p-3 backdrop-blur-xl" role="dialog" aria-modal="true" aria-labelledby="movie-edit-title">
+    <div className="fixed inset-0 z-[100200] flex items-center justify-center bg-black/90 p-3 backdrop-blur-xl" role="dialog" aria-modal="true" aria-labelledby="movie-edit-title">
       <form onSubmit={submit} className="max-h-[94vh] w-full max-w-5xl overflow-y-auto rounded-3xl border border-red-500/30 bg-[#101014] p-5 shadow-2xl md:p-8" dir="rtl">
         <div className="sticky top-0 z-10 mb-6 flex items-center justify-between rounded-2xl border border-white/10 bg-[#101014]/95 p-4 backdrop-blur-xl">
           <div>

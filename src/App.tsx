@@ -12146,39 +12146,56 @@ export default function App() {
   // that was not fully removed. Returns true only when deletion is durable.
   const deleteMoviePermanent = async (movie: any): Promise<boolean> => {
     deletedMovieIdsRef.current.add(movie.id);
-    setMovies((prev) => prev.filter((m: any) => m.id !== movie.id));
+    const adminName = String(currentUser?.username || "Admin");
 
-    let firestoreOk = false;
     try {
-      await deleteDoc(doc(realDb, "movies", movie.id));
-      firestoreOk = true;
-    } catch (fsErr) {
-      console.error("[DeleteMovie] Firestore delete failed:", fsErr);
-    }
-
-    let serverOk = false;
-    if (firestoreOk) {
-      try {
-        const adminName = encodeURIComponent(
-          currentUser?.username || "Admin",
-        );
-        const res = await fetchApi(
-          `/api/admin/movies/${encodeURIComponent(movie.id)}?adminName=${adminName}`,
-          { method: "DELETE" },
-        );
-        serverOk = res.ok;
-      } catch (err) {
-        console.warn("[DeleteMovie] Server mirror delete failed:", err);
+      // The trusted admin endpoint is authoritative and deletes Firestore plus
+      // every server-side mirror. Calling it first avoids client Firestore-rule
+      // failures preventing an otherwise valid owner deletion.
+      const res = await fetchApi(
+        `/api/admin/movies/${encodeURIComponent(movie.id)}?adminName=${encodeURIComponent(adminName)}`,
+        {
+          method: "DELETE",
+          headers: { "X-Admin-Username": adminName },
+        },
+      );
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok || payload?.success !== true) {
+        throw new Error(payload?.error || `Delete failed (${res.status})`);
       }
-    }
 
-    if (!firestoreOk || !serverOk) {
-      // Keep the tombstone active this session so the poll can't resurrect it.
+      // Idempotent client cleanup. Either the trusted server or this client
+      // must confirm the durable Firestore deletion before the UI reports
+      // success. This supports both configured and credential-less servers.
+      let clientFirestoreDeleted = false;
+      try {
+        await deleteDoc(doc(realDb, "movies", movie.id));
+        clientFirestoreDeleted = true;
+      } catch (error) {
+        console.warn("[DeleteMovie] Client Firestore cleanup skipped:", error);
+      }
+      if (payload?.firestoreDeleted !== true && !clientFirestoreDeleted) {
+        throw new Error("Firestore deletion was not confirmed");
+      }
+      setMovies((previous) =>
+        previous.filter((entry: any) => entry.id !== movie.id),
+      );
+      if (selectedMovie?.id === movie.id) {
+        setIsMovieDetailsOpen(false);
+        setShowPlayer(false);
+        setSelectedMovie(null);
+        setActiveServerUrl(null);
+      }
+      if (movieBeingEdited?.id === movie.id) setMovieBeingEdited(null);
+      deletedMovieIdsRef.current.delete(movie.id);
+      return true;
+    } catch (error) {
+      console.error("[DeleteMovie] Permanent delete failed:", error);
+      // Release the tombstone because the server did not confirm deletion;
+      // fetchMovies can now restore the authoritative record.
+      deletedMovieIdsRef.current.delete(movie.id);
       return false;
     }
-    // Both stores are clean — deletion is durable, drop the tombstone.
-    deletedMovieIdsRef.current.delete(movie.id);
-    return true;
   };
 
   // Single delete from the Section 6 row action.
