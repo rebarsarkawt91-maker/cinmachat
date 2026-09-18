@@ -11569,6 +11569,7 @@ export default function App() {
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
+  const [showAllFilms, setShowAllFilms] = useState(false);
   const moviesPerPage = 12;
   const [trackerConfig, setTrackerConfig] = useState({
     text: "بەخێربێن بۆ CinamaChat - نوێترین فیلم و زنجیرەکان لێرە ببینە",
@@ -12300,7 +12301,9 @@ export default function App() {
 
     const start = () => {
       if (cancelled || unsubscribe) return;
-      const q = query(collection(realDb, "movies"), orderBy("createdAt", "desc"), limit(200));
+      // Keep the live catalog unbounded: every movie document is streamed.
+      // Pagination is presentation-only and must never cap the stored catalog.
+      const q = query(collection(realDb, "movies"), orderBy("createdAt", "desc"));
       unsubscribe = onSnapshot(
         q,
         (snapshot) => {
@@ -12431,6 +12434,23 @@ export default function App() {
     const startIndex = (currentPage - 1) * moviesPerPage;
     return sortedMovies.slice(startIndex, startIndex + moviesPerPage);
   }, [sortedMovies, currentPage]);
+
+  // Dedicated all-films page. This is display-only: it never mutates Drama
+  // Rooms or their membership. Explicit drama posts stay in their own rooms.
+  const allFilmsPageMovies = useMemo(() => {
+    const list = publicMovies.filter((movie) => !isDramaMovie(movie));
+    if (sortBy === "trending") {
+      return [...list].sort(
+        (a, b) => getMovieTrendingScore(b) - getMovieTrendingScore(a),
+      );
+    }
+    if (sortBy === "live") {
+      return [...list].sort(
+        (a, b) => getMovieLiveViewers(b) - getMovieLiveViewers(a),
+      );
+    }
+    return list;
+  }, [publicMovies, sortBy, getMovieTrendingScore, getMovieLiveViewers]);
 
   // Clamp the page when the list shrinks (search/filter changes) so the user is
   // never left on an out-of-range page showing "no movies".
@@ -13748,6 +13768,22 @@ export default function App() {
 
                     if (idx === 5) {
                       const items = [movieCard];
+                      items.push(
+                        <div
+                          key="all-films-toggle"
+                          className="col-span-full flex justify-start -mt-3 mb-2"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => setShowAllFilms(true)}
+                            aria-expanded={showAllFilms}
+                            className="inline-flex items-center justify-center gap-2 rounded-xl border border-brand-primary/50 bg-brand-primary px-5 py-2.5 text-sm font-black text-white shadow-lg shadow-brand-primary/20 transition-all hover:-translate-y-0.5 hover:bg-red-700 kurdish-text"
+                          >
+                            سەرجەم فیلمەکان
+                            <ChevronLeft className="h-4 w-4 shrink-0" />
+                          </button>
+                        </div>,
+                      );
                       if (config.ads.banner.image) {
                         items.push(
                           <div
@@ -13849,6 +13885,65 @@ export default function App() {
                 </div>
               )}
             </div>
+
+            {/* Full-screen all-films page. Kept separate from the homepage so
+                opening it cannot move, remove, or re-filter Drama Rooms. */}
+            <AnimatePresence>
+              {showAllFilms && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="fixed inset-0 z-[100000] overflow-y-auto bg-[#050505]"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label="سەرجەم فیلمەکان"
+                >
+                  <div className="sticky top-0 z-20 border-b border-white/10 bg-black/90 backdrop-blur-xl">
+                    <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-4 md:px-8">
+                      <div className="text-right">
+                        <h2 className="text-xl font-black text-white kurdish-text md:text-2xl">
+                          سەرجەم فیلمەکان
+                        </h2>
+                        <p className="mt-1 text-xs text-gray-500 kurdish-text">
+                          {allFilmsPageMovies.length} فیلم
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowAllFilms(false)}
+                        className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-black text-white transition-colors hover:bg-white/10 kurdish-text"
+                        aria-label="گەڕانەوە"
+                      >
+                        <X className="h-5 w-5" />
+                        گەڕانەوە
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mx-auto max-w-7xl px-5 py-8 md:px-8">
+                    <div className="grid grid-cols-2 items-start gap-6 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 md:gap-8">
+                      {allFilmsPageMovies.map((movie) => (
+                        <MovieCard
+                          key={movie.id}
+                          movie={resolvedMovies[movie.id] ?? movie}
+                          liveViewers={getMovieLiveViewers(movie)}
+                          isTopLive={topLiveId === movie.id}
+                          isFavorite={favoriteIds.has(movie.id)}
+                          isLiked={likedIds.has(movie.id)}
+                          likes={getMovieLikes(movie)}
+                          onOpen={openMovieDetails}
+                          onToggleFavorite={handleToggleFavorite}
+                          onToggleLike={handleToggleLike}
+                          onEdit={isPrimaryOwner ? setMovieBeingEdited : undefined}
+                          onDelete={isPrimaryOwner ? handleDeleteMovie : undefined}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {/* Remaining movie sections — rendered AFTER the search + movie grid,
                 so no movie cards appear above the Search section. */}
