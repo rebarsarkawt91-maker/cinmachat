@@ -3161,6 +3161,10 @@ const mergeCatalogWithFirestore = (local: any[], deletedIds: string[] = []): any
   const deleted = new Set<string>(Array.isArray(deletedIds) ? deletedIds : []);
   const store = (movie: any) => {
     if (!movie || typeof movie.id !== 'string' || deleted.has(movie.id)) return;
+    // A Firestore subtitle/status write may contain only part of a movie. Merge
+    // by id so partial metadata cannot erase the local title or poster.
+    const existing = merged.get(movie.id);
+    if (existing) movie = { ...existing, ...movie };
     if (movie.image) movie = { ...movie, image: decodeStoredUrl(movie.image) };
     if (movie.posterUrl) movie = { ...movie, posterUrl: decodeStoredUrl(movie.posterUrl) };
     merged.set(movie.id, movie);
@@ -3194,7 +3198,9 @@ const mergeCatalogWithFirestore = (local: any[], deletedIds: string[] = []): any
       dropIds.add(movie.id);
     }
   }
-  return combined.filter((m) => !m || !dropIds.has(m.id));
+  return combined.filter(
+    (m) => m && String(m.title || '').trim() && !dropIds.has(m.id)
+  );
 };
 
 // ---------------------------------------------------------------------------

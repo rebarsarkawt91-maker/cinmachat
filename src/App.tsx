@@ -208,7 +208,11 @@ const readCachedMovieCatalog = (): Movie[] => {
     }
     const deletedIds = readDeletedMovieIds();
     return cached.movies.filter(
-      (movie: any) => movie && movie.id && !deletedIds.has(movie.id),
+      (movie: any) =>
+        movie &&
+        movie.id &&
+        String(movie.title || "").trim() &&
+        !deletedIds.has(movie.id),
     );
   } catch {
     localStorage.removeItem(MOVIE_CATALOG_CACHE_KEY);
@@ -5771,10 +5775,25 @@ const DRAMA_GENRE_TAG = "دراما";
 const DRAMA_POST_TYPE = "دراما";
 const FILM_POST_TYPE = "فیلم";
 const isDramaMovie = (m: any) => {
-  const postType = String(m?.postType || "").trim();
+  const postType = String(m?.postType || "").trim().toLowerCase();
   if (postType === DRAMA_POST_TYPE) return true;
   if (postType === FILM_POST_TYPE) return false;
-  return Array.isArray(m?.tags) && m.tags.some((t: any) => String(t).trim() === DRAMA_GENRE_TAG);
+  const type = String(m?.type || "").trim().toLowerCase();
+  if (["drama", "series", "episode"].includes(type)) return true;
+  const labels = [m?.category, ...(Array.isArray(m?.tags) ? m.tags : [])];
+  if (
+    labels.some((label: any) => {
+      const value = String(label || "").trim().toLowerCase();
+      return value === DRAMA_GENRE_TAG || value === "drama";
+    })
+  ) {
+    return true;
+  }
+  // Legacy episodes predate postType and were saved under an unrelated genre.
+  // Their episode marker is the only durable discriminator available offline.
+  return /(?:دراما|ئەڵقە|ئه‌ڵقه|episode|\bep\.?\s*\d+)/iu.test(
+    String(m?.title || ""),
+  );
 };
 
 const normalizeDramaHubText = (value: any) =>
@@ -12093,7 +12112,12 @@ export default function App() {
   const applyMovies = (list: any[]) => {
     const unique = Array.from(new Map(list.map((m: any) => [m.id, m])).values());
     const normalized = unique
-        .filter((m: any) => !deletedMovieIdsRef.current.has(m.id))
+        .filter(
+          (m: any) =>
+            m?.id &&
+            String(m.title || "").trim() &&
+            !deletedMovieIdsRef.current.has(m.id),
+        )
         .map((m: any) => ({
           ...m,
           image: decodeStoredUrl(m.image),
@@ -12374,7 +12398,11 @@ export default function App() {
           const incoming: any[] = [];
           snapshot.forEach((entry) => incoming.push({ ...entry.data(), id: entry.id }));
           const durable = incoming.filter(
-            (movie) => movie?.id && movie.id !== "hero-promo" && !deletedMovieIdsRef.current.has(movie.id),
+            (movie) =>
+              movie?.id &&
+              String(movie.title || "").trim() &&
+              movie.id !== "hero-promo" &&
+              !deletedMovieIdsRef.current.has(movie.id),
           );
           if (durable.length === 0) return;
 
@@ -12454,7 +12482,9 @@ export default function App() {
   const filteredMovies = useMemo(() => {
     if (searchMode === "ai" && aiResults) {
       // Hide dramas currently assigned to a Drama Room from AI search too.
-      return aiResults.filter((m: any) => !assignedDramaIds.has(m.id));
+      return aiResults.filter(
+        (m: any) => !isDramaMovie(m) && !assignedDramaIds.has(m.id),
+      );
     }
 
     const tab = activeTab;
