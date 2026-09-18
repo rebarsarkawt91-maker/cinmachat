@@ -13377,7 +13377,14 @@ export default function App() {
                   heroReady={heroConfigReady}
                   config={config}
                   activeAudioSource={activeAudioSource}
-                  isMoviePlayerOpen={!!selectedMovie && showPlayer}
+                  // The mini trailer in the details modal is also an active
+                  // audio source. Claim the existing hero-audio interlock as
+                  // soon as that preview mounts so the background hero pauses
+                  // and cannot mix with the trailer soundtrack.
+                  isMoviePlayerOpen={
+                    !!selectedMovie &&
+                    (showPlayer || (!!isMovieDetailsOpen && !!trailerPreviewId))
+                  }
                 />
               </React.Suspense>
             )}
