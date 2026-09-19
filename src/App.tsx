@@ -14149,7 +14149,7 @@ export default function App() {
                 {(
                   [
                     { id: "recent", label: "نوێترین" },
-                    { id: "trending", label: "باڵاترین ترەند" },
+                    { id: "trending", label: "باڵاترین ترێند" },
                     { id: "live", label: "زۆرترین بینەری ڕاستەوخۆ" },
                   ] as const
                 ).map((s) => (
