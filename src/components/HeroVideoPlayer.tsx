@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { api } from "../services/api";
 import { loadYouTubeAPI, getYTId, isYTVideoId } from "../utils/youtube";
+import { formatUserCount } from "../utils/format";
 
 /**
  * Parse EXACTLY ONE bare 11-char YouTube video id out of an Admin URL.
@@ -1056,17 +1057,17 @@ const HeroVideoPlayer: React.FC<{
             friends and WhatsApp). Actions and IDs stay unchanged. */}
         <div className="fixed bottom-[14.2rem] left-6 z-[48] flex max-h-[calc(100dvh-15.2rem)] w-11 flex-col-reverse items-center gap-2 overflow-y-auto no-scrollbar pointer-events-none">
           <div
-            className="pointer-events-none flex items-center gap-1.5 p-2 md:p-3 bg-black/50 border border-white/10 rounded-xl md:rounded-2xl backdrop-blur-md shadow-lg"
+            className="pointer-events-none flex items-center gap-1.5 py-2 px-2.5 md:py-3 md:px-3 min-w-fit overflow-visible whitespace-nowrap bg-black/50 border border-white/10 rounded-xl md:rounded-2xl backdrop-blur-md shadow-lg"
             title="بینەری ئۆنلاین لە ماڵپەڕ"
             id="hero-online-badge"
           >
-            <span className="relative flex w-1.5 h-1.5 md:w-2 md:h-2">
+            <span className="relative flex w-1.5 h-1.5 md:w-2 md:h-2 shrink-0">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
               <span className="relative inline-flex rounded-full w-1.5 h-1.5 md:w-2 md:h-2 bg-green-400" />
             </span>
-            <Users className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 text-green-400" />
+            <Users className="w-3.5 h-3.5 md:w-4.5 md:h-4.5 text-green-400 shrink-0" />
             <span className="text-[11px] md:text-xs font-black text-white font-mono tabular-nums leading-none">
-              {onlineViewers}
+              {formatUserCount(onlineViewers)}
             </span>
           </div>
 
