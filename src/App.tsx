@@ -13877,149 +13877,153 @@ export default function App() {
             {/* Smart Search Section */}
             <div className="relative max-w-5xl mx-auto px-5 md:px-8 mt-4 mb-8 text-center">
 
-              {/* ROW A — Main Search Bar (kept at the very top of the stack).
-                  The active search input renders on its own row so the catalog
-                  always starts from the search field, per the reference layout. */}
-              <div className="flex flex-wrap items-center justify-center gap-2 mb-5">
-                {searchMode === "title" && (
-                  <div className="relative group flex-1 min-w-[220px] max-w-md text-right">
-                    <Search className="absolute right-6 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500 group-focus-within:text-brand-primary" />
-                    <input
-                      type="text"
-                      placeholder={tr("searchPlaceholder")}
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      onFocus={() => {
-                        if (searchQuery.trim()) setShowSuggestions(true);
-                      }}
-                      onBlur={() => {
-                        setTimeout(() => setShowSuggestions(false), 150);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          submitSearchTerm(searchQuery);
-                          setShowSuggestions(false);
-                        }
-                      }}
-                      className="w-full bg-white/5 border border-white/10 rounded-2xl py-4 pr-14 pl-6 kurdish-text focus:outline-none focus:border-brand-primary focus:bg-white/10 transition-all"
-                    />
-                    {/* Live suggestions dropdown */}
-                    {showSuggestions && localSuggestions.length > 0 && (
-                      <div className="absolute top-full left-0 right-0 mt-2 bg-[#151515] border border-white/10 rounded-2xl overflow-hidden z-30 text-right shadow-2xl">
-                        {localSuggestions.map((s) => (
-                          <button
-                            key={s.id}
-                            type="button"
-                            onClick={() => {
-                              setSearchQuery(s.title);
-                              setShowSuggestions(false);
-                              submitSearchTerm(s.title);
-                            }}
-                            className="w-full flex items-center justify-between px-5 py-3 hover:bg-white/5 transition-colors"
-                          >
-                            <span className="kurdish-text font-bold text-sm text-white">
-                              {s.title}
-                            </span>
-                            {s.year && (
-                              <span className="text-[10px] text-gray-500 font-bold">
-                                {s.year}
-                              </span>
-                            )}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {searchMode === "ai" && (
-                  <>
-                    <div className="relative flex-1 min-w-[220px] max-w-md text-right">
-                      <Sparkles className="absolute right-5 top-1/2 h-5 w-5 -translate-y-1/2 text-brand-primary" />
+              {/* SEARCH PANEL — slim purple card. The active search input (title
+                  or AI) sits on its own TOP row inside the card; the mode
+                  toggles (ناونیشان / گەڕانی زیرەک (AI)) and the sort pills
+                  (ڕیزکردن) sit neatly on one wrapping row beneath it. Compact
+                  paddings for a slick look. Pure layout move — all search and
+                  filter logic is unchanged. */}
+              <div className="mb-6 rounded-2xl border border-purple-500/25 bg-gradient-to-b from-purple-500/10 via-purple-500/5 to-transparent px-4 py-3 flex flex-col items-center gap-3">
+                {/* Row 1 — main search bar (title or AI input + Go). */}
+                <div className="flex w-full flex-wrap items-center justify-center gap-2">
+                  {searchMode === "title" && (
+                    <div className="relative group flex-1 min-w-[220px] max-w-md text-right">
+                      <Search className="absolute right-6 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500 group-focus-within:text-brand-primary" />
                       <input
                         type="text"
-                        value={aiQuery}
-                        onChange={(e) => setAiQuery(e.target.value)}
+                        placeholder={tr("searchPlaceholder")}
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        onFocus={() => {
+                          if (searchQuery.trim()) setShowSuggestions(true);
+                        }}
+                        onBlur={() => {
+                          setTimeout(() => setShowSuggestions(false), 150);
+                        }}
                         onKeyDown={(e) => {
-                          if (e.key === "Enter" && !e.shiftKey) {
-                            e.preventDefault();
-                            runAiSearch();
+                          if (e.key === "Enter") {
+                            submitSearchTerm(searchQuery);
+                            setShowSuggestions(false);
                           }
                         }}
-                        placeholder="بۆ نموونە: فیلمێکی ترسناکم دەوێت"
-                        className="w-full rounded-2xl border border-white/10 bg-white/5 py-4 pr-14 pl-5 kurdish-text transition-all focus:border-brand-primary focus:bg-white/10 focus:outline-none"
+                        className="w-full bg-white/5 border border-white/10 rounded-xl py-3 pr-14 pl-5 kurdish-text focus:outline-none focus:border-brand-primary focus:bg-white/10 transition-all"
                       />
-                    </div>
-                    <button
-                      onClick={runAiSearch}
-                      disabled={aiLoading || !aiQuery.trim()}
-                      className="flex shrink-0 items-center justify-center gap-2 rounded-2xl bg-brand-primary px-7 py-4 text-sm font-black text-white transition-all hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-40 kurdish-text"
-                    >
-                      {aiLoading ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Search className="h-4 w-4" />
+                      {/* Live suggestions dropdown */}
+                      {showSuggestions && localSuggestions.length > 0 && (
+                        <div className="absolute top-full left-0 right-0 mt-2 bg-[#151515] border border-white/10 rounded-xl overflow-hidden z-30 text-right shadow-2xl">
+                          {localSuggestions.map((s) => (
+                            <button
+                              key={s.id}
+                              type="button"
+                              onClick={() => {
+                                setSearchQuery(s.title);
+                                setShowSuggestions(false);
+                                submitSearchTerm(s.title);
+                              }}
+                              className="w-full flex items-center justify-between px-5 py-3 hover:bg-white/5 transition-colors"
+                            >
+                              <span className="kurdish-text font-bold text-sm text-white">
+                                {s.title}
+                              </span>
+                              {s.year && (
+                                <span className="text-[10px] text-gray-500 font-bold">
+                                  {s.year}
+                                </span>
+                              )}
+                            </button>
+                          ))}
+                        </div>
                       )}
-                      {aiLoading ? "ئەی ئای بیردەکاتەوە..." : "گەڕان"}
-                    </button>
-                  </>
-                )}
-              </div>
+                    </div>
+                  )}
 
-              {/* CONTROLS CARD — groups the search-mode toggles (ناونیشان / گەڕانی
-                  زیرەک (AI)) and the sort pills (نوێترین / باڵاترین ترێند /
-                  زۆرترین بینەری ڕاستەوخۆ) into a single purple-tinted box
-                  directly under the main search bar. Pure layout move — no
-                  search/filter logic changed. */}
-              <div className="mt-1 mb-5 rounded-2xl border border-purple-500/25 bg-gradient-to-b from-purple-500/10 via-purple-500/5 to-transparent px-4 py-4 flex flex-col items-center gap-4">
-                <div className="flex flex-wrap items-center justify-center gap-2">
-                  {(
-                    [
-                      { id: "title", label: "ناونیشان", icon: Search },
-                      { id: "ai", label: "گەڕانی زیرەک (AI)", icon: Sparkles },
-                    ] as const
-                  ).map((mode) => (
-                    <button
-                      key={mode.id}
-                      onClick={() => {
-                        setSearchMode(mode.id);
-                        setCurrentPage(1);
-                      }}
-                      className={`flex items-center gap-2 px-5 py-2.5 rounded-xl border text-sm font-bold transition-all kurdish-text ${
-                        searchMode === mode.id
-                          ? "bg-brand-primary border-brand-primary text-white"
-                          : "bg-white/5 border-white/10 text-gray-400 hover:text-white"
-                      }`}
-                    >
-                      <mode.icon className="w-4 h-4" />
-                      {mode.label}
-                    </button>
-                  ))}
+                  {searchMode === "ai" && (
+                    <>
+                      <div className="relative flex-1 min-w-[220px] max-w-md text-right">
+                        <Sparkles className="absolute right-5 top-1/2 h-5 w-5 -translate-y-1/2 text-brand-primary" />
+                        <input
+                          type="text"
+                          value={aiQuery}
+                          onChange={(e) => setAiQuery(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.shiftKey) {
+                              e.preventDefault();
+                              runAiSearch();
+                            }
+                          }}
+                          placeholder="بۆ نموونە: فیلمێکی ترسناکم دەوێت"
+                          className="w-full rounded-xl border border-white/10 bg-white/5 py-3 pr-11 pl-5 kurdish-text transition-all focus:border-brand-primary focus:bg-white/10 focus:outline-none"
+                        />
+                      </div>
+                      <button
+                        onClick={runAiSearch}
+                        disabled={aiLoading || !aiQuery.trim()}
+                        className="flex shrink-0 items-center justify-center gap-2 rounded-xl bg-brand-primary px-6 py-3 text-sm font-black text-white transition-all hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-40 kurdish-text"
+                      >
+                        {aiLoading ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Search className="h-4 w-4" />
+                        )}
+                        {aiLoading ? "ئەی ئای بیردەکاتەوە..." : "گەڕان"}
+                      </button>
+                    </>
+                  )}
                 </div>
 
-                <div className="flex flex-wrap justify-center items-center gap-3">
-                  <span className="text-xs font-bold text-gray-500 kurdish-text">
-                    ڕیزکردن:
-                  </span>
-                  {(
-                    [
-                      { id: "recent", label: "نوێترین" },
-                      { id: "trending", label: "باڵاترین ترێند" },
-                      { id: "live", label: "زۆرترین بینەری ڕاستەوخۆ" },
-                    ] as const
-                  ).map((s) => (
-                    <button
-                      key={s.id}
-                      onClick={() => setSortBy(s.id)}
-                      className={`px-3 py-1.5 rounded-lg border text-xs font-bold transition-all kurdish-text ${
-                        sortBy === s.id
-                          ? "bg-brand-primary/20 border-brand-primary/40 text-brand-primary"
-                          : "bg-white/5 border-white/10 text-gray-500 hover:text-white"
-                      }`}
-                    >
-                      {s.label}
-                    </button>
-                  ))}
+                {/* Row 2 — search-mode toggles + sort pills (wrap on mobile). */}
+                <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    {(
+                      [
+                        { id: "title", label: "ناونیشان", icon: Search },
+                        { id: "ai", label: "گەڕانی زیرەک (AI)", icon: Sparkles },
+                      ] as const
+                    ).map((mode) => (
+                      <button
+                        key={mode.id}
+                        onClick={() => {
+                          setSearchMode(mode.id);
+                          setCurrentPage(1);
+                        }}
+                        className={`flex items-center gap-2 px-4 py-2 rounded-lg border text-sm font-bold transition-all kurdish-text ${
+                          searchMode === mode.id
+                            ? "bg-brand-primary border-brand-primary text-white"
+                            : "bg-white/5 border-white/10 text-gray-400 hover:text-white"
+                        }`}
+                      >
+                        <mode.icon className="w-4 h-4" />
+                        {mode.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="hidden md:block w-px h-6 bg-purple-500/25" />
+
+                  <div className="flex flex-wrap justify-center items-center gap-2">
+                    <span className="text-xs font-bold text-gray-500 kurdish-text">
+                      ڕیزکردن:
+                    </span>
+                    {(
+                      [
+                        { id: "recent", label: "نوێترین" },
+                        { id: "trending", label: "باڵاترین ترێند" },
+                        { id: "live", label: "زۆرترین بینەری ڕاستەوخۆ" },
+                      ] as const
+                    ).map((s) => (
+                      <button
+                        key={s.id}
+                        onClick={() => setSortBy(s.id)}
+                        className={`px-3 py-1.5 rounded-lg border text-xs font-bold transition-all kurdish-text ${
+                          sortBy === s.id
+                            ? "bg-brand-primary/20 border-brand-primary/40 text-brand-primary"
+                            : "bg-white/5 border-white/10 text-gray-500 hover:text-white"
+                        }`}
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
 
