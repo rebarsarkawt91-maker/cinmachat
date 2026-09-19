@@ -11785,12 +11785,12 @@ async function startServer() {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
-    const whatsappNumber = (
+    const whatsappNumber = normalizeWhatsAppNumber(
       whatsappContact.number ||
-      process.env.VITE_WHATSAPP_NUMBER ||
-      process.env.WHATSAPP_NUMBER ||
-      '9647701966649'
-    ).trim();
+        process.env.VITE_WHATSAPP_NUMBER ||
+        process.env.WHATSAPP_NUMBER ||
+        '9647701966649'
+    );
     const whatsappGroupLink = (
       whatsappContact.groupLink ||
       process.env.VITE_WHATSAPP_GROUP_LINK ||
