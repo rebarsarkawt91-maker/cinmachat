@@ -186,6 +186,76 @@ const cacheDeletedMovieIds = (ids: Set<string>) => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// Deleted genre/category tombstones.
+// When an admin removes a genre (admin "بەڕێوەبەرایەتی پۆلێنەکان" panel OR the
+// homepage pill "x"), the tag is recorded here and in localStorage so every
+// local state, fallback chip and legacy movie-derived chip stops rendering it
+// immediately — before and independent of the Firestore snapshot — and stays
+// purged across reloads with NO hardcoded fallback resurrecting it. If the tag
+// is cleanly re-added later the live genre is shown again (the adder clears the
+// tombstone). The module store is shared by the pill row, the admin panel and
+// the main App state through a tiny pub/sub, so deleting from any surface
+// updates every other surface in the same tab in real time.
+// ---------------------------------------------------------------------------
+const DELETED_GENRE_TAGS_CACHE_KEY = "cinemachat:deleted-genre-tags:v1";
+
+const readDeletedGenreTags = (): Set<string> => {
+  const tags = new Set<string>();
+  if (typeof window === "undefined") return tags;
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem(DELETED_GENRE_TAGS_CACHE_KEY) || "[]",
+    );
+    if (Array.isArray(parsed)) {
+      parsed.forEach((t: unknown) => {
+        if (typeof t === "string" && t) tags.add(normalizeCategoryKey(t));
+      });
+    }
+  } catch {
+    // Storage can be unavailable in private mode; Firestore remains canonical.
+  }
+  return tags;
+};
+
+let deletedGenreTags = readDeletedGenreTags();
+const deletedGenreTagsListeners = new Set<() => void>();
+
+const publishDeletedGenreTags = () => {
+  if (typeof window !== "undefined") {
+    try {
+      localStorage.setItem(
+        DELETED_GENRE_TAGS_CACHE_KEY,
+        JSON.stringify([...deletedGenreTags]),
+      );
+    } catch {
+      // Storage can be unavailable in private mode; Firestore remains canonical.
+    }
+  }
+  deletedGenreTagsListeners.forEach((cb) => cb());
+};
+
+/** Keep React state in sync with the module-level tombstone store. */
+const subscribeDeletedGenreTags = (cb: () => void): (() => void) => {
+  deletedGenreTagsListeners.add(cb);
+  return () => {
+    deletedGenreTagsListeners.delete(cb);
+  };
+};
+
+/** Purge a genre tag from state + localStorage immediately (after a delete). */
+const markGenreTagDeleted = (tag: string) => {
+  deletedGenreTags.add(normalizeCategoryKey(tag));
+  publishDeletedGenreTags();
+};
+
+/** Forget a tombstone — used when a delete fails, or an admin re-adds the tag. */
+const clearGenreTagDeleted = (tag: string) => {
+  if (deletedGenreTags.delete(normalizeCategoryKey(tag))) {
+    publishDeletedGenreTags();
+  }
+};
+
 // Inline base64 image (a "data:" URL). Firestore movie docs still carry these
 // as the durable poster copy; the API server materializes them into small
 // /uploads URLs, so base64 blobs must never win a merge against those URLs.
@@ -1198,11 +1268,13 @@ const MovieCategoryRow = ({
   activeTag,
   onSelect,
   isAdmin,
+  loading,
 }: {
-  categories: { name: string; tag: string }[];
+  categories: { name: string; tag: string; id?: string }[];
   activeTag: string;
   onSelect: (tag: string) => void;
   isAdmin: boolean;
+  loading?: boolean;
 }) => {
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   const [canScroll, setCanScroll] = useState(false);
@@ -1211,6 +1283,8 @@ const MovieCategoryRow = ({
   const [newKey, setNewKey] = useState("");
   const [addError, setAddError] = useState("");
   const [adding, setAdding] = useState(false);
+  const [deletingTag, setDeletingTag] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState("");
 
   const measure = () => {
     const el = scrollRef.current;
@@ -1221,7 +1295,7 @@ const MovieCategoryRow = ({
     measure();
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
-  }, [categories.length, showAdd]);
+  }, [categories.length, showAdd, deletingTag, deleteError]);
 
   // Direction-aware scroll: RTL rows overflow toward negative scrollLeft.
   const scrollRow = (dir: 1 | -1) => {
@@ -1249,12 +1323,37 @@ const MovieCategoryRow = ({
       setNewLabel("");
       setNewKey("");
       setShowAdd(false);
+      // If this tag was deleted before and is now cleanly re-added, forget the
+      // old tombstone so the live chip renders again.
+      clearGenreTagDeleted(newKey);
       // The live genre subscriptions update this row, the admin Post-Movie
       // form and the Edit-Movie modal instantly — no local copy to maintain.
     } catch (e: any) {
       setAddError(e?.message || "هەڵەیەک ڕوویدا لە زیادکردنی پۆلێن");
     } finally {
       setAdding(false);
+    }
+  };
+
+  // Instant delete: purge the pill from the row (state + localStorage) the
+  // moment the click lands, then persist the deletion to the database. The
+  // live Firestore subscription confirms the removal; a failed delete restores
+  // the pill so the row never loses an actually-valid category.
+  const handleDeleteCategory = async (category: { name: string; tag: string; id?: string }) => {
+    if (!category?.id) return; // only Firestore-backed categories are deletable
+    if (!window.confirm(`ئایا دڵنیایت لە سڕینەوەی پۆلێنی "${category.name}"؟`)) return;
+    setDeleteError("");
+    setDeletingTag(category.tag);
+    markGenreTagDeleted(category.tag); // immediate purge from state + storage
+    try {
+      await deleteGenre(category.id);
+    } catch (e) {
+      clearGenreTagDeleted(category.tag); // deletion failed → restore the pill
+      setDeletingTag(null);
+      setDeleteError(`کێشەیەک ڕوویدا لە سڕینەوەی "${category.name}" — تکایە دووبارە هەوڵبدەرەوە`);
+      return;
+    } finally {
+      setDeletingTag((t) => (t === category.tag ? null : t));
     }
   };
 
@@ -1275,20 +1374,62 @@ const MovieCategoryRow = ({
           ref={scrollRef}
           className="flex-1 min-w-0 flex items-center gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         >
-          {chips.map((c) => (
-            <button
-              key={c.tag}
-              type="button"
-              onClick={() => onSelect(c.tag)}
-              className={`shrink-0 px-4 py-2 rounded-full border text-xs font-black kurdish-text whitespace-nowrap transition-all ${
-                activeTag === c.tag
-                  ? "bg-brand-primary border-brand-primary text-white shadow-lg shadow-brand-primary/30"
-                  : "bg-white/5 border-white/10 text-gray-300 hover:text-white hover:border-white/30"
-              }`}
-            >
-              {c.name}
-            </button>
-          ))}
+          {loading ? (
+            // Stable-height loading placeholders (no wrong pills flash in while
+            // the Firestore genre snapshot is still in flight, so the row never
+            // swaps lists and never shifts layout).
+            Array.from({ length: 6 }).map((_, i) => (
+              <div
+                key={`genre-sk-${i}`}
+                className="shrink-0 h-9 w-[92px] rounded-full bg-white/5 border border-white/10 animate-pulse"
+              />
+            ))
+          ) : (
+            chips.map((c) => (
+              <div
+                key={c.tag}
+                className={`shrink-0 relative inline-flex rounded-full border text-xs font-black kurdish-text whitespace-nowrap transition-all ${
+                  activeTag === c.tag
+                    ? "bg-brand-primary border-brand-primary text-white shadow-lg shadow-brand-primary/30"
+                    : "bg-white/5 border-white/10 text-gray-300 hover:text-white hover:border-white/30"
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => onSelect(c.tag)}
+                  className={`flex items-center gap-1 rounded-full px-4 py-2 transition-all ${
+                    isAdmin && c.tag !== ALL_CATEGORY_KEY && c.id
+                      ? "pl-4"
+                      : ""
+                  }`}
+                >
+                  {c.name}
+                </button>
+                {/* Visible 'x' delete icon (admins only, on every Firestore-backed
+                    category pill except "All"). Clicking it deletes the genre
+                    from the backend (Firestore) and purges it from the UI. */}
+                {isAdmin && c.tag !== ALL_CATEGORY_KEY && c.id && (
+                  <button
+                    type="button"
+                    title={`سڕینەوەی ${c.name}`}
+                    aria-label={`سڕینەوەی ${c.name}`}
+                    disabled={deletingTag === c.tag}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteCategory(c);
+                    }}
+                    className="absolute -top-1.5 -left-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-red-400/60 bg-red-600 text-white shadow-md shadow-red-950/50 transition-all hover:bg-red-500 hover:scale-105 disabled:opacity-50"
+                  >
+                    {deletingTag === c.tag ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <X className="h-3 w-3" strokeWidth={3} />
+                    )}
+                  </button>
+                )}
+              </div>
+            ))
+          )}
         </div>
         {isAdmin && (
           <button
@@ -1315,6 +1456,12 @@ const MovieCategoryRow = ({
           </button>
         )}
       </div>
+
+      {deleteError && (
+        <p className="mt-2 text-center text-xs font-bold text-red-400 kurdish-text">
+          {deleteError}
+        </p>
+      )}
 
       {isAdmin && showAdd && (
         <div className="mt-3 p-4 rounded-2xl border border-purple-500/30 bg-purple-500/5 space-y-3">
@@ -3082,7 +3229,10 @@ const CategoryModule = ({ movies }: any) => {
     setError("");
     setAdding(true);
     try {
-      await withTimeout(addGenre(name, getAdminUsername()));
+      const created = await withTimeout(addGenre(name, getAdminUsername()));
+      // If this genre was deleted before and is cleanly re-added now, forget
+      // the old tombstone so it renders live again.
+      clearGenreTagDeleted(created.tag);
       setNewCat(""); // the live subscription adds it to the list instantly
     } catch (e: any) {
       setError(e?.message || "هەڵەیەک ڕوویدا لە زیادکردنی پۆلێن");
@@ -3095,9 +3245,14 @@ const CategoryModule = ({ movies }: any) => {
     if (!confirm(`ئایا دڵنیایت لە سڕینەوەی پۆلێنی "${genre.name}"؟`)) return;
     setError("");
     setDeletingId(genre.id);
+    // Purge from local state + the homepage pill row immediately; the live
+    // subscription then removes it from Firestore everywhere. A failed backend
+    // delete restores the pill again so nothing valid is ever hidden.
+    markGenreTagDeleted(genre.tag);
     try {
       await withTimeout(deleteGenre(genre.id)); // live subscription removes it instantly
     } catch (e) {
+      clearGenreTagDeleted(genre.tag);
       setError("کێشەیەک ڕوویدا لە سڕینەوە — تکایە دووبارە هەوڵبدەرەوە");
     } finally {
       setDeletingId(null);
@@ -7342,16 +7497,29 @@ export default function App() {
   // The details/player dialog container, used to move focus into the modal.
   const movieModalRef = useRef<HTMLDivElement | null>(null);
 
-  // Dynamic genres from Firestore (real-time). While the snapshot hasn't
-  // arrived yet we fall back to the default catalog so the nav never flashes
-  // empty on slow networks / cold rules.
+  // Dynamic genres from Firestore (real-time) — the ONLY source the nav chips
+  // render from. No hardcoded DEFAULT_GENRES fallback is ever shown, so a genre
+  // deleted by an admin can never flash back in on the next page load: the row
+  // waits (skeleton) until the real snapshot arrives, then renders the live
+  // list only.
   const [dynamicGenres, setDynamicGenres] = useState<Genre[]>([]);
   const [genresReady, setGenresReady] = useState(false);
 
+  // Deleted-genre tombstones (persisted in localStorage). Subscribed from the
+  // module store so a deletion from the admin panel OR the homepage pill "x"
+  // purges the tag from this component's state and the UI immediately.
+  const [deletedGenreTags, setDeletedGenreTags] = useState<Set<string>>(
+    () => new Set(deletedGenreTags),
+  );
+  useEffect(
+    () =>
+      subscribeDeletedGenreTags(() => setDeletedGenreTags(new Set(deletedGenreTags))),
+    [],
+  );
+
   useEffect(() => {
     // Real-time genre subscription for the main nav. Seeding happens only in the
-    // admin panel (CategoryModule) so visitors are never silently authenticated
-    // — everyone sees DEFAULT_GENRES as a fallback until the snapshot arrives.
+    // admin panel (CategoryModule) so visitors are never silently authenticated.
     const unsub = subscribeGenres((list) => {
       setDynamicGenres(list);
       setGenresReady(true);
@@ -7362,6 +7530,8 @@ export default function App() {
   // Legacy/unknown category chips discovered on existing movie records: a
   // movie whose primary category is not in the Firestore genre list keeps its
   // own chip so it stays reachable (old movies are never hidden or re-tagged).
+  // A deleted genre tag is excluded even if old movie records still carry it,
+  // so an admin deletion stays purged instead of resurrecting as an "extra".
   const movieExtraCategories = useMemo(() => {
     const seen = new Set<string>([ALL_CATEGORY_KEY]);
     DEFAULT_GENRES.forEach((g) => seen.add(normalizeCategoryKey(g.tag)));
@@ -7371,13 +7541,19 @@ export default function App() {
     for (const m of movies) {
       for (const raw of moviePrimaryCategories(m)) {
         const key = normalizeCategoryKey(raw);
-        if (seen.has(key) || pushed.has(key)) continue;
+        if (
+          seen.has(key) ||
+          pushed.has(key) ||
+          deletedGenreTags.has(key)
+        ) {
+          continue;
+        }
         pushed.add(key);
         extras.push({ name: raw, tag: raw });
       }
     }
     return extras;
-  }, [movies, dynamicGenres]);
+  }, [movies, dynamicGenres, deletedGenreTags]);
 
   // If the currently selected genre is deleted in the admin panel, fall back to
   // the "all" view instead of leaving a dead filter active. Category chips
@@ -7388,11 +7564,18 @@ export default function App() {
     if (
       activeTab !== "all" &&
       !dynamicGenres.some((g) => g.tag === activeTab) &&
-      !movieExtraCategories.some((c) => c.tag === activeTab)
+      !movieExtraCategories.some((c) => c.tag === activeTab) &&
+      !deletedGenreTags.has(normalizeCategoryKey(activeTab))
     ) {
       setActiveTab("all");
     }
-  }, [dynamicGenres, movieExtraCategories, genresReady, activeTab]);
+  }, [
+    dynamicGenres,
+    movieExtraCategories,
+    genresReady,
+    activeTab,
+    deletedGenreTags,
+  ]);
 
   const [autoPlay, setAutoPlay] = useState(false);
   const [isHeroMuted, setIsHeroMuted] = useState(false);
@@ -12701,17 +12884,21 @@ export default function App() {
 
   // Navigation genre list: always starts with the special "هەمووی" (all) view,
   // followed by the genres from Firestore with live per-genre movie counts.
+  // Rendered directly from the database — no hardcoded fallback, and any tag
+  // deleted by an admin is purged here too, so it can never flash back in.
   const navGenres = useMemo(() => {
-    const source = genresReady ? dynamicGenres : DEFAULT_GENRES;
-    return source.map((g) => ({
-      id: (g as Genre).id || g.tag,
-      name: g.name,
-      tag: g.tag,
-      count: movies.filter(
-        (m) => Array.isArray(m.tags) && m.tags.includes(g.tag),
-      ).length,
-    }));
-  }, [dynamicGenres, genresReady, movies]);
+    const source = genresReady ? dynamicGenres : [];
+    return source
+      .filter((g) => !deletedGenreTags.has(normalizeCategoryKey(g.tag)))
+      .map((g) => ({
+        id: (g as Genre).id || g.tag,
+        name: g.name,
+        tag: g.tag,
+        count: movies.filter(
+          (m) => Array.isArray(m.tags) && m.tags.includes(g.tag),
+        ).length,
+      }));
+  }, [dynamicGenres, genresReady, movies, deletedGenreTags]);
 
   // Load the drama rooms once on mount (server-persisted in db.dramaRooms).
   const refreshDramaRooms = useCallback(async () => {
@@ -12825,9 +13012,11 @@ export default function App() {
   // Homepage category chips: the canonical Firestore list first, then any
   // legacy/unknown categories found on existing movies so old records stay
   // usable. "All" is added by the chip row itself (built-in, never persisted).
+  // The Firestore doc id travels with each live genre so the pill row can offer
+  // its own one-click delete.
   const homepageCategoryChips = useMemo(
     () => [
-      ...navGenres.map((g) => ({ name: g.name, tag: g.tag })),
+      ...navGenres.map((g) => ({ name: g.name, tag: g.tag, id: g.id })),
       ...movieExtraCategories,
     ],
     [navGenres, movieExtraCategories],
@@ -13645,48 +13834,10 @@ export default function App() {
             {/* Smart Search Section */}
             <div className="relative max-w-5xl mx-auto px-5 md:px-8 mt-4 mb-8 text-center">
 
-              {/* Movie category chip row — shared canonical category list.
-                  Replaces the old dropdowns: every category is visible, one
-                  click filters immediately, arrows scroll when needed, and
-                  the purple "+" (admins only) adds a persistent category. */}
-              <div className="flex flex-wrap items-center justify-center gap-4 mb-5">
-                <MovieCategoryRow
-                  categories={homepageCategoryChips}
-                  activeTag={activeTab}
-                  onSelect={(tag: string) => {
-                    setActiveTab(tag);
-                    setCurrentPage(1);
-                  }}
-                  isAdmin={systemVerified}
-                />
-              </div>
-
-              {/* Search mode buttons live in the same row as the search box
-                  they control (title/AI inputs render inline next to them). */}
+              {/* ROW A — Main Search Bar (kept at the very top of the stack).
+                  The active search input renders on its own row so the catalog
+                  always starts from the search field, per the reference layout. */}
               <div className="flex flex-wrap items-center justify-center gap-2 mb-5">
-                {(
-                  [
-                    { id: "title", label: "ناونیشان", icon: Search },
-                    { id: "ai", label: "گەڕانی زیرەک (AI)", icon: Sparkles },
-                  ] as const
-                ).map((mode) => (
-                  <button
-                    key={mode.id}
-                    onClick={() => {
-                      setSearchMode(mode.id);
-                      setCurrentPage(1);
-                    }}
-                    className={`flex items-center gap-2 px-5 py-2.5 rounded-xl border text-sm font-bold transition-all kurdish-text ${
-                      searchMode === mode.id
-                        ? "bg-brand-primary border-brand-primary text-white"
-                        : "bg-white/5 border-white/10 text-gray-400 hover:text-white"
-                    }`}
-                  >
-                    <mode.icon className="w-4 h-4" />
-                    {mode.label}
-                  </button>
-                ))}
-
                 {searchMode === "title" && (
                   <div className="relative group flex-1 min-w-[220px] max-w-md text-right">
                     <Search className="absolute right-6 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500 group-focus-within:text-brand-primary" />
@@ -13770,6 +13921,34 @@ export default function App() {
                     </button>
                   </>
                 )}
+              </div>
+
+              {/* ROW B — Action buttons (search-mode toggles) sit directly
+                  below the main search bar and above the AI search & filter
+                  controls, so the search itself always stays on top. */}
+              <div className="flex flex-wrap items-center justify-center gap-2 mb-5">
+                {(
+                  [
+                    { id: "title", label: "ناونیشان", icon: Search },
+                    { id: "ai", label: "گەڕانی زیرەک (AI)", icon: Sparkles },
+                  ] as const
+                ).map((mode) => (
+                  <button
+                    key={mode.id}
+                    onClick={() => {
+                      setSearchMode(mode.id);
+                      setCurrentPage(1);
+                    }}
+                    className={`flex items-center gap-2 px-5 py-2.5 rounded-xl border text-sm font-bold transition-all kurdish-text ${
+                      searchMode === mode.id
+                        ? "bg-brand-primary border-brand-primary text-white"
+                        : "bg-white/5 border-white/10 text-gray-400 hover:text-white"
+                    }`}
+                  >
+                    <mode.icon className="w-4 h-4" />
+                    {mode.label}
+                  </button>
+                ))}
               </div>
 
               {searchMode === "title" && (
@@ -13995,6 +14174,24 @@ export default function App() {
               facebookUrl={config.facebookUrl}
               canManage={isPrimaryOwner}
             />
+
+            {/* Category Filter Pills — bottom of the stacked search hierarchy,
+                positioned directly above the movie cards grid. Rendered purely
+                from the Firestore/state category list (a skeleton shows until
+                the real snapshot arrives — no hardcoded fallback, no glitch),
+                with an admin-only delete "x" on every Firestore-backed pill. */}
+            <div className="max-w-7xl mx-auto px-8 mt-6 mb-4">
+              <MovieCategoryRow
+                categories={homepageCategoryChips}
+                activeTag={activeTab}
+                onSelect={(tag: string) => {
+                  setActiveTab(tag);
+                  setCurrentPage(1);
+                }}
+                isAdmin={systemVerified}
+                loading={!genresReady}
+              />
+            </div>
 
             {/* Movie Grid Section */}
             <div className="max-w-7xl mx-auto px-8 pb-32">
