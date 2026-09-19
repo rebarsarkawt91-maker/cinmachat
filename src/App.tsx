@@ -13966,32 +13966,61 @@ export default function App() {
                 )}
               </div>
 
-              {/* ROW B — Action buttons (search-mode toggles) sit directly
-                  below the main search bar and above the AI search & filter
-                  controls, so the search itself always stays on top. */}
-              <div className="flex flex-wrap items-center justify-center gap-2 mb-5">
-                {(
-                  [
-                    { id: "title", label: "ناونیشان", icon: Search },
-                    { id: "ai", label: "گەڕانی زیرەک (AI)", icon: Sparkles },
-                  ] as const
-                ).map((mode) => (
-                  <button
-                    key={mode.id}
-                    onClick={() => {
-                      setSearchMode(mode.id);
-                      setCurrentPage(1);
-                    }}
-                    className={`flex items-center gap-2 px-5 py-2.5 rounded-xl border text-sm font-bold transition-all kurdish-text ${
-                      searchMode === mode.id
-                        ? "bg-brand-primary border-brand-primary text-white"
-                        : "bg-white/5 border-white/10 text-gray-400 hover:text-white"
-                    }`}
-                  >
-                    <mode.icon className="w-4 h-4" />
-                    {mode.label}
-                  </button>
-                ))}
+              {/* CONTROLS CARD — groups the search-mode toggles (ناونیشان / گەڕانی
+                  زیرەک (AI)) and the sort pills (نوێترین / باڵاترین ترێند /
+                  زۆرترین بینەری ڕاستەوخۆ) into a single purple-tinted box
+                  directly under the main search bar. Pure layout move — no
+                  search/filter logic changed. */}
+              <div className="mt-1 mb-5 rounded-2xl border border-purple-500/25 bg-gradient-to-b from-purple-500/10 via-purple-500/5 to-transparent px-4 py-4 flex flex-col items-center gap-4">
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  {(
+                    [
+                      { id: "title", label: "ناونیشان", icon: Search },
+                      { id: "ai", label: "گەڕانی زیرەک (AI)", icon: Sparkles },
+                    ] as const
+                  ).map((mode) => (
+                    <button
+                      key={mode.id}
+                      onClick={() => {
+                        setSearchMode(mode.id);
+                        setCurrentPage(1);
+                      }}
+                      className={`flex items-center gap-2 px-5 py-2.5 rounded-xl border text-sm font-bold transition-all kurdish-text ${
+                        searchMode === mode.id
+                          ? "bg-brand-primary border-brand-primary text-white"
+                          : "bg-white/5 border-white/10 text-gray-400 hover:text-white"
+                      }`}
+                    >
+                      <mode.icon className="w-4 h-4" />
+                      {mode.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex flex-wrap justify-center items-center gap-3">
+                  <span className="text-xs font-bold text-gray-500 kurdish-text">
+                    ڕیزکردن:
+                  </span>
+                  {(
+                    [
+                      { id: "recent", label: "نوێترین" },
+                      { id: "trending", label: "باڵاترین ترێند" },
+                      { id: "live", label: "زۆرترین بینەری ڕاستەوخۆ" },
+                    ] as const
+                  ).map((s) => (
+                    <button
+                      key={s.id}
+                      onClick={() => setSortBy(s.id)}
+                      className={`px-3 py-1.5 rounded-lg border text-xs font-bold transition-all kurdish-text ${
+                        sortBy === s.id
+                          ? "bg-brand-primary/20 border-brand-primary/40 text-brand-primary"
+                          : "bg-white/5 border-white/10 text-gray-500 hover:text-white"
+                      }`}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {searchMode === "title" && (
@@ -14181,32 +14210,6 @@ export default function App() {
                   )}
                 </div>
               )}
-
-              {/* Sort control */}
-              <div className="mt-8 flex justify-center items-center gap-3">
-                <span className="text-xs font-bold text-gray-500 kurdish-text">
-                  ڕیزکردن:
-                </span>
-                {(
-                  [
-                    { id: "recent", label: "نوێترین" },
-                    { id: "trending", label: "باڵاترین ترێند" },
-                    { id: "live", label: "زۆرترین بینەری ڕاستەوخۆ" },
-                  ] as const
-                ).map((s) => (
-                  <button
-                    key={s.id}
-                    onClick={() => setSortBy(s.id)}
-                    className={`px-3 py-1.5 rounded-lg border text-xs font-bold transition-all kurdish-text ${
-                      sortBy === s.id
-                        ? "bg-brand-primary/20 border-brand-primary/40 text-brand-primary"
-                        : "bg-white/5 border-white/10 text-gray-500 hover:text-white"
-                    }`}
-                  >
-                    {s.label}
-                  </button>
-                ))}
-              </div>
             </div>
 
             {/* Social reels are additive: existing search, hero and movie-card
