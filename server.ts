@@ -11622,6 +11622,17 @@ async function startServer() {
   app.post('/api/webhooks/whatsapp', async (req, res) => {
     try {
       const { sender, text, secret } = req.body;
+      // security.ts sanitizationMiddleware HTML-escapes free-text fields
+      // ("/" → "&#x2F;"; the "text" key is not in its url/link skip list),
+      // which corrupts every movie link sent through the webhook. Decode the
+      // entities back before extraction — same pattern as the URL decoders.
+      const webhookText = String(text || '')
+        .replace(/&amp;/gi, '&')
+        .replace(/&#x2F;/gi, '/')
+        .replace(/&#x27;/gi, "'")
+        .replace(/&quot;/gi, '"')
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>');
       const webhookSecret = process.env.WHATSAPP_WEBHOOK_SECRET || 'Cinemachat_Secure_2024';
       const adminNumber = process.env.WHATSAPP_ADMIN_NUMBER || whatsappContact.number || '9647701966649';
       // 2. Security Check: Admin number enforcement (handling with/without +)
@@ -11645,9 +11656,9 @@ async function startServer() {
       const vimeoRegex = /(?:https?:\/\/)?(?:www\.)?(?:vimeo\.com\/)([0-9]+)/;
       const directRegex = /(https?:\/\/[^\s]+\.(mp4|mkv|mov|avi))/i;
 
-      const ytMatch = text.match(ytRegex);
-      const vimeoMatch = text.match(vimeoRegex);
-      const directMatch = text.match(directRegex);
+      const ytMatch = webhookText.match(ytRegex);
+      const vimeoMatch = webhookText.match(vimeoRegex);
+      const directMatch = webhookText.match(directRegex);
 
       let videoUrl = null;
       let title = "فیلمی نوێ (بە وەتسئەپ)";
@@ -11692,7 +11703,7 @@ async function startServer() {
       const newMovie = {
         id: `wa-auto-${Date.now()}`,
         title,
-        description: `بڵاوکراوەی ئۆتۆماتیکی لە ڕێگەی گرووپی واتسئەپەوە.\n\nOriginal Text excerpt:\n${text.substring(0, 200)}`,
+        description: `بڵاوکراوەی ئۆتۆماتیکی لە ڕێگەی گرووپی واتسئەپەوە.\n\nOriginal Text excerpt:\n${webhookText.substring(0, 200)}`,
         image: thumbnail,
         embedUrl: isYouTube ? `https://www.youtube.com/embed/${videoId}` : videoUrl,
         isYouTube,
