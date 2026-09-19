@@ -31,7 +31,11 @@ function siteUrl(): string {
 // from a single-line env var (common on Render/CI), so normalize it.
 function buildJwtClient(): JWT | null {
   const clientEmail = (process.env.GOOGLE_SEARCH_CONSOLE_CLIENT_EMAIL || '').trim();
+  // Render/service dashboards often paste the PEM as a single-line env var with
+  // escaped "\n" (and sometimes CRLF-wrapped "\r\n"). Normalize BOTH styles so
+  // the JWT always receives REAL newlines before signing.
   const rawPrivateKey = (process.env.GOOGLE_SEARCH_CONSOLE_PRIVATE_KEY || '').trim()
+    .replace(/\\r\\n/g, '\n')
     .replace(/\\n/g, '\n');
 
   if (!clientEmail || !rawPrivateKey) {
@@ -41,6 +45,12 @@ function buildJwtClient(): JWT | null {
     );
     return null;
   }
+
+  const keyLines = rawPrivateKey.split('\n').length;
+  console.log(
+    `[Search Console] Credentials found for ${clientEmail} ` +
+      `(site: ${siteUrl()}). Private key normalized — ${keyLines} line(s).`,
+  );
 
   return new JWT({
     email: clientEmail,
@@ -75,7 +85,13 @@ async function fetchQueryReport(jwt: JWT, days: number): Promise<QueryResult | n
   };
   const url = `${SEARCH_CONSOLE_API_PREFIX}/sites/${encodeURIComponent(siteUrl())}/searchAnalytics/query`;
 
-  const token = await jwt.getAccessToken().catch(() => null);
+  const token = await jwt.getAccessToken().catch((err: any) => {
+    console.warn(
+      `[Search Console] getAccessToken() FAILED — client-email/private-key pair is likely invalid: ` +
+        `${err?.message || err}.`,
+    );
+    return null;
+  });
   if (!token?.token) return null;
 
   const resp = await fetch(url, {
@@ -85,8 +101,16 @@ async function fetchQueryReport(jwt: JWT, days: number): Promise<QueryResult | n
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
-  }).catch(() => null);
-  if (!resp || !resp.ok) return null;
+  }).catch((err: any) => {
+    console.warn(`[Search Console] Query report network error: ${err?.message || err}.`);
+    return null;
+  });
+  if (!resp || !resp.ok) {
+    console.warn(
+      `[Search Console] Query report HTTP ${resp?.status ?? '(no response)'} for ${url}.`,
+    );
+    return null;
+  }
 
   const json: any = await resp.json().catch(() => null);
   const rows: any[] = Array.isArray(json?.rows) ? json.rows : [];
@@ -128,15 +152,27 @@ type IndexStatus = {
 // for crawl-error counts so the UI always has a meaningful status.
 async function fetchIndexStatus(jwt: JWT): Promise<IndexStatus> {
   const url = `${SEARCH_CONSOLE_API_PREFIX}/sites/${encodeURIComponent(siteUrl())}`;
-  const token = await jwt.getAccessToken().catch(() => null);
+  const token = await jwt.getAccessToken().catch((err: any) => {
+    console.warn(
+      `[Search Console] getAccessToken() FAILED (index status) — ` +
+        `${err?.message || err}.`,
+    );
+    return null;
+  });
   if (!token?.token) {
     return { status: 'unknown', lastCrawled: null, crawlErrors: 0, securityAlert: false };
   }
   const resp = await fetch(url, {
     method: 'GET',
     headers: { Authorization: `Bearer ${token.token}` },
-  }).catch(() => null);
+  }).catch((err: any) => {
+    console.warn(`[Search Console] Index status network error: ${err?.message || err}.`);
+    return null;
+  });
   if (!resp || !resp.ok) {
+    console.warn(
+      `[Search Console] Index status HTTP ${resp?.status ?? '(no response)'} for ${url}.`,
+    );
     return { status: 'unknown', lastCrawled: null, crawlErrors: 0, securityAlert: false };
   }
   const json: any = await resp.json().catch(() => null);
@@ -175,6 +211,7 @@ function demoData(days: number): any {
   const impressionSum = queries.reduce((s, q) => s + q.impressions, 0);
   return {
     configured: false,
+    isDemo: true,
     siteUrl: siteUrl(),
     rangeDays: days,
     report: {
@@ -207,12 +244,23 @@ export async function getSearchConsoleStats(days = 30): Promise<any> {
   ]);
 
   if (!report) {
-    console.warn('[Search Console] API request failed. Serving demo SEO data.');
+    console.warn(
+      `[Search Console] API call FAILED (${siteUrl()}, ${days}d) — ` +
+        'falling back to demo data. Check the service-account credentials, ' +
+        'private key newlines, and Search Console access for the site.',
+    );
     return demoData(days);
   }
 
+  console.log(
+    `[Search Console] Live API call OK (${siteUrl()}, ${days}d) — ` +
+      `clicks: ${report.totals.clicks}, impressions: ${report.totals.impressions}, ` +
+      `index status: ${index.status}. Returning live stats (isDemo: false).`,
+  );
+
   return {
     configured: true,
+    isDemo: false,
     siteUrl: siteUrl(),
     rangeDays: days,
     report,
