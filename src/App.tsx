@@ -1340,21 +1340,24 @@ const MovieCategoryRow = ({
   // live Firestore subscription confirms the removal; a failed delete restores
   // the pill so the row never loses an actually-valid category.
   const handleDeleteCategory = async (category: { name: string; tag: string; id?: string }) => {
-    if (!category?.id) return; // only Firestore-backed categories are deletable
     if (!window.confirm(`ئایا دڵنیایت لە سڕینەوەی پۆلێنی "${category.name}"؟`)) return;
     setDeleteError("");
     setDeletingTag(category.tag);
     markGenreTagDeleted(category.tag); // immediate purge from state + storage
+    if (!category.id) {
+      // Default / legacy / static category (no Firestore doc): the persisted
+      // tombstone IS the permanent deletion — it hides the pill from every
+      // surface (nav, extras, pills) with nothing to remove server-side.
+      setDeletingTag(null);
+      return;
+    }
     try {
       await deleteGenre(category.id);
     } catch (e) {
       clearGenreTagDeleted(category.tag); // deletion failed → restore the pill
-      setDeletingTag(null);
       setDeleteError(`کێشەیەک ڕوویدا لە سڕینەوەی "${category.name}" — تکایە دووبارە هەوڵبدەرەوە`);
-      return;
-    } finally {
-      setDeletingTag((t) => (t === category.tag ? null : t));
     }
+    setDeletingTag(null);
   };
 
   return (
@@ -1418,12 +1421,13 @@ const MovieCategoryRow = ({
                 >
                   {c.name}
                 </button>
-                {/* Prominent always-visible delete button (admins only, on every
-                    Firestore-backed category pill except "All"): a red/white
-                    Trash button stitched into the pill's edge. Clicking it asks
-                    for confirmation, deletes the genre from Firestore and purges
-                    the pill from the UI instantly. */}
-                {isAdmin && c.tag !== ALL_CATEGORY_KEY && c.id && (
+                {/* Prominent always-visible delete button (admins only, on EVERY
+                    category pill except "All" — including default/static/legacy
+                    categories): a red/white Trash button stitched into the pill's
+                    edge. Clicking it asks for confirmation and permanently hides
+                    the category (Firestore doc deleted for dynamic genres; for
+                    static ones the tombstone IS the permanent deletion). */}
+                {isAdmin && c.tag !== ALL_CATEGORY_KEY && (
                   <>
                     <span className="mx-1 self-stretch w-px my-2 bg-white/20" />
                     <button
