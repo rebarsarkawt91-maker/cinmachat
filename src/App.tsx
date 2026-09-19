@@ -1269,12 +1269,14 @@ const MovieCategoryRow = ({
   onSelect,
   isAdmin,
   loading,
+  onQuickPublish,
 }: {
   categories: { name: string; tag: string; id?: string }[];
   activeTag: string;
   onSelect: (tag: string) => void;
   isAdmin: boolean;
   loading?: boolean;
+  onQuickPublish?: () => void;
 }) => {
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   const [canScroll, setCanScroll] = useState(false);
@@ -1392,6 +1394,21 @@ const MovieCategoryRow = ({
               className="shrink-0 flex h-9 w-9 items-center justify-center rounded-full bg-purple-600 hover:bg-purple-500 text-white border border-purple-400/40 shadow-lg shadow-purple-900/40 transition-all"
             >
               <Plus className="w-5 h-5" />
+            </button>
+          )}
+          {/* Quick "Publish Movie" shortcut (admins only): a prominent button
+              next to the category add "+", opening the movie publishing form
+              (admin dashboard → Content tab) directly from the homepage. */}
+          {isAdmin && onQuickPublish && (
+            <button
+              type="button"
+              onClick={onQuickPublish}
+              title="بڵاوکردنەوەی فیلمی نوێ بە خێرایی"
+              aria-label="بڵاوکردنەوەی فیلمی نوێ"
+              className="shrink-0 inline-flex items-center gap-1.5 h-9 px-3 rounded-full bg-gradient-to-l from-brand-primary to-red-500 hover:from-brand-primary hover:to-red-600 text-white text-[11px] font-black kurdish-text border border-white/20 shadow-lg shadow-red-900/40 transition-all"
+            >
+              <Film className="w-3.5 h-3.5" />
+              بڵاوکردنەوەی فیلم
             </button>
           )}
           {loading ? (
@@ -12279,6 +12296,18 @@ export default function App() {
     }
   };
 
+  // Quick "Publish Movie" shortcut next to the category pills: opens the admin
+  // dashboard straight on the movie-publishing (Content) tab, or prompts the
+  // admin password if the dashboard was never unlocked yet.
+  const handleQuickPublishMovie = () => {
+    if (!currentUser) {
+      setShowPasswordModal(true);
+      return;
+    }
+    setAdminTab("content");
+    setShowAdminPanel(true);
+  };
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -14204,6 +14233,7 @@ export default function App() {
                 }}
                 isAdmin={systemVerified}
                 loading={!genresReady}
+                onQuickPublish={handleQuickPublishMovie}
               />
             </div>
 
