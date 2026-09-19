@@ -218,7 +218,7 @@ const readDeletedGenreTags = (): Set<string> => {
   return tags;
 };
 
-let deletedGenreTags = readDeletedGenreTags();
+let moduleDeletedGenreTags = readDeletedGenreTags();
 const deletedGenreTagsListeners = new Set<() => void>();
 
 const publishDeletedGenreTags = () => {
@@ -226,7 +226,7 @@ const publishDeletedGenreTags = () => {
     try {
       localStorage.setItem(
         DELETED_GENRE_TAGS_CACHE_KEY,
-        JSON.stringify([...deletedGenreTags]),
+        JSON.stringify([...moduleDeletedGenreTags]),
       );
     } catch {
       // Storage can be unavailable in private mode; Firestore remains canonical.
@@ -245,13 +245,13 @@ const subscribeDeletedGenreTags = (cb: () => void): (() => void) => {
 
 /** Purge a genre tag from state + localStorage immediately (after a delete). */
 const markGenreTagDeleted = (tag: string) => {
-  deletedGenreTags.add(normalizeCategoryKey(tag));
+  moduleDeletedGenreTags.add(normalizeCategoryKey(tag));
   publishDeletedGenreTags();
 };
 
 /** Forget a tombstone — used when a delete fails, or an admin re-adds the tag. */
 const clearGenreTagDeleted = (tag: string) => {
-  if (deletedGenreTags.delete(normalizeCategoryKey(tag))) {
+  if (moduleDeletedGenreTags.delete(normalizeCategoryKey(tag))) {
     publishDeletedGenreTags();
   }
 };
@@ -7509,11 +7509,13 @@ export default function App() {
   // module store so a deletion from the admin panel OR the homepage pill "x"
   // purges the tag from this component's state and the UI immediately.
   const [deletedGenreTags, setDeletedGenreTags] = useState<Set<string>>(
-    () => new Set(deletedGenreTags),
+    () => new Set(moduleDeletedGenreTags),
   );
   useEffect(
     () =>
-      subscribeDeletedGenreTags(() => setDeletedGenreTags(new Set(deletedGenreTags))),
+      subscribeDeletedGenreTags(() =>
+        setDeletedGenreTags(new Set(moduleDeletedGenreTags)),
+      ),
     [],
   );
 
