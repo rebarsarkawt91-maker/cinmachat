@@ -1374,6 +1374,23 @@ const MovieCategoryRow = ({
           ref={scrollRef}
           className="flex-1 min-w-0 flex items-center gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         >
+          {/* Category add button (admins only): the FIRST item of the pill bar,
+              so in the RTL layout it lands at the far-RIGHT edge, right next to
+              the "هەمووی (All)" pill. */}
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => {
+                setShowAdd((v) => !v);
+                setAddError("");
+              }}
+              title="زیادکردنی پۆلێنی نوێ"
+              aria-label="زیادکردنی پۆلێنی نوێ"
+              className="shrink-0 flex h-9 w-9 items-center justify-center rounded-full bg-purple-600 hover:bg-purple-500 text-white border border-purple-400/40 shadow-lg shadow-purple-900/40 transition-all"
+            >
+              <Plus className="w-5 h-5" />
+            </button>
+          )}
           {loading ? (
             // Stable-height loading placeholders (no wrong pills flash in while
             // the Firestore genre snapshot is still in flight, so the row never
@@ -1388,7 +1405,7 @@ const MovieCategoryRow = ({
             chips.map((c) => (
               <div
                 key={c.tag}
-                className={`shrink-0 relative inline-flex rounded-full border text-xs font-black kurdish-text whitespace-nowrap transition-all ${
+                className={`shrink-0 inline-flex items-stretch overflow-hidden rounded-full border text-xs font-black kurdish-text whitespace-nowrap transition-all ${
                   activeTag === c.tag
                     ? "bg-brand-primary border-brand-primary text-white shadow-lg shadow-brand-primary/30"
                     : "bg-white/5 border-white/10 text-gray-300 hover:text-white hover:border-white/30"
@@ -1397,54 +1414,45 @@ const MovieCategoryRow = ({
                 <button
                   type="button"
                   onClick={() => onSelect(c.tag)}
-                  className={`flex items-center gap-1 rounded-full px-4 py-2 transition-all ${
-                    isAdmin && c.tag !== ALL_CATEGORY_KEY && c.id
-                      ? "pl-4"
-                      : ""
-                  }`}
+                  className="flex items-center gap-1 px-4 py-2 transition-all"
                 >
                   {c.name}
                 </button>
-                {/* Visible 'x' delete icon (admins only, on every Firestore-backed
-                    category pill except "All"). Clicking it deletes the genre
-                    from the backend (Firestore) and purges it from the UI. */}
+                {/* Prominent always-visible delete button (admins only, on every
+                    Firestore-backed category pill except "All"): a red/white
+                    Trash button stitched into the pill's edge. Clicking it asks
+                    for confirmation, deletes the genre from Firestore and purges
+                    the pill from the UI instantly. */}
                 {isAdmin && c.tag !== ALL_CATEGORY_KEY && c.id && (
-                  <button
-                    type="button"
-                    title={`سڕینەوەی ${c.name}`}
-                    aria-label={`سڕینەوەی ${c.name}`}
-                    disabled={deletingTag === c.tag}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDeleteCategory(c);
-                    }}
-                    className="absolute -top-1.5 -left-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-red-400/60 bg-red-600 text-white shadow-md shadow-red-950/50 transition-all hover:bg-red-500 hover:scale-105 disabled:opacity-50"
-                  >
-                    {deletingTag === c.tag ? (
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                    ) : (
-                      <X className="h-3 w-3" strokeWidth={3} />
-                    )}
-                  </button>
+                  <>
+                    <span className="mx-1 self-stretch w-px my-2 bg-white/20" />
+                    <button
+                      type="button"
+                      title={`سڕینەوەی ${c.name}`}
+                      aria-label={`سڕینەوەی ${c.name}`}
+                      disabled={deletingTag === c.tag}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteCategory(c);
+                      }}
+                      className={`flex w-8 items-center justify-center transition-all disabled:opacity-50 ${
+                        activeTag === c.tag
+                          ? "bg-red-600/20 text-white/90 hover:bg-red-600 hover:text-white"
+                          : "text-red-300 hover:bg-red-600 hover:text-white"
+                      }`}
+                    >
+                      {deletingTag === c.tag ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                  </>
                 )}
               </div>
             ))
           )}
         </div>
-        {isAdmin && (
-          <button
-            type="button"
-            onClick={() => {
-              setShowAdd((v) => !v);
-              setAddError("");
-            }}
-            title="زیادکردنی پۆلێنی نوێ"
-            aria-label="زیادکردنی پۆلێنی نوێ"
-            className="shrink-0 w-9 h-9 rounded-full bg-purple-600 hover:bg-purple-500 text-white flex items-center justify-center border border-purple-400/40 shadow-lg shadow-purple-900/40 transition-all"
-          >
-            <Plus className="w-5 h-5" />
-          </button>
-        )}
         {canScroll && (
           <button
             type="button"
