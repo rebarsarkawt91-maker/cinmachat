@@ -21,7 +21,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const SEARCH_CONSOLE_API_PREFIX = 'https://searchconsole.googleapis.com/webmasters/v3';
-const DEFAULT_SEARCH_CONSOLE_CLIENT_EMAIL =
+const SEARCH_CONSOLE_CLIENT_EMAIL =
   'firebase-adminsdk-fbsvc@gen-lang-client-0240212572.iam.gserviceaccount.com';
 
 // Local service-account JSON candidates (project root), tried in order when the
@@ -89,12 +89,12 @@ function isCompletePrivateKey(formattedKey: string | undefined): formattedKey is
 }
 
 // Shared JWT factory used by both the env and the local-file credential paths.
-function jwtFrom(clientEmail: string, formattedKey: string): JWT {
+function jwtFrom(formattedKey: string): JWT {
   return new JWT({
-    email: clientEmail,
+    email: SEARCH_CONSOLE_CLIENT_EMAIL,
     key: formattedKey,
     scopes: ['https://www.googleapis.com/auth/webmasters.readonly'],
-    subject: clientEmail,
+    subject: SEARCH_CONSOLE_CLIENT_EMAIL,
   });
 }
 
@@ -109,7 +109,14 @@ function loadServiceAccountFile(): { clientEmail: string; privateKey: string } |
       const json = JSON.parse(readFileSync(filePath, 'utf8'));
       const clientEmail = String(json?.client_email || json?.clientEmail || '').trim();
       const privateKey = normalizePrivateKey(json?.private_key || json?.privateKey);
-      if (clientEmail && isCompletePrivateKey(privateKey)) {
+      if (clientEmail && clientEmail !== SEARCH_CONSOLE_CLIENT_EMAIL) {
+        console.warn(
+          `[Search Console] Ignoring ${filePath}: its client_email is not the ` +
+            'configured Firebase Admin service account.',
+        );
+        continue;
+      }
+      if (clientEmail === SEARCH_CONSOLE_CLIENT_EMAIL && isCompletePrivateKey(privateKey)) {
         console.log(
           `[Search Console] Service-account credentials loaded from ${filePath} ` +
             `(${privateKey.split('\n').length} key line(s)).`,
@@ -134,19 +141,26 @@ function loadServiceAccountFile(): { clientEmail: string; privateKey: string } |
 //   2. the local service-account file at the project root;
 //   3. null → demo data.
 function buildJwtClient(): JWT | null {
-  const envEmail = (
-    process.env.GOOGLE_SEARCH_CONSOLE_CLIENT_EMAIL || DEFAULT_SEARCH_CONSOLE_CLIENT_EMAIL
-  ).trim();
+  const configuredEnvEmail = (process.env.GOOGLE_SEARCH_CONSOLE_CLIENT_EMAIL || '').trim();
   const envFormattedKey = normalizePrivateKey(process.env.GOOGLE_SEARCH_CONSOLE_PRIVATE_KEY);
 
   // Env credential present and structurally valid → use it.
-  if (envEmail && isCompletePrivateKey(envFormattedKey)) {
+  const envEmailMatches =
+    !configuredEnvEmail || configuredEnvEmail === SEARCH_CONSOLE_CLIENT_EMAIL;
+  if (configuredEnvEmail && !envEmailMatches) {
+    console.warn(
+      '[Search Console] Ignoring GOOGLE_SEARCH_CONSOLE_* credentials because ' +
+        'GOOGLE_SEARCH_CONSOLE_CLIENT_EMAIL does not match the configured Firebase Admin account.',
+    );
+  }
+
+  if (envEmailMatches && isCompletePrivateKey(envFormattedKey)) {
     console.log(
-      `[Search Console] Credentials found in env for ${envEmail} ` +
+      `[Search Console] Credentials found in env for ${SEARCH_CONSOLE_CLIENT_EMAIL} ` +
         `(site: ${siteUrl()}). Private key normalized — ` +
         `${envFormattedKey.split('\n').length} line(s). Authentication primed.`,
     );
-    return jwtFrom(envEmail, envFormattedKey);
+    return jwtFrom(envFormattedKey);
   }
 
   // Env credential missing/incomplete → fall back to the local credentials file.
@@ -156,7 +170,7 @@ function buildJwtClient(): JWT | null {
       `[Search Console] Authenticating with service-account file: ` +
         `${fileCred.clientEmail} (site: ${siteUrl()}).`,
     );
-    return jwtFrom(fileCred.clientEmail, fileCred.privateKey);
+    return jwtFrom(fileCred.privateKey);
   }
 
   console.warn(
