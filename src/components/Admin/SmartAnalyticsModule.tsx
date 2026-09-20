@@ -205,9 +205,13 @@ export const SmartAnalyticsModule: React.FC<SmartAnalyticsModuleProps> = ({ curr
                   <FileSearch className="w-4 h-4 text-blue-400" />
                   بەرزترین وشە ڕێنیووەکان (Top Search Queries)
                 </h3>
-                {!seoData?.configured && (
+                {seoData?.isDemo ? (
                   <span className="text-[10px] px-2 py-0.5 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20 kurdish-text">
                     داتای نموونەیی (Demo) — پەیوەندی گووگڵ دەستنەکەوتووە
+                  </span>
+                ) : (
+                  <span className="text-[10px] px-2 py-0.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 kurdish-text">
+                    داتای ڕاستەقینەی Google (Live)
                   </span>
                 )}
               </div>

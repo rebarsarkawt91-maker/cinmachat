@@ -25,7 +25,13 @@ const SEARCH_CONSOLE_API_PREFIX = 'https://searchconsole.googleapis.com/webmaste
 // Local service-account JSON candidates (project root), tried in order when the
 // env credential is missing/incomplete. These files are NOT committed to git
 // and act as a development/staging fallback source.
-const SERVICE_ACCOUNT_FILES = ['credentials.json', 'service-account.json'];
+const SERVICE_ACCOUNT_FILES = [
+  'service-account.json',
+  'credentials.json',
+  // Local Firebase Admin credential already used by this project. Search
+  // Console access still has to be granted to this account in Google.
+  'gen-lang-client-0240212572-firebase-adminsdk-fbsvc-b4e91ae7d0.json',
+];
 
 // Search Console "property" (site) candidates, tried in order. The env override
 // wins, then the URL-prefix format for the CinemaChat production domain, then
