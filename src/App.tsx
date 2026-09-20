@@ -98,6 +98,37 @@ import { useRoomSubtitles } from "./hooks/useRoomSubtitles";
 import { ROOM_SUBTITLE_LANGUAGES, loadRoomSubtitleLanguage } from "./lib/roomSubtitleCore";
 import { api } from "./services/api";
 import { useI18n } from "./i18n";
+
+const MOVIE_URL_PARAM = "movieId";
+const SITE_ORIGIN = "https://www.cinamachat.com";
+
+const upsertMetaTag = (attribute: "name" | "property", key: string, content: string) => {
+  let element = document.head.querySelector<HTMLMetaElement>(`meta[${attribute}="${key}"]`);
+  if (!element) {
+    element = document.createElement("meta");
+    element.setAttribute(attribute, key);
+    document.head.appendChild(element);
+  }
+  element.content = content;
+};
+
+const upsertLinkTag = (rel: string, href: string) => {
+  let element = document.head.querySelector<HTMLLinkElement>(`link[rel="${rel}"]`);
+  if (!element) {
+    element = document.createElement("link");
+    element.rel = rel;
+    document.head.appendChild(element);
+  }
+  element.href = href;
+};
+
+const setMovieUrl = (movieId: string | null, replace = false) => {
+  const url = new URL(window.location.href);
+  if (movieId) url.searchParams.set(MOVIE_URL_PARAM, movieId);
+  else url.searchParams.delete(MOVIE_URL_PARAM);
+  window.history[replace ? "replaceState" : "pushState"]({}, "", `${url.pathname}${url.search}${url.hash}`);
+};
+
 import {
   subscribeGenres,
   addGenre,
@@ -9494,6 +9525,7 @@ export default function App() {
       setActiveServerUrl(getMovieSourceUrl(movie));
       setShowPlayer(false);
       setIsMovieDetailsOpen(true);
+      setMovieUrl(movie.id);
     },
     [],
   );
@@ -9529,6 +9561,9 @@ export default function App() {
   // Full close: hide both layers, restore page scroll (handled by the layout
   // effect below) and return keyboard focus to the card that opened the modal.
   const closeMovieModal = useCallback(() => {
+    if (selectedMovie?.id === new URLSearchParams(window.location.search).get(MOVIE_URL_PARAM)) {
+      setMovieUrl(null, true);
+    }
     setIsMovieDetailsOpen(false);
     setShowPlayer(false);
     setSelectedMovie(null);
@@ -9544,7 +9579,7 @@ export default function App() {
         }
       });
     }
-  }, []);
+  }, [selectedMovie?.id]);
 
   // Escape closes ONLY the active foreground layer: while the player is up it
   // steps back to the details panel IF that panel is actually part of the
@@ -9592,6 +9627,71 @@ export default function App() {
     return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedMovie?.id]);
+
+  // Movie detail URLs are crawlable entry points as well as shareable links.
+  // Resolve them after the catalog arrives so guests do not need authentication.
+  useEffect(() => {
+    const movieId = new URLSearchParams(window.location.search).get(MOVIE_URL_PARAM);
+    if (!movieId) return;
+    const movie = movies.find((item) => item.id === movieId);
+    if (!movie || selectedMovie?.id === movie.id) return;
+    setSelectedMovie(movie);
+    setActiveServerUrl(getMovieSourceUrl(movie));
+    setShowPlayer(false);
+    setIsMovieDetailsOpen(true);
+  }, [movies, selectedMovie?.id]);
+
+  // Keep the document head aligned with the currently selected movie.
+  useEffect(() => {
+    const movie = selectedMovie;
+    const defaultTitle = "CinamaChat - نوێترین فیلم و زنجیرەکان بە کوردی";
+    const defaultDescription = "CinamaChat - باشترین پلاتفۆرمی کوردی بۆ بینینی فیلم و زنجیرەکان بە کوالیتی بەرز و دۆبلاژی کوردی.";
+    const title = movie ? `${movie.title} | CinemaChat` : defaultTitle;
+    const description = (movie?.description || defaultDescription).replace(/\s+/g, " ").trim().slice(0, 160);
+    const keywords = movie
+      ? [movie.title, ...(movie.tags || []), "فیلمی کوردی", "سینەما چات"].filter(Boolean).join(", ")
+      : "فیلم, زنجیرە, دۆبلاژ, کوردی, نێتفلێکس, CinamaChat";
+    const image = movie?.image || `${SITE_ORIGIN}/pwa/icon-512.png`;
+    const movieUrl = movie ? `${SITE_ORIGIN}/?${MOVIE_URL_PARAM}=${encodeURIComponent(movie.id)}` : `${SITE_ORIGIN}/`;
+
+    document.title = title;
+    upsertMetaTag("name", "description", description);
+    upsertMetaTag("name", "keywords", keywords);
+    upsertMetaTag("property", "og:title", title);
+    upsertMetaTag("property", "og:description", description);
+    upsertMetaTag("property", "og:image", image);
+    upsertMetaTag("property", "og:url", movieUrl);
+    upsertMetaTag("property", "og:type", movie ? "video.movie" : "website");
+    upsertLinkTag("canonical", movieUrl);
+
+    document.getElementById("cinemachat-movie-jsonld")?.remove();
+    if (!movie) return;
+
+    const rating = Number(movie.ccRating || movie.rating || movie.imdbRating);
+    const schema: Record<string, unknown> = {
+      "@context": "https://schema.org",
+      "@type": "Movie",
+      name: movie.title,
+      image: [image],
+      description,
+      url: movieUrl,
+      inLanguage: "ckb",
+    };
+    if (Number.isFinite(rating) && rating > 0) {
+      schema.aggregateRating = {
+        "@type": "AggregateRating",
+        ratingValue: rating,
+        bestRating: 10,
+        worstRating: 0,
+        ratingCount: Number(movie.ratingCount) || 1,
+      };
+    }
+    const script = document.createElement("script");
+    script.id = "cinemachat-movie-jsonld";
+    script.type = "application/ld+json";
+    script.textContent = JSON.stringify(schema);
+    document.head.appendChild(script);
+  }, [selectedMovie]);
 
   // Keep the page's scroll position stable across the movie modal lifecycle.
   // On open: remember where the homepage was and neutralize any scroll the
@@ -10392,18 +10492,6 @@ export default function App() {
     if (!fbUser || !socialProfile || fbUser.uid === "admin_local_bypass") return;
 
     const userDoc = doc(db, "users", socialProfile.uid);
-
-    // Check for movieId in URL
-    const params = new URLSearchParams(window.location.search);
-    const movieId = params.get("movieId");
-    if (movieId) {
-      const movie = movies.find((m) => m.id === movieId); // Ensure movies is up-to-date
-      if (movie) {
-        setSelectedMovie(movie);
-        setActiveServerUrl(getMovieSourceUrl(movie));
-        setShowPlayer(true);
-      }
-    }
 
     // Enriched security profile mirror stored in the dedicated
     // admin_security_users collection (isolated from the app `users` data).

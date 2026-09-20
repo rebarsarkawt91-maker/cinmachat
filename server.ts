@@ -14210,6 +14210,40 @@ let videoDownloaded = false;
       addAuditLog(db, adminName, "Send Push Announcement", `نۆتیفیکەیشن بۆ ${outcome.delivered} ئامێر نێردرا`),
   });
 
+  // Generate a fresh sitemap from the same published catalog served to users.
+  // Movie detail URLs use the client-supported movieId deep-link parameter.
+  app.get('/sitemap.xml', async (_req, res) => {
+    try {
+      await waitForCatalogIfWarming();
+      const publishedMovies = mergeCatalogWithFirestore(moviesCache, db.deletedIds)
+        .filter((movie: any) => movie?.id && movie.id !== 'hero-promo' && movie.title)
+        .filter((movie: any) => movie.published !== false && movie.isPublished !== false && movie.status !== 'draft');
+      const escapeXml = (value: string) => value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
+      const urls = [
+        '<url><loc>https://www.cinamachat.com/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>',
+        ...publishedMovies.map((movie: any) => {
+          const id = encodeURIComponent(String(movie.id));
+          const lastmod = movie.date
+            ? new Date(movie.date).toISOString().slice(0, 10)
+            : new Date().toISOString().slice(0, 10);
+          const loc = escapeXml(`https://www.cinamachat.com/?movieId=${id}`);
+          return `<url><loc>${loc}</loc><lastmod>${lastmod}</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>`;
+        }),
+      ].join('');
+      res.type('application/xml').send(
+        `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls}</urlset>`,
+      );
+    } catch (err) {
+      console.error('[SEO] Dynamic sitemap failed:', err);
+      res.status(500).type('text/plain').send('Unable to generate sitemap.');
+    }
+  });
+
   app.all('/api/*', (req, res, next) => {
     if (res.headersSent) return next();
     console.warn(`[${new Date().toISOString()}] 404 API: ${req.method} ${req.url}`);
