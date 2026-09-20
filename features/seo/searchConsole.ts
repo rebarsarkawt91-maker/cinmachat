@@ -143,9 +143,23 @@ type QueryResult = {
   totals: { clicks: number; impressions: number; ctr: number; position: number };
 };
 
+// Zeroed result used when the connection is authenticated but the report
+// cannot be produced (empties/zeros, throttling, 5xx — NOT an auth problem).
+const ZEROED_RESULT: QueryResult = {
+  queries: [],
+  totals: { clicks: 0, impressions: 0, ctr: 0, position: 0 },
+};
+
+type ReportResult =
+  | { ok: true; data: QueryResult }
+  | { ok: false; reason: 'auth'; detail: string }
+  | { ok: false; reason: 'other'; detail: string };
+
 // Fetches the search-analytics query report (top queries + totals) via the
-// Search Console API. Returns null on any failure so the caller falls back.
-async function fetchQueryReport(jwt: JWT, days: number): Promise<QueryResult | null> {
+// Search Console API. Failures are classified so the caller can tell a REAL
+// authentication problem (missing/invalid credentials or a 401/403 from
+// Google) apart from transient/empty responses that should NOT trigger demo.
+async function fetchQueryReport(jwt: JWT, days: number): Promise<ReportResult> {
   const [startDate, endDate] = lastNDaysIso(days);
   const body = {
     startDate,
@@ -162,7 +176,9 @@ async function fetchQueryReport(jwt: JWT, days: number): Promise<QueryResult | n
     );
     return null;
   });
-  if (!token?.token) return null;
+  if (!token?.token) {
+    return { ok: false, reason: 'auth', detail: 'access-token acquisition failed' };
+  }
 
   const resp = await fetch(url, {
     method: 'POST',
@@ -175,14 +191,32 @@ async function fetchQueryReport(jwt: JWT, days: number): Promise<QueryResult | n
     console.warn(`[Search Console] Query report network error: ${err?.message || err}.`);
     return null;
   });
-  if (!resp || !resp.ok) {
+
+  if (!resp) {
+    return { ok: false, reason: 'other', detail: 'network error' };
+  }
+  if (resp.status === 401 || resp.status === 403) {
     console.warn(
-      `[Search Console] Query report HTTP ${resp?.status ?? '(no response)'} for ${url}.`,
+      `[Search Console] Google REJECTED the token (HTTP ${resp.status}) — ` +
+        `auth error for ${url}.`,
     );
-    return null;
+    return { ok: false, reason: 'auth', detail: `HTTP ${resp.status}` };
+  }
+  if (!resp.ok) {
+    console.warn(
+      `[Search Console] Query report HTTP ${resp.status} for ${url} ` +
+        '(non-auth error — keeping live response).',
+    );
+    return { ok: false, reason: 'other', detail: `HTTP ${resp.status}` };
   }
 
   const json: any = await resp.json().catch(() => null);
+  if (!json) {
+    console.warn('[Search Console] Query report returned an unparseable body (0 bytes?).');
+    return { ok: false, reason: 'other', detail: 'unparseable body' };
+  }
+
+  // Empty rows / zero counts are a VALID live response — not a reason to demo.
   const rows: any[] = Array.isArray(json?.rows) ? json.rows : [];
   const clickSum = (key: number) => rows.reduce((sum, r) => sum + (Number(r.keys?.[key] ?? 0) || 0), 0);
 
@@ -198,14 +232,17 @@ async function fetchQueryReport(jwt: JWT, days: number): Promise<QueryResult | n
   const totalImpressions = rows.reduce((s, r) => s + (Number(r.impressions) || 0), 0) || queries.reduce((s, q) => s + q.impressions, 0);
 
   return {
-    queries,
-    totals: {
-      clicks: totalClicks,
-      impressions: totalImpressions,
-      ctr: totalImpressions ? totalClicks / totalImpressions : 0,
-      position: rows.length
-        ? rows.reduce((s, r) => s + (Number(r.position) || 0), 0) / rows.length
-        : 0,
+    ok: true,
+    data: {
+      queries,
+      totals: {
+        clicks: totalClicks,
+        impressions: totalImpressions,
+        ctr: totalImpressions ? totalClicks / totalImpressions : 0,
+        position: rows.length
+          ? rows.reduce((s, r) => s + (Number(r.position) || 0), 0) / rows.length
+          : 0,
+      },
     },
   };
 }
@@ -302,8 +339,10 @@ function demoData(days: number): any {
   };
 }
 
-// Main entry used by the /api/admin/seo-stats route. Never throws — falls back
-// to demo data on any configuration/API failure.
+// Main entry used by the /api/admin/seo-stats route. Never throws. Demo data
+// (isDemo: true) is served ONLY when the Google credential itself fails or
+// Google returns a 401/403 auth error. Any authenticated connection — even
+// with empty rows or zero counts — returns the live response (isDemo: false).
 export async function getSearchConsoleStats(days = 30): Promise<any> {
   const jwt = buildJwtClient();
   if (!jwt) return demoData(days);
@@ -313,19 +352,41 @@ export async function getSearchConsoleStats(days = 30): Promise<any> {
     fetchIndexStatus(jwt),
   ]);
 
-  if (!report) {
+  // AUTH failure — token acquisition rejected the credentials, or Google
+  // explicitly rejected the token (401/403). This is the ONLY demo trigger
+  // besides having no usable credentials at all.
+  if (report.ok === false) {
+    if (report.reason === 'auth') {
+      console.warn(
+        `[Search Console] Auth failure (${report.detail}) for ${siteUrl()} (${days}d) — ` +
+          'serving demo data. Check the service-account credentials and Search Console access.',
+      );
+      return demoData(days);
+    }
+    // Authenticated connection that failed for a non-auth reason (network
+    // glitch, 5xx, throttling). We keep the LIVE response with zeroed counts —
+    // never mask a working credential with demo data.
     console.warn(
-      `[Search Console] API call FAILED (${siteUrl()}, ${days}d) — ` +
-        'falling back to demo data. Check the service-account credentials, ' +
-        'private key newlines, and Search Console access for the site.',
+      `[Search Console] Report error (${report.detail}) — keeping authenticated live ` +
+        'response with zeroed counts (isDemo: false).',
     );
-    return demoData(days);
+    return {
+      configured: true,
+      isDemo: false,
+      siteUrl: siteUrl(),
+      rangeDays: days,
+      report: ZEROED_RESULT,
+      index,
+    };
   }
 
+  // Authenticated + report produced — even if rows are empty / counts are 0,
+  // this is a real, connected response (isDemo stays false).
   console.log(
     `[Search Console] Live API call OK (${siteUrl()}, ${days}d) — ` +
-      `clicks: ${report.totals.clicks}, impressions: ${report.totals.impressions}, ` +
-      `index status: ${index.status}. Returning live stats (isDemo: false).`,
+      `rows: ${report.data.queries.length}, clicks: ${report.data.totals.clicks}, ` +
+      `impressions: ${report.data.totals.impressions}, index status: ${index.status}. ` +
+      'Returning live stats (isDemo: false).',
   );
 
   return {
@@ -333,7 +394,7 @@ export async function getSearchConsoleStats(days = 30): Promise<any> {
     isDemo: false,
     siteUrl: siteUrl(),
     rangeDays: days,
-    report,
+    report: report.data,
     index,
   };
 }
