@@ -9646,7 +9646,7 @@ export default function App() {
     const movie = selectedMovie;
     const defaultTitle = "CinamaChat - نوێترین فیلم و زنجیرەکان بە کوردی";
     const defaultDescription = "CinamaChat - باشترین پلاتفۆرمی کوردی بۆ بینینی فیلم و زنجیرەکان بە کوالیتی بەرز و دۆبلاژی کوردی.";
-    const title = movie ? `${movie.title} | CinemaChat` : defaultTitle;
+    const title = movie ? `${movie.title} بە ژێرنووسی کوردی | CinemaChat` : defaultTitle;
     const description = (movie?.description || defaultDescription).replace(/\s+/g, " ").trim().slice(0, 160);
     const keywords = movie
       ? [movie.title, ...(movie.tags || []), "فیلمی کوردی", "سینەما چات"].filter(Boolean).join(", ")
@@ -9677,6 +9677,10 @@ export default function App() {
       url: movieUrl,
       inLanguage: "ckb",
     };
+    const publishedDate = movie.date || (movie.year ? `${movie.year}-01-01` : "");
+    if (publishedDate && !Number.isNaN(Date.parse(publishedDate))) {
+      schema.datePublished = new Date(publishedDate).toISOString().slice(0, 10);
+    }
     if (Number.isFinite(rating) && rating > 0) {
       schema.aggregateRating = {
         "@type": "AggregateRating",

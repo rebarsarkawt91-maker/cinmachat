@@ -14228,13 +14228,15 @@ let videoDownloaded = false;
         '<url><loc>https://www.cinamachat.com/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>',
         ...publishedMovies.map((movie: any) => {
           const id = encodeURIComponent(String(movie.id));
-          const lastmod = movie.date
-            ? new Date(movie.date).toISOString().slice(0, 10)
-            : new Date().toISOString().slice(0, 10);
+          const parsedDate = movie.date ? new Date(movie.date) : null;
+          const lastmod = parsedDate && !Number.isNaN(parsedDate.getTime())
+            ? parsedDate.toISOString().slice(0, 10)
+            : null;
           const loc = escapeXml(`https://www.cinamachat.com/?movieId=${id}`);
-          return `<url><loc>${loc}</loc><lastmod>${lastmod}</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>`;
+          return `<url><loc>${loc}</loc>${lastmod ? `<lastmod>${lastmod}</lastmod>` : ''}<changefreq>weekly</changefreq><priority>0.8</priority></url>`;
         }),
       ].join('');
+      res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=3600');
       res.type('application/xml').send(
         `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls}</urlset>`,
       );
