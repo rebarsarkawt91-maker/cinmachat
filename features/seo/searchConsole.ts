@@ -27,12 +27,22 @@ const SEARCH_CONSOLE_API_PREFIX = 'https://searchconsole.googleapis.com/webmaste
 // and act as a development/staging fallback source.
 const SERVICE_ACCOUNT_FILES = ['credentials.json', 'service-account.json'];
 
-// The Search Console "property" (site) whose data we read. Defaults to the
-// CinemaChat production domain, overridable via env for testing/staging.
-function siteUrl(): string {
+// Search Console "property" (site) candidates, tried in order. The env override
+// wins, then the URL-prefix format for the CinemaChat production domain, then
+// the legacy sc-domain: format (relevant when Search Console only matches the
+// exact https://www.cinamachat.com/ property instead of a domain property).
+function candidateSiteUrls(): string[] {
+  const out: string[] = [];
   const configured = (process.env.GOOGLE_SEARCH_CONSOLE_SITE_URL || '').trim();
-  if (configured) return configured;
-  return 'sc-domain:cinamachat.com';
+  if (configured && !out.includes(configured)) out.push(configured);
+  out.push('https://www.cinamachat.com/');
+  if (!out.includes('sc-domain:cinamachat.com')) out.push('sc-domain:cinamachat.com');
+  return out;
+}
+
+// Primary/display site used in logs and response payloads (first candidate).
+function siteUrl(): string {
+  return candidateSiteUrls()[0];
 }
 
 // Render/service dashboards often paste the PEM as a single-line env var with
@@ -151,13 +161,16 @@ const ZEROED_RESULT: QueryResult = {
 };
 
 type ReportResult =
-  | { ok: true; data: QueryResult }
+  | { ok: true; site: string; data: QueryResult }
   | { ok: false; reason: 'auth'; detail: string }
   | { ok: false; reason: 'other'; detail: string };
 
 // Fetches the search-analytics query report (top queries + totals) via the
-// Search Console API. Failures are classified so the caller can tell a REAL
-// authentication problem (missing/invalid credentials or a 401/403 from
+// Search Console API. Site candidates are tried in order (env override →
+// URL-prefix → sc-domain): a 401/403 on one property may simply mean that exact
+// property isn't granted, so it is retried with the next candidate before being
+// classified as an auth failure. Failures are classified so the caller can tell
+// a REAL authentication problem (missing/invalid credentials or a 401/403 from
 // Google) apart from transient/empty responses that should NOT trigger demo.
 async function fetchQueryReport(jwt: JWT, days: number): Promise<ReportResult> {
   const [startDate, endDate] = lastNDaysIso(days);
@@ -167,7 +180,6 @@ async function fetchQueryReport(jwt: JWT, days: number): Promise<ReportResult> {
     dimensions: ['query'],
     rowLimit: 25,
   };
-  const url = `${SEARCH_CONSOLE_API_PREFIX}/sites/${encodeURIComponent(siteUrl())}/searchAnalytics/query`;
 
   const token = await jwt.getAccessToken().catch((err: any) => {
     console.warn(
@@ -180,71 +192,85 @@ async function fetchQueryReport(jwt: JWT, days: number): Promise<ReportResult> {
     return { ok: false, reason: 'auth', detail: 'access-token acquisition failed' };
   }
 
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token.token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  }).catch((err: any) => {
-    console.warn(`[Search Console] Query report network error: ${err?.message || err}.`);
-    return null;
-  });
+  let lastAuthError: string | null = null;
+  let lastOtherError: string | null = null;
 
-  if (!resp) {
-    return { ok: false, reason: 'other', detail: 'network error' };
-  }
-  if (resp.status === 401 || resp.status === 403) {
-    console.warn(
-      `[Search Console] Google REJECTED the token (HTTP ${resp.status}) — ` +
-        `auth error for ${url}.`,
-    );
-    return { ok: false, reason: 'auth', detail: `HTTP ${resp.status}` };
-  }
-  if (!resp.ok) {
-    console.warn(
-      `[Search Console] Query report HTTP ${resp.status} for ${url} ` +
-        '(non-auth error — keeping live response).',
-    );
-    return { ok: false, reason: 'other', detail: `HTTP ${resp.status}` };
-  }
+  for (const candidate of candidateSiteUrls()) {
+    const url = `${SEARCH_CONSOLE_API_PREFIX}/sites/${encodeURIComponent(candidate)}/searchAnalytics/query`;
 
-  const json: any = await resp.json().catch(() => null);
-  if (!json) {
-    console.warn('[Search Console] Query report returned an unparseable body (0 bytes?).');
-    return { ok: false, reason: 'other', detail: 'unparseable body' };
-  }
-
-  // Empty rows / zero counts are a VALID live response — not a reason to demo.
-  const rows: any[] = Array.isArray(json?.rows) ? json.rows : [];
-  const clickSum = (key: number) => rows.reduce((sum, r) => sum + (Number(r.keys?.[key] ?? 0) || 0), 0);
-
-  const queries = rows.map((r: any) => ({
-    query: String(r.keys?.[0] ?? '(unknown)'),
-    clicks: Number(r.clicks) || 0,
-    impressions: Number(r.impressions) || 0,
-    ctr: Number(r.ctr) || 0,
-    position: Number(r.position) || 0,
-  }));
-
-  const totalClicks = clickSum(2) || rows.reduce((s, r) => s + (Number(r.clicks) || 0), 0) || queries.reduce((s, q) => s + q.clicks, 0);
-  const totalImpressions = rows.reduce((s, r) => s + (Number(r.impressions) || 0), 0) || queries.reduce((s, q) => s + q.impressions, 0);
-
-  return {
-    ok: true,
-    data: {
-      queries,
-      totals: {
-        clicks: totalClicks,
-        impressions: totalImpressions,
-        ctr: totalImpressions ? totalClicks / totalImpressions : 0,
-        position: rows.length
-          ? rows.reduce((s, r) => s + (Number(r.position) || 0), 0) / rows.length
-          : 0,
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token.token}`,
+        'Content-Type': 'application/json',
       },
-    },
-  };
+      body: JSON.stringify(body),
+    }).catch((err: any) => {
+      console.warn(`[Search Console] Query report network error for ${candidate}: ${err?.message || err}.`);
+      return null;
+    });
+
+    if (!resp) {
+      lastOtherError = lastOtherError || `network error for ${candidate}`;
+      continue;
+    }
+    if (resp.status === 401 || resp.status === 403) {
+      console.warn(
+        `[Search Console] Google rejected the token for ${candidate} (HTTP ${resp.status}) — ` +
+          'trying next site candidate...',
+      );
+      lastAuthError = lastAuthError || `HTTP ${resp.status} for ${candidate}`;
+      continue;
+    }
+    if (!resp.ok) {
+      console.warn(
+        `[Search Console] Query report HTTP ${resp.status} for ${candidate} ` +
+          '(non-auth error — trying next site candidate).',
+      );
+      lastOtherError = lastOtherError || `HTTP ${resp.status} for ${candidate}`;
+      continue;
+    }
+
+    const json: any = await resp.json().catch(() => null);
+    if (!json) {
+      lastOtherError = lastOtherError || `unparseable body for ${candidate}`;
+      continue;
+    }
+
+    // Empty rows / zero counts are a VALID live response — not a reason to demo.
+    const rows: any[] = Array.isArray(json?.rows) ? json.rows : [];
+    const clickSum = (key: number) => rows.reduce((sum, r) => sum + (Number(r.keys?.[key] ?? 0) || 0), 0);
+
+    const queries = rows.map((r: any) => ({
+      query: String(r.keys?.[0] ?? '(unknown)'),
+      clicks: Number(r.clicks) || 0,
+      impressions: Number(r.impressions) || 0,
+      ctr: Number(r.ctr) || 0,
+      position: Number(r.position) || 0,
+    }));
+
+    const totalClicks = clickSum(2) || rows.reduce((s, r) => s + (Number(r.clicks) || 0), 0) || queries.reduce((s, q) => s + q.clicks, 0);
+    const totalImpressions = rows.reduce((s, r) => s + (Number(r.impressions) || 0), 0) || queries.reduce((s, q) => s + q.impressions, 0);
+
+    return {
+      ok: true,
+      site: candidate,
+      data: {
+        queries,
+        totals: {
+          clicks: totalClicks,
+          impressions: totalImpressions,
+          ctr: totalImpressions ? totalClicks / totalImpressions : 0,
+          position: rows.length
+            ? rows.reduce((s, r) => s + (Number(r.position) || 0), 0) / rows.length
+            : 0,
+        },
+      },
+    };
+  }
+
+  if (lastAuthError) return { ok: false, reason: 'auth', detail: lastAuthError };
+  return { ok: false, reason: 'other', detail: lastOtherError || 'all site candidates failed' };
 }
 
 type IndexStatus = {
@@ -258,7 +284,6 @@ type IndexStatus = {
 // crawl data via the "sites" resource; combine it with conservative defaults
 // for crawl-error counts so the UI always has a meaningful status.
 async function fetchIndexStatus(jwt: JWT): Promise<IndexStatus> {
-  const url = `${SEARCH_CONSOLE_API_PREFIX}/sites/${encodeURIComponent(siteUrl())}`;
   const token = await jwt.getAccessToken().catch((err: any) => {
     console.warn(
       `[Search Console] getAccessToken() FAILED (index status) — ` +
@@ -269,31 +294,38 @@ async function fetchIndexStatus(jwt: JWT): Promise<IndexStatus> {
   if (!token?.token) {
     return { status: 'unknown', lastCrawled: null, crawlErrors: 0, securityAlert: false };
   }
-  const resp = await fetch(url, {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${token.token}` },
-  }).catch((err: any) => {
-    console.warn(`[Search Console] Index status network error: ${err?.message || err}.`);
-    return null;
-  });
-  if (!resp || !resp.ok) {
-    console.warn(
-      `[Search Console] Index status HTTP ${resp?.status ?? '(no response)'} for ${url}.`,
-    );
-    return { status: 'unknown', lastCrawled: null, crawlErrors: 0, securityAlert: false };
+
+  for (const candidate of candidateSiteUrls()) {
+    const url = `${SEARCH_CONSOLE_API_PREFIX}/sites/${encodeURIComponent(candidate)}`;
+    const resp = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token.token}` },
+    }).catch((err: any) => {
+      console.warn(`[Search Console] Index status network error for ${candidate}: ${err?.message || err}.`);
+      return null;
+    });
+    if (!resp || !resp.ok) {
+      console.warn(
+        `[Search Console] Index status HTTP ${resp?.status ?? '(no response)'} for ${candidate} ` +
+          '(trying next site candidate).',
+      );
+      continue;
+    }
+    const json: any = await resp.json().catch(() => null);
+    const permissionLevel = String(json?.permissionLevel || '');
+    const status: IndexStatus['status'] =
+      permissionLevel === 'siteFullUser' || permissionLevel === 'siteRestrictedUser'
+        ? 'indexed'
+        : 'unknown';
+    return {
+      status,
+      lastCrawled: json?.lastCrawlDate || null,
+      crawlErrors: 0,
+      securityAlert: false,
+    };
   }
-  const json: any = await resp.json().catch(() => null);
-  const permissionLevel = String(json?.permissionLevel || '');
-  const status: IndexStatus['status'] =
-    permissionLevel === 'siteFullUser' || permissionLevel === 'siteRestrictedUser'
-      ? 'indexed'
-      : 'unknown';
-  return {
-    status,
-    lastCrawled: json?.lastCrawlDate || null,
-    crawlErrors: 0,
-    securityAlert: false,
-  };
+
+  return { status: 'unknown', lastCrawled: null, crawlErrors: 0, securityAlert: false };
 }
 
 // Deterministic-looking demo dataset so the dashboard renders when Search
@@ -383,7 +415,7 @@ export async function getSearchConsoleStats(days = 30): Promise<any> {
   // Authenticated + report produced — even if rows are empty / counts are 0,
   // this is a real, connected response (isDemo stays false).
   console.log(
-    `[Search Console] Live API call OK (${siteUrl()}, ${days}d) — ` +
+    `[Search Console] Live API call OK (${report.site}, ${days}d) — ` +
       `rows: ${report.data.queries.length}, clicks: ${report.data.totals.clicks}, ` +
       `impressions: ${report.data.totals.impressions}, index status: ${index.status}. ` +
       'Returning live stats (isDemo: false).',
@@ -392,7 +424,7 @@ export async function getSearchConsoleStats(days = 30): Promise<any> {
   return {
     configured: true,
     isDemo: false,
-    siteUrl: siteUrl(),
+    siteUrl: report.site,
     rangeDays: days,
     report: report.data,
     index,
