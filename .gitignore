@@ -7,6 +7,9 @@ coverage/
 *.log
 .env*
 !.env.example
+# Google service-account private keys (Search Console auth) — NEVER commit.
+credentials*.json
+service-account*.json
 .firebase/
 *firebase-adminsdk*.json
 gen-lang-client-0240212572-*.json
