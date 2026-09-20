@@ -28,6 +28,7 @@ const DEFAULT_SEARCH_CONSOLE_CLIENT_EMAIL =
 // env credential is missing/incomplete. These files are NOT committed to git
 // and act as a development/staging fallback source.
 const SERVICE_ACCOUNT_FILES = [
+  'firebase-service-account.json',
   'service-account.json',
   'credentials.json',
   // Local Firebase Admin credential already used by this project. Search
@@ -56,14 +57,33 @@ function siteUrl(): string {
 // Render/service dashboards often paste the PEM as a single-line env var with
 // escaped "\n" (and sometimes CRLF-wrapped "\r\n"). Normalize BOTH styles so
 // the JWT always receives REAL newlines before signing.
-function normalizePrivateKey(key: string): string {
-  return key.trim().replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
+function normalizePrivateKey(key: string | undefined): string | undefined {
+  if (!key) return undefined;
+
+  let formatted = key.trim();
+  if (formatted.startsWith('"') && formatted.endsWith('"')) {
+    formatted = formatted.slice(1, -1);
+  }
+
+  // Hosting dashboards commonly preserve JSON's escaped newlines literally.
+  // Normalize both escaped CRLF and LF, then clean real multiline whitespace.
+  formatted = formatted
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join('\n');
+
+  return formatted || undefined;
 }
 
 // A usable private key must carry the PEM header AND footer after newline
 // normalization, otherwise it is treated as incomplete so a fallback source
 // (or the demo path) can be used instead of failing further down the line.
-function isCompletePrivateKey(formattedKey: string): boolean {
+function isCompletePrivateKey(formattedKey: string | undefined): formattedKey is string {
+  if (!formattedKey) return false;
   const upper = formattedKey.toUpperCase();
   return upper.includes('BEGIN PRIVATE KEY') && upper.includes('END PRIVATE KEY');
 }
@@ -88,7 +108,7 @@ function loadServiceAccountFile(): { clientEmail: string; privateKey: string } |
     try {
       const json = JSON.parse(readFileSync(filePath, 'utf8'));
       const clientEmail = String(json?.client_email || json?.clientEmail || '').trim();
-      const privateKey = normalizePrivateKey(String(json?.private_key || json?.privateKey || ''));
+      const privateKey = normalizePrivateKey(json?.private_key || json?.privateKey);
       if (clientEmail && isCompletePrivateKey(privateKey)) {
         console.log(
           `[Search Console] Service-account credentials loaded from ${filePath} ` +
@@ -117,9 +137,7 @@ function buildJwtClient(): JWT | null {
   const envEmail = (
     process.env.GOOGLE_SEARCH_CONSOLE_CLIENT_EMAIL || DEFAULT_SEARCH_CONSOLE_CLIENT_EMAIL
   ).trim();
-  const envFormattedKey = normalizePrivateKey(
-    process.env.GOOGLE_SEARCH_CONSOLE_PRIVATE_KEY || '',
-  );
+  const envFormattedKey = normalizePrivateKey(process.env.GOOGLE_SEARCH_CONSOLE_PRIVATE_KEY);
 
   // Env credential present and structurally valid → use it.
   if (envEmail && isCompletePrivateKey(envFormattedKey)) {
