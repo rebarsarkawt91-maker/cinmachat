@@ -21,6 +21,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const SEARCH_CONSOLE_API_PREFIX = 'https://searchconsole.googleapis.com/webmasters/v3';
+const DEFAULT_SEARCH_CONSOLE_CLIENT_EMAIL =
+  'firebase-adminsdk-fbsvc@gen-lang-client-0240212572.iam.gserviceaccount.com';
 
 // Local service-account JSON candidates (project root), tried in order when the
 // env credential is missing/incomplete. These files are NOT committed to git
@@ -112,7 +114,9 @@ function loadServiceAccountFile(): { clientEmail: string; privateKey: string } |
 //   2. the local service-account file at the project root;
 //   3. null → demo data.
 function buildJwtClient(): JWT | null {
-  const envEmail = (process.env.GOOGLE_SEARCH_CONSOLE_CLIENT_EMAIL || '').trim();
+  const envEmail = (
+    process.env.GOOGLE_SEARCH_CONSOLE_CLIENT_EMAIL || DEFAULT_SEARCH_CONSOLE_CLIENT_EMAIL
+  ).trim();
   const envFormattedKey = normalizePrivateKey(
     process.env.GOOGLE_SEARCH_CONSOLE_PRIVATE_KEY || '',
   );
