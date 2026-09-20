@@ -8,15 +8,24 @@
 // it works on non-GCP hosts (e.g. Render).
 //
 // Design rules (mirroring the rest of the server):
-//   • Credentials are read ONLY from the environment, never hardcoded/committed.
-//   • If the credentials are missing (or any API call fails) the endpoint
-//     FAILS SAFE: it returns a clearly-marked demo dataset so the admin UI
-//     still renders, never throws, and never crashes the server.
+//   • Credentials are read ONLY from the environment OR an untracked local
+//     service-account file (credentials.json / service-account.json at the
+//     project root) — never hardcoded/committed.
+//   • If the credentials are missing or incomplete (or any API call fails) the
+//     endpoint FAILS SAFE: it returns a clearly-marked demo dataset so the
+//     admin UI still renders, never throws, and never crashes the server.
 //   • Only a short, scoped subset of data is ever returned to the client.
 // ---------------------------------------------------------------------------
 import { JWT } from 'google-auth-library';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 
 const SEARCH_CONSOLE_API_PREFIX = 'https://searchconsole.googleapis.com/webmasters/v3';
+
+// Local service-account JSON candidates (project root), tried in order when the
+// env credential is missing/incomplete. These files are NOT committed to git
+// and act as a development/staging fallback source.
+const SERVICE_ACCOUNT_FILES = ['credentials.json', 'service-account.json'];
 
 // The Search Console "property" (site) whose data we read. Defaults to the
 // CinemaChat production domain, overridable via env for testing/staging.
@@ -26,38 +35,99 @@ function siteUrl(): string {
   return 'sc-domain:cinamachat.com';
 }
 
-// Build an authenticated JWT client. Returns null when credentials are missing
-// (so callers can serve demo data). The private key may arrive as literal "\n"
-// from a single-line env var (common on Render/CI), so normalize it.
-function buildJwtClient(): JWT | null {
-  const clientEmail = (process.env.GOOGLE_SEARCH_CONSOLE_CLIENT_EMAIL || '').trim();
-  // Render/service dashboards often paste the PEM as a single-line env var with
-  // escaped "\n" (and sometimes CRLF-wrapped "\r\n"). Normalize BOTH styles so
-  // the JWT always receives REAL newlines before signing.
-  const rawPrivateKey = (process.env.GOOGLE_SEARCH_CONSOLE_PRIVATE_KEY || '').trim()
-    .replace(/\\r\\n/g, '\n')
-    .replace(/\\n/g, '\n');
+// Render/service dashboards often paste the PEM as a single-line env var with
+// escaped "\n" (and sometimes CRLF-wrapped "\r\n"). Normalize BOTH styles so
+// the JWT always receives REAL newlines before signing.
+function normalizePrivateKey(key: string): string {
+  return key.trim().replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
+}
 
-  if (!clientEmail || !rawPrivateKey) {
-    console.warn(
-      '[Search Console] GOOGLE_SEARCH_CONSOLE_CLIENT_EMAIL / GOOGLE_SEARCH_CONSOLE_PRIVATE_KEY ' +
-        'are not configured. Serving demo SEO data.',
-    );
-    return null;
-  }
+// A usable private key must carry the PEM header AND footer after newline
+// normalization, otherwise it is treated as incomplete so a fallback source
+// (or the demo path) can be used instead of failing further down the line.
+function isCompletePrivateKey(formattedKey: string): boolean {
+  const upper = formattedKey.toUpperCase();
+  return upper.includes('BEGIN PRIVATE KEY') && upper.includes('END PRIVATE KEY');
+}
 
-  const keyLines = rawPrivateKey.split('\n').length;
-  console.log(
-    `[Search Console] Credentials found for ${clientEmail} ` +
-      `(site: ${siteUrl()}). Private key normalized — ${keyLines} line(s).`,
-  );
-
+// Shared JWT factory used by both the env and the local-file credential paths.
+function jwtFrom(clientEmail: string, formattedKey: string): JWT {
   return new JWT({
     email: clientEmail,
-    key: rawPrivateKey,
+    key: formattedKey,
     scopes: ['https://www.googleapis.com/auth/webmasters.readonly'],
     subject: clientEmail,
   });
+}
+
+// Reads service-account credentials from a local JSON file at the project root
+// (credentials.json or service-account.json). Returns the normalized email +
+// private key, or null when no file exists or it cannot be parsed.
+function loadServiceAccountFile(): { clientEmail: string; privateKey: string } | null {
+  for (const fileName of SERVICE_ACCOUNT_FILES) {
+    const filePath = path.resolve(process.cwd(), fileName);
+    if (!existsSync(filePath)) continue;
+    try {
+      const json = JSON.parse(readFileSync(filePath, 'utf8'));
+      const clientEmail = String(json?.client_email || json?.clientEmail || '').trim();
+      const privateKey = normalizePrivateKey(String(json?.private_key || json?.privateKey || ''));
+      if (clientEmail && isCompletePrivateKey(privateKey)) {
+        console.log(
+          `[Search Console] Service-account credentials loaded from ${filePath} ` +
+            `(${privateKey.split('\n').length} key line(s)).`,
+        );
+        return { clientEmail, privateKey };
+      }
+      console.warn(
+        `[Search Console] ${filePath} exists but is missing a valid ` +
+          'client_email / private_key pair.',
+      );
+    } catch (err: any) {
+      console.warn(`[Search Console] Failed to parse ${filePath}: ${err?.message || err}.`);
+    }
+  }
+  return null;
+}
+
+// Build an authenticated JWT client. Returns null when no usable credential can
+// be resolved (so callers serve demo data). Resolution order:
+//   1. GOOGLE_SEARCH_CONSOLE_CLIENT_EMAIL + GOOGLE_SEARCH_CONSOLE_PRIVATE_KEY
+//      from the environment;
+//   2. the local service-account file at the project root;
+//   3. null → demo data.
+function buildJwtClient(): JWT | null {
+  const envEmail = (process.env.GOOGLE_SEARCH_CONSOLE_CLIENT_EMAIL || '').trim();
+  const envFormattedKey = normalizePrivateKey(
+    process.env.GOOGLE_SEARCH_CONSOLE_PRIVATE_KEY || '',
+  );
+
+  // Env credential present and structurally valid → use it.
+  if (envEmail && isCompletePrivateKey(envFormattedKey)) {
+    console.log(
+      `[Search Console] Credentials found in env for ${envEmail} ` +
+        `(site: ${siteUrl()}). Private key normalized — ` +
+        `${envFormattedKey.split('\n').length} line(s). Authentication primed.`,
+    );
+    return jwtFrom(envEmail, envFormattedKey);
+  }
+
+  // Env credential missing/incomplete → fall back to the local credentials file.
+  const fileCred = loadServiceAccountFile();
+  if (fileCred) {
+    console.log(
+      `[Search Console] Authenticating with service-account file: ` +
+        `${fileCred.clientEmail} (site: ${siteUrl()}).`,
+    );
+    return jwtFrom(fileCred.clientEmail, fileCred.privateKey);
+  }
+
+  console.warn(
+    '[Search Console] No usable Google Search Console credentials found. ' +
+      'GOOGLE_SEARCH_CONSOLE_CLIENT_EMAIL / GOOGLE_SEARCH_CONSOLE_PRIVATE_KEY are not ' +
+      'configured (or the private key is incomplete), and no local credentials file ' +
+      `(${SERVICE_ACCOUNT_FILES.join(', ')}) exists at ${process.cwd()}. Serving demo SEO data.`,
+  );
+  return null;
 }
 
 function lastNDaysIso(n: number): string[] {
