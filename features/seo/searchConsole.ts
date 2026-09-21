@@ -141,6 +141,17 @@ function loadServiceAccountFile(): { clientEmail: string; privateKey: string } |
 //   2. the local service-account file at the project root;
 //   3. null → demo data.
 function buildJwtClient(): JWT | null {
+  // Prefer a validated JSON secret. JSON preserves the PEM exactly and avoids
+  // hosting dashboards corrupting quotes or newlines in multiline env values.
+  const preferredFileCred = loadServiceAccountFile();
+  if (preferredFileCred) {
+    console.log(
+      `[Search Console] Authenticating with preferred service-account file: ` +
+        `${preferredFileCred.clientEmail} (site: ${siteUrl()}).`,
+    );
+    return jwtFrom(preferredFileCred.privateKey);
+  }
+
   const configuredEnvEmail = (process.env.GOOGLE_SEARCH_CONSOLE_CLIENT_EMAIL || '').trim();
   const envFormattedKey = normalizePrivateKey(process.env.GOOGLE_SEARCH_CONSOLE_PRIVATE_KEY);
 
@@ -164,15 +175,6 @@ function buildJwtClient(): JWT | null {
   }
 
   // Env credential missing/incomplete → fall back to the local credentials file.
-  const fileCred = loadServiceAccountFile();
-  if (fileCred) {
-    console.log(
-      `[Search Console] Authenticating with service-account file: ` +
-        `${fileCred.clientEmail} (site: ${siteUrl()}).`,
-    );
-    return jwtFrom(fileCred.privateKey);
-  }
-
   console.warn(
     '[Search Console] No usable Google Search Console credentials found. ' +
       'GOOGLE_SEARCH_CONSOLE_CLIENT_EMAIL / GOOGLE_SEARCH_CONSOLE_PRIVATE_KEY are not ' +
@@ -180,6 +182,35 @@ function buildJwtClient(): JWT | null {
       `(${SERVICE_ACCOUNT_FILES.join(', ')}) exists at ${process.cwd()}. Serving demo SEO data.`,
   );
   return null;
+}
+
+type AccessTokenResult = { token?: string | null };
+
+async function getAccessTokenWithFileFallback(
+  jwt: JWT,
+  context: string,
+): Promise<AccessTokenResult | null> {
+  try {
+    return await jwt.getAccessToken();
+  } catch (error: any) {
+    console.warn(
+      `[Search Console] getAccessToken() FAILED (${context}): ${error?.message || error}. ` +
+        'Retrying with JSON credentials if available.',
+    );
+  }
+
+  const fileCred = loadServiceAccountFile();
+  if (!fileCred) return null;
+
+  try {
+    return await jwtFrom(fileCred.privateKey).getAccessToken();
+  } catch (fallbackError: any) {
+    console.warn(
+      `[Search Console] JSON credential fallback FAILED (${context}): ` +
+        `${fallbackError?.message || fallbackError}.`,
+    );
+    return null;
+  }
 }
 
 function lastNDaysIso(n: number): string[] {
@@ -223,13 +254,7 @@ async function fetchQueryReport(jwt: JWT, days: number): Promise<ReportResult> {
     rowLimit: 25,
   };
 
-  const token = await jwt.getAccessToken().catch((err: any) => {
-    console.warn(
-      `[Search Console] getAccessToken() FAILED — client-email/private-key pair is likely invalid: ` +
-        `${err?.message || err}.`,
-    );
-    return null;
-  });
+  const token = await getAccessTokenWithFileFallback(jwt, 'query report');
   if (!token?.token) {
     return { ok: false, reason: 'auth', detail: 'access-token acquisition failed' };
   }
@@ -326,13 +351,7 @@ type IndexStatus = {
 // crawl data via the "sites" resource; combine it with conservative defaults
 // for crawl-error counts so the UI always has a meaningful status.
 async function fetchIndexStatus(jwt: JWT): Promise<IndexStatus> {
-  const token = await jwt.getAccessToken().catch((err: any) => {
-    console.warn(
-      `[Search Console] getAccessToken() FAILED (index status) — ` +
-        `${err?.message || err}.`,
-    );
-    return null;
-  });
+  const token = await getAccessTokenWithFileFallback(jwt, 'index status');
   if (!token?.token) {
     return { status: 'unknown', lastCrawled: null, crawlErrors: 0, securityAlert: false };
   }
