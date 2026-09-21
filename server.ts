@@ -6978,6 +6978,9 @@ async function startServer() {
 
   app.get('/api/admin/seo-stats', async (req, res) => {
     try {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
       // Allowed time ranges for the SEO dashboard filter (7 / 30 / 90 days).
       const rawRange = Number((req.query as any)?.range);
       const allowedRanges = [7, 30, 90];

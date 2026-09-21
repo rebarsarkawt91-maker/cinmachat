@@ -36,11 +36,17 @@ export const AdminSEOAnalyticsModule: React.FC<AdminSEOAnalyticsModuleProps> = (
         `/api/admin/seo-stats?range=${range}&adminName=${encodeURIComponent(adminName)}`,
         {
           headers: { "x-admin-username": adminName },
+          cache: "no-store",
         },
       );
+      const json = await res.json();
+      if (json?.googleError) {
+        console.error("Search Console live API error:", json.googleError);
+      }
       if (res.ok) {
-        const json = await res.json();
         setSeoData(json);
+      } else {
+        console.error("Search Console stats request failed:", res.status, json);
       }
     } catch (err) {
       console.error("Failed to load SEO statistics:", err);

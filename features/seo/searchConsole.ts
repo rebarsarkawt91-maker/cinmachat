@@ -239,8 +239,38 @@ const ZEROED_RESULT: QueryResult = {
 
 type ReportResult =
   | { ok: true; site: string; data: QueryResult }
-  | { ok: false; reason: 'auth'; detail: string }
-  | { ok: false; reason: 'other'; detail: string };
+  | { ok: false; reason: 'auth'; detail: string; googleError?: GoogleApiFailure }
+  | { ok: false; reason: 'other'; detail: string; googleError?: GoogleApiFailure };
+
+type GoogleApiFailure = {
+  status: number;
+  statusText: string;
+  code: number | string | null;
+  message: string;
+  details: unknown;
+  rawBody: string;
+  serviceAccountEmail: string;
+  site: string;
+};
+
+function googleApiFailure(resp: Response, rawBody: string, jwt: JWT, site: string): GoogleApiFailure {
+  let parsed: any = null;
+  try {
+    parsed = rawBody ? JSON.parse(rawBody) : null;
+  } catch {
+    parsed = null;
+  }
+  return {
+    status: resp.status,
+    statusText: resp.statusText,
+    code: parsed?.error?.code ?? null,
+    message: String(parsed?.error?.message || rawBody || resp.statusText || 'Unknown Google API error'),
+    details: parsed?.error?.details ?? parsed?.error?.errors ?? null,
+    rawBody,
+    serviceAccountEmail: String((jwt as any).email || SEARCH_CONSOLE_CLIENT_EMAIL),
+    site,
+  };
+}
 
 // Fetches the search-analytics query report (top queries + totals) via the
 // Search Console API. Site candidates are tried in order (env override →
@@ -265,6 +295,7 @@ async function fetchQueryReport(jwt: JWT, days: number): Promise<ReportResult> {
 
   let lastAuthError: string | null = null;
   let lastOtherError: string | null = null;
+  let lastGoogleError: GoogleApiFailure | undefined;
 
   for (const candidate of candidateSiteUrls()) {
     const url = `${SEARCH_CONSOLE_API_PREFIX}/sites/${encodeURIComponent(candidate)}/searchAnalytics/query`;
@@ -285,11 +316,17 @@ async function fetchQueryReport(jwt: JWT, days: number): Promise<ReportResult> {
       lastOtherError = lastOtherError || `network error for ${candidate}`;
       continue;
     }
+    const rawBody = await resp.text();
+    if (!resp.ok) {
+      lastGoogleError = googleApiFailure(resp, rawBody, jwt, candidate);
+      console.error('[Search Console] Google API raw failure response:', lastGoogleError);
+    }
     if (resp.status === 401 || resp.status === 403) {
-      console.warn(
-        `[Search Console] Google rejected the token for ${candidate} (HTTP ${resp.status}) — ` +
-          'trying next site candidate...',
-      );
+      console.error('[Search Console] Authorization rejected:', {
+        status: resp.status,
+        serviceAccountEmail: lastGoogleError?.serviceAccountEmail,
+        site: candidate,
+      });
       lastAuthError = lastAuthError || `HTTP ${resp.status} for ${candidate}`;
       continue;
     }
@@ -302,7 +339,9 @@ async function fetchQueryReport(jwt: JWT, days: number): Promise<ReportResult> {
       continue;
     }
 
-    const json: any = await resp.json().catch(() => null);
+    const json: any = (() => {
+      try { return rawBody ? JSON.parse(rawBody) : null; } catch { return null; }
+    })();
     if (!json) {
       lastOtherError = lastOtherError || `unparseable body for ${candidate}`;
       continue;
@@ -340,8 +379,15 @@ async function fetchQueryReport(jwt: JWT, days: number): Promise<ReportResult> {
     };
   }
 
-  if (lastAuthError) return { ok: false, reason: 'auth', detail: lastAuthError };
-  return { ok: false, reason: 'other', detail: lastOtherError || 'all site candidates failed' };
+  if (lastAuthError) {
+    return { ok: false, reason: 'auth', detail: lastAuthError, googleError: lastGoogleError };
+  }
+  return {
+    ok: false,
+    reason: 'other',
+    detail: lastOtherError || 'all site candidates failed',
+    googleError: lastGoogleError,
+  };
 }
 
 type IndexStatus = {
@@ -369,14 +415,28 @@ async function fetchIndexStatus(jwt: JWT): Promise<IndexStatus> {
       console.warn(`[Search Console] Index status network error for ${candidate}: ${err?.message || err}.`);
       return null;
     });
-    if (!resp || !resp.ok) {
+    if (!resp) {
       console.warn(
-        `[Search Console] Index status HTTP ${resp?.status ?? '(no response)'} for ${candidate} ` +
-          '(trying next site candidate).',
+        `[Search Console] Index status received no response for ${candidate}.`,
       );
       continue;
     }
-    const json: any = await resp.json().catch(() => null);
+    const rawBody = await resp.text();
+    if (!resp.ok) {
+      const failure = googleApiFailure(resp, rawBody, jwt, candidate);
+      console.error('[Search Console] Google API raw index-status failure response:', failure);
+      if (resp.status === 401 || resp.status === 403) {
+        console.error('[Search Console] Index authorization rejected:', {
+          status: resp.status,
+          serviceAccountEmail: failure.serviceAccountEmail,
+          site: candidate,
+        });
+      }
+      continue;
+    }
+    const json: any = (() => {
+      try { return rawBody ? JSON.parse(rawBody) : null; } catch { return null; }
+    })();
     const permissionLevel = String(json?.permissionLevel || '');
     const status: IndexStatus['status'] =
       permissionLevel === 'siteFullUser' || permissionLevel === 'siteRestrictedUser'
@@ -458,7 +518,7 @@ export async function getSearchConsoleStats(days = 30): Promise<any> {
         `[Search Console] Auth failure (${report.detail}) for ${siteUrl} (${days}d) — ` +
           'serving demo data. Check the service-account credentials and Search Console access.',
       );
-      return demoData(days);
+      return { ...demoData(days), googleError: report.googleError || null };
     }
     // Authenticated connection that failed for a non-auth reason (network
     // glitch, 5xx, throttling). We keep the LIVE response with zeroed counts —
@@ -474,6 +534,7 @@ export async function getSearchConsoleStats(days = 30): Promise<any> {
       rangeDays: days,
       report: ZEROED_RESULT,
       index,
+      googleError: report.googleError || null,
     };
   }
 
