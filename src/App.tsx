@@ -98,6 +98,7 @@ import { useRoomSubtitles } from "./hooks/useRoomSubtitles";
 import { ROOM_SUBTITLE_LANGUAGES, loadRoomSubtitleLanguage } from "./lib/roomSubtitleCore";
 import { api } from "./services/api";
 import { useI18n } from "./i18n";
+import { lazyWithRetry } from "./utils/lazyWithRetry";
 
 const MOVIE_URL_PARAM = "movieId";
 const SITE_ORIGIN = "https://www.cinamachat.com";
@@ -332,50 +333,59 @@ const cacheMovieCatalog = (movies: Movie[]) => {
     // Storage can be unavailable in private mode; live loading still works.
   }
 };
-const SecurityShieldModule = React.lazy(() =>
+const SecurityShieldModule = lazyWithRetry(() =>
   import("./components/Admin/SecurityShieldModule").then((m) => ({
     default: m.SecurityShieldModule,
   })),
+  "SecurityShieldModule",
 );
-const SystemDatabaseAuditModule = React.lazy(() =>
+const SystemDatabaseAuditModule = lazyWithRetry(() =>
   import("./components/Admin/SystemDatabaseAuditModule").then((m) => ({
     default: m.SystemDatabaseAuditModule,
   })),
+  "SystemDatabaseAuditModule",
 );
-const SmartAnalyticsModule = React.lazy(() =>
+const SmartAnalyticsModule = lazyWithRetry(() =>
   import("./components/Admin/SmartAnalyticsModule").then((m) => ({
     default: m.SmartAnalyticsModule,
   })),
+  "SmartAnalyticsModule",
 );
-const TicketVIPModule = React.lazy(() =>
+const TicketVIPModule = lazyWithRetry(() =>
   import("./components/Admin/TicketVIPModule").then((m) => ({
     default: m.TicketVIPModule,
   })),
+  "TicketVIPModule",
 );
-const SystemHubModule = React.lazy(() =>
+const SystemHubModule = lazyWithRetry(() =>
   import("./components/Admin/SystemHub/SystemHubModule").then((m) => ({
     default: m.SystemHubModule,
   })),
+  "SystemHubModule",
 );
-const GrowthModule = React.lazy(() =>
+const GrowthModule = lazyWithRetry(() =>
   import("./components/Admin/GrowthModule").then((m) => ({
     default: m.GrowthModule,
   })),
+  "GrowthModule",
 );
-const MultiLevelAdminModule = React.lazy(() =>
+const MultiLevelAdminModule = lazyWithRetry(() =>
   import("./components/Admin/MultiLevelAdminModule").then((m) => ({
     default: m.MultiLevelAdminModule,
   })),
+  "MultiLevelAdminModule",
 );
-const UserAnalyticsModule = React.lazy(() =>
+const UserAnalyticsModule = lazyWithRetry(() =>
   import("./components/Admin/UserAnalyticsModule").then((m) => ({
     default: m.UserAnalyticsModule,
   })),
+  "UserAnalyticsModule",
 );
-const AdminSEOAnalyticsModule = React.lazy(() =>
+const AdminSEOAnalyticsModule = lazyWithRetry(() =>
   import("./components/Admin/AdminSEOAnalyticsModule").then((m) => ({
     default: m.AdminSEOAnalyticsModule,
   })),
+  "AdminSEOAnalyticsModule",
 );
 import { VIPRoomModal } from "./components/Social/VIPRoomModal";
 import { CinemaWindowModal } from "./components/Social/CinemaWindowModal";
