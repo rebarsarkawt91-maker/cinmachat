@@ -102,14 +102,7 @@ function loadServiceAccountFile(
       const json = JSON.parse(readFileSync(filePath, 'utf8'));
       const clientEmail = String(json?.client_email || json?.clientEmail || '').trim();
       const privateKey = normalizePrivateKey(json?.private_key || json?.privateKey);
-      if (clientEmail && clientEmail !== SEARCH_CONSOLE_CLIENT_EMAIL) {
-        console.warn(
-          `[Search Console] Ignoring ${filePath}: its client_email is not the ` +
-            'configured Firebase Admin service account.',
-        );
-        continue;
-      }
-      if (clientEmail === SEARCH_CONSOLE_CLIENT_EMAIL && isCompletePrivateKey(privateKey)) {
+      if (clientEmail && isCompletePrivateKey(privateKey)) {
         console.log(
           `[Search Console] Service-account credentials loaded from ${filePath} ` +
             `(${privateKey.split('\n').length} key line(s)).`,
