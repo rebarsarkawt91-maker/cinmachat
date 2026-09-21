@@ -21,6 +21,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const SEARCH_CONSOLE_API_PREFIX = 'https://searchconsole.googleapis.com/webmasters/v3';
+const siteUrl = 'sc-domain:cinamachat.com';
 const SEARCH_CONSOLE_CLIENT_EMAIL =
   'firebase-adminsdk-fbsvc@gen-lang-client-0240212572.iam.gserviceaccount.com';
 const RENDER_SECRET_FILE = '/etc/secrets/firebase-service-account.json';
@@ -38,22 +39,10 @@ const SERVICE_ACCOUNT_FILES = [
   'gen-lang-client-0240212572-firebase-adminsdk-fbsvc-b4e91ae7d0.json',
 ];
 
-// Search Console "property" (site) candidates, tried in order. The env override
-// wins, then the URL-prefix format for the CinemaChat production domain, then
-// the legacy sc-domain: format (relevant when Search Console only matches the
-// exact https://www.cinamachat.com/ property instead of a domain property).
+// The verified domain property is authoritative. Environment configuration is
+// intentionally ignored so production cannot query an ungranted URL property.
 function candidateSiteUrls(): string[] {
-  const out: string[] = [];
-  const configured = (process.env.GOOGLE_SEARCH_CONSOLE_SITE_URL || '').trim();
-  if (configured && !out.includes(configured)) out.push(configured);
-  out.push('https://www.cinamachat.com/');
-  if (!out.includes('sc-domain:cinamachat.com')) out.push('sc-domain:cinamachat.com');
-  return out;
-}
-
-// Primary/display site used in logs and response payloads (first candidate).
-function siteUrl(): string {
-  return candidateSiteUrls()[0];
+  return [siteUrl];
 }
 
 // Render/service dashboards often paste the PEM as a single-line env var with
@@ -161,7 +150,7 @@ function buildJwtClient(): JWT | null {
   if (preferredFileCred) {
     console.log(
       `[Search Console] Authenticating with preferred service-account file: ` +
-        `${preferredFileCred.clientEmail} (site: ${siteUrl()}).`,
+        `${preferredFileCred.clientEmail} (site: ${siteUrl}).`,
     );
     return jwtFrom(preferredFileCred.clientEmail, preferredFileCred.privateKey);
   }
@@ -182,7 +171,7 @@ function buildJwtClient(): JWT | null {
   if (envEmailMatches && isCompletePrivateKey(envFormattedKey)) {
     console.log(
       `[Search Console] Credentials found in env for ${SEARCH_CONSOLE_CLIENT_EMAIL} ` +
-        `(site: ${siteUrl()}). Private key normalized — ` +
+        `(site: ${siteUrl}). Private key normalized — ` +
         `${envFormattedKey.split('\n').length} line(s). Authentication primed.`,
     );
     return jwtFrom(SEARCH_CONSOLE_CLIENT_EMAIL, envFormattedKey);
@@ -204,6 +193,7 @@ async function getAccessTokenWithFileFallback(
   jwt: JWT,
   context: string,
 ): Promise<AccessTokenResult | null> {
+  console.log('[Search Console] Querying site:', siteUrl);
   try {
     return await jwt.getAccessToken();
   } catch (error: any) {
@@ -426,7 +416,7 @@ function demoData(days: number): any {
   return {
     configured: false,
     isDemo: true,
-    siteUrl: siteUrl(),
+    siteUrl,
     rangeDays: days,
     report: {
       queries,
@@ -465,7 +455,7 @@ export async function getSearchConsoleStats(days = 30): Promise<any> {
   if (report.ok === false) {
     if (report.reason === 'auth') {
       console.warn(
-        `[Search Console] Auth failure (${report.detail}) for ${siteUrl()} (${days}d) — ` +
+        `[Search Console] Auth failure (${report.detail}) for ${siteUrl} (${days}d) — ` +
           'serving demo data. Check the service-account credentials and Search Console access.',
       );
       return demoData(days);
@@ -480,7 +470,7 @@ export async function getSearchConsoleStats(days = 30): Promise<any> {
     return {
       configured: true,
       isDemo: false,
-      siteUrl: siteUrl(),
+      siteUrl,
       rangeDays: days,
       report: ZEROED_RESULT,
       index,
