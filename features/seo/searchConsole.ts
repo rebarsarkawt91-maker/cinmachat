@@ -28,6 +28,8 @@ const SEARCH_CONSOLE_CLIENT_EMAIL =
 // env credential is missing/incomplete. These files are NOT committed to git
 // and act as a development/staging fallback source.
 const SERVICE_ACCOUNT_FILES = [
+  '/etc/secrets/firebase-service-account.json',
+  '/etc/secrets/service-account.json',
   'firebase-service-account.json',
   'service-account.json',
   'credentials.json',
