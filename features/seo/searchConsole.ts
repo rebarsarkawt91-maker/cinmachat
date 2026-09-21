@@ -23,12 +23,12 @@ import path from 'node:path';
 const SEARCH_CONSOLE_API_PREFIX = 'https://searchconsole.googleapis.com/webmasters/v3';
 const SEARCH_CONSOLE_CLIENT_EMAIL =
   'firebase-adminsdk-fbsvc@gen-lang-client-0240212572.iam.gserviceaccount.com';
+const RENDER_SECRET_FILE = '/etc/secrets/firebase-service-account.json';
 
 // Local service-account JSON candidates (project root), tried in order when the
 // env credential is missing/incomplete. These files are NOT committed to git
 // and act as a development/staging fallback source.
 const SERVICE_ACCOUNT_FILES = [
-  '/etc/secrets/firebase-service-account.json',
   '/etc/secrets/service-account.json',
   'firebase-service-account.json',
   'service-account.json',
@@ -91,20 +91,22 @@ function isCompletePrivateKey(formattedKey: string | undefined): formattedKey is
 }
 
 // Shared JWT factory used by both the env and the local-file credential paths.
-function jwtFrom(formattedKey: string): JWT {
+function jwtFrom(clientEmail: string, formattedKey: string): JWT {
   return new JWT({
-    email: SEARCH_CONSOLE_CLIENT_EMAIL,
+    email: clientEmail,
     key: formattedKey,
     scopes: ['https://www.googleapis.com/auth/webmasters.readonly'],
-    subject: SEARCH_CONSOLE_CLIENT_EMAIL,
+    subject: clientEmail,
   });
 }
 
 // Reads service-account credentials from a local JSON file at the project root
 // (credentials.json or service-account.json). Returns the normalized email +
 // private key, or null when no file exists or it cannot be parsed.
-function loadServiceAccountFile(): { clientEmail: string; privateKey: string } | null {
-  for (const fileName of SERVICE_ACCOUNT_FILES) {
+function loadServiceAccountFile(
+  candidates: readonly string[] = SERVICE_ACCOUNT_FILES,
+): { clientEmail: string; privateKey: string } | null {
+  for (const fileName of candidates) {
     const filePath = path.resolve(process.cwd(), fileName);
     if (!existsSync(filePath)) continue;
     try {
@@ -143,15 +145,25 @@ function loadServiceAccountFile(): { clientEmail: string; privateKey: string } |
 //   2. the local service-account file at the project root;
 //   3. null → demo data.
 function buildJwtClient(): JWT | null {
-  // Prefer a validated JSON secret. JSON preserves the PEM exactly and avoids
-  // hosting dashboards corrupting quotes or newlines in multiline env values.
+  // Render's mounted secret is authoritative. Return before reading either
+  // GOOGLE_SEARCH_CONSOLE_* variable so stale env credentials cannot override it.
+  const renderSecretCred = loadServiceAccountFile([RENDER_SECRET_FILE]);
+  if (renderSecretCred) {
+    console.log(
+      `[Search Console] Using authoritative Render secret file ` +
+        `${RENDER_SECRET_FILE} for ${renderSecretCred.clientEmail}.`,
+    );
+    return jwtFrom(renderSecretCred.clientEmail, renderSecretCred.privateKey);
+  }
+
+  // Other validated JSON files remain preferred over environment credentials.
   const preferredFileCred = loadServiceAccountFile();
   if (preferredFileCred) {
     console.log(
       `[Search Console] Authenticating with preferred service-account file: ` +
         `${preferredFileCred.clientEmail} (site: ${siteUrl()}).`,
     );
-    return jwtFrom(preferredFileCred.privateKey);
+    return jwtFrom(preferredFileCred.clientEmail, preferredFileCred.privateKey);
   }
 
   const configuredEnvEmail = (process.env.GOOGLE_SEARCH_CONSOLE_CLIENT_EMAIL || '').trim();
@@ -173,7 +185,7 @@ function buildJwtClient(): JWT | null {
         `(site: ${siteUrl()}). Private key normalized — ` +
         `${envFormattedKey.split('\n').length} line(s). Authentication primed.`,
     );
-    return jwtFrom(envFormattedKey);
+    return jwtFrom(SEARCH_CONSOLE_CLIENT_EMAIL, envFormattedKey);
   }
 
   // Env credential missing/incomplete → fall back to the local credentials file.
@@ -201,11 +213,11 @@ async function getAccessTokenWithFileFallback(
     );
   }
 
-  const fileCred = loadServiceAccountFile();
+  const fileCred = loadServiceAccountFile([RENDER_SECRET_FILE, ...SERVICE_ACCOUNT_FILES]);
   if (!fileCred) return null;
 
   try {
-    return await jwtFrom(fileCred.privateKey).getAccessToken();
+    return await jwtFrom(fileCred.clientEmail, fileCred.privateKey).getAccessToken();
   } catch (fallbackError: any) {
     console.warn(
       `[Search Console] JSON credential fallback FAILED (${context}): ` +
