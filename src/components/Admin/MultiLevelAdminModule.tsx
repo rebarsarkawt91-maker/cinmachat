@@ -63,7 +63,7 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
   // Create Sub-Admin / Assistant inputs
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
-  const [newRole, setNewRole] = useState<"deputy_manager" | "staff">("staff");
+  const [newRole, setNewRole] = useState<"deputy_manager" | "staff" | "cinema_room_admin">("staff");
   const [showCreatePass, setShowCreatePass] = useState(false);
 
   // Edit/Reset password inputs
@@ -494,11 +494,14 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
                 <label className="text-[11px] font-bold text-gray-400 kurdish-text">دیاریکردنی ڕۆڵ و دەسەڵات (Role & Permissions)</label>
                 <select
                   value={newRole}
-                  onChange={(e) => setNewRole(e.target.value as "deputy_manager" | "staff")}
+                  onChange={(e) => setNewRole(e.target.value as "deputy_manager" | "staff" | "cinema_room_admin")}
                   className="w-full bg-black/40 border border-white/5 rounded-xl px-4 py-3 text-xs text-white kurdish-text outline-none focus:border-amber-500/50 transition-all cursor-pointer"
                 >
                   <option value="staff" className="bg-[#0c0d12] text-white">
                     کارمەندی بەڕێوەبەر (Staff) - تەنها پۆستکردن و دانانی لینک (Post & Links Only)
+                  </option>
+                  <option value="cinema_room_admin" className="bg-[#0c0d12] text-white">
+                    ئەدمینی بەڕێوەبەری ژووری سینەما چات
                   </option>
                   {isPrivileged && (
                     <option value="deputy_manager" className="bg-[#0c0d12] text-white">

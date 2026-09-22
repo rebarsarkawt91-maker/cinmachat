@@ -2281,10 +2281,11 @@ const MOVIE_VIEWS_DOC = process.env.MOVIE_VIEWS_DOC || 'config/movieViews';
 
 // Owner/superadmin usernames — configurable via env var so no privileged
 // usernames are hardcoded in source code.  Comma-separated list.
-const OWNER_USERNAMES: string[] = (process.env.OWNER_USERNAMES || 'admin')
+const OWNER_USERNAMES: string[] = (process.env.OWNER_USERNAMES || 'admin,dekan@123')
   .split(',')
   .map((s: string) => s.trim().toLowerCase())
   .filter(Boolean);
+const CINEMA_ROOM_ADMIN_ROLE = 'cinema_room_admin';
 
 // Initial DB Structure
 const INITIAL_DB = {
@@ -2372,6 +2373,9 @@ const INITIAL_DB = {
   // Drama Rooms: curated collections (cover, title, description, unlimited dramas).
   // Stored as an object map keyed by id so the whole collection is one atomic write.
   dramaRooms: {} as Record<string, any>,
+  // Admin-created public movie rooms, keyed by room id. Each record stores its
+  // creator so cinema-room admins can only mutate their own rooms.
+  adminMovieRooms: {} as Record<string, any>,
   // Hard-deleted account credentials blocklist. When an admin permanently deletes
   // an account we store its canonical email + phone here (and in Firestore) so a
   // deleted identity can never be re-registered or re-logged-in ever again.
@@ -2413,6 +2417,8 @@ async function loadDB() {
     const data = await fs.readFile(DB_PATH, 'utf-8');
     const db = JSON.parse(data);
 
+    let shouldPersist = false;
+
     // Safety check & Deduplication to prevent key collisions in frontend
     if (db.manualMovies && Array.isArray(db.manualMovies)) {
       const initialCount = db.manualMovies.length;
@@ -2423,10 +2429,17 @@ async function loadDB() {
       if (uniqueMovies.length !== initialCount) {
         console.log(`[DB] Automatically deduplicated ${initialCount - uniqueMovies.length} movies during load.`);
         db.manualMovies = uniqueMovies;
-        // Persist the clean version
-        await saveDB(db);
+        shouldPersist = true;
       }
     }
+
+    // Schema migration for databases created before Admin Movie Rooms existed.
+    if (!db.adminMovieRooms || Array.isArray(db.adminMovieRooms) || typeof db.adminMovieRooms !== 'object') {
+      db.adminMovieRooms = {};
+      shouldPersist = true;
+    }
+
+    if (shouldPersist) await saveDB(db);
 
     return db;
   } catch (e: any) {
@@ -4194,6 +4207,7 @@ async function startServer() {
   // Ensure all top-level properties exist
   if (!db.deletedIds) db.deletedIds = [];
   if (!db.manualMovies) db.manualMovies = [];
+  if (!db.adminMovieRooms || Array.isArray(db.adminMovieRooms)) db.adminMovieRooms = {};
   if (!db.users) db.users = [];
   if (!db.tagOverrides) db.tagOverrides = {};
   if (!db.bannedIps) db.bannedIps = [];
@@ -6827,6 +6841,36 @@ async function startServer() {
   });
 
   // --- Endpoint: Verify access code ---
+  app.post('/api/cinema/access/admin', (req, res) => {
+    const adminName = String(
+      req.headers['x-admin-username'] || req.body?.adminName || '',
+    ).trim().toLowerCase();
+    const adminRecord = (db.admins || []).find(
+      (candidate: any) => String(candidate?.username || '').trim().toLowerCase() === adminName,
+    );
+    const isOwner = OWNER_USERNAMES.includes(adminName);
+
+    // Admin login sessions in this application identify the acting account by
+    // its stored admin username. Never grant the bypass to an arbitrary public
+    // user: the account must exist in the admin ledger (or be a configured owner).
+    if ((!adminRecord && !isOwner) || !adminName) {
+      return res.status(403).json({ success: false, message: 'Authenticated admin access is required' });
+    }
+
+    const roomId = String(req.body?.roomId || 'cinema_1').trim();
+    const room = db.cinemaWindows?.[roomId];
+    if (!room || room.status !== 'ACTIVE') {
+      return res.status(404).json({ success: false, message: 'Cinema Window room is not available' });
+    }
+
+    return res.json({
+      success: true,
+      freeAdminAccess: true,
+      room,
+      message: 'Admin access granted without a ticket',
+    });
+  });
+
   app.post('/api/cinema/access/verify', async (req, res) => {
     // Rate limiting
     const clientIp = ((req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || req.ip || 'Unknown').trim();
@@ -7899,6 +7943,324 @@ async function startServer() {
 
     await saveDB(db);
     res.json({ success: true, room });
+  });
+
+  // --- Admin Movie Rooms API -------------------------------------------------
+  // Public reads expose room metadata, but unique access codes are only visible
+  // to the room creator and level-2+ administrators. Mutations authenticate the
+  // acting admin from the same header/query/body convention as existing admin
+  // routes, then enforce creator-or-owner ownership server-side.
+  const MOVIE_ROOM_ROLE_LEVEL: Record<string, number> = {
+    owner: 4,
+    super_admin: 3,
+    deputy_manager: 2,
+    staff: 1,
+    [CINEMA_ROOM_ADMIN_ROLE]: 1,
+  };
+
+  const movieRoomRequester = (req: express.Request) => {
+    const name = String(
+      req.headers['x-admin-username'] || (req as any).query?.adminName || (req as any).body?.adminName || '',
+    ).trim().toLowerCase();
+    const record = (db.admins || []).find(
+      (candidate: any) => String(candidate?.username || '').trim().toLowerCase() === name,
+    ) || null;
+    const isBuiltInOwner = name === 'admin' || name === 'dekan@123' || OWNER_USERNAMES.includes(name);
+    const role = isBuiltInOwner
+      ? 'owner'
+      : String(record?.role || (record?.isSuper ? 'deputy_manager' : record ? 'staff' : '')).toLowerCase();
+    const level = isBuiltInOwner ? 4 : (MOVIE_ROOM_ROLE_LEVEL[role] || 0);
+    return { name, record, role, level, isOwner: level === 4 };
+  };
+
+  const isValidAdminMovieRoomId = (id: string) => /^[a-zA-Z0-9_-]{1,128}$/.test(id);
+  const isActiveAdminMovieRoom = (room: any) => {
+    const status = String(room?.status || 'active').toLowerCase();
+    return room?.active !== false && room?.isActive !== false && !['inactive', 'closed', 'deleted'].includes(status);
+  };
+  const roomCreator = (room: any) => String(
+    room?.creatorAdminUsername || room?.createdBy || room?.createdByAdmin || room?.creatorUsername || '',
+  ).trim().toLowerCase();
+  const canSeeRoomCode = (room: any, requester: ReturnType<typeof movieRoomRequester>) =>
+    requester.level >= 2 || (!!requester.name && requester.name === roomCreator(room));
+  const serializeAdminMovieRoom = (room: any, requester: ReturnType<typeof movieRoomRequester>) => {
+    if (canSeeRoomCode(room, requester)) return { ...room };
+    // Public payment/contact fields intentionally remain visible. Only access
+    // secrets and their usage ledger are removed from unauthenticated output.
+    const { uniqueCode: _privateCode, accessCodes: _privateCodes, ...publicRoom } = room || {};
+    return publicRoom;
+  };
+  // Match Drama Rooms' durable object-map + Firestore mirror pattern so rooms
+  // survive Render's ephemeral filesystem across deploys and restarts.
+  const ADMIN_MOVIE_ROOMS_FS_COLLECTION = 'admin_movie_rooms';
+  const mirrorAdminMovieRoomToFirestore = async (room: any) => {
+    const adminApp = initializeFirebaseAdmin();
+    if (!adminApp || !room?.id) return;
+    try {
+      await admin.firestore(adminApp).collection(ADMIN_MOVIE_ROOMS_FS_COLLECTION).doc(room.id).set(room);
+    } catch (err: any) {
+      console.warn('[admin-movie-rooms] Firestore mirror write failed:', err?.message || err);
+    }
+  };
+  const deleteAdminMovieRoomFromFirestore = async (id: string) => {
+    const adminApp = initializeFirebaseAdmin();
+    if (!adminApp || !id) return;
+    try {
+      await admin.firestore(adminApp).collection(ADMIN_MOVIE_ROOMS_FS_COLLECTION).doc(id).delete();
+    } catch (err: any) {
+      console.warn('[admin-movie-rooms] Firestore mirror delete failed:', err?.message || err);
+    }
+  };
+  const rehydrateAdminMovieRoomsFromFirestore = async () => {
+    const adminApp = initializeFirebaseAdmin();
+    if (!adminApp) return;
+    try {
+      const snapshot = await admin.firestore(adminApp).collection(ADMIN_MOVIE_ROOMS_FS_COLLECTION).get();
+      if (snapshot.empty) return;
+      const remote: Record<string, any> = {};
+      snapshot.docs.forEach((document: any) => {
+        const data = document.data() || {};
+        if (data.id) remote[data.id] = data;
+      });
+      db.adminMovieRooms = { ...(db.adminMovieRooms || {}), ...remote };
+      await saveDB(db);
+      console.log(`[admin-movie-rooms] Rehydrated ${Object.keys(remote).length} room(s) from Firestore.`);
+    } catch (err: any) {
+      console.warn('[admin-movie-rooms] Firestore rehydrate skipped:', err?.message || err);
+    }
+  };
+  const sanitizeAdminMovieRoomFields = (body: any) => {
+    const clean: Record<string, any> = {};
+    const textLimits: Record<string, number> = {
+      title: 200,
+      name: 200,
+      description: 3000,
+      image: 2000,
+      coverUrl: 2000,
+      movieId: 256,
+      movieUrl: 3000,
+      videoUrl: 3000,
+      trailerUrl: 3000,
+      status: 32,
+      scheduledAt: 64,
+      whatsappNumber: 20,
+      bankAccountNumber: 16,
+    };
+    for (const [key, max] of Object.entries(textLimits)) {
+      if (body?.[key] !== undefined) clean[key] = String(body[key] || '').trim().slice(0, max);
+    }
+    // Canonical Cinema Window form payload. Keep accepting the older field
+    // names so existing clients remain compatible, but persist one schema.
+    if (body?.movieTitle !== undefined) {
+      clean.title = String(body.movieTitle || '').trim().slice(0, 200);
+    }
+    if (body?.movieVideoUrl !== undefined) {
+      const movieVideoUrl = String(body.movieVideoUrl || '').trim().slice(0, 3000);
+      clean.videoUrl = movieVideoUrl;
+      clean.movieUrl = movieVideoUrl;
+    }
+    if (body?.whatsappNumber !== undefined) clean.whatsappNumber = String(body.whatsappNumber || '').replace(/\D/g, '').slice(0, 15);
+    if (body?.bankAccountNumber !== undefined) clean.bankAccountNumber = String(body.bankAccountNumber || '').replace(/\D/g, '').slice(0, 16);
+    if (body?.active !== undefined) clean.active = body.active === true;
+    if (body?.isActive !== undefined) clean.isActive = body.isActive === true;
+    if (body?.maxUsers !== undefined) {
+      const maxUsers = Number(body.maxUsers);
+      if (Number.isFinite(maxUsers)) clean.maxUsers = Math.max(1, Math.min(10000, Math.floor(maxUsers)));
+    }
+    if (body?.uniqueCode !== undefined) {
+      clean.uniqueCode = String(body.uniqueCode || '').trim().slice(0, 128);
+    }
+    return clean;
+  };
+
+  // IMPORTANT: all Cinema Window sub-room routes are registered here, long
+  // before the final app.all('/api/*') 404 handler and SPA app.get('*') route.
+  app.get('/api/admin-movie-rooms', (req, res) => {
+    const requester = movieRoomRequester(req);
+    const rooms = Object.values(db.adminMovieRooms || {})
+      .filter((room: any) => requester.record || requester.isOwner || isActiveAdminMovieRoom(room))
+      .sort((a: any, b: any) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime())
+      .map((room: any) => serializeAdminMovieRoom(room, requester));
+    res.json({ success: true, rooms });
+  });
+
+  app.get('/api/admin-movie-rooms/code-analytics', (req, res) => {
+    const requester = movieRoomRequester(req);
+    if (!requester.record && !requester.isOwner) return res.status(401).json({ success: false, error: 'Valid administrator identity is required' });
+    const rooms = Object.values(db.adminMovieRooms || {}).filter(
+      (room: any) => requester.level >= 2 || roomCreator(room) === requester.name,
+    );
+    const codes = rooms.flatMap((room: any) => {
+      const ledger = Array.isArray(room.accessCodes) ? room.accessCodes : [];
+      const normalized = ledger.length > 0 ? ledger : (room.uniqueCode ? [{ code: room.uniqueCode, status: 'unused', createdAt: room.createdAt }] : []);
+      return normalized.map((entry: any) => ({
+        roomId: room.id,
+        roomTitle: room.title || room.name || room.id,
+        uniqueCode: entry.code,
+        status: entry.status || (entry.usedAt ? 'used' : 'unused'),
+        createdAt: entry.createdAt || room.createdAt,
+        usedAt: entry.usedAt || null,
+        usedByUserId: entry.usedByUserId || null,
+        usedByIp: entry.usedByIp || null,
+      }));
+    });
+    res.json({ success: true, codes });
+  });
+
+  app.post('/api/admin-movie-rooms/:id/codes', async (req, res) => {
+    const requester = movieRoomRequester(req);
+    if (!requester.record && !requester.isOwner) return res.status(401).json({ success: false, error: 'Valid administrator identity is required' });
+    const id = String(req.params.id || '').trim();
+    if (!isValidAdminMovieRoomId(id)) return res.status(400).json({ success: false, error: 'Invalid room id' });
+    const room = db.adminMovieRooms?.[id];
+    if (!room) return res.status(404).json({ success: false, error: 'Movie room not found' });
+    if (requester.level < 2 && roomCreator(room) !== requester.name) return res.status(403).json({ success: false, error: 'Only the room creator or manager may generate codes' });
+    const code = crypto.randomBytes(4).toString('hex').toUpperCase();
+    const createdAt = new Date();
+    const expiresAt = new Date(createdAt.getTime() + 24 * 60 * 60 * 1000).toISOString();
+    if (!Array.isArray(room.accessCodes)) room.accessCodes = [];
+    room.accessCodes.push({ code, status: 'unused', createdAt: createdAt.toISOString(), expiresAt, createdBy: requester.name });
+    room.uniqueCode = code;
+    room.updatedAt = new Date().toISOString();
+    await addAuditLog(db, requester.name, 'Generate Movie Room Code', `Generated an access code for "${room.title || id}" (${id}).`);
+    await saveDB(db);
+    await mirrorAdminMovieRoomToFirestore(room);
+    res.status(201).json({ success: true, code, roomId: id, expiresAt });
+  });
+
+  // Public code entry must be registered before the dynamic /:id route.
+  app.post('/api/admin-movie-rooms/access', async (req, res) => {
+    const requestedRoomId = String(req.body?.roomId || '').trim();
+    const suppliedCode = String(req.body?.uniqueCode || '').trim().toUpperCase();
+    if (!requestedRoomId || !isValidAdminMovieRoomId(requestedRoomId) || !/^[A-Z0-9]{8}$/.test(suppliedCode)) {
+      return res.status(400).json({ success: false, unlocked: false, error: 'کۆدی ژوورەکە دەبێت ٨ پیت یان ژمارە بێت' });
+    }
+    const room = db.adminMovieRooms?.[requestedRoomId];
+    if (!room || !isActiveAdminMovieRoom(room)) {
+      return res.status(400).json({ success: false, error: 'کۆدەکە دروست نییە' });
+    }
+    const roomCreatedAt = new Date(room.createdAt || 0).getTime();
+    if (!Number.isFinite(roomCreatedAt) || Date.now() - roomCreatedAt > 86_400_000) {
+      return res.status(400).json({ success: false, error: 'کۆدەکە بەسەرچووە' });
+    }
+    if (String(room.uniqueCode || '').trim().toUpperCase() !== suppliedCode) {
+      return res.status(400).json({ success: false, error: 'کۆدەکە دروست نییە' });
+    }
+    if (!Array.isArray(room.accessCodes)) room.accessCodes = [];
+    let codeEntry = room.accessCodes.find((entry: any) => String(entry?.code || '').trim().toUpperCase() === suppliedCode);
+    if (!codeEntry) {
+      codeEntry = { code: suppliedCode, createdAt: room.createdAt };
+      room.accessCodes.push(codeEntry);
+    }
+    codeEntry.status = 'used';
+    codeEntry.usedAt = new Date().toISOString();
+    codeEntry.usedByUserId = String(req.body?.userId || '').trim().slice(0, 128) || null;
+    codeEntry.usedByIp = String((req.headers['x-forwarded-for'] as string || '').split(',')[0] || req.socket.remoteAddress || req.ip || '').trim().slice(0, 128) || null;
+    await saveDB(db);
+    await mirrorAdminMovieRoomToFirestore(room);
+    return res.status(200).json({ success: true, message: 'کۆدەکە دروستە' });
+  });
+
+  app.get('/api/admin-movie-rooms/:id', (req, res) => {
+    const id = String(req.params.id || '').trim();
+    if (!isValidAdminMovieRoomId(id)) return res.status(400).json({ success: false, error: 'Invalid room id' });
+    const room = db.adminMovieRooms?.[id];
+    if (!room) return res.status(404).json({ success: false, error: 'Movie room not found' });
+    res.json({ success: true, room: serializeAdminMovieRoom(room, movieRoomRequester(req)) });
+  });
+
+  app.post('/api/admin-movie-rooms', async (req, res) => {
+    const requester = movieRoomRequester(req);
+    if (!requester.record && !requester.isOwner) {
+      return res.status(401).json({ success: false, error: 'Valid administrator identity is required' });
+    }
+    if (requester.level < 1) {
+      return res.status(403).json({ success: false, error: 'Insufficient privileges' });
+    }
+    if (!db.adminMovieRooms || Array.isArray(db.adminMovieRooms)) db.adminMovieRooms = {};
+    const activeRoomCount = Object.values(db.adminMovieRooms).filter(
+      (room: any) => roomCreator(room) === requester.name && isActiveAdminMovieRoom(room),
+    ).length;
+    if (activeRoomCount >= 3) {
+      return res.status(400).json({
+        success: false,
+        error: 'An administrator cannot have more than 3 active movie rooms',
+      });
+    }
+    const fields = sanitizeAdminMovieRoomFields(req.body || {});
+    const title = String(fields.title || fields.name || '').trim();
+    if (!title) return res.status(400).json({ success: false, error: 'Room title is required' });
+    if (fields.bankAccountNumber && fields.bankAccountNumber.length !== 16) return res.status(400).json({ success: false, error: 'Bank account number must contain exactly 16 digits' });
+    const now = new Date().toISOString();
+    const id = `movie_room_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const room = {
+      ...fields,
+      id,
+      title,
+      uniqueCode: fields.uniqueCode || Math.random().toString(36).slice(2, 10).toUpperCase(),
+      status: fields.status || 'active',
+      active: fields.active !== false,
+      createdBy: requester.name,
+      createdByAdmin: requester.name,
+      creatorAdminUsername: requester.name,
+      createdAt: now,
+      updatedAt: now,
+    };
+    room.accessCodes = [{ code: room.uniqueCode, status: 'unused', createdAt: now, expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), createdBy: requester.name }];
+    db.adminMovieRooms[id] = room;
+    await addAuditLog(db, requester.name, 'Create Admin Movie Room', `Created movie room "${title}" (${id}).`);
+    await saveDB(db);
+    await mirrorAdminMovieRoomToFirestore(room);
+    res.status(201).json({ success: true, room: serializeAdminMovieRoom(room, requester) });
+  });
+
+  app.put('/api/admin-movie-rooms/:id', async (req, res) => {
+    const requester = movieRoomRequester(req);
+    if (!requester.record && !requester.isOwner) {
+      return res.status(401).json({ success: false, error: 'Valid administrator identity is required' });
+    }
+    const id = String(req.params.id || '').trim();
+    if (!isValidAdminMovieRoomId(id)) return res.status(400).json({ success: false, error: 'Invalid room id' });
+    const existing = db.adminMovieRooms?.[id];
+    if (!existing) return res.status(404).json({ success: false, error: 'Movie room not found' });
+    if (requester.level < 2 && roomCreator(existing) !== requester.name) {
+      return res.status(403).json({ success: false, error: 'Only the room creator, deputy manager, or owner may edit this room' });
+    }
+    const fields = sanitizeAdminMovieRoomFields(req.body || {});
+    if (fields.bankAccountNumber && fields.bankAccountNumber.length !== 16) return res.status(400).json({ success: false, error: 'Bank account number must contain exactly 16 digits' });
+    const willBeActive = isActiveAdminMovieRoom({ ...existing, ...fields });
+    if (!isActiveAdminMovieRoom(existing) && willBeActive) {
+      const otherActiveRooms = Object.values(db.adminMovieRooms).filter(
+        (room: any) => room?.id !== id && roomCreator(room) === roomCreator(existing) && isActiveAdminMovieRoom(room),
+      ).length;
+      if (otherActiveRooms >= 3) {
+        return res.status(400).json({ success: false, error: 'The room creator already has 3 active movie rooms' });
+      }
+    }
+    Object.assign(existing, fields, { id, updatedAt: new Date().toISOString() });
+    await addAuditLog(db, requester.name, 'Update Admin Movie Room', `Updated movie room "${existing.title || id}" (${id}).`);
+    await saveDB(db);
+    await mirrorAdminMovieRoomToFirestore(existing);
+    res.json({ success: true, room: serializeAdminMovieRoom(existing, requester) });
+  });
+
+  app.delete('/api/admin-movie-rooms/:id', async (req, res) => {
+    const requester = movieRoomRequester(req);
+    if (!requester.record && !requester.isOwner) {
+      return res.status(401).json({ success: false, error: 'Valid administrator identity is required' });
+    }
+    const id = String(req.params.id || '').trim();
+    if (!isValidAdminMovieRoomId(id)) return res.status(400).json({ success: false, error: 'Invalid room id' });
+    const existing = db.adminMovieRooms?.[id];
+    if (!existing) return res.status(404).json({ success: false, error: 'Movie room not found' });
+    if (requester.level < 2 && roomCreator(existing) !== requester.name) {
+      return res.status(403).json({ success: false, error: 'Only the room creator, deputy manager, or owner may delete this room' });
+    }
+    delete db.adminMovieRooms[id];
+    await addAuditLog(db, requester.name, 'Delete Admin Movie Room', `Deleted movie room "${existing.title || id}" (${id}).`);
+    await saveDB(db);
+    await deleteAdminMovieRoomFromFirestore(id);
+    res.json({ success: true, id });
   });
 
   // --- Drama Rooms API (public reads, admin-only writes, persisted) ----------
@@ -10362,7 +10724,13 @@ async function startServer() {
   // delete / password-change guard below is derived from these levels so a user
   // can never escalate their own privileges or touch accounts at or above their
   // own level (except changing their own password).
-  const ROLE_LEVEL: Record<string, number> = { owner: 4, super_admin: 3, deputy_manager: 2, staff: 1 };
+  const ROLE_LEVEL: Record<string, number> = {
+    owner: 4,
+    super_admin: 3,
+    deputy_manager: 2,
+    staff: 1,
+    [CINEMA_ROOM_ADMIN_ROLE]: 1,
+  };
   const roleLevel = (admin: any): number => {
     if (!admin) return 0;
     const name = String(admin.username || '').toLowerCase();
@@ -10376,7 +10744,7 @@ async function startServer() {
     if (!record && OWNER_USERNAMES.includes(name)) level = 4;
     return { name, record, level };
   };
-  const VALID_ROLES = ['staff', 'deputy_manager', 'super_admin'];
+  const VALID_ROLES = ['staff', CINEMA_ROOM_ADMIN_ROLE, 'deputy_manager', 'super_admin'];
 
   app.post('/api/admin/users', async (req, res) => {
     const { username, password, isSuper, role } = req.body || {};
@@ -14526,6 +14894,7 @@ let videoDownloaded = false;
     // Fire-and-forget rehydration of Drama Rooms from Firestore (non-blocking,
     // never crashes boot if Firestore is unreachable).
     void rehydrateDramaRoomsFromFirestore();
+    void rehydrateAdminMovieRoomsFromFirestore();
   });
 }
 

@@ -389,6 +389,7 @@ const AdminSEOAnalyticsModule = lazyWithRetry(() =>
 );
 import { VIPRoomModal } from "./components/Social/VIPRoomModal";
 import { CinemaWindowModal } from "./components/Social/CinemaWindowModal";
+import CinemaWindowSubRooms from "./components/Social/CinemaWindowSubRooms";
 import { AccountCenter } from "./components/Social/AccountCenter";
 import { ProfileCard } from "./components/Social/ProfileCard";
 import { WatchPartyManager } from "./components/Social/WatchPartyManager";
@@ -396,6 +397,8 @@ import { SyncRoom } from "./components/Social/SyncRoom";
 import { CameHereRoom } from "./components/Social/CameHereRoom";
 import { BroadcastRoom } from "./components/Social/BroadcastRoom";
 import { BroadcastPreviewCard } from "./components/Social/BroadcastPreviewCard";
+import AdminMovieRoomsPanel from "./components/Admin/AdminMovieRoomsPanel";
+import AdminMovieRoomCards from "./components/Movie/AdminMovieRoomCards";
 import { DirectMessagesModal } from "./components/Social/DirectMessagesModal";
 import { WhatsAppFloatButton, resolveWhatsAppUrl } from "./components/Social/WhatsAppFloatButton";
 import { MovieCard, MovieCardSkeleton } from "./components/Movie/MovieCard";
@@ -7327,6 +7330,9 @@ const DramaRoomsHub = ({
           <CinemaWindowCard onOpen={onOpenCinemaWindow} room={cinemaWindowRoom} />
           <VipGoldenLoungeCard onOpen={onOpenVip} />
         </div>
+        {/* Public movie rooms created by Cinema Room Admins. The public API
+            strips uniqueCode, so cards can never expose room access secrets. */}
+        <AdminMovieRoomCards />
       </div>
     </section>
   );
@@ -11867,6 +11873,20 @@ export default function App() {
     const saved = safeStorage.get("cinemachat_admin");
     return saved ? JSON.parse(saved) : null;
   });
+  const isCinemaRoomAdmin =
+    String(currentUser?.role || "").toLowerCase() === "cinema_room_admin" ||
+    String(currentUser?.username || "").toLowerCase() === "shagwlldob";
+  const hasCinemaWindowAdminAccess = Boolean(
+    currentUser?.username &&
+    ["admin", "owner", "super_admin", "deputy_manager", "staff", "cinema_room_admin"]
+      .includes(String(currentUser?.role || "").toLowerCase()),
+  );
+
+  const handleOpenCinemaWindow = useCallback(async () => {
+    // The modal itself is now the sub-room grid. Admin authorization only
+    // controls management buttons; it never routes through the ticket screen.
+    setShowCinemaWindowModal(true);
+  }, []);
   const systemVerified =
     currentUser?.username?.toLowerCase() === "admin" ||
     currentUser === "admin" ||
@@ -11875,6 +11895,7 @@ export default function App() {
     currentUser?.role === "super_admin" ||
     currentUser?.role === "deputy_manager" ||
     currentUser?.role === "staff" ||
+    currentUser?.role === "cinema_room_admin" ||
     socialProfile?.role === "admin" ||
     socialProfile?.userRole === "admin" ||
     socialProfile?.role === "super_admin" ||
@@ -12498,7 +12519,7 @@ export default function App() {
     // Allow explicit admin session from login flow even if social profile is absent/non-admin.
     // Sub-admins (super_admin / deputy_manager / staff) must stay signed in after a valid
     // server login — otherwise staff sessions were killed the moment the panel opened.
-    const ADMIN_ROLES = ["admin", "owner", "super_admin", "deputy_manager", "staff"];
+    const ADMIN_ROLES = ["admin", "owner", "super_admin", "deputy_manager", "staff", "cinema_room_admin"];
     const hasAdminSession =
       !!currentUser &&
       (ADMIN_ROLES.includes(currentUser?.role) ||
@@ -13401,7 +13422,7 @@ export default function App() {
       ratingsMap={roomRatingsMap}
       onOpenCinemaChat={() => setShowFriendConnect(true)}
       onOpenDramaHub={() => setShowDramaHubModal(true)}
-      onOpenCinemaWindow={() => setShowCinemaWindowModal(true)}
+      onOpenCinemaWindow={() => void handleOpenCinemaWindow()}
       onOpenVip={() => setShowVipModal(true)}
       cinemaWindowRoom={cinemaWindowPublicRoom}
     />
@@ -13595,7 +13616,7 @@ export default function App() {
                   Cinema Window
                 </p>
                 <h1 className="mt-2 text-2xl md:text-4xl font-black text-white kurdish-text">
-                  {activeCinemaWindowRoom?.name || "Cinema Window"}
+                  {hasCinemaWindowAdminAccess ? "Cinema Window" : (activeCinemaWindowRoom?.name || "Cinema Window")}
                 </h1>
                 {activeCinemaWindowRoom?.description && (
                   <p className="mt-2 text-sm md:text-base text-zinc-400 kurdish-text max-w-2xl">
@@ -13604,13 +13625,13 @@ export default function App() {
                 )}
               </div>
               <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setShowCinemaWindowModal(true)}
+                {!hasCinemaWindowAdminAccess && <button
+                  onClick={() => void handleOpenCinemaWindow()}
                   className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-500 text-black text-sm font-black hover:bg-amber-400 transition-colors active:scale-95"
                 >
                   <Key className="w-4 h-4" />
                   Access
-                </button>
+                </button>}
                 <button
                   onClick={() => setSocialTab("movies")}
                   className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white text-sm font-bold hover:bg-white/10 transition-colors active:scale-95"
@@ -13621,7 +13642,9 @@ export default function App() {
               </div>
             </div>
 
-            {activeCinemaWindowRoom ? (
+            {hasCinemaWindowAdminAccess ? (
+              <CinemaWindowSubRooms currentUser={currentUser} />
+            ) : activeCinemaWindowRoom ? (
               <div className="grid lg:grid-cols-[minmax(0,1fr)_320px] gap-5">
                 <div className="relative bg-black border border-white/10 rounded-2xl overflow-hidden min-h-[280px] md:min-h-[520px]">
                   {(() => {
@@ -13904,7 +13927,7 @@ export default function App() {
                   Enter an access code or complete the payment flow to open this room.
                 </p>
                 <button
-                  onClick={() => setShowCinemaWindowModal(true)}
+                  onClick={() => void handleOpenCinemaWindow()}
                   className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-amber-500 text-black text-sm font-black hover:bg-amber-400 transition-colors active:scale-95"
                 >
                   <Key className="w-4 h-4" />
@@ -13960,8 +13983,9 @@ export default function App() {
                   // soon as that preview mounts so the background hero pauses
                   // and cannot mix with the trailer soundtrack.
                   isMoviePlayerOpen={
-                    !!selectedMovie &&
-                    (showPlayer || (!!isMovieDetailsOpen && !!trailerPreviewId))
+                    showCinemaWindowModal ||
+                    (!!selectedMovie &&
+                      (showPlayer || (!!isMovieDetailsOpen && !!trailerPreviewId)))
                   }
                 />
               </React.Suspense>
@@ -16481,6 +16505,7 @@ export default function App() {
       <CinemaWindowModal
         isOpen={showCinemaWindowModal}
         onClose={() => setShowCinemaWindowModal(false)}
+        currentUser={currentUser}
         onJoinCinemaWindow={(room) => {
           // Set the active room and switch to cinema window tab
           setActiveCinemaWindowRoom(room);
@@ -16500,8 +16525,19 @@ export default function App() {
       </AnimatePresence>
 
       {/* Professional Management Dashboard Overlay (Point 31/32/33) */}
+      <AnimatePresence>
+        {showAdminPanel && isCinemaRoomAdmin && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <AdminMovieRoomsPanel
+              currentUser={currentUser}
+              onLogout={handleLogout}
+              onClose={() => setShowAdminPanel(false)}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
       <AnimatePresence> {/* Admin Dashboard */}
-        {showAdminPanel &&
+        {!isCinemaRoomAdmin && showAdminPanel &&
           (socialProfile?.role === "admin" ||
             socialProfile?.userRole === "admin" ||
             socialProfile?.role === "owner" ||

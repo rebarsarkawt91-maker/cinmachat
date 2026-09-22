@@ -230,6 +230,22 @@ export function createAdminGuard(db: any) {
     const requesterRole = adminRecord?.role || 
       (adminName === 'dekan@123' ? 'ROLE_SUPER_ADMIN' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
 
+    // Cinema Room Admin is intentionally isolated from the general admin API.
+    // Its dedicated /api/admin-movie-rooms routes do not match /api/admin/* and
+    // enforce creator/owner permissions in their own handlers.
+    const isUnrestrictedOwner = adminName === 'admin' || adminName === 'dekan@123' || adminRecord?.isOwner === true;
+    if (requesterRole === 'cinema_room_admin' && !isUnrestrictedOwner) {
+      logFailedAttempt(
+        'Admin Guard Rejection',
+        `Cinema room admin "${adminName}" was rejected from ${req.method} ${req.url}`,
+      );
+      return res.status(403).json({
+        success: false,
+        message: '⚠️ ئەم بەڕێوەبەرە تەنها دەسەڵاتی بەڕێوەبردنی ژوورەکانی سینەمای هەیە.',
+        error: 'Cinema room admins cannot access general admin endpoints',
+      });
+    }
+
     // Staff ("Post & Links Only") may only reach the publishing flow plus the
     // read views of their permitted tabs. Everything else stays locked so a
     // staff account can never manage admins, VIP, snapshots, bans, etc.
