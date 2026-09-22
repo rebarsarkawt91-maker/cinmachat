@@ -389,7 +389,6 @@ const AdminSEOAnalyticsModule = lazyWithRetry(() =>
 );
 import { VIPRoomModal } from "./components/Social/VIPRoomModal";
 import { CinemaWindowModal } from "./components/Social/CinemaWindowModal";
-import CinemaWindowSubRooms from "./components/Social/CinemaWindowSubRooms";
 import { AccountCenter } from "./components/Social/AccountCenter";
 import { ProfileCard } from "./components/Social/ProfileCard";
 import { WatchPartyManager } from "./components/Social/WatchPartyManager";
@@ -398,7 +397,6 @@ import { CameHereRoom } from "./components/Social/CameHereRoom";
 import { BroadcastRoom } from "./components/Social/BroadcastRoom";
 import { BroadcastPreviewCard } from "./components/Social/BroadcastPreviewCard";
 import AdminMovieRoomsPanel from "./components/Admin/AdminMovieRoomsPanel";
-import AdminMovieRoomCards from "./components/Movie/AdminMovieRoomCards";
 import { DirectMessagesModal } from "./components/Social/DirectMessagesModal";
 import { WhatsAppFloatButton, resolveWhatsAppUrl } from "./components/Social/WhatsAppFloatButton";
 import { MovieCard, MovieCardSkeleton } from "./components/Movie/MovieCard";
@@ -7330,9 +7328,6 @@ const DramaRoomsHub = ({
           <CinemaWindowCard onOpen={onOpenCinemaWindow} room={cinemaWindowRoom} />
           <VipGoldenLoungeCard onOpen={onOpenVip} />
         </div>
-        {/* Public movie rooms created by Cinema Room Admins. The public API
-            strips uniqueCode, so cards can never expose room access secrets. */}
-        <AdminMovieRoomCards />
       </div>
     </section>
   );
@@ -13643,7 +13638,11 @@ export default function App() {
             </div>
 
             {hasCinemaWindowAdminAccess ? (
-              <CinemaWindowSubRooms currentUser={currentUser} />
+              <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-8 text-center">
+                <button type="button" onClick={() => void handleOpenCinemaWindow()} className="rounded-xl bg-amber-500 px-5 py-3 text-sm font-black text-black hover:bg-amber-400">
+                  Open Cinema Window
+                </button>
+              </div>
             ) : activeCinemaWindowRoom ? (
               <div className="grid lg:grid-cols-[minmax(0,1fr)_320px] gap-5">
                 <div className="relative bg-black border border-white/10 rounded-2xl overflow-hidden min-h-[280px] md:min-h-[520px]">

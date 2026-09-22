@@ -362,7 +362,12 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
   const verifyRoomCode = async (event: React.FormEvent, room: MovieRoom) => {
     event.preventDefault();
     const uniqueCode = String(roomCodes[room.id] || "").trim();
-    if (!uniqueCode) return;
+    const accessError = "تکایە کۆدی بێهاوتای ژوورەکە بنووسە بۆ چوونەژوورەوە";
+    if (!/^[A-Za-z0-9]{8}$/.test(uniqueCode)) {
+      setMessage(accessError);
+      window.alert(accessError);
+      return;
+    }
     setCheckingRoomId(room.id);
     try {
       const response = await fetch(api.resolveApiUrl("/api/admin-movie-rooms/access"), { method: "POST", headers: { "Content-Type": "application/json", "Accept": "application/json" }, body: JSON.stringify({ roomId: room.id, uniqueCode }) });
@@ -374,7 +379,9 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
       setRoomCodes((current) => ({ ...current, [room.id]: "" }));
       setFullScreenRoom(room);
     } catch (error: any) {
-      setMessage(error?.message || "کۆدەکە دروست نییە");
+      console.warn("Movie room access denied:", error?.message || error);
+      setMessage(accessError);
+      window.alert(accessError);
     } finally {
       setCheckingRoomId("");
     }
@@ -397,17 +404,10 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
             <h3 className="line-clamp-1 text-sm font-black leading-snug text-white kurdish-text">{room.title || room.name}</h3>
             <p className="mt-3 flex items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs font-black text-amber-300"><User className="h-3.5 w-3.5" />دروستکراوە لەلایەن: {creator}</p>
             {canEdit && <button type="button" onClick={() => void copyRoomCode(room)} className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-fuchsia-500/40 bg-fuchsia-500/10 px-3 py-2 text-xs font-black text-fuchsia-200"><Copy className="h-4 w-4" /> کۆپی کردنی کۆد</button>}
-            {!canAdminister && <form onSubmit={(event) => {
-              if (isUnlocked) {
-                event.preventDefault();
-                setFullScreenRoom(room);
-                return;
-              }
-              void verifyRoomCode(event, room);
-            }} className="mt-3 rounded-xl border border-white/10 bg-black/50 p-3">
+            {!canAdminister && <form noValidate onSubmit={(event) => void verifyRoomCode(event, room)} className="mt-3 rounded-xl border border-white/10 bg-black/50 p-3">
               <label className="mb-2 block text-xs font-black text-zinc-300 kurdish-text">کۆدی بێ هاوتا بۆ ژووری {room.title || room.name}</label>
               <div dir="ltr" className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-                <input required={!isUnlocked} minLength={8} maxLength={8} pattern="[A-Za-z0-9]{8}" value={roomCodes[room.id] || ""} onChange={(event) => setRoomCodes((current) => ({ ...current, [room.id]: event.target.value.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 8) }))} placeholder="کۆدی بێ هاوتا" aria-label="کۆدی بێ هاوتا" className="min-w-0 rounded-xl border border-fuchsia-500/50 bg-black px-3 py-2 text-left font-mono text-xs uppercase text-white outline-none focus:border-fuchsia-400" />
+                <input required minLength={8} maxLength={8} pattern="[A-Za-z0-9]{8}" value={roomCodes[room.id] || ""} onChange={(event) => setRoomCodes((current) => ({ ...current, [room.id]: event.target.value.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 8) }))} placeholder="کۆدی بێ هاوتا" aria-label="کۆدی بێ هاوتا" className="min-w-0 rounded-xl border border-fuchsia-500/50 bg-black px-3 py-2 text-left font-mono text-xs uppercase text-white outline-none focus:border-fuchsia-400" />
                 <button disabled={checkingRoomId === room.id} className={`rounded-xl px-3 py-2 text-xs font-black text-white disabled:opacity-50 ${isUnlocked ? "border border-emerald-400/50 bg-gradient-to-r from-emerald-600 to-amber-500" : "bg-red-600 hover:bg-red-500"}`}>{checkingRoomId === room.id ? "..." : isUnlocked ? "چوونەژوورەوە (چالاکە بۆ ٢٤ کاتژمێر)" : "چوونەژوورەوە"}</button>
               </div>
             </form>}
