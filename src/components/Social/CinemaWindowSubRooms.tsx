@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Copy, Edit3, Loader2, Plus, Trash2, User, X } from "lucide-react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Copy, Edit3, Loader2, Pause, Play, Plus, Trash2, User, Volume2, VolumeX, X } from "lucide-react";
 import { api } from "../../services/api";
 
 type MovieRoom = {
@@ -22,6 +22,8 @@ const activeRoom = (room: MovieRoom) =>
   room.active !== false && !["inactive", "closed", "deleted"].includes(String(room.status || "active").toLowerCase());
 
 const LOCAL_ROOM_CACHE_KEY = "cinemachat_local_admin_movie_rooms";
+const UNLOCKED_ROOMS_KEY = "unlocked_rooms";
+const UNLOCK_DURATION_MS = 24 * 60 * 60 * 1000;
 const loadCachedLocalRooms = (): MovieRoom[] => {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(LOCAL_ROOM_CACHE_KEY) || "[]");
@@ -32,17 +34,43 @@ const loadCachedLocalRooms = (): MovieRoom[] => {
 };
 const hasValidRoomUnlock = (roomId: string): boolean => {
   try {
-    const raw = window.localStorage.getItem(`unlocked_room_${roomId}`);
-    if (!raw) return false;
-    const stored = JSON.parse(raw);
-    const expiresAt = new Date(stored?.expiresAt || 0).getTime();
-    if (!Number.isFinite(expiresAt) || Date.now() >= expiresAt) {
+    const unlocks = JSON.parse(window.localStorage.getItem(UNLOCKED_ROOMS_KEY) || "{}");
+    let unlockedAt = Number(unlocks?.[roomId] || 0);
+
+    // One-time migration for browsers that unlocked a room before the shared
+    // unlocked_rooms map was introduced.
+    if (!unlockedAt) {
+      const legacyRaw = window.localStorage.getItem(`unlocked_room_${roomId}`);
+      const legacy = legacyRaw ? JSON.parse(legacyRaw) : null;
+      unlockedAt = new Date(legacy?.verifiedAt || 0).getTime();
+      if (Number.isFinite(unlockedAt) && unlockedAt > 0) unlocks[roomId] = unlockedAt;
+    }
+    if (!Number.isFinite(unlockedAt) || Date.now() - unlockedAt >= UNLOCK_DURATION_MS) {
+      delete unlocks[roomId];
       window.localStorage.removeItem(`unlocked_room_${roomId}`);
+      window.localStorage.setItem(UNLOCKED_ROOMS_KEY, JSON.stringify(unlocks));
       return false;
     }
-    return stored?.unlocked === true;
+    window.localStorage.setItem(UNLOCKED_ROOMS_KEY, JSON.stringify(unlocks));
+    return true;
   } catch {
     return false;
+  }
+};
+
+const saveRoomUnlock = (roomId: string) => {
+  const unlockedAt = Date.now();
+  try {
+    const unlocks = JSON.parse(window.localStorage.getItem(UNLOCKED_ROOMS_KEY) || "{}");
+    unlocks[roomId] = unlockedAt;
+    window.localStorage.setItem(UNLOCKED_ROOMS_KEY, JSON.stringify(unlocks));
+  } catch {
+    try {
+      window.localStorage.setItem(UNLOCKED_ROOMS_KEY, JSON.stringify({ [roomId]: unlockedAt }));
+    } catch {
+      // Private browsing may disable storage; the current in-memory session
+      // still opens immediately after successful verification.
+    }
   }
 };
 
@@ -70,6 +98,44 @@ const VideoPlayer = ({ room }: { room: MovieRoom }) => {
     return <iframe title={title} src={`https://www.youtube-nocookie.com/embed/${id}?${embedParams.toString()}`} loading="eager" allow="autoplay; encrypted-media; picture-in-picture" referrerPolicy="strict-origin-when-cross-origin" className="pointer-events-none h-full w-full border-0" />;
   }
   return <video src={url} controls autoPlay muted preload="auto" playsInline className="h-full w-full object-contain" />;
+};
+
+const FullscreenVideoPlayer = ({ room }: { room: MovieRoom }) => {
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [playing, setPlaying] = useState(true);
+  const [volume, setVolume] = useState(100);
+  const url = room.videoUrl || room.movieUrl || "";
+  const id = youtubeId(url);
+  const sendYouTubeCommand = (func: string, args: unknown[] = []) => {
+    iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: "command", func, args }), "https://www.youtube-nocookie.com");
+  };
+  const togglePlayback = () => {
+    if (id) sendYouTubeCommand(playing ? "pauseVideo" : "playVideo");
+    else if (videoRef.current) playing ? videoRef.current.pause() : void videoRef.current.play();
+    setPlaying((current) => !current);
+  };
+  const setPlayerVolume = (next: number) => {
+    setVolume(next);
+    if (id) {
+      sendYouTubeCommand(next === 0 ? "mute" : "unMute");
+      sendYouTubeCommand("setVolume", [next]);
+    } else if (videoRef.current) {
+      videoRef.current.muted = next === 0;
+      videoRef.current.volume = next / 100;
+    }
+  };
+  const params = new URLSearchParams({ autoplay: "1", mute: "0", playsinline: "1", controls: "0", modestbranding: "1", rel: "0", showinfo: "0", iv_load_policy: "3", fs: "0", disablekb: "1", enablejsapi: "1", origin: window.location.origin });
+
+  return <div className="relative h-full w-full overflow-hidden bg-black" dir="ltr">
+    {id ? <iframe ref={iframeRef} title={room.title || room.name || "Cinema Window"} src={`https://www.youtube-nocookie.com/embed/${id}?${params.toString()}`} onLoad={() => { sendYouTubeCommand("unMute"); sendYouTubeCommand("setVolume", [100]); sendYouTubeCommand("playVideo"); }} allow="autoplay; encrypted-media; picture-in-picture" referrerPolicy="strict-origin-when-cross-origin" className="pointer-events-none absolute inset-0 h-full w-full border-0" /> : <video ref={videoRef} src={url} autoPlay playsInline preload="auto" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} className="h-full w-full object-contain" />}
+    <div className="pointer-events-none absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-black via-black/70 to-transparent" />
+    <div className="absolute inset-x-0 bottom-0 flex items-center gap-4 bg-gradient-to-t from-black via-black/90 to-transparent px-5 pb-5 pt-16 text-white">
+      <button type="button" onClick={togglePlayback} aria-label={playing ? "Pause" : "Play"} className="rounded-full bg-amber-500 p-3 text-black transition hover:scale-105">{playing ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}</button>
+      <button type="button" onClick={() => setPlayerVolume(volume === 0 ? 100 : 0)} aria-label={volume === 0 ? "Unmute" : "Mute"} className="rounded-full bg-white/10 p-3 hover:bg-white/20">{volume === 0 ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}</button>
+      <input aria-label="Volume" type="range" min="0" max="100" value={volume} onChange={(event) => setPlayerVolume(Number(event.target.value))} className="h-1 w-28 accent-amber-500" />
+    </div>
+  </div>;
 };
 
 export default function CinemaWindowSubRooms({ currentUser, canAdminister = false }: { currentUser: any; canAdminister?: boolean }) {
@@ -303,11 +369,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data?.success !== true) throw new Error(data?.error || "کۆدەکە دروست نییە");
       setUnlockedRoomIds((current) => new Set(current).add(room.id));
-      window.localStorage.setItem(`unlocked_room_${room.id}`, JSON.stringify({
-        unlocked: true,
-        verifiedAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-      }));
+      saveRoomUnlock(room.id);
       setMessage(data?.message || "کۆدەکە دروستە");
       setRoomCodes((current) => ({ ...current, [room.id]: "" }));
       setFullScreenRoom(room);
@@ -328,14 +390,15 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
       {visibleRooms.map((room) => {
         const creator = room.creatorAdminUsername || room.createdBy || "CinemaChat";
         const canEdit = canAdminister && (canManageAll || creator.toLowerCase() === adminName.toLowerCase());
+        const isUnlocked = hasValidRoomUnlock(room.id);
         return <article id={`cinema-sub-room-${room.id}`} key={room.id} className="group relative overflow-hidden rounded-3xl border border-white/10 bg-zinc-900 transition-all hover:scale-[1.02] hover:border-red-500/40">
           <div className="aspect-video overflow-hidden bg-gradient-to-br from-zinc-800 to-zinc-950"><VideoPlayer room={room} /></div>
           <div className="p-4">
             <h3 className="line-clamp-1 text-sm font-black leading-snug text-white kurdish-text">{room.title || room.name}</h3>
             <p className="mt-3 flex items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs font-black text-amber-300"><User className="h-3.5 w-3.5" />دروستکراوە لەلایەن: {creator}</p>
             {canEdit && <button type="button" onClick={() => void copyRoomCode(room)} className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-fuchsia-500/40 bg-fuchsia-500/10 px-3 py-2 text-xs font-black text-fuchsia-200"><Copy className="h-4 w-4" /> کۆپی کردنی کۆد</button>}
-            {!canAdminister && !hasValidRoomUnlock(room.id) && <form onSubmit={(event) => void verifyRoomCode(event, room)} className="mt-3 rounded-xl border border-white/10 bg-black/50 p-3"><label className="mb-2 block text-xs font-black text-zinc-300 kurdish-text">کۆدی ژووری {room.title || room.name}</label><div className="flex gap-2"><input required minLength={8} maxLength={8} pattern="[A-Za-z0-9]{8}" value={roomCodes[room.id] || ""} onChange={(event) => setRoomCodes((current) => ({ ...current, [room.id]: event.target.value.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 8) }))} placeholder="XXXXXXXX" className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black px-3 py-2 font-mono text-xs uppercase text-white outline-none" /><button disabled={checkingRoomId === room.id} className="rounded-xl bg-amber-500 px-3 py-2 text-xs font-black text-black disabled:opacity-50">{checkingRoomId === room.id ? "..." : "کردنەوە"}</button></div></form>}
-            {!canAdminister && hasValidRoomUnlock(room.id) && <p className="mt-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-center text-xs font-black text-emerald-300 kurdish-text">دەستگەیشتنی ٢٤ کاتژمێری چالاکە</p>}
+            {!canAdminister && !isUnlocked && <form onSubmit={(event) => void verifyRoomCode(event, room)} className="mt-3 rounded-xl border border-white/10 bg-black/50 p-3"><label className="mb-2 block text-xs font-black text-zinc-300 kurdish-text">کۆدی ژووری {room.title || room.name}</label><div className="flex gap-2"><input required minLength={8} maxLength={8} pattern="[A-Za-z0-9]{8}" value={roomCodes[room.id] || ""} onChange={(event) => setRoomCodes((current) => ({ ...current, [room.id]: event.target.value.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 8) }))} placeholder="XXXXXXXX" className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black px-3 py-2 font-mono text-xs uppercase text-white outline-none" /><button disabled={checkingRoomId === room.id} className="rounded-xl bg-amber-500 px-3 py-2 text-xs font-black text-black disabled:opacity-50">{checkingRoomId === room.id ? "..." : "کردنەوە"}</button></div></form>}
+            {!canAdminister && isUnlocked && <button type="button" onClick={() => setFullScreenRoom(room)} className="mt-3 w-full rounded-xl border border-emerald-400/50 bg-gradient-to-r from-emerald-600 to-amber-500 px-3 py-3 text-center text-xs font-black text-white shadow-lg shadow-emerald-950/30 transition hover:brightness-110 kurdish-text">چوونەژوورەوە (چالاکە بۆ ٢٤ کاتژمێر)</button>}
             {room.whatsappNumber && <a href={`https://wa.me/${room.whatsappNumber.replace(/\D/g, "")}`} target="_blank" rel="noreferrer" className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-black text-emerald-300"><svg viewBox="0 0 32 32" className="h-5 w-5 fill-current" aria-hidden="true"><path d="M16 3a13 13 0 0 0-11.2 19.6L3 29l6.6-1.7A13 13 0 1 0 16 3Zm0 23.6c-2.1 0-4.1-.6-5.8-1.7l-.4-.2-3.9 1 1-3.8-.3-.4A10.6 10.6 0 1 1 16 26.6Zm5.8-7.9c-.3-.2-1.9-.9-2.2-1-.3-.1-.5-.2-.7.2-.2.3-.8 1-1 1.2-.2.2-.4.2-.7.1-2-.8-3.4-1.9-4.5-3.8-.3-.5.3-.5.8-1.6.1-.2 0-.4 0-.6l-1-2.4c-.3-.6-.5-.5-.7-.5h-.6c-.2 0-.6.1-.9.4-.3.4-1.2 1.2-1.2 3s1.3 3.5 1.5 3.7c.2.2 2.5 3.9 6.2 5.4 2.3 1 3.2 1.1 4.4.9.7-.1 1.9-.8 2.2-1.5.3-.8.3-1.4.2-1.5-.1-.2-.3-.3-.6-.4Z" /></svg> پەیوەندی لە وەتسئەپ / ناردنی پسوولە</a>}
             {room.bankAccountNumber && <div className="mt-3 max-w-full overflow-hidden rounded-xl border border-blue-500/40 bg-blue-500/10 p-3"><div className="flex min-w-0 flex-wrap items-center gap-2"><div className="flex shrink-0 items-center gap-1"><span className="rounded bg-blue-700 px-2 py-1 text-[9px] font-black italic text-white">VISA</span><span className="flex -space-x-1"><span className="h-5 w-5 rounded-full bg-red-500" /><span className="h-5 w-5 rounded-full bg-amber-400 opacity-90" /></span></div><div className="min-w-0 flex-1 basis-[130px]"><p className="text-[10px] font-bold text-blue-300">ژمارەی حیسابی بانکی</p><p dir="ltr" className="max-w-full break-all whitespace-normal font-mono text-xs font-black leading-5 tracking-wide text-blue-100">{room.bankAccountNumber}</p></div><button type="button" onClick={() => void navigator.clipboard.writeText(room.bankAccountNumber || "")} className="w-full shrink-0 rounded-lg bg-blue-500 px-3 py-2 text-[10px] font-black text-white sm:w-auto">کۆپیکردن</button></div></div>}
           </div>
@@ -347,7 +410,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
 
     {fullScreenRoom && <div className="fixed inset-0 z-[980] flex flex-col bg-black p-4 sm:p-8" role="dialog" aria-modal="true" aria-label={fullScreenRoom.title || fullScreenRoom.name || "Cinema Window"}>
       <div className="mb-4 flex items-center justify-between gap-4"><h2 className="truncate text-lg font-black text-white kurdish-text">{fullScreenRoom.title || fullScreenRoom.name}</h2><button type="button" onClick={() => setFullScreenRoom(null)} aria-label="داخستن" className="rounded-full bg-white/10 p-3 text-white hover:bg-white/20"><X className="h-6 w-6" /></button></div>
-      <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-white/10 bg-zinc-950"><VideoPlayer room={fullScreenRoom} /></div>
+      <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-white/10 bg-zinc-950"><FullscreenVideoPlayer room={fullScreenRoom} /></div>
     </div>}
 
     {showForm && <div className="fixed inset-0 z-[950] flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm">
