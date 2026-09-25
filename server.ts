@@ -8067,6 +8067,11 @@ async function startServer() {
       const handle = rawTelegram.replace(/^https?:\/\/(?:www\.)?(?:t\.me|telegram\.me)\//i, '').replace(/^@/, '').replace(/^\/+|\/+$/g, '');
       clean.telegramChannel = handle && /^[A-Za-z0-9_/+.-]+$/.test(handle) ? `https://t.me/${handle}` : '';
     }
+    if (body?.accessPrice !== undefined) {
+      const accessPrice = Number(String(body.accessPrice ?? '').replace(/[^0-9]/g, ''));
+      if (Number.isSafeInteger(accessPrice) && accessPrice >= 0 && accessPrice <= 1_000_000_000) clean.accessPrice = accessPrice;
+    }
+    if (body?.showWhatsapp !== undefined) clean.showWhatsapp = body.showWhatsapp === true || body.showWhatsapp === 'true';
     if (body?.active !== undefined) clean.active = body.active === true;
     if (body?.isActive !== undefined) clean.isActive = body.isActive === true;
     if (body?.maxUsers !== undefined) {

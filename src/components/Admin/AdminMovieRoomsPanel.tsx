@@ -15,6 +15,8 @@ type AdminMovieRoom = {
   whatsappNumber?: string;
   bankAccountNumber?: string;
   telegramChannel?: string;
+  accessPrice?: number;
+  showWhatsapp?: boolean;
   uniqueCode?: string;
   localOnly?: boolean;
 };
@@ -47,6 +49,8 @@ export default function AdminMovieRoomsPanel({ currentUser, onLogout, onClose }:
   const [whatsappNumber, setWhatsappNumber] = useState("");
   const [bankAccountNumber, setBankAccountNumber] = useState("");
   const [telegramChannel, setTelegramChannel] = useState("");
+  const [accessPrice, setAccessPrice] = useState("");
+  const [showWhatsapp, setShowWhatsapp] = useState(true);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
@@ -139,6 +143,8 @@ export default function AdminMovieRoomsPanel({ currentUser, onLogout, onClose }:
     setWhatsappNumber("");
     setBankAccountNumber("");
     setTelegramChannel("");
+    setAccessPrice("");
+    setShowWhatsapp(true);
     setMessage("");
     setShowForm(true);
   };
@@ -151,6 +157,8 @@ export default function AdminMovieRoomsPanel({ currentUser, onLogout, onClose }:
     setWhatsappNumber(room.whatsappNumber || "");
     setBankAccountNumber(room.bankAccountNumber || "");
     setTelegramChannel(room.telegramChannel || "");
+    setAccessPrice(room.accessPrice === undefined ? "" : String(room.accessPrice));
+    setShowWhatsapp(room.showWhatsapp !== false);
     setMessage("");
     setShowForm(true);
   };
@@ -161,9 +169,9 @@ export default function AdminMovieRoomsPanel({ currentUser, onLogout, onClose }:
     setMessage("");
     const applyLocalFallback = () => {
       if (editing) {
-        setRooms((current) => current.map((room) => room.id === editing.id ? { ...room, title, videoUrl, movieUrl: videoUrl, description, whatsappNumber, bankAccountNumber, telegramChannel, localOnly: true } : room));
+        setRooms((current) => current.map((room) => room.id === editing.id ? { ...room, title, videoUrl, movieUrl: videoUrl, description, whatsappNumber, bankAccountNumber, telegramChannel, accessPrice: Number(accessPrice || 0), showWhatsapp, localOnly: true } : room));
       } else {
-        const localRoom: AdminMovieRoom = { id: `local_movie_room_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, title, videoUrl, movieUrl: videoUrl, description, whatsappNumber, bankAccountNumber, telegramChannel, creatorAdminUsername: adminName, createdBy: adminName, active: true, status: "active", localOnly: true, uniqueCode: Math.random().toString(36).slice(2, 10).toUpperCase() };
+        const localRoom: AdminMovieRoom = { id: `local_movie_room_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, title, videoUrl, movieUrl: videoUrl, description, whatsappNumber, bankAccountNumber, telegramChannel, accessPrice: Number(accessPrice || 0), showWhatsapp, creatorAdminUsername: adminName, createdBy: adminName, active: true, status: "active", localOnly: true, uniqueCode: Math.random().toString(36).slice(2, 10).toUpperCase() };
         setRooms((current) => [localRoom, ...current]);
       }
       setShowForm(false);
@@ -175,7 +183,7 @@ export default function AdminMovieRoomsPanel({ currentUser, onLogout, onClose }:
       const response = await fetch(api.resolveApiUrl(endpoint), {
         method: editing ? "PUT" : "POST",
         headers: { "Content-Type": "application/json", "x-admin-username": adminName },
-        body: JSON.stringify({ movieTitle: title, movieVideoUrl: videoUrl, whatsappNumber, bankAccountNumber, telegramChannel, description }),
+        body: JSON.stringify({ movieTitle: title, movieVideoUrl: videoUrl, whatsappNumber, bankAccountNumber, telegramChannel, accessPrice: Number(accessPrice || 0), showWhatsapp, description }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -246,6 +254,8 @@ export default function AdminMovieRoomsPanel({ currentUser, onLogout, onClose }:
             <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="کورتە باس" className="min-h-24 w-full rounded-xl border border-white/10 bg-black px-4 py-3 outline-none" />
             <input inputMode="tel" value={whatsappNumber} onChange={(e) => setWhatsappNumber(e.target.value.replace(/\D/g, "").slice(0, 15))} placeholder="ژمارەی وەتسئەپ (بە کۆدی وڵات)" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 outline-none" />
             <input type="url" value={telegramChannel} onChange={(e) => setTelegramChannel(e.target.value)} placeholder="لینکی چەناڵی تەلەگرام — https://t.me/..." className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 outline-none" />
+            <input inputMode="numeric" value={accessPrice} onChange={(e) => setAccessPrice(e.target.value.replace(/\D/g, "").slice(0, 10))} placeholder="نرخی چوونەژوورەوە - بۆ نموونە: 1000 دینار" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 outline-none" />
+            <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-white/10 bg-black px-4 py-3 font-bold kurdish-text"><input type="checkbox" checked={showWhatsapp} onChange={(e) => setShowWhatsapp(e.target.checked)} className="h-5 w-5 accent-emerald-500" /><span>پیشاندانی ژمارەی وەتسئەپ لەسەر ژوورەکە</span></label>
             <input required inputMode="numeric" pattern="[0-9]{16}" maxLength={16} value={bankAccountNumber} onChange={(e) => setBankAccountNumber(e.target.value.replace(/\D/g, "").slice(0, 16))} placeholder="ژمارەی حیسابی بانکی - ١٦ ژمارە" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 outline-none" />
             <div className="flex gap-3">
               <button disabled={saving} className="flex items-center gap-2 rounded-xl bg-red-600 px-5 py-3 font-black disabled:opacity-50">{saving && <Loader2 className="h-4 w-4 animate-spin" />} پاشەکەوتکردن</button>

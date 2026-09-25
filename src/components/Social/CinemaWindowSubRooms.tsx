@@ -17,6 +17,8 @@ type MovieRoom = {
   whatsappNumber?: string;
   bankAccountNumber?: string;
   telegramChannel?: string;
+  accessPrice?: number;
+  showWhatsapp?: boolean;
 };
 
 const activeRoom = (room: MovieRoom) =>
@@ -84,6 +86,8 @@ const roomDirectUrl = (roomId: string) => {
   url.hash = `cinema-sub-room-${roomId}`;
   return url.toString();
 };
+
+const formatAccessPrice = (value: number) => new Intl.NumberFormat("ku-IQ", { maximumFractionDigits: 0 }).format(value);
 
 const VideoPlayer = ({ room }: { room: MovieRoom }) => {
   const title = room.title || room.name || "Cinema Window";
@@ -160,6 +164,8 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
   const [whatsappNumber, setWhatsappNumber] = useState("");
   const [bankAccountNumber, setBankAccountNumber] = useState("");
   const [telegramChannel, setTelegramChannel] = useState("");
+  const [accessPrice, setAccessPrice] = useState("");
+  const [showWhatsapp, setShowWhatsapp] = useState(true);
   const [message, setMessage] = useState("");
   const [roomCodes, setRoomCodes] = useState<Record<string, string>>({});
   const [checkingRoomId, setCheckingRoomId] = useState("");
@@ -229,6 +235,8 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
     setWhatsappNumber("");
     setBankAccountNumber("");
     setTelegramChannel("");
+    setAccessPrice("");
+    setShowWhatsapp(true);
     setMessage("");
     setShowForm(true);
   };
@@ -240,6 +248,8 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
     setWhatsappNumber(room.whatsappNumber || "");
     setBankAccountNumber(room.bankAccountNumber || "");
     setTelegramChannel(room.telegramChannel || "");
+    setAccessPrice(room.accessPrice === undefined ? "" : String(room.accessPrice));
+    setShowWhatsapp(room.showWhatsapp !== false);
     setMessage("");
     setShowForm(true);
   };
@@ -259,6 +269,8 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
           whatsappNumber: whatsappNumber.replace(/\D/g, ""),
           bankAccountNumber: bankAccountNumber.replace(/\D/g, ""),
           telegramChannel: telegramChannel.trim(),
+          accessPrice: Number(accessPrice || 0),
+          showWhatsapp,
           localOnly: true,
         };
         setRooms((current) => current.map((room) => room.id === editing.id ? locallyUpdated : room));
@@ -277,6 +289,8 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
           whatsappNumber: whatsappNumber.replace(/\D/g, ""),
           bankAccountNumber: bankAccountNumber.replace(/\D/g, ""),
           telegramChannel: telegramChannel.trim(),
+          accessPrice: Number(accessPrice || 0),
+          showWhatsapp,
         };
         setRooms((current) => [localRoom, ...current]);
       }
@@ -305,6 +319,8 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
           whatsappNumber: whatsappNumber.replace(/\D/g, ""),
           bankAccountNumber: bankAccountNumber.replace(/\D/g, ""),
           telegramChannel: telegramChannel.trim(),
+          accessPrice: Number(accessPrice || 0),
+          showWhatsapp,
         }),
       });
       const data = await response.json().catch(() => ({}));
@@ -331,6 +347,8 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
       setWhatsappNumber("");
       setBankAccountNumber("");
       setTelegramChannel("");
+      setAccessPrice("");
+      setShowWhatsapp(true);
       void loadRooms();
     } catch (error: any) {
       console.warn("Admin movie room write API unavailable; using local state:", error);
@@ -427,6 +445,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
             <h3 className="line-clamp-1 text-sm font-black leading-snug text-white kurdish-text">{room.title || room.name}</h3>
             <p className="mt-3 flex items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs font-black text-amber-300"><User className="h-3.5 w-3.5" />دروستکراوە لەلایەن: {creator}</p>
             {canEdit && <button type="button" onClick={() => void copyRoomCode(room)} className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-fuchsia-500/40 bg-fuchsia-500/10 px-3 py-2 text-xs font-black text-fuchsia-200"><Copy className="h-4 w-4" /> کۆپی کردنی کۆد</button>}
+            {room.accessPrice !== undefined && <div className="mt-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-3 text-center text-xs font-black text-amber-300 kurdish-text">نرخی چوونەژوورەوە بۆ ئەم ژوورە: {formatAccessPrice(Number(room.accessPrice) || 0)} دینار</div>}
             {!canAdminister && <form noValidate onSubmit={(event) => void verifyRoomCode(event, room)} className="mt-3 rounded-xl border border-white/10 bg-black/50 p-3">
               <label className="mb-2 block text-xs font-black text-zinc-300 kurdish-text">کۆدی بێ هاوتا بۆ ژووری {room.title || room.name}</label>
               <div dir="ltr" className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
@@ -434,7 +453,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
                 <button disabled={checkingRoomId === room.id} className={`rounded-xl px-3 py-2 text-xs font-black text-white disabled:opacity-50 ${isUnlocked ? "border border-emerald-400/50 bg-gradient-to-r from-emerald-600 to-amber-500" : "bg-red-600 hover:bg-red-500"}`}>{checkingRoomId === room.id ? "..." : isUnlocked ? "چوونەژوورەوە (چالاکە بۆ ٢٤ کاتژمێر)" : "چوونەژوورەوە"}</button>
               </div>
             </form>}
-            {room.whatsappNumber && <a href={`https://wa.me/${room.whatsappNumber.replace(/\D/g, "")}`} target="_blank" rel="noreferrer" className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-black text-emerald-300"><svg viewBox="0 0 32 32" className="h-5 w-5 fill-current" aria-hidden="true"><path d="M16 3a13 13 0 0 0-11.2 19.6L3 29l6.6-1.7A13 13 0 1 0 16 3Zm0 23.6c-2.1 0-4.1-.6-5.8-1.7l-.4-.2-3.9 1 1-3.8-.3-.4A10.6 10.6 0 1 1 16 26.6Zm5.8-7.9c-.3-.2-1.9-.9-2.2-1-.3-.1-.5-.2-.7.2-.2.3-.8 1-1 1.2-.2.2-.4.2-.7.1-2-.8-3.4-1.9-4.5-3.8-.3-.5.3-.5.8-1.6.1-.2 0-.4 0-.6l-1-2.4c-.3-.6-.5-.5-.7-.5h-.6c-.2 0-.6.1-.9.4-.3.4-1.2 1.2-1.2 3s1.3 3.5 1.5 3.7c.2.2 2.5 3.9 6.2 5.4 2.3 1 3.2 1.1 4.4.9.7-.1 1.9-.8 2.2-1.5.3-.8.3-1.4.2-1.5-.1-.2-.3-.3-.6-.4Z" /></svg> پەیوەندی لە وەتسئەپ / ناردنی پسوولە</a>}
+            {room.showWhatsapp !== false && room.whatsappNumber && <a href={`https://wa.me/${room.whatsappNumber.replace(/\D/g, "")}`} target="_blank" rel="noreferrer" className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-black text-emerald-300"><svg viewBox="0 0 32 32" className="h-5 w-5 fill-current" aria-hidden="true"><path d="M16 3a13 13 0 0 0-11.2 19.6L3 29l6.6-1.7A13 13 0 1 0 16 3Zm0 23.6c-2.1 0-4.1-.6-5.8-1.7l-.4-.2-3.9 1 1-3.8-.3-.4A10.6 10.6 0 1 1 16 26.6Zm5.8-7.9c-.3-.2-1.9-.9-2.2-1-.3-.1-.5-.2-.7.2-.2.3-.8 1-1 1.2-.2.2-.4.2-.7.1-2-.8-3.4-1.9-4.5-3.8-.3-.5.3-.5.8-1.6.1-.2 0-.4 0-.6l-1-2.4c-.3-.6-.5-.5-.7-.5h-.6c-.2 0-.6.1-.9.4-.3.4-1.2 1.2-1.2 3s1.3 3.5 1.5 3.7c.2.2 2.5 3.9 6.2 5.4 2.3 1 3.2 1.1 4.4.9.7-.1 1.9-.8 2.2-1.5.3-.8.3-1.4.2-1.5-.1-.2-.3-.3-.6-.4Z" /></svg> پەیوەندی لە وەتسئەپ / ناردنی پسوولە — {room.whatsappNumber}</a>}
             {room.telegramChannel && <a href={room.telegramChannel} target="_blank" rel="noopener noreferrer" className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs font-black text-sky-300"><svg viewBox="0 0 24 24" className="h-5 w-5 fill-current" aria-hidden="true"><path d="M21.7 3.3 18.5 20c-.2 1.2-.9 1.5-1.9.9l-4.9-3.6-2.4 2.3c-.3.3-.5.5-1 .5l.4-5 9-8.1c.4-.4-.1-.6-.6-.2L6 13.8l-4.8-1.5c-1-.3-1.1-1 .2-1.5L20.2 3.5c.9-.3 1.7.2 1.5-.2Z" /></svg> جۆینبوون لە چەناڵی تەلەگرام</a>}
             <div className="mt-3 flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 p-3"><img src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(directUrl)}`} alt={`QR code for ${room.title || room.name || "Cinema Window"}`} loading="lazy" className="h-20 w-20 shrink-0 rounded-lg bg-white p-1" /><div className="min-w-0 text-xs text-zinc-400 kurdish-text"><p className="font-black text-white">QR Code</p><p className="mt-1">سکانی بکە بۆ کردنەوەی ئەم ژوورە</p></div></div>
             {room.bankAccountNumber && <div className="mt-3 max-w-full overflow-hidden rounded-xl border border-blue-500/40 bg-blue-500/10 p-3"><div className="flex min-w-0 flex-wrap items-center gap-2"><div className="flex shrink-0 items-center gap-1"><span className="rounded bg-blue-700 px-2 py-1 text-[9px] font-black italic text-white">VISA</span><span className="flex -space-x-1"><span className="h-5 w-5 rounded-full bg-red-500" /><span className="h-5 w-5 rounded-full bg-amber-400 opacity-90" /></span></div><div className="min-w-0 flex-1 basis-[130px]"><p className="text-[10px] font-bold text-blue-300">ژمارەی حیسابی بانکی</p><p dir="ltr" className="max-w-full break-all whitespace-normal font-mono text-xs font-black leading-5 tracking-wide text-blue-100">{room.bankAccountNumber}</p></div><button type="button" onClick={() => void navigator.clipboard.writeText(room.bankAccountNumber || "")} className="w-full shrink-0 rounded-lg bg-blue-500 px-3 py-2 text-[10px] font-black text-white sm:w-auto">کۆپیکردن</button></div></div>}
@@ -458,6 +477,8 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
         <input required type="url" value={videoUrl} onChange={(event) => setVideoUrl(event.target.value)} placeholder="لینکی ڤیدیۆی فیلم" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-amber-500/50" />
         <input inputMode="tel" value={whatsappNumber} onChange={(event) => setWhatsappNumber(event.target.value.replace(/\D/g, "").slice(0, 15))} placeholder="ژمارەی وەتسئەپ (بە کۆدی وڵات)" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-emerald-500/50" />
         <input type="url" value={telegramChannel} onChange={(event) => setTelegramChannel(event.target.value)} placeholder="لینکی چەناڵی تەلەگرام — https://t.me/..." className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-sky-500/50" />
+        <input inputMode="numeric" value={accessPrice} onChange={(event) => setAccessPrice(event.target.value.replace(/\D/g, "").slice(0, 10))} placeholder="نرخی چوونەژوورەوە - بۆ نموونە: 1000 دینار" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-amber-500/50" />
+        <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-white/10 bg-black px-4 py-3 font-bold text-white kurdish-text"><input type="checkbox" checked={showWhatsapp} onChange={(event) => setShowWhatsapp(event.target.checked)} className="h-5 w-5 accent-emerald-500" /><span>پیشاندانی ژمارەی وەتسئەپ لەسەر ژوورەکە</span></label>
         <input required inputMode="numeric" pattern="[0-9]{16}" maxLength={16} value={bankAccountNumber} onChange={(event) => setBankAccountNumber(event.target.value.replace(/\D/g, "").slice(0, 16))} placeholder="ژمارەی حیسابی بانکی - ١٦ ژمارە" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-blue-500/50" />
         <button disabled={saving} className="flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 px-5 py-3 font-black text-black disabled:opacity-50">{saving && <Loader2 className="h-4 w-4 animate-spin" />} پاشەکەوتکردن</button>
       </form>
