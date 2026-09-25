@@ -15,6 +15,7 @@ type AdminMovieRoom = {
   whatsappNumber?: string;
   bankAccountNumber?: string;
   telegramChannel?: string;
+  telegramVideoUrl?: string;
   accessPrice?: number;
   showWhatsapp?: boolean;
   uniqueCode?: string;
@@ -45,6 +46,7 @@ export default function AdminMovieRoomsPanel({ currentUser, onLogout, onClose }:
   const [showForm, setShowForm] = useState(false);
   const [title, setTitle] = useState("");
   const [videoUrl, setVideoUrl] = useState("");
+  const [telegramVideoUrl, setTelegramVideoUrl] = useState("");
   const [description, setDescription] = useState("");
   const [whatsappNumber, setWhatsappNumber] = useState("");
   const [bankAccountNumber, setBankAccountNumber] = useState("");
@@ -139,6 +141,7 @@ export default function AdminMovieRoomsPanel({ currentUser, onLogout, onClose }:
     setEditing(null);
     setTitle("");
     setVideoUrl("");
+    setTelegramVideoUrl("");
     setDescription("");
     setWhatsappNumber("");
     setBankAccountNumber("");
@@ -153,6 +156,7 @@ export default function AdminMovieRoomsPanel({ currentUser, onLogout, onClose }:
     setEditing(room);
     setTitle(room.title || "");
     setVideoUrl(room.videoUrl || room.movieUrl || "");
+    setTelegramVideoUrl(room.telegramVideoUrl || "");
     setDescription(room.description || "");
     setWhatsappNumber(room.whatsappNumber || "");
     setBankAccountNumber(room.bankAccountNumber || "");
@@ -169,9 +173,9 @@ export default function AdminMovieRoomsPanel({ currentUser, onLogout, onClose }:
     setMessage("");
     const applyLocalFallback = () => {
       if (editing) {
-        setRooms((current) => current.map((room) => room.id === editing.id ? { ...room, title, videoUrl, movieUrl: videoUrl, description, whatsappNumber, bankAccountNumber, telegramChannel, accessPrice: Number(accessPrice || 0), showWhatsapp, localOnly: true } : room));
+        setRooms((current) => current.map((room) => room.id === editing.id ? { ...room, title, videoUrl, movieUrl: videoUrl, telegramVideoUrl, description, whatsappNumber, bankAccountNumber, telegramChannel, accessPrice: Number(accessPrice || 0), showWhatsapp, localOnly: true } : room));
       } else {
-        const localRoom: AdminMovieRoom = { id: `local_movie_room_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, title, videoUrl, movieUrl: videoUrl, description, whatsappNumber, bankAccountNumber, telegramChannel, accessPrice: Number(accessPrice || 0), showWhatsapp, creatorAdminUsername: adminName, createdBy: adminName, active: true, status: "active", localOnly: true, uniqueCode: Math.random().toString(36).slice(2, 10).toUpperCase() };
+        const localRoom: AdminMovieRoom = { id: `local_movie_room_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, title, videoUrl, movieUrl: videoUrl, telegramVideoUrl, description, whatsappNumber, bankAccountNumber, telegramChannel, accessPrice: Number(accessPrice || 0), showWhatsapp, creatorAdminUsername: adminName, createdBy: adminName, active: true, status: "active", localOnly: true, uniqueCode: Math.random().toString(36).slice(2, 10).toUpperCase() };
         setRooms((current) => [localRoom, ...current]);
       }
       setShowForm(false);
@@ -183,7 +187,7 @@ export default function AdminMovieRoomsPanel({ currentUser, onLogout, onClose }:
       const response = await fetch(api.resolveApiUrl(endpoint), {
         method: editing ? "PUT" : "POST",
         headers: { "Content-Type": "application/json", "x-admin-username": adminName },
-        body: JSON.stringify({ movieTitle: title, movieVideoUrl: videoUrl, whatsappNumber, bankAccountNumber, telegramChannel, accessPrice: Number(accessPrice || 0), showWhatsapp, description }),
+        body: JSON.stringify({ movieTitle: title, movieVideoUrl: videoUrl, telegramVideoUrl, whatsappNumber, bankAccountNumber, telegramChannel, accessPrice: Number(accessPrice || 0), showWhatsapp, description }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -251,6 +255,7 @@ export default function AdminMovieRoomsPanel({ currentUser, onLogout, onClose }:
             <h2 className="font-black kurdish-text">{editing ? "دەستکاریکردنی ژوور" : "دروستکردنی ژووری نوێ"}</h2>
             <input required value={title} onChange={(e) => setTitle(e.target.value)} placeholder="ناوی فیلم" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 outline-none" />
             <input required type="url" value={videoUrl} onChange={(e) => setVideoUrl(e.target.value)} placeholder="لینکی ڤیدیۆ / YouTube" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 outline-none" />
+            <label className="block space-y-2"><span className="text-sm font-bold kurdish-text">لینکی فیلمی تەلەگرام - بۆ نموونە: https://t.me/channel/123</span><input type="url" value={telegramVideoUrl} onChange={(e) => setTelegramVideoUrl(e.target.value)} placeholder="https://t.me/..." className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 outline-none" /></label>
             <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="کورتە باس" className="min-h-24 w-full rounded-xl border border-white/10 bg-black px-4 py-3 outline-none" />
             <input inputMode="tel" value={whatsappNumber} onChange={(e) => setWhatsappNumber(e.target.value.replace(/\D/g, "").slice(0, 15))} placeholder="ژمارەی وەتسئەپ (بە کۆدی وڵات)" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 outline-none" />
             <input type="url" value={telegramChannel} onChange={(e) => setTelegramChannel(e.target.value)} placeholder="لینکی چەناڵی تەلەگرام — https://t.me/..." className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 outline-none" />

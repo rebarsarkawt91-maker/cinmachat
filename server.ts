@@ -8046,6 +8046,7 @@ async function startServer() {
       whatsappNumber: 20,
       bankAccountNumber: 16,
       telegramChannel: 500,
+      telegramVideoUrl: 1000,
     };
     for (const [key, max] of Object.entries(textLimits)) {
       if (body?.[key] !== undefined) clean[key] = String(body[key] || '').trim().slice(0, max);
@@ -8066,6 +8067,22 @@ async function startServer() {
       const rawTelegram = String(body.telegramChannel || '').trim().slice(0, 500);
       const handle = rawTelegram.replace(/^https?:\/\/(?:www\.)?(?:t\.me|telegram\.me)\//i, '').replace(/^@/, '').replace(/^\/+|\/+$/g, '');
       clean.telegramChannel = handle && /^[A-Za-z0-9_/+.-]+$/.test(handle) ? `https://t.me/${handle}` : '';
+    }
+    if (body?.telegramVideoUrl !== undefined) {
+      const rawTelegramVideo = String(body.telegramVideoUrl || '').trim().slice(0, 1000);
+      if (!rawTelegramVideo) {
+        clean.telegramVideoUrl = '';
+      } else {
+        try {
+          const telegramUrl = new URL(rawTelegramVideo);
+          const isTelegramHost = ['t.me', 'www.t.me', 'telegram.me', 'www.telegram.me'].includes(telegramUrl.hostname.toLowerCase());
+          const pathParts = telegramUrl.pathname.split('/').filter(Boolean);
+          const hasPostId = pathParts.length >= 2 && /^\d+$/.test(pathParts[pathParts.length - 1]);
+          clean.telegramVideoUrl = isTelegramHost && hasPostId ? `https://t.me/${pathParts.join('/')}` : '';
+        } catch {
+          clean.telegramVideoUrl = '';
+        }
+      }
     }
     if (body?.accessPrice !== undefined) {
       const accessPrice = Number(String(body.accessPrice ?? '').replace(/[^0-9]/g, ''));

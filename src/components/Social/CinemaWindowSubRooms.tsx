@@ -8,6 +8,7 @@ type MovieRoom = {
   name?: string;
   videoUrl?: string;
   movieUrl?: string;
+  telegramVideoUrl?: string;
   creatorAdminUsername?: string;
   createdBy?: string;
   active?: boolean;
@@ -80,6 +81,19 @@ const saveRoomUnlock = (roomId: string) => {
 const youtubeId = (url: string) =>
   url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/))([A-Za-z0-9_-]{11})/)?.[1] || "";
 
+const telegramEmbedUrl = (rawUrl?: string) => {
+  if (!rawUrl) return "";
+  try {
+    const url = new URL(rawUrl);
+    if (!["t.me", "www.t.me", "telegram.me", "www.telegram.me"].includes(url.hostname.toLowerCase())) return "";
+    const pathParts = url.pathname.split("/").filter(Boolean);
+    if (pathParts.length < 2 || !/^\d+$/.test(pathParts[pathParts.length - 1])) return "";
+    return `https://t.me/${pathParts.join("/")}?embed=1&mode=tme`;
+  } catch {
+    return "";
+  }
+};
+
 const roomDirectUrl = (roomId: string) => {
   const url = new URL(window.location.pathname, window.location.origin);
   url.searchParams.set("cinemaWindowRoom", roomId);
@@ -92,7 +106,9 @@ const formatAccessPrice = (value: number) => new Intl.NumberFormat("ku-IQ", { ma
 const VideoPlayer = ({ room }: { room: MovieRoom }) => {
   const title = room.title || room.name || "Cinema Window";
   const url = room.videoUrl || room.movieUrl || "";
+  const telegramUrl = telegramEmbedUrl(room.telegramVideoUrl);
   const id = youtubeId(url);
+  if (telegramUrl) return <iframe title={`${title} — Telegram`} src={telegramUrl} loading="eager" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowFullScreen referrerPolicy="strict-origin-when-cross-origin" className="h-full w-full border-0 bg-black" />;
   if (!url) return <div className="flex h-full items-center justify-center text-xs text-zinc-600">No video</div>;
   if (id) {
     const embedParams = new URLSearchParams({
@@ -118,6 +134,7 @@ const FullscreenVideoPlayer = ({ room }: { room: MovieRoom }) => {
   const [playing, setPlaying] = useState(true);
   const [volume, setVolume] = useState(100);
   const url = room.videoUrl || room.movieUrl || "";
+  const telegramUrl = telegramEmbedUrl(room.telegramVideoUrl);
   const id = youtubeId(url);
   const sendYouTubeCommand = (func: string, args: unknown[] = []) => {
     iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: "command", func, args }), "https://www.youtube-nocookie.com");
@@ -138,6 +155,8 @@ const FullscreenVideoPlayer = ({ room }: { room: MovieRoom }) => {
     }
   };
   const params = new URLSearchParams({ autoplay: "1", mute: "0", playsinline: "1", controls: "0", modestbranding: "1", rel: "0", showinfo: "0", iv_load_policy: "3", fs: "0", disablekb: "1", enablejsapi: "1", origin: window.location.origin });
+
+  if (telegramUrl) return <iframe title={`${room.title || room.name || "Cinema Window"} — Telegram`} src={telegramUrl} allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowFullScreen referrerPolicy="strict-origin-when-cross-origin" className="h-full w-full border-0 bg-black" />;
 
   return <div className="relative h-full w-full overflow-hidden bg-black" dir="ltr">
     {id ? <iframe ref={iframeRef} title={room.title || room.name || "Cinema Window"} src={`https://www.youtube-nocookie.com/embed/${id}?${params.toString()}`} onLoad={() => { sendYouTubeCommand("unMute"); sendYouTubeCommand("setVolume", [100]); sendYouTubeCommand("playVideo"); }} allow="autoplay; encrypted-media; picture-in-picture" referrerPolicy="strict-origin-when-cross-origin" className="pointer-events-none absolute inset-0 h-full w-full border-0" /> : <video ref={videoRef} src={url} autoPlay playsInline preload="auto" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} className="h-full w-full object-contain" />}
@@ -161,6 +180,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
   const [showForm, setShowForm] = useState(false);
   const [title, setTitle] = useState("");
   const [videoUrl, setVideoUrl] = useState("");
+  const [telegramVideoUrl, setTelegramVideoUrl] = useState("");
   const [whatsappNumber, setWhatsappNumber] = useState("");
   const [bankAccountNumber, setBankAccountNumber] = useState("");
   const [telegramChannel, setTelegramChannel] = useState("");
@@ -232,6 +252,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
     setEditing(null);
     setTitle("");
     setVideoUrl("");
+    setTelegramVideoUrl("");
     setWhatsappNumber("");
     setBankAccountNumber("");
     setTelegramChannel("");
@@ -245,6 +266,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
     setEditing(room);
     setTitle(room.title || room.name || "");
     setVideoUrl(room.videoUrl || room.movieUrl || "");
+    setTelegramVideoUrl(room.telegramVideoUrl || "");
     setWhatsappNumber(room.whatsappNumber || "");
     setBankAccountNumber(room.bankAccountNumber || "");
     setTelegramChannel(room.telegramChannel || "");
@@ -265,6 +287,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
           title: title.trim(),
           videoUrl: videoUrl.trim(),
           movieUrl: videoUrl.trim(),
+          telegramVideoUrl: telegramVideoUrl.trim(),
           creatorAdminUsername: editing.creatorAdminUsername || editing.createdBy || adminName,
           whatsappNumber: whatsappNumber.replace(/\D/g, ""),
           bankAccountNumber: bankAccountNumber.replace(/\D/g, ""),
@@ -280,6 +303,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
           title: title.trim(),
           videoUrl: videoUrl.trim(),
           movieUrl: videoUrl.trim(),
+          telegramVideoUrl: telegramVideoUrl.trim(),
           creatorAdminUsername: adminName,
           createdBy: adminName,
           status: "active",
@@ -316,6 +340,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
           adminName,
           movieTitle: title.trim(),
           movieVideoUrl: videoUrl.trim(),
+          telegramVideoUrl: telegramVideoUrl.trim(),
           whatsappNumber: whatsappNumber.replace(/\D/g, ""),
           bankAccountNumber: bankAccountNumber.replace(/\D/g, ""),
           telegramChannel: telegramChannel.trim(),
@@ -344,6 +369,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
       setEditing(null);
       setTitle("");
       setVideoUrl("");
+      setTelegramVideoUrl("");
       setWhatsappNumber("");
       setBankAccountNumber("");
       setTelegramChannel("");
@@ -475,6 +501,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
         <h3 className="text-lg font-black text-white kurdish-text">{editing ? "دەستکاریکردنی ژوور" : "دروستکردنی ژووری نوێ"}</h3>
         <input required value={title} onChange={(event) => setTitle(event.target.value)} placeholder="ناوی فیلم" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-amber-500/50" />
         <input required type="url" value={videoUrl} onChange={(event) => setVideoUrl(event.target.value)} placeholder="لینکی ڤیدیۆی فیلم" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-amber-500/50" />
+        <label className="block space-y-2"><span className="text-sm font-bold text-zinc-300 kurdish-text">لینکی فیلمی تەلەگرام - بۆ نموونە: https://t.me/channel/123</span><input type="url" value={telegramVideoUrl} onChange={(event) => setTelegramVideoUrl(event.target.value)} placeholder="https://t.me/..." className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-sky-500/50" /></label>
         <input inputMode="tel" value={whatsappNumber} onChange={(event) => setWhatsappNumber(event.target.value.replace(/\D/g, "").slice(0, 15))} placeholder="ژمارەی وەتسئەپ (بە کۆدی وڵات)" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-emerald-500/50" />
         <input type="url" value={telegramChannel} onChange={(event) => setTelegramChannel(event.target.value)} placeholder="لینکی چەناڵی تەلەگرام — https://t.me/..." className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-sky-500/50" />
         <input inputMode="numeric" value={accessPrice} onChange={(event) => setAccessPrice(event.target.value.replace(/\D/g, "").slice(0, 10))} placeholder="نرخی چوونەژوورەوە - بۆ نموونە: 1000 دینار" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-amber-500/50" />
