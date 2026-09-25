@@ -16,6 +16,7 @@ type MovieRoom = {
   uniqueCode?: string;
   whatsappNumber?: string;
   bankAccountNumber?: string;
+  telegramChannel?: string;
 };
 
 const activeRoom = (room: MovieRoom) =>
@@ -76,6 +77,13 @@ const saveRoomUnlock = (roomId: string) => {
 
 const youtubeId = (url: string) =>
   url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/))([A-Za-z0-9_-]{11})/)?.[1] || "";
+
+const roomDirectUrl = (roomId: string) => {
+  const url = new URL(window.location.pathname, window.location.origin);
+  url.searchParams.set("cinemaWindowRoom", roomId);
+  url.hash = `cinema-sub-room-${roomId}`;
+  return url.toString();
+};
 
 const VideoPlayer = ({ room }: { room: MovieRoom }) => {
   const title = room.title || room.name || "Cinema Window";
@@ -151,6 +159,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
   const [videoUrl, setVideoUrl] = useState("");
   const [whatsappNumber, setWhatsappNumber] = useState("");
   const [bankAccountNumber, setBankAccountNumber] = useState("");
+  const [telegramChannel, setTelegramChannel] = useState("");
   const [message, setMessage] = useState("");
   const [roomCodes, setRoomCodes] = useState<Record<string, string>>({});
   const [checkingRoomId, setCheckingRoomId] = useState("");
@@ -192,6 +201,13 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
   useEffect(() => { void loadRooms(); }, [loadRooms]);
 
   useEffect(() => {
+    if (loading) return;
+    const roomId = new URLSearchParams(window.location.search).get("cinemaWindowRoom");
+    if (!roomId) return;
+    window.requestAnimationFrame(() => document.getElementById(`cinema-sub-room-${roomId}`)?.scrollIntoView({ behavior: "smooth", block: "center" }));
+  }, [loading, visibleRooms]);
+
+  useEffect(() => {
     try {
       const publicLocalRooms = rooms
         .filter((room) => room.localOnly && activeRoom(room))
@@ -212,6 +228,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
     setVideoUrl("");
     setWhatsappNumber("");
     setBankAccountNumber("");
+    setTelegramChannel("");
     setMessage("");
     setShowForm(true);
   };
@@ -222,6 +239,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
     setVideoUrl(room.videoUrl || room.movieUrl || "");
     setWhatsappNumber(room.whatsappNumber || "");
     setBankAccountNumber(room.bankAccountNumber || "");
+    setTelegramChannel(room.telegramChannel || "");
     setMessage("");
     setShowForm(true);
   };
@@ -240,6 +258,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
           creatorAdminUsername: editing.creatorAdminUsername || editing.createdBy || adminName,
           whatsappNumber: whatsappNumber.replace(/\D/g, ""),
           bankAccountNumber: bankAccountNumber.replace(/\D/g, ""),
+          telegramChannel: telegramChannel.trim(),
           localOnly: true,
         };
         setRooms((current) => current.map((room) => room.id === editing.id ? locallyUpdated : room));
@@ -257,6 +276,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
           uniqueCode: Math.random().toString(36).slice(2, 10).toUpperCase(),
           whatsappNumber: whatsappNumber.replace(/\D/g, ""),
           bankAccountNumber: bankAccountNumber.replace(/\D/g, ""),
+          telegramChannel: telegramChannel.trim(),
         };
         setRooms((current) => [localRoom, ...current]);
       }
@@ -284,6 +304,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
           movieVideoUrl: videoUrl.trim(),
           whatsappNumber: whatsappNumber.replace(/\D/g, ""),
           bankAccountNumber: bankAccountNumber.replace(/\D/g, ""),
+          telegramChannel: telegramChannel.trim(),
         }),
       });
       const data = await response.json().catch(() => ({}));
@@ -309,6 +330,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
       setVideoUrl("");
       setWhatsappNumber("");
       setBankAccountNumber("");
+      setTelegramChannel("");
       void loadRooms();
     } catch (error: any) {
       console.warn("Admin movie room write API unavailable; using local state:", error);
@@ -398,6 +420,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
         const creator = room.creatorAdminUsername || room.createdBy || "CinemaChat";
         const canEdit = canAdminister && (canManageAll || creator.toLowerCase() === adminName.toLowerCase());
         const isUnlocked = hasValidRoomUnlock(room.id);
+        const directUrl = roomDirectUrl(room.id);
         return <article id={`cinema-sub-room-${room.id}`} key={room.id} className="group relative overflow-hidden rounded-3xl border border-white/10 bg-zinc-900 transition-all hover:scale-[1.02] hover:border-red-500/40">
           <div className="aspect-video overflow-hidden bg-gradient-to-br from-zinc-800 to-zinc-950"><VideoPlayer room={room} /></div>
           <div className="p-4">
@@ -412,6 +435,8 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
               </div>
             </form>}
             {room.whatsappNumber && <a href={`https://wa.me/${room.whatsappNumber.replace(/\D/g, "")}`} target="_blank" rel="noreferrer" className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-black text-emerald-300"><svg viewBox="0 0 32 32" className="h-5 w-5 fill-current" aria-hidden="true"><path d="M16 3a13 13 0 0 0-11.2 19.6L3 29l6.6-1.7A13 13 0 1 0 16 3Zm0 23.6c-2.1 0-4.1-.6-5.8-1.7l-.4-.2-3.9 1 1-3.8-.3-.4A10.6 10.6 0 1 1 16 26.6Zm5.8-7.9c-.3-.2-1.9-.9-2.2-1-.3-.1-.5-.2-.7.2-.2.3-.8 1-1 1.2-.2.2-.4.2-.7.1-2-.8-3.4-1.9-4.5-3.8-.3-.5.3-.5.8-1.6.1-.2 0-.4 0-.6l-1-2.4c-.3-.6-.5-.5-.7-.5h-.6c-.2 0-.6.1-.9.4-.3.4-1.2 1.2-1.2 3s1.3 3.5 1.5 3.7c.2.2 2.5 3.9 6.2 5.4 2.3 1 3.2 1.1 4.4.9.7-.1 1.9-.8 2.2-1.5.3-.8.3-1.4.2-1.5-.1-.2-.3-.3-.6-.4Z" /></svg> پەیوەندی لە وەتسئەپ / ناردنی پسوولە</a>}
+            {room.telegramChannel && <a href={room.telegramChannel} target="_blank" rel="noopener noreferrer" className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs font-black text-sky-300"><svg viewBox="0 0 24 24" className="h-5 w-5 fill-current" aria-hidden="true"><path d="M21.7 3.3 18.5 20c-.2 1.2-.9 1.5-1.9.9l-4.9-3.6-2.4 2.3c-.3.3-.5.5-1 .5l.4-5 9-8.1c.4-.4-.1-.6-.6-.2L6 13.8l-4.8-1.5c-1-.3-1.1-1 .2-1.5L20.2 3.5c.9-.3 1.7.2 1.5-.2Z" /></svg> جۆینبوون لە چەناڵی تەلەگرام</a>}
+            <div className="mt-3 flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 p-3"><img src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(directUrl)}`} alt={`QR code for ${room.title || room.name || "Cinema Window"}`} loading="lazy" className="h-20 w-20 shrink-0 rounded-lg bg-white p-1" /><div className="min-w-0 text-xs text-zinc-400 kurdish-text"><p className="font-black text-white">QR Code</p><p className="mt-1">سکانی بکە بۆ کردنەوەی ئەم ژوورە</p></div></div>
             {room.bankAccountNumber && <div className="mt-3 max-w-full overflow-hidden rounded-xl border border-blue-500/40 bg-blue-500/10 p-3"><div className="flex min-w-0 flex-wrap items-center gap-2"><div className="flex shrink-0 items-center gap-1"><span className="rounded bg-blue-700 px-2 py-1 text-[9px] font-black italic text-white">VISA</span><span className="flex -space-x-1"><span className="h-5 w-5 rounded-full bg-red-500" /><span className="h-5 w-5 rounded-full bg-amber-400 opacity-90" /></span></div><div className="min-w-0 flex-1 basis-[130px]"><p className="text-[10px] font-bold text-blue-300">ژمارەی حیسابی بانکی</p><p dir="ltr" className="max-w-full break-all whitespace-normal font-mono text-xs font-black leading-5 tracking-wide text-blue-100">{room.bankAccountNumber}</p></div><button type="button" onClick={() => void navigator.clipboard.writeText(room.bankAccountNumber || "")} className="w-full shrink-0 rounded-lg bg-blue-500 px-3 py-2 text-[10px] font-black text-white sm:w-auto">کۆپیکردن</button></div></div>}
           </div>
           {canEdit && <div className="absolute left-3 top-3 z-10 flex gap-2"><button onClick={() => openEdit(room)} aria-label="دەستکاری" className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-black/70 text-white hover:text-red-500"><Edit3 className="h-3.5 w-3.5" /></button><button onClick={() => void remove(room)} aria-label="سڕینەوە" className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-black/70 text-white hover:text-red-500"><Trash2 className="h-3.5 w-3.5" /></button></div>}
@@ -432,6 +457,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
         <input required value={title} onChange={(event) => setTitle(event.target.value)} placeholder="ناوی فیلم" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-amber-500/50" />
         <input required type="url" value={videoUrl} onChange={(event) => setVideoUrl(event.target.value)} placeholder="لینکی ڤیدیۆی فیلم" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-amber-500/50" />
         <input inputMode="tel" value={whatsappNumber} onChange={(event) => setWhatsappNumber(event.target.value.replace(/\D/g, "").slice(0, 15))} placeholder="ژمارەی وەتسئەپ (بە کۆدی وڵات)" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-emerald-500/50" />
+        <input type="url" value={telegramChannel} onChange={(event) => setTelegramChannel(event.target.value)} placeholder="لینکی چەناڵی تەلەگرام — https://t.me/..." className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-sky-500/50" />
         <input required inputMode="numeric" pattern="[0-9]{16}" maxLength={16} value={bankAccountNumber} onChange={(event) => setBankAccountNumber(event.target.value.replace(/\D/g, "").slice(0, 16))} placeholder="ژمارەی حیسابی بانکی - ١٦ ژمارە" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-blue-500/50" />
         <button disabled={saving} className="flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 px-5 py-3 font-black text-black disabled:opacity-50">{saving && <Loader2 className="h-4 w-4 animate-spin" />} پاشەکەوتکردن</button>
       </form>

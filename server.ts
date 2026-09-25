@@ -8045,6 +8045,7 @@ async function startServer() {
       scheduledAt: 64,
       whatsappNumber: 20,
       bankAccountNumber: 16,
+      telegramChannel: 500,
     };
     for (const [key, max] of Object.entries(textLimits)) {
       if (body?.[key] !== undefined) clean[key] = String(body[key] || '').trim().slice(0, max);
@@ -8061,6 +8062,11 @@ async function startServer() {
     }
     if (body?.whatsappNumber !== undefined) clean.whatsappNumber = String(body.whatsappNumber || '').replace(/\D/g, '').slice(0, 15);
     if (body?.bankAccountNumber !== undefined) clean.bankAccountNumber = String(body.bankAccountNumber || '').replace(/\D/g, '').slice(0, 16);
+    if (body?.telegramChannel !== undefined) {
+      const rawTelegram = String(body.telegramChannel || '').trim().slice(0, 500);
+      const handle = rawTelegram.replace(/^https?:\/\/(?:www\.)?(?:t\.me|telegram\.me)\//i, '').replace(/^@/, '').replace(/^\/+|\/+$/g, '');
+      clean.telegramChannel = handle && /^[A-Za-z0-9_/+.-]+$/.test(handle) ? `https://t.me/${handle}` : '';
+    }
     if (body?.active !== undefined) clean.active = body.active === true;
     if (body?.isActive !== undefined) clean.isActive = body.isActive === true;
     if (body?.maxUsers !== undefined) {

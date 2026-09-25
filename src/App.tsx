@@ -10824,6 +10824,13 @@ export default function App() {
   const [cinemaWindowPublicRoom, setCinemaWindowPublicRoom] = useState<any | null>(null);
   const [cinemaWindowDirectVideoUrl, setCinemaWindowDirectVideoUrl] = useState("");
   const cinemaWindowVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  // QR/deep links open the canonical Cinema Window modal. The room grid then
+  // scrolls the matching card into view after its public data has loaded.
+  useEffect(() => {
+    const roomId = new URLSearchParams(window.location.search).get("cinemaWindowRoom");
+    if (roomId) setShowCinemaWindowModal(true);
+  }, []);
   const cinemaWindowFrameRef = useRef<HTMLIFrameElement | null>(null);
   const [cinemaWindowStreamRefreshKey, setCinemaWindowStreamRefreshKey] = useState(0);
   const [cinemaWindowNativeFailureCount, setCinemaWindowNativeFailureCount] = useState(0);
