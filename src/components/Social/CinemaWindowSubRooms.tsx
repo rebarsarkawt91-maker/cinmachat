@@ -156,7 +156,19 @@ const FullscreenVideoPlayer = ({ room }: { room: MovieRoom }) => {
   };
   const params = new URLSearchParams({ autoplay: "1", mute: "0", playsinline: "1", controls: "0", modestbranding: "1", rel: "0", showinfo: "0", iv_load_policy: "3", fs: "0", disablekb: "1", enablejsapi: "1", origin: window.location.origin });
 
-  if (telegramUrl) return <iframe title={`${room.title || room.name || "Cinema Window"} — Telegram`} src={telegramUrl} allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowFullScreen referrerPolicy="strict-origin-when-cross-origin" className="h-full w-full border-0 bg-black" />;
+  if (telegramUrl) return (
+    <div className="flex h-full w-full items-center justify-center bg-black">
+      <iframe
+        title={`${room.title || room.name || "Cinema Window"} — Telegram`}
+        src={telegramUrl}
+        allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+        allowFullScreen
+        referrerPolicy="strict-origin-when-cross-origin"
+        className="block w-full border-0 bg-black"
+        style={{ width: "100%", height: "85vh", maxWidth: "1200px", margin: "0 auto", border: "none" }}
+      />
+    </div>
+  );
 
   return <div className="relative h-full w-full overflow-hidden bg-black" dir="ltr">
     {id ? <iframe ref={iframeRef} title={room.title || room.name || "Cinema Window"} src={`https://www.youtube-nocookie.com/embed/${id}?${params.toString()}`} onLoad={() => { sendYouTubeCommand("unMute"); sendYouTubeCommand("setVolume", [100]); sendYouTubeCommand("playVideo"); }} allow="autoplay; encrypted-media; picture-in-picture" referrerPolicy="strict-origin-when-cross-origin" className="pointer-events-none absolute inset-0 h-full w-full border-0" /> : <video ref={videoRef} src={url} autoPlay playsInline preload="auto" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} className="h-full w-full object-contain" />}

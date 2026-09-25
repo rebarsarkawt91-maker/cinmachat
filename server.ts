@@ -8135,6 +8135,27 @@ async function startServer() {
     res.json({ success: true, codes });
   });
 
+  const generateUniqueAdminMovieRoomCode = (): string => {
+    const existingCodes = new Set<string>();
+    Object.values(db.adminMovieRooms || {}).forEach((room: any) => {
+      const currentCode = String(room?.uniqueCode || '').trim().toUpperCase();
+      if (currentCode) existingCodes.add(currentCode);
+      if (Array.isArray(room?.accessCodes)) {
+        room.accessCodes.forEach((entry: any) => {
+          const historicalCode = String(entry?.code || '').trim().toUpperCase();
+          if (historicalCode) existingCodes.add(historicalCode);
+        });
+      }
+    });
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const entropy = `${Date.now()}:${process.hrtime.bigint()}:${crypto.randomBytes(32).toString('hex')}`;
+      const code = crypto.createHash('sha256').update(entropy).digest('hex').slice(0, 8).toUpperCase();
+      if (!existingCodes.has(code)) return code;
+    }
+    throw new Error('Unable to generate a unique movie-room access code');
+  };
+
   app.post('/api/admin-movie-rooms/:id/codes', async (req, res) => {
     const requester = movieRoomRequester(req);
     if (!requester.record && !requester.isOwner) return res.status(401).json({ success: false, error: 'Valid administrator identity is required' });
@@ -8143,7 +8164,7 @@ async function startServer() {
     const room = db.adminMovieRooms?.[id];
     if (!room) return res.status(404).json({ success: false, error: 'Movie room not found' });
     if (requester.level < 2 && roomCreator(room) !== requester.name) return res.status(403).json({ success: false, error: 'Only the room creator or manager may generate codes' });
-    const code = crypto.randomBytes(4).toString('hex').toUpperCase();
+    const code = generateUniqueAdminMovieRoomCode();
     const createdAt = new Date();
     const expiresAt = new Date(createdAt.getTime() + 24 * 60 * 60 * 1000).toISOString();
     if (!Array.isArray(room.accessCodes)) room.accessCodes = [];
@@ -8226,7 +8247,7 @@ async function startServer() {
       ...fields,
       id,
       title,
-      uniqueCode: fields.uniqueCode || Math.random().toString(36).slice(2, 10).toUpperCase(),
+      uniqueCode: generateUniqueAdminMovieRoomCode(),
       status: fields.status || 'active',
       active: fields.active !== false,
       createdBy: requester.name,
