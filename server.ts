@@ -8069,16 +8069,13 @@ async function startServer() {
       clean.telegramChannel = handle && /^[A-Za-z0-9_/+.-]+$/.test(handle) ? `https://t.me/${handle}` : '';
     }
     if (body?.telegramVideoUrl !== undefined) {
-      const rawTelegramVideo = String(body.telegramVideoUrl || '').trim().slice(0, 1000);
-      if (!rawTelegramVideo) {
+      const rawUniversalVideo = String(body.telegramVideoUrl || '').trim().slice(0, 1000);
+      if (!rawUniversalVideo) {
         clean.telegramVideoUrl = '';
       } else {
         try {
-          const telegramUrl = new URL(rawTelegramVideo);
-          const isTelegramHost = ['t.me', 'www.t.me', 'telegram.me', 'www.telegram.me'].includes(telegramUrl.hostname.toLowerCase());
-          const pathParts = telegramUrl.pathname.split('/').filter(Boolean);
-          const hasPostId = pathParts.length >= 2 && /^\d+$/.test(pathParts[pathParts.length - 1]);
-          clean.telegramVideoUrl = isTelegramHost && hasPostId ? `https://t.me/${pathParts.join('/')}` : '';
+          const universalUrl = new URL(rawUniversalVideo);
+          clean.telegramVideoUrl = ['http:', 'https:'].includes(universalUrl.protocol) ? rawUniversalVideo : '';
         } catch {
           clean.telegramVideoUrl = '';
         }
@@ -8239,7 +8236,7 @@ async function startServer() {
     const fields = sanitizeAdminMovieRoomFields(req.body || {});
     const title = String(fields.title || fields.name || '').trim();
     if (!title) return res.status(400).json({ success: false, error: 'Room title is required' });
-    if (!String(fields.videoUrl || fields.movieUrl || '').trim() && !String(fields.telegramVideoUrl || '').trim()) return res.status(400).json({ success: false, error: 'A YouTube/video URL or valid Telegram post URL is required' });
+    if (!String(fields.videoUrl || fields.movieUrl || '').trim() && !String(fields.telegramVideoUrl || '').trim()) return res.status(400).json({ success: false, error: 'A valid video or embed URL is required' });
     if (fields.bankAccountNumber && fields.bankAccountNumber.length !== 16) return res.status(400).json({ success: false, error: 'Bank account number must contain exactly 16 digits' });
     const now = new Date().toISOString();
     const id = `movie_room_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -8277,7 +8274,7 @@ async function startServer() {
       return res.status(403).json({ success: false, error: 'Only the room creator, deputy manager, or owner may edit this room' });
     }
     const fields = sanitizeAdminMovieRoomFields(req.body || {});
-    if (!String(fields.videoUrl ?? existing.videoUrl ?? existing.movieUrl ?? '').trim() && !String(fields.telegramVideoUrl ?? existing.telegramVideoUrl ?? '').trim()) return res.status(400).json({ success: false, error: 'A YouTube/video URL or valid Telegram post URL is required' });
+    if (!String(fields.videoUrl ?? existing.videoUrl ?? existing.movieUrl ?? '').trim() && !String(fields.telegramVideoUrl ?? existing.telegramVideoUrl ?? '').trim()) return res.status(400).json({ success: false, error: 'A valid video or embed URL is required' });
     if (fields.bankAccountNumber && fields.bankAccountNumber.length !== 16) return res.status(400).json({ success: false, error: 'Bank account number must contain exactly 16 digits' });
     const willBeActive = isActiveAdminMovieRoom({ ...existing, ...fields });
     if (!isActiveAdminMovieRoom(existing) && willBeActive) {

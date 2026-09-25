@@ -169,8 +169,9 @@ export default function AdminMovieRoomsPanel({ currentUser, onLogout, onClose }:
 
   const saveRoom = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!videoUrl.trim() && !/^https?:\/\/(?:www\.)?(?:t\.me|telegram\.me)\/(?:c\/)?[^/]+\/\d+(?:\?.*)?$/i.test(telegramVideoUrl.trim())) {
-      setMessage("تکایە لینکی YouTube یان لینکی پۆستی تەلەگرام بنووسە.");
+    const isHttpUrl = (value: string) => { try { return ["http:", "https:"].includes(new URL(value).protocol); } catch { return false; } };
+    if (!isHttpUrl(videoUrl.trim()) && !isHttpUrl(telegramVideoUrl.trim())) {
+      setMessage("تکایە لینکی دروستی ڤیدیۆ یان embed بنووسە.");
       return;
     }
     setSaving(true);
@@ -259,7 +260,7 @@ export default function AdminMovieRoomsPanel({ currentUser, onLogout, onClose }:
             <h2 className="font-black kurdish-text">{editing ? "دەستکاریکردنی ژوور" : "دروستکردنی ژووری نوێ"}</h2>
             <input required value={title} onChange={(e) => setTitle(e.target.value)} placeholder="ناوی فیلم" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 outline-none" />
             <input type="url" value={videoUrl} onChange={(e) => setVideoUrl(e.target.value)} placeholder="لینکی ڤیدیۆ / YouTube (ئارەزوومەندانە)" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 outline-none" />
-            <label className="block space-y-2"><span className="text-sm font-bold kurdish-text">لینکی فیلمی تەلەگرام - بۆ نموونە: https://t.me/channel/123</span><input type="url" value={telegramVideoUrl} onChange={(e) => setTelegramVideoUrl(e.target.value)} placeholder="https://t.me/..." className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 outline-none" /></label>
+            <label className="block space-y-2"><span className="text-sm font-bold kurdish-text">لینکی گشتی فیلم (Direct MP4, HLS, Vimeo, Google Drive, Telegram)</span><input type="url" value={telegramVideoUrl} onChange={(e) => setTelegramVideoUrl(e.target.value)} placeholder="https://... (Direct Video URL or Embed Link)" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 outline-none" /></label>
             <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="کورتە باس" className="min-h-24 w-full rounded-xl border border-white/10 bg-black px-4 py-3 outline-none" />
             <input inputMode="tel" value={whatsappNumber} onChange={(e) => setWhatsappNumber(e.target.value.replace(/\D/g, "").slice(0, 15))} placeholder="ژمارەی وەتسئەپ (بە کۆدی وڵات)" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 outline-none" />
             <input type="url" value={telegramChannel} onChange={(e) => setTelegramChannel(e.target.value)} placeholder="لینکی چەناڵی تەلەگرام — https://t.me/..." className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 outline-none" />

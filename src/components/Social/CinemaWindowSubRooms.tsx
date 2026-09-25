@@ -94,6 +94,33 @@ const telegramEmbedUrl = (rawUrl?: string) => {
   }
 };
 
+type UniversalVideoSource = { kind: "direct" | "youtube" | "telegram" | "iframe"; url: string; youtubeId?: string };
+
+const universalVideoSource = (rawUrl?: string): UniversalVideoSource | null => {
+  const value = String(rawUrl || "").trim();
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    if (!["http:", "https:"].includes(parsed.protocol)) return null;
+    const id = youtubeId(value);
+    if (id) return { kind: "youtube", url: value, youtubeId: id };
+    const telegram = telegramEmbedUrl(value);
+    if (telegram) return { kind: "telegram", url: telegram };
+    if (/\.(?:mp4|m3u8)(?:$|[?#])/i.test(parsed.pathname + parsed.search + parsed.hash)) return { kind: "direct", url: value };
+    const vimeoId = value.match(/vimeo\.com\/(?:video\/)?(\d+)/i)?.[1];
+    if (vimeoId) return { kind: "iframe", url: `https://player.vimeo.com/video/${vimeoId}?autoplay=1` };
+    if (/^(?:drive|docs)\.google\.com$/i.test(parsed.hostname)) {
+      const driveId = parsed.pathname.match(/\/file\/d\/([^/]+)/i)?.[1] || parsed.searchParams.get("id");
+      if (driveId) return { kind: "iframe", url: `https://drive.google.com/file/d/${encodeURIComponent(driveId)}/preview` };
+      parsed.pathname = parsed.pathname.replace(/\/view\/?$/i, "/preview");
+      return { kind: "iframe", url: parsed.toString() };
+    }
+    return { kind: "iframe", url: value };
+  } catch {
+    return null;
+  }
+};
+
 const roomDirectUrl = (roomId: string) => {
   const url = new URL(window.location.pathname, window.location.origin);
   url.searchParams.set("cinemaWindowRoom", roomId);
@@ -105,12 +132,9 @@ const formatAccessPrice = (value: number) => new Intl.NumberFormat("ku-IQ", { ma
 
 const VideoPlayer = ({ room }: { room: MovieRoom }) => {
   const title = room.title || room.name || "Cinema Window";
-  const url = room.videoUrl || room.movieUrl || "";
-  const telegramUrl = !url ? telegramEmbedUrl(room.telegramVideoUrl) : "";
-  const id = youtubeId(url);
-  if (telegramUrl) return <iframe title={`${title} — Telegram`} src={telegramUrl} loading="eager" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowFullScreen referrerPolicy="strict-origin-when-cross-origin" className="h-full w-full border-0 bg-black" />;
-  if (!url) return <div className="flex h-full items-center justify-center text-xs text-zinc-600">No video</div>;
-  if (id) {
+  const source = universalVideoSource(room.videoUrl || room.movieUrl) || universalVideoSource(room.telegramVideoUrl);
+  if (!source) return <div className="flex h-full items-center justify-center text-xs text-zinc-600">No video</div>;
+  if (source.kind === "youtube" && source.youtubeId) {
     const embedParams = new URLSearchParams({
       autoplay: "1",
       mute: "1",
@@ -123,9 +147,10 @@ const VideoPlayer = ({ room }: { room: MovieRoom }) => {
       fs: "0",
       disablekb: "1",
     });
-    return <iframe title={title} src={`https://www.youtube-nocookie.com/embed/${id}?${embedParams.toString()}`} loading="eager" allow="autoplay; encrypted-media; picture-in-picture" referrerPolicy="strict-origin-when-cross-origin" className="pointer-events-none h-full w-full border-0" />;
+    return <iframe title={title} src={`https://www.youtube-nocookie.com/embed/${source.youtubeId}?${embedParams.toString()}`} loading="eager" allow="autoplay; encrypted-media; picture-in-picture" referrerPolicy="strict-origin-when-cross-origin" className="pointer-events-none h-full w-full border-0" />;
   }
-  return <video src={url} controls autoPlay muted preload="auto" playsInline className="h-full w-full object-contain" />;
+  if (source.kind === "direct") return <video src={source.url} controls autoPlay muted preload="auto" playsInline className="h-full w-full object-contain" />;
+  return <iframe title={`${title} — Embedded video`} src={source.url} loading="eager" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowFullScreen referrerPolicy="strict-origin-when-cross-origin" className="h-full w-full border-0 bg-black" />;
 };
 
 const FullscreenVideoPlayer = ({ room }: { room: MovieRoom }) => {
@@ -133,9 +158,8 @@ const FullscreenVideoPlayer = ({ room }: { room: MovieRoom }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(true);
   const [volume, setVolume] = useState(100);
-  const url = room.videoUrl || room.movieUrl || "";
-  const telegramUrl = !url ? telegramEmbedUrl(room.telegramVideoUrl) : "";
-  const id = youtubeId(url);
+  const source = universalVideoSource(room.videoUrl || room.movieUrl) || universalVideoSource(room.telegramVideoUrl);
+  const id = source?.kind === "youtube" ? source.youtubeId || "" : "";
   const sendYouTubeCommand = (func: string, args: unknown[] = []) => {
     iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: "command", func, args }), "https://www.youtube-nocookie.com");
   };
@@ -156,11 +180,11 @@ const FullscreenVideoPlayer = ({ room }: { room: MovieRoom }) => {
   };
   const params = new URLSearchParams({ autoplay: "1", mute: "0", playsinline: "1", controls: "0", modestbranding: "1", rel: "0", showinfo: "0", iv_load_policy: "3", fs: "0", disablekb: "1", enablejsapi: "1", origin: window.location.origin });
 
-  if (telegramUrl) return (
+  if (source && ["telegram", "iframe"].includes(source.kind)) return (
     <div className="flex h-full w-full items-center justify-center bg-black">
       <iframe
         title={`${room.title || room.name || "Cinema Window"} — Telegram`}
-        src={telegramUrl}
+        src={source.url}
         allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
         allowFullScreen
         referrerPolicy="strict-origin-when-cross-origin"
@@ -171,7 +195,7 @@ const FullscreenVideoPlayer = ({ room }: { room: MovieRoom }) => {
   );
 
   return <div className="relative h-full w-full overflow-hidden bg-black" dir="ltr">
-    {id ? <iframe ref={iframeRef} title={room.title || room.name || "Cinema Window"} src={`https://www.youtube-nocookie.com/embed/${id}?${params.toString()}`} onLoad={() => { sendYouTubeCommand("unMute"); sendYouTubeCommand("setVolume", [100]); sendYouTubeCommand("playVideo"); }} allow="autoplay; encrypted-media; picture-in-picture" referrerPolicy="strict-origin-when-cross-origin" className="pointer-events-none absolute inset-0 h-full w-full border-0" /> : <video ref={videoRef} src={url} autoPlay playsInline preload="auto" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} className="h-full w-full object-contain" />}
+    {id ? <iframe ref={iframeRef} title={room.title || room.name || "Cinema Window"} src={`https://www.youtube-nocookie.com/embed/${id}?${params.toString()}`} onLoad={() => { sendYouTubeCommand("unMute"); sendYouTubeCommand("setVolume", [100]); sendYouTubeCommand("playVideo"); }} allow="autoplay; encrypted-media; picture-in-picture" referrerPolicy="strict-origin-when-cross-origin" className="pointer-events-none absolute inset-0 h-full w-full border-0" /> : source?.kind === "direct" ? <video ref={videoRef} src={source.url} controls autoPlay playsInline preload="auto" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} className="h-full w-full object-contain" /> : <div className="flex h-full items-center justify-center text-zinc-500">No video</div>}
     <div className="pointer-events-none absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-black via-black/70 to-transparent" />
     <div className="absolute inset-x-0 bottom-0 flex items-center gap-4 bg-gradient-to-t from-black via-black/90 to-transparent px-5 pb-5 pt-16 text-white">
       <button type="button" onClick={togglePlayback} aria-label={playing ? "Pause" : "Play"} className="rounded-full bg-amber-500 p-3 text-black transition hover:scale-105">{playing ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}</button>
@@ -290,8 +314,8 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!videoUrl.trim() && !telegramEmbedUrl(telegramVideoUrl)) {
-      setMessage("تکایە لینکی YouTube یان لینکی پۆستی تەلەگرام بنووسە.");
+    if (!universalVideoSource(videoUrl) && !universalVideoSource(telegramVideoUrl)) {
+      setMessage("تکایە لینکی دروستی ڤیدیۆ یان embed بنووسە.");
       return;
     }
     setSaving(true);
@@ -517,7 +541,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
         <h3 className="text-lg font-black text-white kurdish-text">{editing ? "دەستکاریکردنی ژوور" : "دروستکردنی ژووری نوێ"}</h3>
         <input required value={title} onChange={(event) => setTitle(event.target.value)} placeholder="ناوی فیلم" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-amber-500/50" />
         <input type="url" value={videoUrl} onChange={(event) => setVideoUrl(event.target.value)} placeholder="لینکی ڤیدیۆی فیلم / YouTube (ئارەزوومەندانە)" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-amber-500/50" />
-        <label className="block space-y-2"><span className="text-sm font-bold text-zinc-300 kurdish-text">لینکی فیلمی تەلەگرام - بۆ نموونە: https://t.me/channel/123</span><input type="url" value={telegramVideoUrl} onChange={(event) => setTelegramVideoUrl(event.target.value)} placeholder="https://t.me/..." className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-sky-500/50" /></label>
+        <label className="block space-y-2"><span className="text-sm font-bold text-zinc-300 kurdish-text">لینکی گشتی فیلم (Direct MP4, HLS, Vimeo, Google Drive, Telegram)</span><input type="url" value={telegramVideoUrl} onChange={(event) => setTelegramVideoUrl(event.target.value)} placeholder="https://... (Direct Video URL or Embed Link)" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-sky-500/50" /></label>
         <input inputMode="tel" value={whatsappNumber} onChange={(event) => setWhatsappNumber(event.target.value.replace(/\D/g, "").slice(0, 15))} placeholder="ژمارەی وەتسئەپ (بە کۆدی وڵات)" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-emerald-500/50" />
         <input type="url" value={telegramChannel} onChange={(event) => setTelegramChannel(event.target.value)} placeholder="لینکی چەناڵی تەلەگرام — https://t.me/..." className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-sky-500/50" />
         <input inputMode="numeric" value={accessPrice} onChange={(event) => setAccessPrice(event.target.value.replace(/\D/g, "").slice(0, 10))} placeholder="نرخی چوونەژوورەوە - بۆ نموونە: 1000 دینار" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-amber-500/50" />
