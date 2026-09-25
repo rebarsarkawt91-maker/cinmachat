@@ -106,7 +106,7 @@ const formatAccessPrice = (value: number) => new Intl.NumberFormat("ku-IQ", { ma
 const VideoPlayer = ({ room }: { room: MovieRoom }) => {
   const title = room.title || room.name || "Cinema Window";
   const url = room.videoUrl || room.movieUrl || "";
-  const telegramUrl = telegramEmbedUrl(room.telegramVideoUrl);
+  const telegramUrl = !url ? telegramEmbedUrl(room.telegramVideoUrl) : "";
   const id = youtubeId(url);
   if (telegramUrl) return <iframe title={`${title} — Telegram`} src={telegramUrl} loading="eager" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowFullScreen referrerPolicy="strict-origin-when-cross-origin" className="h-full w-full border-0 bg-black" />;
   if (!url) return <div className="flex h-full items-center justify-center text-xs text-zinc-600">No video</div>;
@@ -134,7 +134,7 @@ const FullscreenVideoPlayer = ({ room }: { room: MovieRoom }) => {
   const [playing, setPlaying] = useState(true);
   const [volume, setVolume] = useState(100);
   const url = room.videoUrl || room.movieUrl || "";
-  const telegramUrl = telegramEmbedUrl(room.telegramVideoUrl);
+  const telegramUrl = !url ? telegramEmbedUrl(room.telegramVideoUrl) : "";
   const id = youtubeId(url);
   const sendYouTubeCommand = (func: string, args: unknown[] = []) => {
     iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: "command", func, args }), "https://www.youtube-nocookie.com");
@@ -278,6 +278,10 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (!videoUrl.trim() && !telegramEmbedUrl(telegramVideoUrl)) {
+      setMessage("تکایە لینکی YouTube یان لینکی پۆستی تەلەگرام بنووسە.");
+      return;
+    }
     setSaving(true);
     setMessage("");
     const applyLocalFallback = () => {
@@ -500,7 +504,7 @@ export default function CinemaWindowSubRooms({ currentUser, canAdminister = fals
         <button type="button" onClick={() => setShowForm(false)} className="absolute left-5 top-5 rounded-lg bg-white/5 p-2 text-zinc-400"><X className="h-4 w-4" /></button>
         <h3 className="text-lg font-black text-white kurdish-text">{editing ? "دەستکاریکردنی ژوور" : "دروستکردنی ژووری نوێ"}</h3>
         <input required value={title} onChange={(event) => setTitle(event.target.value)} placeholder="ناوی فیلم" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-amber-500/50" />
-        <input required type="url" value={videoUrl} onChange={(event) => setVideoUrl(event.target.value)} placeholder="لینکی ڤیدیۆی فیلم" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-amber-500/50" />
+        <input type="url" value={videoUrl} onChange={(event) => setVideoUrl(event.target.value)} placeholder="لینکی ڤیدیۆی فیلم / YouTube (ئارەزوومەندانە)" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-amber-500/50" />
         <label className="block space-y-2"><span className="text-sm font-bold text-zinc-300 kurdish-text">لینکی فیلمی تەلەگرام - بۆ نموونە: https://t.me/channel/123</span><input type="url" value={telegramVideoUrl} onChange={(event) => setTelegramVideoUrl(event.target.value)} placeholder="https://t.me/..." className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-sky-500/50" /></label>
         <input inputMode="tel" value={whatsappNumber} onChange={(event) => setWhatsappNumber(event.target.value.replace(/\D/g, "").slice(0, 15))} placeholder="ژمارەی وەتسئەپ (بە کۆدی وڵات)" className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-emerald-500/50" />
         <input type="url" value={telegramChannel} onChange={(event) => setTelegramChannel(event.target.value)} placeholder="لینکی چەناڵی تەلەگرام — https://t.me/..." className="w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-sky-500/50" />
