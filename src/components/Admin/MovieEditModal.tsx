@@ -107,6 +107,19 @@ export default function MovieEditModal({
     setSaving(true);
     setError("");
     try {
+      const normalizedDraft = { ...draft };
+      const inlineSubtitleParts = [String(draft.subtitleText || "").trim()].filter(Boolean);
+      for (const field of ["subtitleUrl", "subtitleUrl2", "kurdishSubtitleUrl"] as const) {
+        const value = String(draft[field] || "").trim();
+        if (!value) continue;
+        const isUrl = /^https?:\/\/\S+$/i.test(value) || /^\/(?:api\/subtitles|uploads)\//i.test(value);
+        const isSubtitleText = /^WEBVTT(?:\s|$)/i.test(value) || /\d{2}:\d{2}:\d{2}[,.]\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}[,.]\d{3}/.test(value);
+        if (!isUrl && isSubtitleText) {
+          inlineSubtitleParts.push(value);
+          normalizedDraft[field] = "";
+        }
+      }
+      normalizedDraft.subtitleText = inlineSubtitleParts.join("\n\n");
       const category = String(draft.category ?? "").trim();
       const tags = String(draft.tagsText || "")
         .split(",")
@@ -120,7 +133,7 @@ export default function MovieEditModal({
       ) {
         tags.unshift(category);
       }
-      await onSave({ ...draft, category, tags, image: draft.posterUrl || "" });
+      await onSave({ ...normalizedDraft, category, tags, image: draft.posterUrl || "" });
       onClose();
     } catch (err: any) {
       setError(err?.message || "پاشەکەوتکردن سەرکەوتوو نەبوو");

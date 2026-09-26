@@ -2248,6 +2248,11 @@ function sanitizeUrl(url: string): string {
   return cleanUrl;
 }
 
+function looksLikeSubtitleText(value: unknown): boolean {
+  const text = String(value || '').trim();
+  return /^WEBVTT(?:\s|$)/i.test(text) || /\d{2}:\d{2}:\d{2}[,.]\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}[,.]\d{3}/.test(text);
+}
+
 // Global error handlers - Move to top to catch early errors
 process.on('uncaughtException', (err: any) => {
   console.error('UNCAUGHT EXCEPTION:', err.message || err);
@@ -11746,18 +11751,32 @@ async function startServer() {
       'trailerUrl', 'mainTrailerUrl', 'subtitleUrl', 'subtitleUrl2', 'kurdishSubtitleUrl',
       'imdbUrl', 'whatsappLink', 'externalMovieLink',
     ]);
+    const subtitleUrlFields = new Set(['subtitleUrl', 'subtitleUrl2', 'kurdishSubtitleUrl']);
+    const inlineSubtitleParts: string[] = [];
     const changes: Record<string, any> = {};
     for (const field of stringFields) {
       if (!(field in input)) continue;
       if (typeof input[field] !== 'string') {
         return res.status(400).json({ success: false, error: `Invalid ${field}` });
       }
-      const value = input[field].trim();
+      let value = input[field].trim();
+      if (subtitleUrlFields.has(field) && looksLikeSubtitleText(value)) {
+        inlineSubtitleParts.push(value);
+        value = '';
+      }
+      if (field === 'subtitleText' && inlineSubtitleParts.length) {
+        value = [value, ...inlineSubtitleParts].filter(Boolean).join('\n\n');
+      }
       const isHostedAsset = /^\/(?:api\/subtitles|uploads)\/[A-Za-z0-9%._\/-]+$/i.test(value);
       if (urlFields.has(field) && value && !/^https?:\/\/\S+$/i.test(value) && !isHostedAsset) {
         return res.status(400).json({ success: false, error: `Invalid URL in ${field}` });
       }
       changes[field] = value;
+    }
+    if (inlineSubtitleParts.length && !('subtitleText' in input)) {
+      changes.subtitleText = [String(existing.subtitleText || '').trim(), ...inlineSubtitleParts]
+        .filter(Boolean)
+        .join('\n\n');
     }
     if ('tags' in input) {
       if (!Array.isArray(input.tags)) {
@@ -11956,6 +11975,12 @@ async function startServer() {
     // Process trailer
     const trailerYtMatch = trailerUrl?.match(ytRegex);
     const trailerEmbedUrl = trailerYtMatch ? `https://www.youtube.com/embed/${trailerYtMatch[1]}` : trailerUrl;
+    const pastedSubtitleText = [subtitleUrl, subtitleUrl2, kurdishSubtitleUrl]
+      .filter((value) => looksLikeSubtitleText(value))
+      .map((value) => String(value).trim());
+    const normalizedSubtitleText = [typeof subtitleText === 'string' ? subtitleText.trim() : '', ...pastedSubtitleText]
+      .filter(Boolean)
+      .join('\n\n');
 
     const newMovie = {
       id: `manual-${Date.now()}`,
@@ -11998,7 +12023,7 @@ async function startServer() {
       // dramas from films for Drama Rooms. Missing/non-drama → "فیلم".
       postType: postType === "دراما" ? "دراما" : "فیلم",
       // Raw pasted .srt/.vtt subtitle content from the admin movie form
-      subtitleText: typeof subtitleText === "string" ? subtitleText.trim() : "",
+      subtitleText: normalizedSubtitleText,
       // IMDb metadata (import-only — NEVER used as playback source)
       imdbId: typeof rawImdbId === 'string' ? rawImdbId.trim() : '',
       imdbUrl: typeof rawImdbUrl === 'string' ? rawImdbUrl.trim() : '',
