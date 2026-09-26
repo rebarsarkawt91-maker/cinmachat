@@ -11758,6 +11758,19 @@ async function startServer() {
       }
     }
     if (!existing) {
+      const suppliedMovie = req.body?.movie;
+      if (
+        suppliedMovie &&
+        String(suppliedMovie.id || '') === id &&
+        String(suppliedMovie.title || '').trim()
+      ) {
+        // Recover a legacy browser-cached movie that predates the durable
+        // Firestore mirror. The admin's complete selected movie is used as the
+        // seed, then the validated subtitle fields below are merged onto it.
+        existing = { ...suppliedMovie, id };
+      }
+    }
+    if (!existing) {
       return res.status(404).json({ success: false, error: 'Movie not found' });
     }
 
@@ -11806,6 +11819,7 @@ async function startServer() {
       });
     }
 
+    const input = req.body || {};
     let existing =
       db.manualMovies.find((movie: any) => movie.id === id) ||
       firestoreMoviesCache[id] ||
@@ -11826,11 +11840,15 @@ async function startServer() {
         console.warn(`[movies] direct editor lookup failed for ${id}:`, error);
       }
     }
+    if (!existing && String(input.id || id) === id && String(input.title || '').trim()) {
+      // Owner edits are also the recovery path for old locally cached movies
+      // that never reached Firestore. Saving the edit creates the durable doc.
+      existing = { ...input, id };
+    }
     if (!existing) {
       return res.status(404).json({ success: false, error: 'Movie not found' });
     }
 
-    const input = req.body || {};
     const stringFields = [
       'title', 'description', 'posterUrl', 'streamingUrl', 'hdtodayUrl',
       'vidsrcUrl', 'vidmolyUrl', 'streamwishUrl', 'fileLrunUrl',

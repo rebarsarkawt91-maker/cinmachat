@@ -8931,7 +8931,7 @@ export default function App() {
           "Content-Type": "application/json",
           "x-admin-username": String(currentUser.username),
         },
-        body: JSON.stringify({ subtitleText: vtt }),
+        body: JSON.stringify({ subtitleText: vtt, movie: selectedMovie }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data?.success) {
