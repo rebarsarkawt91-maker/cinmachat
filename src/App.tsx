@@ -8975,6 +8975,55 @@ export default function App() {
     [activeServerUrl, isYoutubeSource, resolvedSubtitleTrackUrl],
   );
 
+  useEffect(() => {
+    if (!resolvedSubtitleTrackUrl) return;
+    let disposed = false;
+    const timers: number[] = [];
+    let player: any = null;
+    let media: HTMLVideoElement | null = null;
+
+    const showKurdishTrack = () => {
+      if (disposed) return;
+      player = plyrRef.current?.plyr;
+      media = (player?.media as HTMLVideoElement | undefined) || null;
+      if (!media) return;
+
+      media.querySelectorAll("track").forEach((track, index) => {
+        const language = String(track.srclang || "").toLowerCase();
+        const isKurdish = language === "ckb" || language === "ku" || index === 0;
+        track.default = isKurdish;
+        if (isKurdish) track.setAttribute("default", "");
+      });
+      Array.from(media.textTracks).forEach((track, index) => {
+        const language = String(track.language || "").toLowerCase();
+        track.mode = language === "ckb" || language === "ku" || index === 0 ? "showing" : "disabled";
+      });
+      try {
+        player.captions.active = true;
+        player.captions.language = "ckb";
+        if (media.textTracks.length) player.currentTrack = 0;
+      } catch {
+        // The native TextTrack mode above is sufficient on browsers where
+        // Plyr does not expose mutable caption preferences.
+      }
+    };
+
+    player = plyrRef.current?.plyr;
+    media = (player?.media as HTMLVideoElement | undefined) || null;
+    player?.on?.("ready", showKurdishTrack);
+    media?.addEventListener("loadedmetadata", showKurdishTrack);
+    media?.textTracks?.addEventListener?.("addtrack", showKurdishTrack);
+    [0, 100, 400, 1000].forEach((delay) => timers.push(window.setTimeout(showKurdishTrack, delay)));
+
+    return () => {
+      disposed = true;
+      timers.forEach(window.clearTimeout);
+      player?.off?.("ready", showKurdishTrack);
+      media?.removeEventListener("loadedmetadata", showKurdishTrack);
+      media?.textTracks?.removeEventListener?.("addtrack", showKurdishTrack);
+    };
+  }, [activeServerUrl, resolvedSubtitleTrackUrl, showPlayer]);
+
   const plyrOptions = React.useMemo(
     () => ({
       autoplay: true,
@@ -8998,7 +9047,8 @@ export default function App() {
       // Speed is handled by the unified custom speed control; drop Plyr's own
       // speed menu so the two selectors can't disagree. `speed.selected` stays
       // static (1) — the actual rate is applied via applyPlaybackRate.
-      settings: ["quality"],
+      settings: ["captions", "quality"],
+      captions: { active: true, language: "ckb", update: true },
       speed: {
         selected: 1,
         options: [0.5, 0.75, 1, 1.25, 1.5, 2],
