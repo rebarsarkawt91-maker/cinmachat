@@ -11719,7 +11719,7 @@ async function startServer() {
     );
     const isAuthenticatedAdmin = Boolean(
       OWNER_USERNAMES.includes(normalizedAdminName) ||
-      adminRecord && ['owner', 'admin', 'super_admin', 'deputy_manager', 'staff', 'cinema_room_admin']
+      adminRecord && ['owner', 'admin', 'super_admin', 'deputy_manager', 'staff']
         .includes(String(adminRecord.role || '').toLowerCase())
     );
     if (!isAuthenticatedAdmin) {

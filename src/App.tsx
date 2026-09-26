@@ -8916,7 +8916,7 @@ export default function App() {
     if (!file) return;
 
     try {
-      if (!systemVerified || !currentUser?.username || !selectedMovie?.id) {
+      if (!canManageMovieSubtitles || !selectedMovie?.id) {
         throw new Error("Admin authentication required");
       }
       const vtt = srtToVtt(await file.text());
@@ -12086,6 +12086,11 @@ export default function App() {
     socialProfile?.userRole === "deputy_manager" ||
     socialProfile?.role === "staff" ||
     socialProfile?.userRole === "staff";
+  const canManageMovieSubtitles = Boolean(
+    currentUser?.username &&
+    systemVerified &&
+    String(currentUser?.role || "").toLowerCase() !== "cinema_room_admin"
+  );
 
   // "New Room +" is restricted to Owner / Deputy Manager accounts only (reuses
   // the existing role vocabulary — no new permission system).
@@ -15617,7 +15622,7 @@ export default function App() {
                           )}
                         </div>
 
-                        {isCatalogMoviePlayer && systemVerified && (
+                        {isCatalogMoviePlayer && canManageMovieSubtitles && (
                           <div className="relative z-[60]">
                             <input
                               ref={movieSubtitleFileInputRef}
