@@ -91,7 +91,11 @@ import { Plyr } from "plyr-react";
 import { UsersIcon } from "lucide-react";
 import "plyr-react/plyr.css";
 import ImmersiveShieldedPlayer from "./components/Player/ImmersiveShieldedPlayer";
-import { SUBTITLE_SYNC_LEAD_S } from "./hooks/useSubtitleManager";
+import {
+  SUBTITLE_SYNC_LEAD_S,
+  parseSubtitleCues,
+  type SubtitleCue,
+} from "./hooks/useSubtitleManager";
 import YouTubeResilientPlayer from "./components/Player/YouTubeResilientPlayer";
 import SubtitleJobStatus from "./components/Player/RoomSubtitleStatus";
 import { useRoomSubtitles } from "./hooks/useRoomSubtitles";
@@ -8900,11 +8904,34 @@ export default function App() {
   // -------------------------------------------------------------------------
   const isYoutubeSource = !!activeServerUrl && /youtube\.com|youtu\.be/i.test(activeServerUrl);
   const [resolvedSubtitleTrackUrl, setResolvedSubtitleTrackUrl] = useState("");
+  const [mainMovieSubtitleCues, setMainMovieSubtitleCues] = useState<SubtitleCue[]>([]);
+  const [importedMovieSubtitleText, setImportedMovieSubtitleText] = useState("");
+  const [movieSubtitleImportMessage, setMovieSubtitleImportMessage] = useState("");
+  const movieSubtitleFileInputRef = useRef<HTMLInputElement>(null);
+
+  const importMovieSubtitleFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+
+    try {
+      const vtt = srtToVtt(await file.text());
+      const cues = parseSubtitleCues(vtt);
+      if (!cues.length) throw new Error("No subtitle cues were found");
+      setImportedMovieSubtitleText(vtt);
+      setCcSettings((settings) => ({ ...settings, showSubtitle: true }));
+      setMovieSubtitleImportMessage(`ژێرنووسەکە ئامادەیە (${cues.length} دێڕ)`);
+    } catch (error) {
+      console.error("Subtitle import failed:", error);
+      setMovieSubtitleImportMessage("فایلی ژێرنووسەکە دروست نییە");
+    }
+  };
 
   useEffect(() => {
     let disposed = false;
     let objectUrl = "";
-    const inlineText = String(selectedMovie?.subtitleText || "").trim();
+    const inlineText = String(importedMovieSubtitleText || selectedMovie?.subtitleText || "").trim();
     const remoteUrls = [selectedMovie?.kurdishSubtitleUrl, selectedMovie?.subtitleUrl, selectedMovie?.subtitleUrl2]
       .map((value) => String(value || "").trim())
       .filter((value, index, all) => Boolean(value) && all.indexOf(value) === index);
@@ -8912,11 +8939,16 @@ export default function App() {
     const installTrack = (text: string) => {
       const vtt = srtToVtt(text);
       if (!vtt || disposed) return;
+      const cues = parseSubtitleCues(vtt);
+      if (!cues.length) return;
       objectUrl = URL.createObjectURL(new Blob([vtt], { type: "text/vtt;charset=utf-8" }));
       setResolvedSubtitleTrackUrl(objectUrl);
+      setMainMovieSubtitleCues(cues);
+      setCcSettings((settings) => ({ ...settings, showSubtitle: true }));
     };
 
     setResolvedSubtitleTrackUrl("");
+    setMainMovieSubtitleCues([]);
     if (inlineText) {
       installTrack(inlineText);
     } else if (remoteUrls.length) {
@@ -8948,7 +8980,17 @@ export default function App() {
       disposed = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [selectedMovie?.id, selectedMovie?.kurdishSubtitleUrl, selectedMovie?.subtitleText, selectedMovie?.subtitleUrl, selectedMovie?.subtitleUrl2]);
+  }, [importedMovieSubtitleText, selectedMovie?.id, selectedMovie?.kurdishSubtitleUrl, selectedMovie?.subtitleText, selectedMovie?.subtitleUrl, selectedMovie?.subtitleUrl2]);
+
+  useEffect(() => {
+    setImportedMovieSubtitleText("");
+    setMovieSubtitleImportMessage("");
+  }, [selectedMovie?.id]);
+
+  const mainMovieActiveSubtitleText = useMemo(() => {
+    const time = playerCurrentTime + SUBTITLE_SYNC_LEAD_S;
+    return mainMovieSubtitleCues.find((cue) => time >= cue.start && time <= cue.end)?.text || "";
+  }, [mainMovieSubtitleCues, playerCurrentTime]);
 
   const plyrSource = React.useMemo(
     () => ({
@@ -15128,6 +15170,22 @@ export default function App() {
 
                       {isRoomModalActive && <RoomSubtitleOverlay cues={cinemaWindowSubtitleCues} original={originalCinemaWindowSubtitleCues}
                     time={subtitlePlaybackTime} language={cinemaWindowSubtitleLang} settings={ccSettings} font={ccFontSizeEntry} style={ccSubtitleStyle} />}
+                      {!isRoomModalActive && ccSettings.showSubtitle && mainMovieActiveSubtitleText && (
+                        <div
+                          data-testid="main-movie-kurdish-subtitle"
+                          className="pointer-events-none absolute inset-x-0 z-[55] flex justify-center px-4 sm:px-8"
+                          style={{ bottom: ccSubtitleBottomPercent(ccSettings.subtitleOffsetY) }}
+                        >
+                          <div
+                            dir="rtl"
+                            lang="ckb"
+                            className={`${ccFontSizeEntry.cls} kurdish-text max-w-[92%] whitespace-pre-line rounded-lg px-3 py-1.5 text-center font-bold leading-relaxed shadow-2xl`}
+                            style={ccSubtitleStyle}
+                          >
+                            {mainMovieActiveSubtitleText}
+                          </div>
+                        </div>
+                      )}
                       {/* Live subtitle-generation status (loading/error) for
                           Drama Rooms. Positioned in the clear zone ABOVE the
                           seek/timeline row and the control bar — the same
@@ -15894,6 +15952,37 @@ export default function App() {
                             <span className="text-[10px] font-black uppercase tracking-widest text-brand-primary">
                               Netflix Original
                             </span>
+                          </div>
+                        )}
+
+                        {!isRoomModalActive && (
+                          <div className="relative z-[60]">
+                            <input
+                              ref={movieSubtitleFileInputRef}
+                              data-testid="movie-subtitle-file-input"
+                              type="file"
+                              accept=".vtt,.srt,text/vtt,application/x-subrip,text/plain"
+                              className="hidden"
+                              onChange={importMovieSubtitleFile}
+                            />
+                            <button
+                              type="button"
+                              data-testid="movie-subtitle-import-button"
+                              onClick={() => movieSubtitleFileInputRef.current?.click()}
+                              className="min-w-10 h-10 md:h-11 px-2.5 flex items-center justify-center rounded-full bg-black/60 hover:bg-brand-primary text-white border border-white/10 transition-all active:scale-95 shadow-lg backdrop-blur-md"
+                              title="هێنانی ژێرنووسی VTT / SRT"
+                              aria-label="هێنانی ژێرنووسی VTT یان SRT"
+                            >
+                              <span className="text-[9px] font-black tracking-tight">VTT+</span>
+                            </button>
+                            {movieSubtitleImportMessage && (
+                              <div
+                                role="status"
+                                className="absolute bottom-full right-0 mb-3 w-max max-w-56 rounded-xl border border-white/10 bg-black/90 px-3 py-2 text-[10px] font-bold text-white shadow-2xl kurdish-text"
+                              >
+                                {movieSubtitleImportMessage}
+                              </div>
+                            )}
                           </div>
                         )}
                         <span className="px-3 py-1 bg-white/10 rounded-full text-[10px] font-black uppercase text-gray-400">
