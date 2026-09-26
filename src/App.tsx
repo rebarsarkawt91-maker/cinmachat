@@ -12795,8 +12795,13 @@ export default function App() {
   // sort newest-first. This only ever sets state from real data — it never
   // clears the grid.
   const applyMovies = (list: any[]) => {
-    const unique = Array.from(new Map(list.map((m: any) => [m.id, m])).values());
-    const normalized = unique
+    setMovies((previous) => {
+      // Never let a cold/partial API response replace a fuller catalog already
+      // painted from cache or Firestore. Incoming records win by id, while
+      // known cards remain mounted until an explicit deletion tombstone exists.
+      const merged = previous.length > 0 ? mergeMovieLists(list, previous) : list;
+      const unique = Array.from(new Map(merged.map((m: any) => [m.id, m])).values());
+      const normalized = unique
         .filter(
           (m: any) =>
             m?.id &&
@@ -12816,8 +12821,9 @@ export default function App() {
           const timeB = b.date ? new Date(b.date).getTime() : 0;
           return timeB - timeA;
         });
-    setMovies(normalized);
-    cacheMovieCatalog(normalized as Movie[]);
+      cacheMovieCatalog(normalized as Movie[]);
+      return normalized;
+    });
     // First catalog paint complete: the live Firestore listener may connect now
     // so genuinely-new (Firestore-only) movies mount right after this list lands
     // instead of popping in seconds later.
@@ -13081,7 +13087,14 @@ export default function App() {
         (snapshot) => {
           if (cancelled) return;
           const incoming: any[] = [];
-          snapshot.forEach((entry) => incoming.push({ ...entry.data(), id: entry.id }));
+          snapshot.forEach((entry) => {
+            const data = entry.data() as any;
+            // Older movie documents sometimes use an auto-generated Firestore
+            // document id while keeping the public `manual-*` id in the data.
+            // Preserve that canonical id so cards are patched in place instead
+            // of briefly duplicating/reordering on every live snapshot.
+            incoming.push({ ...data, id: String(data?.id || entry.id) });
+          });
           const durable = incoming.filter(
             (movie) =>
               movie?.id &&
