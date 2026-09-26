@@ -11040,6 +11040,7 @@ export default function App() {
   // has its own native clock. CinemaChat owns a separate hook beside its own
   // playback clock.
   const isRoomModalActive = showPlayer && !!activeServerUrl;
+  const isCatalogMoviePlayer = isRoomModalActive && !selectedDramaRoom && !activeSyncGroup?.isVIP;
   const subtitleSourceUrl = isCinemaWindowRoomActive ? activeCinemaWindowSourceUrl : isRoomModalActive ? activeServerUrl || "" : "";
   const subtitlePlaybackTime = isCinemaWindowRoomActive ? cinemaWindowPlaybackTime : playerCurrentTime;
   const activeSubtitleMovie = isCinemaWindowRoomActive && activeCinemaWindowRoom?.movieId
@@ -15170,7 +15171,7 @@ export default function App() {
 
                       {isRoomModalActive && <RoomSubtitleOverlay cues={cinemaWindowSubtitleCues} original={originalCinemaWindowSubtitleCues}
                     time={subtitlePlaybackTime} language={cinemaWindowSubtitleLang} settings={ccSettings} font={ccFontSizeEntry} style={ccSubtitleStyle} />}
-                      {!isRoomModalActive && ccSettings.showSubtitle && mainMovieActiveSubtitleText && (
+                      {isCatalogMoviePlayer && ccSettings.showSubtitle && mainMovieActiveSubtitleText && (
                         <div
                           data-testid="main-movie-kurdish-subtitle"
                           className="pointer-events-none absolute inset-x-0 z-[55] flex justify-center px-4 sm:px-8"
@@ -15592,6 +15593,37 @@ export default function App() {
                           )}
                         </div>
 
+                        {isCatalogMoviePlayer && (
+                          <div className="relative z-[60]">
+                            <input
+                              ref={movieSubtitleFileInputRef}
+                              data-testid="movie-subtitle-file-input"
+                              type="file"
+                              accept=".vtt,.srt,text/vtt,application/x-subrip,text/plain"
+                              className="hidden"
+                              onChange={importMovieSubtitleFile}
+                            />
+                            <button
+                              type="button"
+                              data-testid="movie-subtitle-import-button"
+                              onClick={() => movieSubtitleFileInputRef.current?.click()}
+                              className="min-w-10 h-10 md:h-11 px-2.5 flex items-center justify-center rounded-full bg-black/60 hover:bg-brand-primary text-white border border-white/10 transition-all active:scale-95 shadow-lg backdrop-blur-md"
+                              title="هێنانی ژێرنووسی VTT / SRT"
+                              aria-label="هێنانی ژێرنووسی VTT یان SRT"
+                            >
+                              <span className="text-[9px] font-black tracking-tight">VTT+</span>
+                            </button>
+                            {movieSubtitleImportMessage && (
+                              <div
+                                role="status"
+                                className="absolute bottom-full right-0 mb-3 w-max max-w-56 rounded-xl border border-white/10 bg-black/90 px-3 py-2 text-[10px] font-bold text-white shadow-2xl kurdish-text"
+                              >
+                                {movieSubtitleImportMessage}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
                         {/* [1.5] Subtitle Language Toggle — Drama and VIP rooms. Lets
                             the user switch subtitle language from inside the main
                             player without needing the Cinema Window sidebar. */}
@@ -15955,36 +15987,6 @@ export default function App() {
                           </div>
                         )}
 
-                        {!isRoomModalActive && (
-                          <div className="relative z-[60]">
-                            <input
-                              ref={movieSubtitleFileInputRef}
-                              data-testid="movie-subtitle-file-input"
-                              type="file"
-                              accept=".vtt,.srt,text/vtt,application/x-subrip,text/plain"
-                              className="hidden"
-                              onChange={importMovieSubtitleFile}
-                            />
-                            <button
-                              type="button"
-                              data-testid="movie-subtitle-import-button"
-                              onClick={() => movieSubtitleFileInputRef.current?.click()}
-                              className="min-w-10 h-10 md:h-11 px-2.5 flex items-center justify-center rounded-full bg-black/60 hover:bg-brand-primary text-white border border-white/10 transition-all active:scale-95 shadow-lg backdrop-blur-md"
-                              title="هێنانی ژێرنووسی VTT / SRT"
-                              aria-label="هێنانی ژێرنووسی VTT یان SRT"
-                            >
-                              <span className="text-[9px] font-black tracking-tight">VTT+</span>
-                            </button>
-                            {movieSubtitleImportMessage && (
-                              <div
-                                role="status"
-                                className="absolute bottom-full right-0 mb-3 w-max max-w-56 rounded-xl border border-white/10 bg-black/90 px-3 py-2 text-[10px] font-bold text-white shadow-2xl kurdish-text"
-                              >
-                                {movieSubtitleImportMessage}
-                              </div>
-                            )}
-                          </div>
-                        )}
                         <span className="px-3 py-1 bg-white/10 rounded-full text-[10px] font-black uppercase text-gray-400">
                           {selectedMovie.quality}
                         </span>
