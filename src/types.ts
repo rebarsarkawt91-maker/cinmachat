@@ -27,6 +27,10 @@ export interface Movie {
   isYouTube?: boolean;
   isTooLarge?: boolean;
   subtitleUrl?: string;
+  /** Optional secondary SRT/WebVTT source URL. */
+  subtitleUrl2?: string;
+  /** Inline SRT/WebVTT text uploaded or pasted in the movie editor. */
+  subtitleText?: string;
   videoId?: string;
   category?: string;
   hdtodayUrl?: string;

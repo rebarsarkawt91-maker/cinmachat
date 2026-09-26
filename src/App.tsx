@@ -1247,6 +1247,18 @@ function findYoutubeSource(movie: any): string | null {
   return null;
 }
 
+function srtToVtt(rawText: string): string {
+  const normalized = String(rawText || "")
+    .replace(/^\uFEFF/, "")
+    .replace(/\r\n?/g, "\n")
+    .trim();
+  if (!normalized) return "";
+  const cues = normalized
+    .replace(/^WEBVTT[^\n]*\n*/i, "")
+    .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, "$1.$2");
+  return `WEBVTT\n\n${cues}\n`;
+}
+
 // Immersive player "quality" presets: each step zooms the embedded video in a bit
 // more (crops more of the provider's site chrome). Mirrors the requested
 // "زیاد کردن و کەمکردنی کوالێتی وێنە" control.
@@ -8887,6 +8899,57 @@ export default function App() {
   // is what prevents the "jumps back to the first second" bug.
   // -------------------------------------------------------------------------
   const isYoutubeSource = !!activeServerUrl && /youtube\.com|youtu\.be/i.test(activeServerUrl);
+  const [resolvedSubtitleTrackUrl, setResolvedSubtitleTrackUrl] = useState("");
+
+  useEffect(() => {
+    let disposed = false;
+    let objectUrl = "";
+    const inlineText = String(selectedMovie?.subtitleText || "").trim();
+    const remoteUrls = [selectedMovie?.kurdishSubtitleUrl, selectedMovie?.subtitleUrl, selectedMovie?.subtitleUrl2]
+      .map((value) => String(value || "").trim())
+      .filter((value, index, all) => Boolean(value) && all.indexOf(value) === index);
+
+    const installTrack = (text: string) => {
+      const vtt = srtToVtt(text);
+      if (!vtt || disposed) return;
+      objectUrl = URL.createObjectURL(new Blob([vtt], { type: "text/vtt;charset=utf-8" }));
+      setResolvedSubtitleTrackUrl(objectUrl);
+    };
+
+    setResolvedSubtitleTrackUrl("");
+    if (inlineText) {
+      installTrack(inlineText);
+    } else if (remoteUrls.length) {
+      void (async () => {
+        let lastError: unknown = null;
+        for (const remoteUrl of remoteUrls) {
+          try {
+            let response: Response;
+            try {
+              response = await fetch(remoteUrl, { mode: "cors" });
+              if (!response.ok) throw new Error(`Subtitle HTTP ${response.status}`);
+            } catch {
+              // Same-origin proxy avoids third-party CORS restrictions. Conversion
+              // stays client-side so every input follows the same SRT -> VTT path.
+              response = await fetch(`/api/subtitle/remote?url=${encodeURIComponent(remoteUrl)}`);
+              if (!response.ok) throw new Error(`Subtitle proxy HTTP ${response.status}`);
+            }
+            installTrack(await response.text());
+            return;
+          } catch (error) {
+            lastError = error;
+          }
+        }
+        if (!disposed) console.warn("Subtitle track could not be loaded:", lastError);
+      })();
+    }
+
+    return () => {
+      disposed = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [selectedMovie?.id, selectedMovie?.kurdishSubtitleUrl, selectedMovie?.subtitleText, selectedMovie?.subtitleUrl, selectedMovie?.subtitleUrl2]);
+
   const plyrSource = React.useMemo(
     () => ({
       type: "video" as const,
@@ -8896,20 +8959,20 @@ export default function App() {
           provider: (isYoutubeSource ? "youtube" : "html5") as "youtube" | "html5",
         },
       ],
-      tracks: selectedMovie?.subtitleUrl
+      tracks: resolvedSubtitleTrackUrl
         ? [
             {
-              kind: "captions" as const,
+              kind: "subtitles" as const,
               label: "Kurdish",
-              srcLang: "ku",
-              src: selectedMovie.subtitleUrl,
+              srcLang: "ckb",
+              src: resolvedSubtitleTrackUrl,
               default: true,
             },
           ]
         : [],
     }),
     // Do NOT add `selectedMovie` (object identity churns on sync-room writes).
-    [activeServerUrl, isYoutubeSource, selectedMovie?.subtitleUrl],
+    [activeServerUrl, isYoutubeSource, resolvedSubtitleTrackUrl],
   );
 
   const plyrOptions = React.useMemo(

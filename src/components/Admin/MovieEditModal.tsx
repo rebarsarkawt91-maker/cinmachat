@@ -29,6 +29,7 @@ const TEXT_FIELDS: Array<{ key: string; label: string; placeholder?: string }> =
   { key: "otherVideoUrl", label: "لینکی ڤیدیۆی تر" },
   { key: "mainTrailerUrl", label: "Main Trailer URL" },
   { key: "subtitleUrl", label: "ژێرنووسی سەرچاوە (VTT/SRT URL)" },
+  { key: "subtitleUrl2", label: "ژێرنووسی دووەم (VTT/SRT URL 2)" },
   { key: "kurdishSubtitleUrl", label: "Kurdish VTT URL (کوردی سۆرانی)" },
   { key: "imdbUrl", label: "IMDb URL" },
   { key: "rating", label: "IMDb Rating" },
@@ -70,6 +71,20 @@ export default function MovieEditModal({
 
   const setField = (key: string, value: string) =>
     setDraft((current) => (current ? { ...current, [key]: value } : current));
+
+  const loadSubtitleFile = async (file?: File) => {
+    if (!file) return;
+    if (!/\.(?:srt|vtt)$/i.test(file.name)) {
+      setError("تەنها فایلی SRT یان VTT ڕێگەپێدراوە.");
+      return;
+    }
+    try {
+      setField("subtitleText", await file.text());
+      setError("");
+    } catch {
+      setError("خوێندنەوەی فایلی ژێرنووس سەرکەوتوو نەبوو.");
+    }
+  };
 
   // Category chips from the shared canonical list. If the movie's current
   // category is a legacy/unknown value, it is appended so it stays visible
@@ -191,6 +206,7 @@ export default function MovieEditModal({
         </label>
         <label className="mt-4 block space-y-2 text-xs font-bold text-gray-300 kurdish-text">
           <span>دەقی ژێرنووس (VTT/SRT)</span>
+          <input type="file" accept=".srt,.vtt,text/vtt,application/x-subrip" onChange={(event) => void loadSubtitleFile(event.target.files?.[0])} className="block w-full rounded-xl border border-dashed border-white/20 bg-black/50 px-4 py-3 text-sm text-gray-300 file:mr-4 file:rounded-lg file:border-0 file:bg-red-600 file:px-4 file:py-2 file:font-bold file:text-white" />
           <textarea value={String(draft.subtitleText ?? "")} onChange={(event) => setField("subtitleText", event.target.value)} rows={8} dir="auto" spellCheck={false} className="w-full rounded-xl border border-white/10 bg-black/50 px-4 py-3 font-mono text-sm text-white outline-none focus:border-red-500" />
         </label>
 

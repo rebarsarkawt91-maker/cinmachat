@@ -11736,14 +11736,14 @@ async function startServer() {
       'title', 'description', 'posterUrl', 'streamingUrl', 'hdtodayUrl',
       'vidsrcUrl', 'vidmolyUrl', 'streamwishUrl', 'fileLrunUrl',
       'youtubeMovieUrl', 'otherVideoUrl', 'trailerUrl', 'mainTrailerUrl',
-      'subtitleUrl', 'kurdishSubtitleUrl', 'subtitleText', 'imdbUrl', 'imdbId',
+      'subtitleUrl', 'subtitleUrl2', 'kurdishSubtitleUrl', 'subtitleText', 'imdbUrl', 'imdbId',
       'rating', 'year', 'duration', 'quality', 'language', 'category',
       'whatsappLink', 'externalMovieLink', 'type', 'postType',
     ];
     const urlFields = new Set([
       'posterUrl', 'streamingUrl', 'hdtodayUrl', 'vidsrcUrl', 'vidmolyUrl',
       'streamwishUrl', 'fileLrunUrl', 'youtubeMovieUrl', 'otherVideoUrl',
-      'trailerUrl', 'mainTrailerUrl', 'subtitleUrl', 'kurdishSubtitleUrl',
+      'trailerUrl', 'mainTrailerUrl', 'subtitleUrl', 'subtitleUrl2', 'kurdishSubtitleUrl',
       'imdbUrl', 'whatsappLink', 'externalMovieLink',
     ]);
     const changes: Record<string, any> = {};
@@ -11910,7 +11910,7 @@ async function startServer() {
     if (!req.body) {
       return res.status(400).json({ success: false, error: "Body is empty — check Content-Type header (use application/json or text/plain)" });
     }
-    const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, mainTrailerUrl, streamingSourceUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, hdtodayUrl, vidsrcUrl, otherVideoUrl, youtubeMovieUrl, subtitleUrl, kurdishSubtitleUrl, quality, tags, category, rating, year, type, duration, postType, subtitleText, imdbId: rawImdbId, imdbUrl: rawImdbUrl } = req.body;
+    const { title, description, image, posterUrl, videoUrl, trailerUrl, streamingUrl, mainTrailerUrl, streamingSourceUrl, vidmolyUrl, streamwishUrl, fileLrunUrl, hdtodayUrl, vidsrcUrl, otherVideoUrl, youtubeMovieUrl, subtitleUrl, subtitleUrl2, kurdishSubtitleUrl, quality, tags, category, rating, year, type, duration, postType, subtitleText, imdbId: rawImdbId, imdbUrl: rawImdbUrl } = req.body;
 
     // Keeps only well-formed http(s) links (or an empty string) so malformed
     // admin input can never poison the movie record or the subtitle pipeline.
@@ -11979,6 +11979,7 @@ async function startServer() {
       // Existing subtitle file (.srt/.vtt URL) — priority #1 source for the
       // automatic Kurdish subtitle pipeline.
       subtitleUrl: safeHttpUrl(subtitleUrl),
+      subtitleUrl2: safeHttpUrl(subtitleUrl2),
       // Optional pre-generated Sorani WebVTT. This remains editable later and
       // takes precedence in players that support the Kurdish track directly.
       kurdishSubtitleUrl: safeHttpUrl(kurdishSubtitleUrl),
@@ -13597,6 +13598,56 @@ async function startServer() {
       if (!res.headersSent) {
         res.status(500).json({ error: err?.message || 'Auto-translate subtitle failed' });
       }
+    }
+  });
+
+  // GET /api/subtitle/remote?url=... — bounded, SSRF-checked subtitle proxy.
+  // The browser converts the returned SRT/VTT text into a same-origin Blob URL,
+  // so third-party CORS policies cannot prevent the HTML5 <track> from loading.
+  app.get('/api/subtitle/remote', async (req, res) => {
+    const requestedUrl = String(req.query.url || '').trim();
+    if (!requestedUrl) return res.status(400).json({ error: 'Subtitle URL is required' });
+
+    try {
+      let currentUrl = requestedUrl;
+      let response: Response | null = null;
+      for (let hop = 0; hop <= 5; hop += 1) {
+        const parsed = new URL(currentUrl);
+        validateHostOf(parsed);
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 20_000);
+        try {
+          response = await fetch(currentUrl, {
+            redirect: 'manual',
+            signal: controller.signal,
+            headers: { Accept: 'text/vtt, application/x-subrip, text/plain;q=0.9, */*;q=0.1' },
+          });
+        } finally {
+          clearTimeout(timer);
+        }
+        if (response.status >= 300 && response.status < 400) {
+          const location = response.headers.get('location');
+          if (!location || hop === 5) throw new Error('Invalid subtitle redirect');
+          currentUrl = new URL(location, currentUrl).toString();
+          continue;
+        }
+        break;
+      }
+
+      if (!response?.ok) return res.status(response?.status || 502).json({ error: 'Remote subtitle download failed' });
+      const declaredSize = Number(response.headers.get('content-length') || 0);
+      if (declaredSize > SUBTITLE_DOWNLOAD_MAX_BYTES) return res.status(413).json({ error: 'Subtitle file is too large' });
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (bytes.length > SUBTITLE_DOWNLOAD_MAX_BYTES) return res.status(413).json({ error: 'Subtitle file is too large' });
+      const text = bytes.toString('utf8').replace(/^\uFEFF/, '');
+      if (!text.trim()) return res.status(422).json({ error: 'Subtitle file is empty' });
+
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'no-store');
+      return res.send(text);
+    } catch (error: any) {
+      return res.status(400).json({ error: error?.message || 'Invalid subtitle URL' });
     }
   });
 
