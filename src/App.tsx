@@ -6715,7 +6715,7 @@ const getCinemaWindowSubtitleLanguage = (code: string) =>
   ROOM_SUBTITLE_LANGUAGES.find((language) => language.code === code) || ROOM_SUBTITLE_LANGUAGES[0];
 
 type CcSettings = {
-  fontSize: 'sm' | 'md' | 'lg' | 'xl';
+  fontSize: 'xs' | 'sm' | 'md' | 'lg' | 'xl' | '2xl';
   bgOpacity: number;
   textColor: string;
   showSubtitle: boolean;
@@ -6737,12 +6737,14 @@ const ccSubtitleBottomPercent = (offsetY: number | undefined): string => {
   return `${(6 + (v / 100) * 30).toFixed(2)}%`;
 };
 const CC_FONT_SIZES: { key: CcSettings['fontSize']; label: string; cls: string; mobileCls: string }[] = [
-  { key: 'sm', label: 'A-', cls: 'text-sm md:text-base', mobileCls: 'text-[11px]' },
-  { key: 'md', label: 'A', cls: 'text-lg md:text-2xl', mobileCls: 'text-base' },
-  { key: 'lg', label: 'A+', cls: 'text-xl md:text-3xl', mobileCls: 'text-lg' },
-  { key: 'xl', label: 'A++', cls: 'text-2xl md:text-4xl', mobileCls: 'text-xl' },
+  { key: 'xs', label: '1', cls: 'text-xs md:text-sm', mobileCls: 'text-[10px]' },
+  { key: 'sm', label: '2', cls: 'text-sm md:text-base', mobileCls: 'text-[11px]' },
+  { key: 'md', label: '3', cls: 'text-lg md:text-2xl', mobileCls: 'text-base' },
+  { key: 'lg', label: '4', cls: 'text-xl md:text-3xl', mobileCls: 'text-lg' },
+  { key: 'xl', label: '5', cls: 'text-2xl md:text-4xl', mobileCls: 'text-xl' },
+  { key: '2xl', label: '6', cls: 'text-3xl md:text-5xl', mobileCls: 'text-2xl' },
 ];
-const CC_TEXT_COLORS = ['#ffffff', '#FFFF00', '#00FFFF', '#00FF00', '#FF8800', '#FF5555'];
+const CC_TEXT_COLORS = ['#ffffff', '#FFFF00', '#000000'];
 
 function loadCcSettings(): CcSettings {
   try {
@@ -15649,6 +15651,87 @@ export default function App() {
                               >
                                 {movieSubtitleImportMessage}
                               </div>
+                            )}
+                          </div>
+                        )}
+
+                        {isCatalogMoviePlayer && (
+                          <div className="relative z-[60]">
+                            <button
+                              type="button"
+                              data-testid="catalog-subtitle-settings-button"
+                              onClick={() => setShowCcPanel((visible) => !visible)}
+                              className={`min-w-10 h-10 md:h-11 px-2.5 flex items-center justify-center rounded-full border transition-all active:scale-95 shadow-lg backdrop-blur-md ${
+                                showCcPanel ? "bg-brand-primary text-white border-brand-primary" : "bg-black/60 hover:bg-white/10 text-white border-white/10"
+                              }`}
+                              title="ڕێکخستنی ژێرنووس"
+                              aria-label="ڕێکخستنی ژێرنووس"
+                            >
+                              <span className="text-[10px] font-black">CC</span>
+                            </button>
+
+                            {showCcPanel && (
+                              <>
+                                <div className="fixed inset-0 z-[65]" onClick={() => setShowCcPanel(false)} />
+                                <div className="absolute bottom-full right-0 mb-24 z-[70] w-64 rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-3 shadow-2xl space-y-4 kurdish-text">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-xs font-black text-white">ڕێکخستنی ژێرنووس</span>
+                                    <button type="button" onClick={() => setShowCcPanel(false)} className="text-zinc-400 hover:text-white">✕</button>
+                                  </div>
+
+                                  <div>
+                                    <span className="mb-2 block text-[10px] font-bold text-zinc-400">قەبارەی نووسین — ٦ ئاست</span>
+                                    <div className="grid grid-cols-6 gap-1">
+                                      {CC_FONT_SIZES.map((fontSize) => (
+                                        <button
+                                          key={fontSize.key}
+                                          type="button"
+                                          onClick={() => setCcSettings((settings) => ({ ...settings, fontSize: fontSize.key }))}
+                                          className={`h-8 rounded-lg text-[10px] font-black ${ccSettings.fontSize === fontSize.key ? "bg-brand-primary text-white" : "bg-white/5 text-zinc-300 hover:bg-white/10"}`}
+                                        >
+                                          {fontSize.label}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+
+                                  <div>
+                                    <span className="mb-2 block text-[10px] font-bold text-zinc-400">ڕەنگی ژێرنووس</span>
+                                    <div className="flex gap-3">
+                                      {CC_TEXT_COLORS.map((color) => (
+                                        <button
+                                          key={color}
+                                          type="button"
+                                          aria-label={`Subtitle color ${color}`}
+                                          onClick={() => setCcSettings((settings) => ({ ...settings, textColor: color }))}
+                                          className={`h-8 w-8 rounded-full border-2 ${ccSettings.textColor === color ? "scale-110 border-brand-primary" : "border-zinc-500"}`}
+                                          style={{ backgroundColor: color }}
+                                        />
+                                      ))}
+                                    </div>
+                                  </div>
+
+                                  <div>
+                                    <div className="mb-2 flex items-center justify-between text-[10px] font-bold text-zinc-400">
+                                      <span>شوێنی تێکست</span>
+                                      <span>{Math.round(ccSettings.subtitleOffsetY)}%</span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <button type="button" onClick={() => setCcSettings((settings) => ({ ...settings, subtitleOffsetY: Math.max(0, settings.subtitleOffsetY - 10) }))} className="h-8 w-8 rounded-lg bg-white/5 hover:bg-white/10" title="هێنانە خوارەوە"><ChevronDown className="mx-auto h-4 w-4" /></button>
+                                      <input type="range" min={0} max={100} step={5} value={ccSettings.subtitleOffsetY} onChange={(event) => setCcSettings((settings) => ({ ...settings, subtitleOffsetY: Number(event.target.value) }))} className="h-1 flex-1 accent-brand-primary" />
+                                      <button type="button" onClick={() => setCcSettings((settings) => ({ ...settings, subtitleOffsetY: Math.min(100, settings.subtitleOffsetY + 10) }))} className="h-8 w-8 rounded-lg bg-white/5 hover:bg-white/10" title="بردنە سەرەوە"><ChevronUp className="mx-auto h-4 w-4" /></button>
+                                    </div>
+                                  </div>
+
+                                  <div>
+                                    <div className="mb-2 flex items-center justify-between text-[10px] font-bold text-zinc-400">
+                                      <span>کاڵ و تۆخی پشتەوە</span>
+                                      <span>{Math.round(ccSettings.bgOpacity * 100)}%</span>
+                                    </div>
+                                    <input type="range" min={0} max={1} step={0.1} value={ccSettings.bgOpacity} onChange={(event) => setCcSettings((settings) => ({ ...settings, bgOpacity: Number(event.target.value) }))} className="h-1 w-full accent-brand-primary" />
+                                  </div>
+                                </div>
+                              </>
                             )}
                           </div>
                         )}

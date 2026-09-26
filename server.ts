@@ -11737,10 +11737,26 @@ async function startServer() {
       return res.status(413).json({ success: false, error: 'Subtitle file is too large' });
     }
 
-    const existing =
+    let existing =
       db.manualMovies.find((movie: any) => movie.id === id) ||
       firestoreMoviesCache[id] ||
       moviesCache.find((movie: any) => movie.id === id);
+    if (!existing) {
+      try {
+        const movieAdminApp = initializeFirebaseAdmin();
+        const collection = movieAdminApp ? admin.firestore(movieAdminApp).collection('movies') : null;
+        const snapshot = collection ? await collection.doc(id).get() : null;
+        if (snapshot?.exists) {
+          existing = { ...(snapshot.data() || {}), id };
+        } else if (collection) {
+          const matches = await collection.where('id', '==', id).limit(1).get();
+          const match = matches.docs[0];
+          if (match) existing = { ...(match.data() || {}), id, __firestoreDocId: match.id };
+        }
+      } catch (error) {
+        console.warn(`[movies] direct subtitle lookup failed for ${id}:`, error);
+      }
+    }
     if (!existing) {
       return res.status(404).json({ success: false, error: 'Movie not found' });
     }
@@ -11756,7 +11772,8 @@ async function startServer() {
     try {
       const movieAdminApp = initializeFirebaseAdmin();
       if (!movieAdminApp) throw new Error('Firebase Admin is unavailable');
-      await admin.firestore(movieAdminApp).collection('movies').doc(id).set(changes, { merge: true });
+      const firestoreDocId = String((existing as any).__firestoreDocId || id);
+      await admin.firestore(movieAdminApp).collection('movies').doc(firestoreDocId).set(changes, { merge: true });
       firestoreMoviesCache[id] = updatedMovie;
       setMoviesCache((previous) => previous.map((movie) => movie.id === id ? updatedMovie : movie));
       const manualIndex = db.manualMovies.findIndex((movie: any) => movie.id === id);
@@ -11788,10 +11805,26 @@ async function startServer() {
       });
     }
 
-    const existing =
+    let existing =
       db.manualMovies.find((movie: any) => movie.id === id) ||
       firestoreMoviesCache[id] ||
       moviesCache.find((movie: any) => movie.id === id);
+    if (!existing) {
+      try {
+        const movieAdminApp = initializeFirebaseAdmin();
+        const collection = movieAdminApp ? admin.firestore(movieAdminApp).collection('movies') : null;
+        const snapshot = collection ? await collection.doc(id).get() : null;
+        if (snapshot?.exists) {
+          existing = { ...(snapshot.data() || {}), id };
+        } else if (collection) {
+          const matches = await collection.where('id', '==', id).limit(1).get();
+          const match = matches.docs[0];
+          if (match) existing = { ...(match.data() || {}), id, __firestoreDocId: match.id };
+        }
+      } catch (error) {
+        console.warn(`[movies] direct editor lookup failed for ${id}:`, error);
+      }
+    }
     if (!existing) {
       return res.status(404).json({ success: false, error: 'Movie not found' });
     }
@@ -11866,7 +11899,8 @@ async function startServer() {
       // Firestore is the durable catalog used by every visitor.
       const movieAdminApp = initializeFirebaseAdmin();
       if (!movieAdminApp) throw new Error('Firebase Admin is unavailable');
-      await admin.firestore(movieAdminApp).collection('movies').doc(id).set(changes, { merge: true });
+      const firestoreDocId = String((existing as any).__firestoreDocId || id);
+      await admin.firestore(movieAdminApp).collection('movies').doc(firestoreDocId).set(changes, { merge: true });
       firestoreMoviesCache[id] = updatedMovie;
       setMoviesCache((previous) =>
         previous.map((movie) => movie.id === id ? updatedMovie : movie)
