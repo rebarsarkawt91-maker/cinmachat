@@ -11768,6 +11768,7 @@ async function startServer() {
       updatedAt: new Date().toISOString(),
     };
     const updatedMovie = { ...existing, ...changes, id };
+    delete (updatedMovie as any).__firestoreDocId;
 
     try {
       const movieAdminApp = initializeFirebaseAdmin();
@@ -11894,6 +11895,7 @@ async function startServer() {
     }
     changes.updatedAt = new Date().toISOString();
     const updatedMovie = { ...existing, ...changes, id };
+    delete (updatedMovie as any).__firestoreDocId;
 
     try {
       // Firestore is the durable catalog used by every visitor.
