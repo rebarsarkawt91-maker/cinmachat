@@ -11710,6 +11710,66 @@ async function startServer() {
   // Full movie editor. This route is intentionally owner-only even though
   // some other dashboard actions are available to deputies. Fields are
   // allowlisted, and an explicit empty string means "clear this field".
+  app.patch('/api/admin/movies/:id/subtitle', async (req, res) => {
+    const { id } = req.params;
+    const adminName = String(req.headers['x-admin-username'] || '').trim();
+    const normalizedAdminName = adminName.toLowerCase();
+    const adminRecord = db.admins.find(
+      (entry: any) => String(entry?.username || '').trim().toLowerCase() === normalizedAdminName
+    );
+    const isAuthenticatedAdmin = Boolean(
+      OWNER_USERNAMES.includes(normalizedAdminName) ||
+      adminRecord && ['owner', 'admin', 'super_admin', 'deputy_manager', 'staff', 'cinema_room_admin']
+        .includes(String(adminRecord.role || '').toLowerCase())
+    );
+    if (!isAuthenticatedAdmin) {
+      return res.status(403).json({ success: false, error: 'Admin authentication required' });
+    }
+
+    const subtitleText = typeof req.body?.subtitleText === 'string'
+      ? normalizeSubtitleText(req.body.subtitleText).trim()
+      : '';
+    if (!subtitleText || !looksLikeSubtitleText(subtitleText)) {
+      return res.status(400).json({ success: false, error: 'Invalid VTT / SRT subtitle file' });
+    }
+    // Keep the movie document bounded while still allowing feature-length VTT files.
+    if (Buffer.byteLength(subtitleText, 'utf8') > 4 * 1024 * 1024) {
+      return res.status(413).json({ success: false, error: 'Subtitle file is too large' });
+    }
+
+    const existing =
+      db.manualMovies.find((movie: any) => movie.id === id) ||
+      firestoreMoviesCache[id] ||
+      moviesCache.find((movie: any) => movie.id === id);
+    if (!existing) {
+      return res.status(404).json({ success: false, error: 'Movie not found' });
+    }
+
+    const changes = {
+      subtitleText,
+      subtitleUrl: '',
+      kurdishSubtitleUrl: '',
+      updatedAt: new Date().toISOString(),
+    };
+    const updatedMovie = { ...existing, ...changes, id };
+
+    try {
+      const movieAdminApp = initializeFirebaseAdmin();
+      if (!movieAdminApp) throw new Error('Firebase Admin is unavailable');
+      await admin.firestore(movieAdminApp).collection('movies').doc(id).set(changes, { merge: true });
+      firestoreMoviesCache[id] = updatedMovie;
+      setMoviesCache((previous) => previous.map((movie) => movie.id === id ? updatedMovie : movie));
+      const manualIndex = db.manualMovies.findIndex((movie: any) => movie.id === id);
+      if (manualIndex !== -1) db.manualMovies[manualIndex] = updatedMovie;
+      await addAuditLog(db, adminName, 'Upload Movie Subtitle', `Kurdish subtitle updated: "${updatedMovie.title}" (${id})`);
+      await saveDB(db);
+      return res.json({ success: true, movie: updatedMovie });
+    } catch (error: any) {
+      console.error(`[movies] subtitle upload failed for ${id}:`, error?.message || error);
+      return res.status(500).json({ success: false, error: 'Subtitle save failed' });
+    }
+  });
+
   app.patch('/api/admin/movies/:id', async (req, res) => {
     const { id } = req.params;
     const rawAdminName = String(

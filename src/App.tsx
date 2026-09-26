@@ -8916,15 +8916,39 @@ export default function App() {
     if (!file) return;
 
     try {
+      if (!systemVerified || !currentUser?.username || !selectedMovie?.id) {
+        throw new Error("Admin authentication required");
+      }
       const vtt = srtToVtt(await file.text());
       const cues = parseSubtitleCues(vtt);
       if (!cues.length) throw new Error("No subtitle cues were found");
+      setMovieSubtitleImportMessage("ژێرنووسەکە پاشەکەوت دەکرێت...");
+      const response = await fetchApi(`/api/admin/movies/${encodeURIComponent(selectedMovie.id)}/subtitle`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-username": String(currentUser.username),
+        },
+        body: JSON.stringify({ subtitleText: vtt }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.success) {
+        throw new Error(data?.error || "Subtitle save failed");
+      }
       setImportedMovieSubtitleText(vtt);
+      setMovies((previous) => previous.map((movie) =>
+        movie.id === selectedMovie.id ? { ...movie, subtitleText: vtt } : movie
+      ));
+      setSelectedMovie((previous: any) => previous ? { ...previous, subtitleText: vtt } : previous);
       setCcSettings((settings) => ({ ...settings, showSubtitle: true }));
-      setMovieSubtitleImportMessage(`ژێرنووسەکە ئامادەیە (${cues.length} دێڕ)`);
+      setMovieSubtitleImportMessage(`ژێرنووسەکە بە هەمیشەیی پاشەکەوت کرا (${cues.length} دێڕ)`);
     } catch (error) {
       console.error("Subtitle import failed:", error);
-      setMovieSubtitleImportMessage("فایلی ژێرنووسەکە دروست نییە");
+      setMovieSubtitleImportMessage(
+        error instanceof Error && error.message === "Admin authentication required"
+          ? "تەنها ئەدمین دەتوانێت ژێرنووس زیاد بکات"
+          : "پاشەکەوتکردنی ژێرنووس سەرکەوتوو نەبوو"
+      );
     }
   };
 
@@ -11047,7 +11071,7 @@ export default function App() {
     ? movies.find((movie) => movie.id === activeCinemaWindowRoom.movieId) || null
     : isRoomModalActive ? selectedMovie : null;
   const roomSubtitles = useRoomSubtitles({
-    enabled: isInMainWatchRoom && ccSettings.showSubtitle,
+    enabled: isInMainWatchRoom && !isCatalogMoviePlayer && ccSettings.showSubtitle,
     roomKey: isCinemaWindowRoomActive
       ? `window:${activeCinemaWindowRoom.id}`
       : activeSyncGroup?.isVIP
@@ -15169,7 +15193,7 @@ export default function App() {
                         );
                       })()}
 
-                      {isRoomModalActive && <RoomSubtitleOverlay cues={cinemaWindowSubtitleCues} original={originalCinemaWindowSubtitleCues}
+                      {isRoomModalActive && !isCatalogMoviePlayer && <RoomSubtitleOverlay cues={cinemaWindowSubtitleCues} original={originalCinemaWindowSubtitleCues}
                     time={subtitlePlaybackTime} language={cinemaWindowSubtitleLang} settings={ccSettings} font={ccFontSizeEntry} style={ccSubtitleStyle} />}
                       {isCatalogMoviePlayer && ccSettings.showSubtitle && mainMovieActiveSubtitleText && (
                         <div
@@ -15194,7 +15218,7 @@ export default function App() {
                           never hides behind the bottom chrome or YouTube
                           shield blocks. Renders live pipeline progress via
                           the room subtitle status indicator. */}
-                      {isRoomModalActive &&
+                      {isRoomModalActive && !isCatalogMoviePlayer &&
                         (cinemaWindowSubtitleStatus === "error" ||
                           (cinemaWindowSubtitleStatus === "loading" &&
                             !cinemaWindowActiveSubtitleText)) && (
@@ -15593,7 +15617,7 @@ export default function App() {
                           )}
                         </div>
 
-                        {isCatalogMoviePlayer && (
+                        {isCatalogMoviePlayer && systemVerified && (
                           <div className="relative z-[60]">
                             <input
                               ref={movieSubtitleFileInputRef}
@@ -15627,7 +15651,7 @@ export default function App() {
                         {/* [1.5] Subtitle Language Toggle — Drama and VIP rooms. Lets
                             the user switch subtitle language from inside the main
                             player without needing the Cinema Window sidebar. */}
-                        {isRoomModalActive && (
+                        {isRoomModalActive && !isCatalogMoviePlayer && (
                           <div
                             className="relative z-[60]"
                             /* The trigger lives INSIDE the bottom control bar;
