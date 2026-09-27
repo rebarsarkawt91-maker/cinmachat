@@ -587,7 +587,7 @@ export const CompleteAccountModal: React.FC<CompleteAccountModalProps> = ({
               >
                 <div className="aspect-[2/3] w-full overflow-hidden bg-white/5">
                   <img
-                    src={(movie as any).posterUrl || movie.image || FALLBACK_POSTER}
+                    src={String((movie as any).posterUrl || movie.image || FALLBACK_POSTER).replace(/^\/uploads\//i, "/assets/posters/")}
                     alt={movie.title}
                     className="h-full w-full object-cover transition-transform group-hover:scale-105"
                     loading="lazy"
