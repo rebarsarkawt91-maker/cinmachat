@@ -13750,6 +13750,18 @@ export default function App() {
     />
   );
 
+  // Keep the existing reels carousel as one stable element while placing it
+  // directly after the room hub in the movie grid. Its props and behavior are
+  // unchanged; only its position in the homepage flow is different.
+  const socialReelsElement = (
+    <SocialReelsSection
+      movies={publicMovies}
+      youtubeUrl={config.youtubeUrl}
+      facebookUrl={config.facebookUrl}
+      canManage={isPrimaryOwner}
+    />
+  );
+
   return (
     <div
       className="relative min-h-dvh bg-black text-white select-none overflow-x-hidden"
@@ -14668,15 +14680,6 @@ export default function App() {
               )}
             </div>
 
-            {/* Social reels are additive: existing search, hero and movie-card
-                behavior remain the source of truth. */}
-            <SocialReelsSection
-              movies={publicMovies}
-              youtubeUrl={config.youtubeUrl}
-              facebookUrl={config.facebookUrl}
-              canManage={isPrimaryOwner}
-            />
-
             {/* Category Filter Pills — bottom of the stacked search hierarchy,
                 positioned directly above the movie cards grid. Rendered purely
                 from the Firestore/state category list (a skeleton shows until
@@ -14769,6 +14772,14 @@ export default function App() {
                           {dramaRoomsHubElement}
                         </div>
                       );
+                      items.push(
+                        <div
+                          key="social-reels-carousel"
+                          className="col-span-full"
+                        >
+                          {socialReelsElement}
+                        </div>
+                      );
                       return items;
                     }
                     return [movieCard];
@@ -14776,7 +14787,10 @@ export default function App() {
               </div>
 
               {paginatedMovies.length <= 5 && (
-                <div className="col-span-full">{dramaRoomsHubElement}</div>
+                <>
+                  <div className="col-span-full">{dramaRoomsHubElement}</div>
+                  <div className="col-span-full">{socialReelsElement}</div>
+                </>
               )}
 
               {isLoading && paginatedMovies.length === 0 && (
