@@ -7746,6 +7746,17 @@ export default function App() {
   // Immersive cinematic player: zoom multiplier and active menu.
   const [immersiveScale, setImmersiveScale] = useState(1);
   const [playerMenu, setPlayerMenu] = useState<null | "quality" | "speed" | "subtitle">(null);
+  const [playerControlsVisible, setPlayerControlsVisible] = useState(true);
+  const playerControlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const revealPlayerControls = useCallback(() => {
+    setPlayerControlsVisible(true);
+    if (playerControlsTimerRef.current) clearTimeout(playerControlsTimerRef.current);
+    playerControlsTimerRef.current = setTimeout(() => {
+      setPlayerControlsVisible(false);
+      playerControlsTimerRef.current = null;
+    }, 3500);
+  }, []);
 
   // Progress / seek bar state.
   const [playerCurrentTime, setPlayerCurrentTime] = useState(0);
@@ -11067,6 +11078,53 @@ export default function App() {
   // playback clock.
   const isRoomModalActive = showPlayer && !!activeServerUrl;
   const isCatalogMoviePlayer = isRoomModalActive && !selectedDramaRoom && !activeSyncGroup?.isVIP;
+
+  // Keep the chrome visible while the user is interacting with a popup/slider;
+  // otherwise reveal it on activity and slide it away after 3.5 seconds.
+  useEffect(() => {
+    if (!showPlayer) {
+      if (playerControlsTimerRef.current) clearTimeout(playerControlsTimerRef.current);
+      playerControlsTimerRef.current = null;
+      setPlayerControlsVisible(true);
+      return;
+    }
+    if (playerMenu || showCcPanel || volumeSliderOpen || dragTime !== null) {
+      if (playerControlsTimerRef.current) clearTimeout(playerControlsTimerRef.current);
+      playerControlsTimerRef.current = null;
+      setPlayerControlsVisible(true);
+      return;
+    }
+    revealPlayerControls();
+    return () => {
+      if (playerControlsTimerRef.current) clearTimeout(playerControlsTimerRef.current);
+    };
+  }, [showPlayer, playerMenu, showCcPanel, volumeSliderOpen, dragTime, revealPlayerControls]);
+
+  // Disable provider/native captions independently from CinemaChat's uploaded
+  // Kurdish overlay. Native HTML5 tracks are controlled directly; embeds get
+  // the supported caption commands on a best-effort basis.
+  useEffect(() => {
+    if (!showPlayer || !isCatalogMoviePlayer) return;
+    const root = modalPlayerRef.current;
+    root?.querySelectorAll<HTMLVideoElement>("video").forEach((video) => {
+      Array.from(video.textTracks).forEach((track) => {
+        const language = String(track.language || "").toLowerCase();
+        const isCinemaChatTrack = language === "ckb" || language === "ku";
+        if (!isCinemaChatTrack && !ccSettings.showOriginal) track.mode = "disabled";
+      });
+    });
+    root?.querySelectorAll<HTMLIFrameElement>("iframe").forEach((frame) => {
+      const commands = ccSettings.showOriginal
+        ? [{ event: "command", func: "setOption", args: ["captions", "track", { languageCode: "en" }] }]
+        : [
+            { event: "command", func: "setOption", args: ["captions", "track", {}] },
+            { event: "command", func: "unloadModule", args: ["captions"] },
+          ];
+      commands.forEach((command) => {
+        try { frame.contentWindow?.postMessage(JSON.stringify(command), "*"); } catch { /* Cross-origin providers may ignore it. */ }
+      });
+    });
+  }, [showPlayer, isCatalogMoviePlayer, ccSettings.showOriginal, activeServerUrl]);
   const subtitleSourceUrl = isCinemaWindowRoomActive ? activeCinemaWindowSourceUrl : isRoomModalActive ? activeServerUrl || "" : "";
   const subtitlePlaybackTime = isCinemaWindowRoomActive ? cinemaWindowPlaybackTime : playerCurrentTime;
   const activeSubtitleMovie = isCinemaWindowRoomActive && activeCinemaWindowRoom?.movieId
@@ -15107,10 +15165,11 @@ export default function App() {
                 <div
                   ref={modalPlayerRef}
                   className={`${showPlayer ? "w-full h-full relative bg-black shadow-2xl aspect-video md:aspect-[21/9]" : "absolute inset-0 h-full w-full bg-black"}`}
-                  onPointerDown={onPlayerPointerDown}
-                  onPointerMove={onPlayerPointerMove}
+                  onPointerDown={(event) => { revealPlayerControls(); onPlayerPointerDown(event); }}
+                  onPointerMove={(event) => { revealPlayerControls(); onPlayerPointerMove(event); }}
                   onPointerUp={onPlayerPointerUp}
                   onPointerCancel={onPlayerPointerCancel}
+                  onKeyDown={revealPlayerControls}
                 >
                   {showPlayer && activeServerUrl ? (
                     <div className="absolute inset-0 bg-black flex items-center justify-center z-10 transition-all">
@@ -15173,6 +15232,7 @@ export default function App() {
                               title={`${selectedMovie?.title || "CinemaChat"} — Cinematic Player`}
                               scale={immersiveScale}
                               subtitleOffset={Math.round((ccSettings.subtitleOffsetY / 100) * 15)}
+                              hideNativeSubtitles={!ccSettings.showOriginal}
                             />
                           );
                         }
@@ -15212,6 +15272,17 @@ export default function App() {
                           </div>
                         );
                       })()}
+
+                      {/* Interaction glass keeps pointer/touch activity observable even
+                          over cross-origin iframes, whose events cannot bubble into
+                          React. The custom toolbar remains above this layer. */}
+                      <div
+                        data-testid="player-interaction-layer"
+                        className="absolute inset-0 z-[42] cursor-default"
+                        onPointerMove={revealPlayerControls}
+                        onPointerDown={revealPlayerControls}
+                        aria-hidden="true"
+                      />
 
                       {isRoomModalActive && !isCatalogMoviePlayer && <RoomSubtitleOverlay cues={cinemaWindowSubtitleCues} original={originalCinemaWindowSubtitleCues}
                     time={subtitlePlaybackTime} language={cinemaWindowSubtitleLang} settings={ccSettings} font={ccFontSizeEntry} style={ccSubtitleStyle} />}
@@ -15396,7 +15467,7 @@ export default function App() {
                       )}
 
                       {/* Bottom-left CinemaChat branding (floating, non-blocking) */}
-                      <div className="absolute bottom-0 left-0 h-16 z-50 flex items-center gap-2 px-6 md:px-10 pointer-events-none select-none font-sans">
+                      <div data-testid="player-branding" className={`absolute bottom-0 left-0 h-16 z-50 flex items-center gap-2 px-6 md:px-10 pointer-events-none select-none font-sans transition-all duration-300 ease-out ${playerControlsVisible ? "translate-y-0 opacity-100" : "translate-y-6 opacity-0"}`}>
                         <span className="text-xs font-black text-brand-primary uppercase tracking-[0.3em] font-mono drop-shadow-sm">
                           CINEMACHAT
                         </span>
@@ -15411,7 +15482,7 @@ export default function App() {
                           [4] Forward 10s · [4.5] Next Episode (Drama Room) ·
                           [5] Play/Pause · [6] Back 10s ·
                           [7] Exit Fullscreen · [8] Mute */}
-                      <div className="absolute bottom-0 right-0 z-[60] h-16 flex items-center gap-1.5 md:gap-2 px-4 md:px-6 pointer-events-auto select-none font-sans">
+                      <div data-testid="player-control-bar" className={`absolute bottom-0 right-0 z-[60] h-16 flex items-center gap-1.5 md:gap-2 px-4 md:px-6 select-none font-sans transition-all duration-300 ease-out ${playerControlsVisible ? "translate-y-0 opacity-100 pointer-events-auto" : "translate-y-6 opacity-0 pointer-events-none"}`}>
                         {/* [6] Mute / Audio Toggle + vertical Volume slider.
                             Hovering (or focusing) the mute control reveals a
                             vertically-centered volume slider popup above it —
@@ -15692,6 +15763,32 @@ export default function App() {
                                     <button type="button" onClick={() => setShowCcPanel(false)} className="text-zinc-400 hover:text-white">✕</button>
                                   </div>
 
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[10px] font-bold text-zinc-300">ژێرنووسی CinemaChat</span>
+                                    <button
+                                      type="button"
+                                      data-testid="cinemachat-subtitle-toggle"
+                                      onClick={() => setCcSettings((settings) => ({ ...settings, showSubtitle: !settings.showSubtitle }))}
+                                      className={`h-5 w-10 rounded-full transition-all ${ccSettings.showSubtitle ? "bg-brand-primary" : "bg-zinc-600"}`}
+                                      aria-pressed={ccSettings.showSubtitle}
+                                    >
+                                      <span className={`block h-4 w-4 rounded-full bg-white shadow transition-transform ${ccSettings.showSubtitle ? "translate-x-5" : "translate-x-0.5"}`} />
+                                    </button>
+                                  </div>
+
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[10px] font-bold text-zinc-300">ژێرنووسی ڕەسەن / Original</span>
+                                    <button
+                                      type="button"
+                                      data-testid="original-subtitle-toggle"
+                                      onClick={() => setCcSettings((settings) => ({ ...settings, showOriginal: !settings.showOriginal }))}
+                                      className={`h-5 w-10 rounded-full transition-all ${ccSettings.showOriginal ? "bg-emerald-500" : "bg-zinc-600"}`}
+                                      aria-pressed={ccSettings.showOriginal}
+                                    >
+                                      <span className={`block h-4 w-4 rounded-full bg-white shadow transition-transform ${ccSettings.showOriginal ? "translate-x-5" : "translate-x-0.5"}`} />
+                                    </button>
+                                  </div>
+
                                   <div>
                                     <span className="mb-2 block text-[10px] font-bold text-zinc-400">قەبارەی نووسین — ٦ ئاست</span>
                                     <div className="grid grid-cols-6 gap-1">
@@ -15941,7 +16038,7 @@ export default function App() {
                       {/* Full-width progress / seek bar with live time readout.
                           Shows the active player's position and lets the user seek by
                           dragging. Works natively with Plyr + YouTube; best-effort elsewhere. */}
-                      <div className="absolute bottom-16 inset-x-0 z-50 flex items-center gap-3 px-4 md:px-6 select-none font-sans pointer-events-auto">
+                      <div data-testid="player-progress-bar" className={`absolute bottom-16 inset-x-0 z-50 flex items-center gap-3 px-4 md:px-6 select-none font-sans transition-all duration-300 ease-out ${playerControlsVisible ? "translate-y-0 opacity-100 pointer-events-auto" : "translate-y-6 opacity-0 pointer-events-none"}`}>
                         <span className="min-w-[88px] text-left text-[11px] font-bold text-white tabular-nums drop-shadow">
                           {formatTime(dragTime ?? playerCurrentTime)}
                         </span>

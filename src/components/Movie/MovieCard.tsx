@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Heart,
   ThumbsUp,
@@ -54,6 +54,23 @@ export function formatCount(n: number): string {
 
 export const FALLBACK_POSTER =
   "https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800";
+
+/** Builds the poster fallback chain from every supported legacy/current field. */
+function getPosterCandidates(movie: Movie): string[] {
+  const raw = [
+    (movie as any).posterUrl,
+    movie.image,
+    (movie as any).poster,
+    (movie as any).poster_url,
+    (movie as any).coverUrl,
+    (movie as any).thumbnail,
+  ];
+  const seen = new Set<string>();
+  return raw
+    .map((value) => String(value || "").trim().replace(/&amp;/gi, "&"))
+    .map((value) => value.startsWith("//") ? `${window.location.protocol}${value}` : value)
+    .filter((value) => value && !seen.has(value) && seen.add(value));
+}
 
 /** Normalize a string for language/tag matching (case + whitespace folding). */
 const norm = (s: string): string =>
@@ -161,6 +178,18 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
   const language = inferMovieLanguage(movie);
   const quality = movie.quality || "HD";
   const canPlay = movieCanPlay(movie);
+  const posterCandidates = useMemo(() => getPosterCandidates(movie), [
+    movie.id,
+    movie.image,
+    (movie as any).posterUrl,
+    (movie as any).poster,
+    (movie as any).poster_url,
+    (movie as any).coverUrl,
+    (movie as any).thumbnail,
+  ]);
+  const [posterIndex, setPosterIndex] = useState(0);
+  useEffect(() => setPosterIndex(0), [posterCandidates.join("|")]);
+  const posterSrc = posterCandidates[posterIndex] || FALLBACK_POSTER;
 
   // When duration/year are missing, fall back to the publish date so the meta
   // row never looks empty.
@@ -215,13 +244,17 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
       {/* Poster */}
       <div className="relative aspect-[2/3] rounded-2xl overflow-hidden bg-[#0b0b0d] ring-1 ring-white/10 shadow-[0_8px_30px_rgba(0,0,0,0.55)] transition-all duration-300 group-hover:-translate-y-1.5 group-hover:ring-brand-primary/60 group-hover:shadow-[0_22px_60px_-15px_rgba(229,9,20,0.45)]">
         <img
-          src={movie.image || FALLBACK_POSTER}
+          src={posterSrc}
           loading="lazy"
           decoding="async"
           referrerPolicy="no-referrer"
           onError={(e) => {
             const target = e.target as HTMLImageElement;
-            if (target.src !== FALLBACK_POSTER) target.src = FALLBACK_POSTER;
+            if (posterIndex + 1 < posterCandidates.length) {
+              setPosterIndex((index) => index + 1);
+            } else if (target.src !== FALLBACK_POSTER) {
+              target.src = FALLBACK_POSTER;
+            }
           }}
           className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-[1.08]"
           alt=""

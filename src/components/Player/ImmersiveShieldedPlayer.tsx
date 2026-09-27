@@ -32,6 +32,8 @@ interface ImmersiveShieldedPlayerProps {
   scale?: number;
   /** Percent (0-15) of container height to shift the video up so subtitles stay visible. */
   subtitleOffset?: number;
+  /** Hide provider/native captions so CinemaChat subtitles never overlap them. */
+  hideNativeSubtitles?: boolean;
   className?: string;
 }
 
@@ -66,7 +68,7 @@ const SHIELD_CSS = `
 // Tries to install the shield inside the embedded document. Returns true when the
 // document is reachable (same-origin / allow-same-origin) — otherwise the caller
 // retries a few times (some providers swap documents after load).
-function installShield(iframe: HTMLIFrameElement): boolean {
+function installShield(iframe: HTMLIFrameElement, hideNativeSubtitles = false): boolean {
   try {
     const doc = iframe.contentDocument;
     if (!doc || !doc.documentElement || !doc.body) return false;
@@ -76,6 +78,16 @@ function installShield(iframe: HTMLIFrameElement): boolean {
       style.id = "__cinemachat_shield_css__";
       style.textContent = SHIELD_CSS;
       (doc.head || doc.documentElement).appendChild(style);
+    }
+    const style = doc.getElementById("__cinemachat_shield_css__") as HTMLStyleElement | null;
+    if (style) {
+      style.textContent = `${SHIELD_CSS}\n${hideNativeSubtitles ? `
+        video::cue { visibility: hidden !important; opacity: 0 !important; }
+        .vjs-text-track-display, .jw-captions, .jw-text-track-display,
+        .plyr__captions, .caption, .captions, [class*="subtitle"], [class*="caption"] {
+          display: none !important; visibility: hidden !important; opacity: 0 !important;
+        }
+      ` : ""}`;
     }
 
     const sweep = () => {
@@ -109,6 +121,7 @@ export default function ImmersiveShieldedPlayer({
   title,
   scale = 1,
   subtitleOffset = 0,
+  hideNativeSubtitles = false,
   className,
 }: ImmersiveShieldedPlayerProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -142,7 +155,7 @@ export default function ImmersiveShieldedPlayer({
     retries.current = 0;
 
     const tryInstall = () => {
-      if (!installShield(iframe)) {
+      if (!installShield(iframe, hideNativeSubtitles)) {
         // Same-origin shield can't reach cross-origin documents — retry briefly in
         // case the provider swaps its document after the first load event.
         retries.current += 1;
@@ -164,7 +177,7 @@ export default function ImmersiveShieldedPlayer({
         /* ignore */
       }
     };
-  }, [url]);
+  }, [url, hideNativeSubtitles]);
 
   const effectiveScale = coverScale * Math.max(0.8, scale || 1);
   const transform = `translateY(${-Math.max(0, Math.min(15, subtitleOffset || 0))}%) scale(${effectiveScale.toFixed(3)})`;
@@ -193,7 +206,7 @@ export default function ImmersiveShieldedPlayer({
           allowFullScreen
           onLoad={() => {
             // Best-effort first sweep right after (re)load.
-            setTimeout(() => installShield(iframeRef.current!), 200);
+            setTimeout(() => installShield(iframeRef.current!, hideNativeSubtitles), 200);
           }}
         />
       </div>
