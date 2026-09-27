@@ -3250,8 +3250,9 @@ const mergeCatalogWithFirestore = (local: any[], deletedIds: string[] = []): any
     // by id so partial metadata cannot erase the local title or poster.
     const existing = merged.get(movie.id);
     if (existing) movie = { ...existing, ...movie };
-    const image = movie.image ? decodeStoredUrl(movie.image) : "";
-    const posterUrl = movie.posterUrl ? decodeStoredUrl(movie.posterUrl) : "";
+    const publicMediaUrl = (value: any) => String(value || "").replace(/^\/uploads\//i, "/api/uploads/");
+    const image = movie.image ? publicMediaUrl(decodeStoredUrl(movie.image)) : "";
+    const posterUrl = movie.posterUrl ? publicMediaUrl(decodeStoredUrl(movie.posterUrl)) : "";
     const imageIsGenericFallback = String(image).includes("photo-1485846234645-a62644f84728");
     // Normalize both historical poster fields at the API boundary. Older
     // records often kept the uploaded cover only in posterUrl while image was
@@ -14864,6 +14865,14 @@ let videoDownloaded = false;
       res.status(500).type('text/plain').send('Unable to generate sitemap.');
     }
   });
+
+  // Production Firebase/Cloudflare forwards /api/* to this server, while a
+  // bare /uploads path is consumed by the SPA rewrite. Expose the same durable
+  // files through the API namespace so uploaded posters retain an image MIME.
+  app.use('/api/uploads', express.static(path.join(process.cwd(), 'uploads'), {
+    maxAge: '30d',
+    immutable: true,
+  }));
 
   app.all('/api/*', (req, res, next) => {
     if (res.headersSent) return next();
