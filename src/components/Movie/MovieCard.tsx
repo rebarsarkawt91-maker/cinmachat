@@ -68,7 +68,6 @@ function getPosterCandidates(movie: Movie): string[] {
   const seen = new Set<string>();
   return raw
     .map((value) => String(value || "").trim().replace(/&amp;/gi, "&"))
-    .map((value) => value.replace(/^\/uploads\//i, "/api/uploads/"))
     .map((value) => value.startsWith("//") ? `${window.location.protocol}${value}` : value)
     .filter((value) => value && !seen.has(value) && seen.add(value));
 }

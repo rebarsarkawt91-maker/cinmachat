@@ -3250,9 +3250,8 @@ const mergeCatalogWithFirestore = (local: any[], deletedIds: string[] = []): any
     // by id so partial metadata cannot erase the local title or poster.
     const existing = merged.get(movie.id);
     if (existing) movie = { ...existing, ...movie };
-    const publicMediaUrl = (value: any) => String(value || "").replace(/^\/uploads\//i, "/api/uploads/");
-    const image = movie.image ? publicMediaUrl(decodeStoredUrl(movie.image)) : "";
-    const posterUrl = movie.posterUrl ? publicMediaUrl(decodeStoredUrl(movie.posterUrl)) : "";
+    const image = movie.image ? decodeStoredUrl(movie.image) : "";
+    const posterUrl = movie.posterUrl ? decodeStoredUrl(movie.posterUrl) : "";
     const imageIsGenericFallback = String(image).includes("photo-1485846234645-a62644f84728");
     // Normalize both historical poster fields at the API boundary. Older
     // records often kept the uploaded cover only in posterUrl while image was
