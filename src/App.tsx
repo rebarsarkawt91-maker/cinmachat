@@ -403,7 +403,7 @@ import { BroadcastPreviewCard } from "./components/Social/BroadcastPreviewCard";
 import AdminMovieRoomsPanel from "./components/Admin/AdminMovieRoomsPanel";
 import { DirectMessagesModal } from "./components/Social/DirectMessagesModal";
 import { WhatsAppFloatButton, resolveWhatsAppUrl } from "./components/Social/WhatsAppFloatButton";
-import { MovieCard, MovieCardSkeleton } from "./components/Movie/MovieCard";
+import { MovieCard, MovieCardSkeleton, getMoviePosterCandidates } from "./components/Movie/MovieCard";
 import {
   fuzzyMatchMovie,
   movieMatchesGenres,
@@ -7376,6 +7376,8 @@ const DramaRoomGallery = ({ rooms, onOpenRoom, liveViewersMap, ratingsMap }: any
   );
 };
 
+const preloadedMoviePosterUrls = new Set<string>();
+
 export default function App() {
   const { setSensitiveActivity } = usePwaInstall();
   const { t: tr } = useI18n();
@@ -8317,15 +8319,41 @@ export default function App() {
   const postVideoCommand = (id: string, func: string) => {
     const frame = document.getElementById(id) as HTMLIFrameElement | null;
     if (!frame?.contentWindow) return;
-    frame.contentWindow.postMessage(
-      JSON.stringify({ event: "command", func, args: [] }),
-      "*",
-    );
+    const action = func === "playVideo" ? "play" : func === "pauseVideo" ? "pause" : func;
+    const commands = [
+      { event: "command", func, args: [] },
+      // VidSrc/proxy.garageband transport (the same provider that emits the
+      // PLAYER_EVENT clock consumed above).
+      { player: true, action },
+      // Common custom-embed transports.
+      { type: action, action },
+      { method: action },
+    ];
+    commands.forEach((command) => {
+      frame.contentWindow?.postMessage(JSON.stringify(command), "*");
+      frame.contentWindow?.postMessage(command, "*");
+    });
   };
 
   const toggleIframePlay = () => {
-    const isPlaying = !isIframePlaying;
+    // Direct-stream and HLS fallbacks render native <video> elements rather
+    // than the iframe/Plyr transport. Read their real paused state so the
+    // button always performs the inverse action instead of merely changing
+    // its icon.
+    const nativeVideos = Array.from(
+      modalPlayerRef.current?.querySelectorAll<HTMLVideoElement>("video") || [],
+    );
+    const nativeIsPlaying = nativeVideos.some((video) => !video.paused && !video.ended);
+    const isPlaying = nativeVideos.length > 0 ? !nativeIsPlaying : !isIframePlaying;
     setIsIframePlaying(isPlaying);
+
+    nativeVideos.forEach((video) => {
+      if (isPlaying) {
+        void video.play().then(() => setIsIframePlaying(true)).catch(() => setIsIframePlaying(false));
+      } else {
+        video.pause();
+      }
+    });
 
     // 1. Control Plyr if it's active
     if (plyrRef.current?.plyr) {
@@ -8369,6 +8397,30 @@ export default function App() {
     // command, so publish the intent rather than the live read).
     publishPlaybackNowRef.current({ isPlaying });
   };
+
+  // Mirror native playback events back into the red transport button. This is
+  // especially important when YouTube switches to its direct MP4 fallback or
+  // an HLS source pauses because the user/browser changed playback state.
+  useEffect(() => {
+    if (!showPlayer) return;
+    const videos = Array.from(
+      modalPlayerRef.current?.querySelectorAll<HTMLVideoElement>("video") || [],
+    );
+    const onPlay = () => setIsIframePlaying(true);
+    const onPause = () => setIsIframePlaying(false);
+    videos.forEach((video) => {
+      video.addEventListener("play", onPlay);
+      video.addEventListener("playing", onPlay);
+      video.addEventListener("pause", onPause);
+      video.addEventListener("ended", onPause);
+    });
+    return () => videos.forEach((video) => {
+      video.removeEventListener("play", onPlay);
+      video.removeEventListener("playing", onPlay);
+      video.removeEventListener("pause", onPause);
+      video.removeEventListener("ended", onPause);
+    });
+  }, [showPlayer, activeServerUrl, youtubePlayerMode]);
 
   const toggleIframeMute = () => {
     const isMuted = !isIframeMuted;
@@ -12879,6 +12931,16 @@ export default function App() {
           const timeB = b.date ? new Date(b.date).getTime() : 0;
           return timeB - timeA;
         });
+      // Warm the visible catalog row before React paints it. The module-level
+      // URL set prevents repeat requests during API polling/Firestore patches.
+      normalized.slice(0, 30).forEach((movie: any) => {
+        const poster = getMoviePosterCandidates(movie)[0];
+        if (!poster || preloadedMoviePosterUrls.has(poster)) return;
+        preloadedMoviePosterUrls.add(poster);
+        const image = new window.Image();
+        image.decoding = "async";
+        image.src = poster;
+      });
       cacheMovieCatalog(normalized as Movie[]);
       return normalized;
     });

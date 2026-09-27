@@ -56,7 +56,16 @@ export const FALLBACK_POSTER =
   "https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800";
 
 /** Builds the poster fallback chain from every supported legacy/current field. */
-function getPosterCandidates(movie: Movie): string[] {
+export function getMoviePosterCandidates(movie: Movie): string[] {
+  const videoFields = [
+    (movie as any).trailerUrl,
+    (movie as any).youtubeMovieUrl,
+    movie.videoUrl,
+    movie.embedUrl,
+  ].map((value) => String(value || ""));
+  const youtubeId = videoFields
+    .map((value) => value.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/))([A-Za-z0-9_-]{11})/i)?.[1])
+    .find(Boolean);
   const raw = [
     (movie as any).posterUrl,
     movie.image,
@@ -64,6 +73,7 @@ function getPosterCandidates(movie: Movie): string[] {
     (movie as any).poster_url,
     (movie as any).coverUrl,
     (movie as any).thumbnail,
+    youtubeId ? `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg` : "",
   ];
   const seen = new Set<string>();
   return raw
@@ -179,7 +189,7 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
   const language = inferMovieLanguage(movie);
   const quality = movie.quality || "HD";
   const canPlay = movieCanPlay(movie);
-  const posterCandidates = useMemo(() => getPosterCandidates(movie), [
+  const posterCandidates = useMemo(() => getMoviePosterCandidates(movie), [
     movie.id,
     movie.image,
     (movie as any).posterUrl,
@@ -187,6 +197,10 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
     (movie as any).poster_url,
     (movie as any).coverUrl,
     (movie as any).thumbnail,
+    (movie as any).trailerUrl,
+    (movie as any).youtubeMovieUrl,
+    movie.videoUrl,
+    movie.embedUrl,
   ]);
   const [posterIndex, setPosterIndex] = useState(0);
   useEffect(() => setPosterIndex(0), [posterCandidates.join("|")]);
