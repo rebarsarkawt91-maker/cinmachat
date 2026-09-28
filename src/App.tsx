@@ -9843,6 +9843,7 @@ export default function App() {
   // There is a single handler so there is never more than one Escape-triggered
   // close path — matching the single visible X button on the player overlay.
   useEffect(() => {
+
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (showPlayer && isMovieDetailsOpen) {
@@ -9899,8 +9900,8 @@ export default function App() {
   // Keep the document head aligned with the currently selected movie.
   useEffect(() => {
     const movie = selectedMovie;
-    const defaultTitle = "CinamaChat - نوێترین فیلم و زنجیرەکان بە کوردی";
-    const defaultDescription = "kurdCinamaChat -kurdsh movise - kurdsubtitle cinamachatکورد سینەما چات ئامەدەیە بۆ بڵاوکردنەوەى فیلمەکانى بۆکس ئۆفیس و فیلمە بیانیەکان و خاوەنى پێشکەوتو ترین گەڕانەلە ئێستادا ";
+    const defaultTitle = "kurdCinamaChat -کورد سینەماچات نوێترین فیلم و دراما بە ژێرنوسى کوردى ";
+    const defaultDescription = "CinamaChat -kurdsh movise - kurdsubtitle cinamachatکورد سینەما چات ئامەدەیە بۆ بڵاوکردنەوەى فیلمەکانى بۆکس ئۆفیس و فیلمە بیانیەکان و خاوەنى پێشکەوتو ترین گەڕانەلە ئێستادا ";
     const title = movie ? `${movie.title} بە ژێرنووسی کوردی | CinemaChat` : defaultTitle;
     const description = (movie?.description || defaultDescription).replace(/\s+/g, " ").trim().slice(0, 160);
     const keywords = movie
