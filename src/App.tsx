@@ -15523,8 +15523,31 @@ export default function App() {
                           </div>
                         </div>
 
-                        <div className="shrink-0 px-2.5 md:px-4 py-1.5 bg-black/60 backdrop-blur-md rounded-full border border-white/5 text-[8px] md:text-[10px] uppercase font-bold tracking-widest text-brand-primary font-mono hidden sm:block">
-                          CINEMACHAT PRO PLAYER
+                        <div
+                          data-testid="player-animated-branding"
+                          className="cinema-player-brand shrink-0"
+                          aria-label="CinemaChat branding"
+                        >
+                          <img
+                            src="/pwa/icon.svg"
+                            alt=""
+                            aria-hidden="true"
+                            className="cinema-player-brand__logo"
+                          />
+                          <span className="cinema-player-brand__ticker" aria-hidden="true">
+                            <span className="cinema-player-brand__message cinema-player-brand__message--1">
+                              cinamachat | سینەما چات
+                            </span>
+                            <span className="cinema-player-brand__message cinema-player-brand__message--2 kurdish-text">
+                              فۆڵۆى ئەکاونتەکانمان بکە
+                            </span>
+                            <span className="cinema-player-brand__message cinema-player-brand__message--3">
+                              cinamachat | سینەما چات
+                            </span>
+                            <span className="cinema-player-brand__message cinema-player-brand__message--4">
+                              www.cinamachat.com
+                            </span>
+                          </span>
                         </div>
                       </div>
 
