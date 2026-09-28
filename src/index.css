@@ -212,6 +212,7 @@ iframe#streaming-player {
   width: 2.15rem;
   height: 2.15rem;
   flex: 0 0 auto;
+  object-fit: cover;
   border-radius: 0.55rem;
   filter: drop-shadow(0 3px 7px rgba(229, 9, 20, 0.38));
   animation: cinema-player-logo-spin 14s linear infinite;
@@ -235,11 +236,11 @@ iframe#streaming-player {
   overflow: hidden;
   text-overflow: ellipsis;
   opacity: 0;
-  color: #fff;
+  color: rgba(255, 255, 255, 0.72);
   font-size: clamp(0.68rem, 1.5vw, 0.92rem);
   font-weight: 900;
   letter-spacing: 0.02em;
-  text-shadow: 0 1px 2px #000, 0 2px 10px rgba(0, 0, 0, 0.98);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.88), 0 2px 8px rgba(0, 0, 0, 0.78);
   animation: cinema-player-brand-message 16s ease-in-out infinite;
 }
 
@@ -255,7 +256,7 @@ iframe#streaming-player {
 
 .cinema-player-brand__message--4 {
   animation-delay: 12s;
-  color: #ff3340;
+  color: rgba(255, 51, 64, 0.76);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 

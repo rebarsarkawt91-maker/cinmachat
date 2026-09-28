@@ -9900,7 +9900,7 @@ export default function App() {
   useEffect(() => {
     const movie = selectedMovie;
     const defaultTitle = "CinamaChat - نوێترین فیلم و زنجیرەکان بە کوردی";
-    const defaultDescription = "CinamaChat - باشترین پلاتفۆرمی کوردی بۆ بینینی فیلم و زنجیرەکان بە کوالیتی بەرز و دۆبلاژی کوردی.";
+    const defaultDescription = "kurdCinamaChat -kurdsh movise - kurdsubtitle cinamachatکورد سینەما چات ئامەدەیە بۆ بڵاوکردنەوەى فیلمەکانى بۆکس ئۆفیس و فیلمە بیانیەکان و خاوەنى پێشکەوتو ترین گەڕانەلە ئێستادا ";
     const title = movie ? `${movie.title} بە ژێرنووسی کوردی | CinemaChat` : defaultTitle;
     const description = (movie?.description || defaultDescription).replace(/\s+/g, " ").trim().slice(0, 160);
     const keywords = movie
@@ -15529,7 +15529,7 @@ export default function App() {
                           aria-label="CinemaChat branding"
                         >
                           <img
-                            src="/pwa/icon.svg"
+                            src="/branding/cinamachat-logo.jpg"
                             alt=""
                             aria-hidden="true"
                             className="cinema-player-brand__logo"
