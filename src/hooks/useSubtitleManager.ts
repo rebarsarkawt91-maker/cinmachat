@@ -59,7 +59,7 @@ export const CC_TEXT_COLORS = ["#ffffff", "#FFFF00", "#00FFFF", "#00FF00", "#FF8
 export const SUBTITLE_SYNC_LEAD_S = 0.25;
 
 const CC_SETTINGS_KEY = "cinemachat-cc-settings";
-const DEFAULT_CC: CcSettings = { fontSize: "md", bgOpacity: 0.8, textColor: "#ffffff", showSubtitle: true, showOriginal: false, subtitleOffsetY: 15 };
+const DEFAULT_CC: CcSettings = { fontSize: "md", bgOpacity: 0.55, textColor: "#ffffff", showSubtitle: true, showOriginal: false, subtitleOffsetY: 15 };
 
 /**
  * Maps the stored 0-100 vertical offset to a CSS `bottom` percentage inside the
@@ -93,7 +93,11 @@ export function loadCcSettings(): CcSettings {
   try {
     const raw = localStorage.getItem(CC_SETTINGS_KEY);
     if (!raw) return DEFAULT_CC;
-    return { ...DEFAULT_CC, ...JSON.parse(raw) };
+    const parsed = JSON.parse(raw);
+    // Keep previously selected values, but migrate the former 80% default to
+    // the clearer subtitle backdrop used by the player now.
+    if (Number(parsed?.bgOpacity) === 0.8) parsed.bgOpacity = DEFAULT_CC.bgOpacity;
+    return { ...DEFAULT_CC, ...parsed };
   } catch {
     return DEFAULT_CC;
   }

@@ -6725,7 +6725,7 @@ type CcSettings = {
 };
 
 const CC_SETTINGS_STORAGE_KEY = 'cinemachat-cc-settings';
-const DEFAULT_CC_SETTINGS: CcSettings = { fontSize: 'md', bgOpacity: 0.8, textColor: '#ffffff', showSubtitle: true, showOriginal: false, subtitleOffsetY: 15 };
+const DEFAULT_CC_SETTINGS: CcSettings = { fontSize: 'md', bgOpacity: 0.55, textColor: '#ffffff', showSubtitle: true, showOriginal: false, subtitleOffsetY: 15 };
 
 /**
  * Maps the stored 0-100 vertical offset to a CSS `bottom` percentage inside
@@ -6751,6 +6751,9 @@ function loadCcSettings(): CcSettings {
     const raw = localStorage.getItem(CC_SETTINGS_STORAGE_KEY);
     if (!raw) return DEFAULT_CC_SETTINGS;
     const parsed = JSON.parse(raw);
+    // Migrate the previous default (80%) to the new, clearer 55% backdrop.
+    // Deliberately chosen opacity values remain unchanged.
+    if (Number(parsed?.bgOpacity) === 0.8) parsed.bgOpacity = DEFAULT_CC_SETTINGS.bgOpacity;
     return { ...DEFAULT_CC_SETTINGS, ...parsed };
   } catch { return DEFAULT_CC_SETTINGS; }
 }
