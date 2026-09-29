@@ -173,6 +173,11 @@ export default function HlsVideoPlayer({
         lowLatencyMode: false,
         maxBufferLength: 30,
         startFragPrefetch: true,
+        // Do not cap rendition selection to the player's rendered dimensions.
+        // The source stream is kept at its highest advertised level so CSS
+        // layout cannot silently turn an HD source into a lower-bitrate stream.
+        capLevelToPlayerSize: false,
+        autoLevelCapping: -1,
       });
       hlsRef.current = hls;
       activeHlsInstances.add(hls);
@@ -181,6 +186,21 @@ export default function HlsVideoPlayer({
       hls.attachMedia(video);
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        // Select the highest resolution/bitrate advertised by the manifest.
+        // A stream without multiple renditions simply keeps its only level.
+        const highestLevel = hls.levels.reduce((best, level, index, levels) => {
+          const bestLevel = levels[best];
+          const currentPixels = (level.width || 0) * (level.height || 0);
+          const bestPixels = (bestLevel.width || 0) * (bestLevel.height || 0);
+          return currentPixels > bestPixels || (currentPixels === bestPixels && (level.bitrate || 0) > (bestLevel.bitrate || 0))
+            ? index
+            : best;
+        }, 0);
+        if (hls.levels.length > 0) {
+          hls.currentLevel = highestLevel;
+          hls.nextLevel = highestLevel;
+          hls.loadLevel = highestLevel;
+        }
         if (autoPlay) video.play().catch(() => {});
       });
 
@@ -231,7 +251,7 @@ export default function HlsVideoPlayer({
         <video
           ref={videoRef}
           id="room-player-hls-video"
-          className="w-full h-full object-contain"
+          className="w-full h-full object-contain [filter:none] [transform:none]"
           muted={muted}
           controls
           playsInline

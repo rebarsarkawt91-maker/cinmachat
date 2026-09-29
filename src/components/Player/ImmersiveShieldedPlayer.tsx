@@ -12,10 +12,9 @@ import React, { useEffect, useRef, useState } from "react";
  *     - The sandbox token set is RELAXED (popups/forms allowed) so providers that
  *       require them can still initialize their player — blocks are now removed
  *       by the sweep instead of by refusing to let the provider run at all.
- *  2) Immersive full-frame scaling:
- *     - ResizeObserver computes a "cover" zoom based on the container aspect ratio so
- *       the video fills the whole CinemaChat player frame and the provider's site
- *       header/footer whitespace is cropped out.
+ *  2) Original-aspect playback:
+ *     - The embedded player remains unscaled by default, preserving the provider's
+ *       original frame and avoiding the blur/cropping caused by forced cover zoom.
  *  3) Subtitle integrity: the optional `subtitleOffset` shifts the (scaled) content
  *     upward so the provider's native subtitles stay visible even when zoomed/cropped.
  *
@@ -28,7 +27,7 @@ interface ImmersiveShieldedPlayerProps {
   url: string;
   iframeId?: string;
   title?: string;
-  /** User zoom multiplier on top of the automatic cover-fit scale (1 = cover). */
+  /** User-selected zoom multiplier (1 = original aspect ratio). */
   scale?: number;
   /** Percent (0-15) of container height to shift the video up so subtitles stay visible. */
   subtitleOffset?: number;
@@ -55,10 +54,11 @@ const AD_SELECTOR = [
   ".m3u8-ad", "[class*='interstitial']",
 ].join(", ");
 
-// Injected stylesheet: locks scrolling, hides ad iframes, and force-fills the video.
+// Injected stylesheet: locks scrolling, hides ad iframes, and preserves the source
+// video aspect ratio without visual filters or scale transforms.
 const SHIELD_CSS = `
   html, body { overflow: hidden !important; height: 100% !important; }
-  video { width: 100% !important; height: 100% !important; object-fit: cover !important; }
+  video { width: 100% !important; height: 100% !important; object-fit: contain !important; object-position: center !important; filter: none !important; transform: none !important; image-rendering: auto !important; }
   .jwplayer, .vjs_video_3 { background: #000 !important; }
   #adult, #ad-frame, #overlay, #overlay-ads, #aads, #advertise, #banner-ad {
     display: none !important; visibility: hidden !important; pointer-events: none !important;
@@ -128,26 +128,6 @@ export default function ImmersiveShieldedPlayer({
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const retries = useRef(0);
 
-  // "Cover" zoom: fill the container and crop the provider's site chrome.
-  // Assumes a 16:9 source; scales up (min 1.15x) so headers/footers fall outside
-  // the visible frame instead of letterboxing around the player.
-  const [coverScale, setCoverScale] = useState(1);
-  useEffect(() => {
-    const el = wrapperRef.current;
-    if (!el) return;
-    const measure = () => {
-      const rect = el.getBoundingClientRect();
-      if (rect.width < 1 || rect.height < 1) return;
-      const containerAspect = rect.width / rect.height;
-      const cover = Math.max(1.15, 16 / 9 / containerAspect);
-      setCoverScale(Math.min(cover, 2.2));
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
   // Install the anti-popup / overlay shield once the document is ready.
   useEffect(() => {
     const iframe = iframeRef.current;
@@ -179,7 +159,9 @@ export default function ImmersiveShieldedPlayer({
     };
   }, [url, hideNativeSubtitles]);
 
-  const effectiveScale = coverScale * Math.max(0.8, scale || 1);
+  // Keep the provider at its original size by default. The existing quality
+  // menu can still intentionally zoom when a viewer chooses it.
+  const effectiveScale = Math.max(0.8, scale || 1);
   const transform = `translateY(${-Math.max(0, Math.min(15, subtitleOffset || 0))}%) scale(${effectiveScale.toFixed(3)})`;
 
   return (

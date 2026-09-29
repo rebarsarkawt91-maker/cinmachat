@@ -7873,8 +7873,14 @@ export default function App() {
           setPlayerCurrentTime(progress);
         }
         if (Number.isFinite(duration) && duration > 0) setPlayerDuration(duration);
-        if (data.data.player_status === "playing") setIsIframePlaying(true);
-        if (data.data.player_status === "paused") setIsIframePlaying(false);
+        if (data.data.player_status === "playing") {
+          ytPlayingRef.current = true;
+          setIsIframePlaying(true);
+        }
+        if (data.data.player_status === "paused") {
+          ytPlayingRef.current = false;
+          setIsIframePlaying(false);
+        }
         return;
       }
 
@@ -8040,10 +8046,13 @@ export default function App() {
           localClockRef.current = t;
         } else {
           // External cross-origin embed (ImmersiveShieldedPlayer) — we cannot
-          // read the iframe's currentTime, so advance the drift clock by the
-          // tick interval (~250 ms).  This is approximate (ignores pauses /
-          // buffering) but good enough for subtitle cue matching.
-          localClockRef.current += 0.25;
+          // read the iframe's currentTime, so use the proxy clock when it is
+          // available and otherwise advance a local clock *only while playing*.
+          // Advancing this clock during pause made custom VTT cues continue to
+          // change even though the movie frame and audio were frozen.
+          if (ytPlayingRef.current) {
+            localClockRef.current += 0.25;
+          }
           t = localClockRef.current;
         }
       }
@@ -8409,8 +8418,14 @@ export default function App() {
     const videos = Array.from(
       modalPlayerRef.current?.querySelectorAll<HTMLVideoElement>("video") || [],
     );
-    const onPlay = () => setIsIframePlaying(true);
-    const onPause = () => setIsIframePlaying(false);
+    const onPlay = () => {
+      ytPlayingRef.current = true;
+      setIsIframePlaying(true);
+    };
+    const onPause = () => {
+      ytPlayingRef.current = false;
+      setIsIframePlaying(false);
+    };
     videos.forEach((video) => {
       video.addEventListener("play", onPlay);
       video.addEventListener("playing", onPlay);
