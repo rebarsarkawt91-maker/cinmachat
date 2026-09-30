@@ -13913,6 +13913,8 @@ async function startServer() {
   type KurdSubRemoteTrack = {
     id: string;
     downloadUrl: string;
+    provider: 'legacy' | 'official';
+    fileId: string;
     language: string;
     languageCode: string;
     fileName: string;
@@ -13954,6 +13956,49 @@ async function startServer() {
 
   const kurdSubTrackId = (imdbId: string, downloadUrl: string) =>
     crypto.createHash('sha256').update(`${imdbId}:${downloadUrl}`).digest('hex').slice(0, 32);
+
+  const openSubtitlesApiKey = () =>
+    String(process.env.OPENSUBTITLES_API_KEY || process.env.OPEN_SUBTITLES_API_KEY || '').trim();
+
+  const fetchOfficialOpenSubtitlesTracks = async (
+    imdbNumeric: string,
+    apiKey: string,
+    signal: AbortSignal,
+  ): Promise<KurdSubRemoteTrack[]> => {
+    const response = await fetch(
+      `https://api.opensubtitles.com/api/v1/subtitles?imdb_id=${encodeURIComponent(imdbNumeric)}&order_by=download_count&order_direction=desc`,
+      {
+        headers: {
+          'Api-Key': apiKey,
+          'User-Agent': 'CinemaChat KurdSub Studio v1.0',
+          Accept: 'application/json',
+        },
+        signal,
+      },
+    );
+    if (!response.ok) throw new Error(`Official OpenSubtitles search unavailable (HTTP ${response.status})`);
+    const payload = await response.json() as { data?: any[] };
+    return (Array.isArray(payload?.data) ? payload.data : [])
+      .map((entry: any): KurdSubRemoteTrack | null => {
+        const attributes = entry?.attributes || {};
+        const file = Array.isArray(attributes.files) ? attributes.files[0] : null;
+        const fileId = String(file?.file_id || '').trim();
+        if (!fileId) return null;
+        return {
+          id: `official-${fileId}`,
+          downloadUrl: '',
+          provider: 'official',
+          fileId,
+          language: String(attributes.language || 'und'),
+          languageCode: String(attributes.language || 'und').toLowerCase(),
+          fileName: String(file?.file_name || attributes.release || 'subtitle.srt'),
+          downloads: Number(attributes.download_count || attributes.new_download_count || 0),
+          hearingImpaired: Boolean(attributes.hearing_impaired),
+          fps: String(attributes.fps || ''),
+        };
+      })
+      .filter((track): track is KurdSubRemoteTrack => Boolean(track));
+  };
 
   const decodeKurdSubArchive = (bytes: Buffer) => {
     const archive = bytes[0] === 0x1f && bytes[1] === 0x8b
@@ -13998,33 +14043,55 @@ async function startServer() {
         throw new Error('The embed source did not return a playable provider page');
       }
 
-      const searchResponse = await fetch(
-        `https://rest.opensubtitles.org/search/imdbid-${source.imdbNumeric}`,
-        { headers: KURDSUB_PROXY_HEADERS, signal: controller.signal },
-      );
-      if (!searchResponse.ok) throw new Error(`Subtitle search unavailable (HTTP ${searchResponse.status})`);
-      const records = await searchResponse.json() as any[];
-      const tracks = (Array.isArray(records) ? records : [])
-        .map((item: any): KurdSubRemoteTrack | null => {
-          const downloadUrl = String(item?.SubDownloadLink || '').trim();
-          if (!/^https:\/\/dl\.opensubtitles\.org\//i.test(downloadUrl)) return null;
-          const languageCode = String(item?.SubLanguageID || 'und').toLowerCase();
-          return {
-            id: kurdSubTrackId(source.imdbId, downloadUrl),
-            downloadUrl,
-            language: String(item?.LanguageName || languageCode),
-            languageCode,
-            fileName: String(item?.SubFileName || 'subtitle.srt'),
-            downloads: Number(item?.SubDownloadsCnt || 0),
-            hearingImpaired: String(item?.SubHearingImpaired || '0') === '1',
-            fps: String(item?.MovieFPS || ''),
-          };
-        })
-        .filter((track): track is KurdSubRemoteTrack => Boolean(track))
+      const configuredApiKey = openSubtitlesApiKey();
+      let tracks: KurdSubRemoteTrack[] = [];
+      let legacyError = '';
+
+      // OpenSubtitles retired the .org API; use the supported v1 endpoint when
+      // the deployment is configured with its application key. The legacy
+      // request remains only as a development fallback for older installations.
+      if (configuredApiKey) {
+        tracks = await fetchOfficialOpenSubtitlesTracks(source.imdbNumeric, configuredApiKey, controller.signal);
+      } else {
+        try {
+          const searchResponse = await fetch(
+            `https://rest.opensubtitles.org/search/imdbid-${source.imdbNumeric}`,
+            { headers: KURDSUB_PROXY_HEADERS, signal: controller.signal },
+          );
+          if (!searchResponse.ok) throw new Error(`HTTP ${searchResponse.status}`);
+          const records = await searchResponse.json() as any[];
+          tracks = (Array.isArray(records) ? records : [])
+            .map((item: any): KurdSubRemoteTrack | null => {
+              const downloadUrl = String(item?.SubDownloadLink || '').trim();
+              if (!/^https:\/\/dl\.opensubtitles\.org\//i.test(downloadUrl)) return null;
+              const languageCode = String(item?.SubLanguageID || 'und').toLowerCase();
+              return {
+                id: kurdSubTrackId(source.imdbId, downloadUrl),
+                downloadUrl,
+                provider: 'legacy',
+                fileId: String(item?.IDSubtitleFile || ''),
+                language: String(item?.LanguageName || languageCode),
+                languageCode,
+                fileName: String(item?.SubFileName || 'subtitle.srt'),
+                downloads: Number(item?.SubDownloadsCnt || 0),
+                hearingImpaired: String(item?.SubHearingImpaired || '0') === '1',
+                fps: String(item?.MovieFPS || ''),
+              };
+            })
+            .filter((track): track is KurdSubRemoteTrack => Boolean(track));
+        } catch (error: any) {
+          legacyError = error?.message || 'legacy API request failed';
+        }
+      }
+
+      tracks = tracks
         .sort((a, b) => b.downloads - a.downloads)
         // Keep the Studio selector responsive and match the standalone Studio's
         // curated catalog size instead of rendering OpenSubtitles' full page.
         .slice(0, 28);
+      if (!tracks.length && !configuredApiKey) {
+        throw new Error(`OpenSubtitles legacy API is unavailable (${legacyError}). Configure OPENSUBTITLES_API_KEY for the supported API.`);
+      }
       if (!tracks.length) throw new Error('No subtitle tracks were found');
       return { imdbId: source.imdbId, tracks };
     } finally {
@@ -14061,7 +14128,27 @@ async function startServer() {
       const timer = setTimeout(() => controller.abort(), 25_000);
       let archiveResponse: Response;
       try {
-        archiveResponse = await fetch(selected.downloadUrl, { headers: KURDSUB_PROXY_HEADERS, signal: controller.signal });
+        if (selected.provider === 'official') {
+          const configuredApiKey = openSubtitlesApiKey();
+          if (!configuredApiKey) throw new Error('OpenSubtitles API key is not configured');
+          const downloadRequest = await fetch('https://api.opensubtitles.com/api/v1/download', {
+            method: 'POST',
+            headers: {
+              'Api-Key': configuredApiKey,
+              'User-Agent': 'CinemaChat KurdSub Studio v1.0',
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+            },
+            body: JSON.stringify({ file_id: Number(selected.fileId) }),
+            signal: controller.signal,
+          });
+          if (!downloadRequest.ok) throw new Error(`Official subtitle download unavailable (HTTP ${downloadRequest.status})`);
+          const downloadPayload = await downloadRequest.json() as { link?: string };
+          if (!downloadPayload?.link || !/^https:\/\//i.test(downloadPayload.link)) throw new Error('Official subtitle download link was invalid');
+          archiveResponse = await fetch(downloadPayload.link, { headers: { 'User-Agent': 'CinemaChat KurdSub Studio v1.0' }, signal: controller.signal });
+        } else {
+          archiveResponse = await fetch(selected.downloadUrl, { headers: KURDSUB_PROXY_HEADERS, signal: controller.signal });
+        }
       } finally {
         clearTimeout(timer);
       }
