@@ -53,6 +53,7 @@ import {
   VolumeX,
   Captions,
   CaptionsOff,
+  Subtitles,
   Maximize,
   Minimize,
   Square,
@@ -415,6 +416,7 @@ import {
 import type { SemanticSignals } from "./utils/search";
 import UserActivityMonitor from "./components/Admin/UserActivityMonitor";
 import MovieEditModal from "./components/Admin/MovieEditModal";
+import KurdSubStudioModal from "./components/Admin/KurdSubStudioModal";
 import FriendPresenceNotification from "./components/Social/FriendPresenceNotification";
 import RoomSubtitleOverlay from "./components/Player/RoomSubtitleOverlay";
 import RoomSubtitleSelector from "./components/Player/RoomSubtitleSelector";
@@ -12412,6 +12414,7 @@ export default function App() {
   const SYSTEM_ADMIN_PASS = "1223344";
   const [adminTab, setAdminTab] = useState<string>("overview");
   const [movieBeingEdited, setMovieBeingEdited] = useState<any | null>(null);
+  const [showKurdSubStudio, setShowKurdSubStudio] = useState(false);
 
   // Movie metadata editing is available to the owner plus the delegated
   // publishing roles. Destructive delete actions remain owner-only.
@@ -12421,6 +12424,14 @@ export default function App() {
   const canEditMovies = Boolean(
     currentUser?.username &&
       ["owner", "admin", "super_admin", "deputy_manager", "staff"].includes(
+        String(currentUser?.role || "").toLowerCase(),
+      ),
+  );
+  // KurdSub Studio can change durable movie subtitle data, so keep it scoped to
+  // the same delegated publishing roles that may edit a movie record.
+  const canUseKurdSubStudio = Boolean(
+    currentUser?.username &&
+      ["owner", "admin", "deputy_manager", "staff"].includes(
         String(currentUser?.role || "").toLowerCase(),
       ),
   );
@@ -13137,6 +13148,37 @@ export default function App() {
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || !payload?.movie) {
       throw new Error(payload?.error || "نوێکردنەوەی فیلم سەرکەوتوو نەبوو");
+    }
+
+    const updatedMovie = payload.movie;
+    setMovies((previous) =>
+      previous.map((movie: any) =>
+        movie.id === updatedMovie.id ? { ...movie, ...updatedMovie } : movie,
+      ),
+    );
+    if (selectedMovie?.id === updatedMovie.id) {
+      setSelectedMovie((previous: any) => ({ ...previous, ...updatedMovie }));
+    }
+  };
+
+  const handleApplyKurdSubStudioSubtitle = async (movieId: string, subtitleText: string) => {
+    if (!canUseKurdSubStudio || !movieId || !subtitleText.trim()) {
+      throw new Error("دەسەڵات یان داتای ژێرنووس بەردەست نییە");
+    }
+
+    // The existing protected movie PATCH endpoint persists inline VTT in both
+    // the primary store and Firestore, making this track available to viewers.
+    const response = await fetchApi(`/api/admin/movies/${encodeURIComponent(movieId)}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Admin-Username": currentUser?.username || "",
+      },
+      body: JSON.stringify({ subtitleText, adminName: currentUser?.username || "" }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload?.movie) {
+      throw new Error(payload?.error || "جێگیرکردنی ژێرنووس سەرکەوتوو نەبوو");
     }
 
     const updatedMovie = payload.movie;
@@ -14456,6 +14498,17 @@ export default function App() {
                         {aiLoading ? "ئەی ئای بیردەکاتەوە..." : "گەڕان"}
                       </button>
                     </>
+                  )}
+                  {canUseKurdSubStudio && (
+                    <button
+                      type="button"
+                      onClick={() => setShowKurdSubStudio(true)}
+                      className="flex shrink-0 items-center justify-center gap-2 rounded-xl border border-amber-300/50 bg-amber-400/15 px-4 py-3 text-sm font-black text-amber-100 transition-colors hover:bg-amber-400/25 kurdish-text"
+                      title="KurdSub Studio"
+                    >
+                      <Subtitles className="h-4 w-4 text-amber-300" />
+                      <span>ستۆدیۆی ژێرنووس <span className="hidden lg:inline">(KurdSub Studio)</span></span>
+                    </button>
                   )}
                 </div>
 
@@ -17078,6 +17131,14 @@ export default function App() {
           />
         )}
       </AnimatePresence>
+
+      {showKurdSubStudio && canUseKurdSubStudio && (
+        <KurdSubStudioModal
+          movies={movies}
+          onClose={() => setShowKurdSubStudio(false)}
+          onApply={handleApplyKurdSubStudioSubtitle}
+        />
+      )}
 
       {/* Professional Management Dashboard Overlay (Point 31/32/33) */}
       <AnimatePresence>
