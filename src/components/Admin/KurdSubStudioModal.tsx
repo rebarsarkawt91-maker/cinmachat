@@ -132,6 +132,20 @@ export default function KurdSubStudioModal({ movies, onClose, onApply }: KurdSub
     setBusy(true);
     setMessage("");
     try {
+      // A YouTube watch/embed URL needs caption discovery, not a raw HTTP
+      // download. The server route handles the provider-specific extraction
+      // and returns the original timestamp-preserving SRT.
+      if (/(?:youtu\.be\/|(?:www\.)?youtube\.com\/)/i.test(value)) {
+        const response = await fetch("/api/subtitle/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: value, lang: "original" }),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result?.srt) throw new Error(result?.error || "YouTube subtitles could not be discovered");
+        setSubtitleText(result.srt);
+        return;
+      }
       const response = await fetch(`/api/subtitle/remote?url=${encodeURIComponent(value)}`);
       const text = await response.text();
       if (!response.ok) throw new Error(text || "Subtitle source could not be loaded");
