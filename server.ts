@@ -14016,7 +14016,7 @@ async function startServer() {
     }
   };
 
-  const directSubtitleTracks = (value: unknown, imdbId: string): KurdSubRemoteTrack[] => {
+  const directSubtitleTracks = (value: unknown, imdbId: string, baseUrl = 'https://data.vidsrc.sh/'): KurdSubRemoteTrack[] => {
     const candidates: Array<{ url: string; label?: string; lang?: string; code?: string }> = [];
     const seen = new Set<unknown>();
     const visit = (entry: any) => {
@@ -14036,7 +14036,7 @@ async function startServer() {
     visit(value);
     return candidates
       .map((candidate, index): KurdSubRemoteTrack | null => {
-        const url = absoluteUrl(candidate.url, 'https://data.vidsrc.sh/');
+        const url = absoluteUrl(candidate.url, baseUrl);
         if (!url) return null;
         const languageCode = String(candidate.code || candidate.lang || 'und').toLowerCase();
         return {
@@ -14062,51 +14062,69 @@ async function startServer() {
       code: match[0].match(/\bsrclang=["']([^"']+)["']/i)?.[1],
     }));
 
+  const subtitleUrlsInText = (text: string) => {
+    const normalized = text.replace(/\\\//g, '/');
+    return [
+      ...normalized.matchAll(/https?:\/\/[^"'<> \t\r\n]+?\.(?:vtt|srt)(?:[?#][^"'<> \t\r\n]*)?/gi),
+      ...normalized.matchAll(/\bURI=["']?([^"',\s]+\.(?:vtt|srt)(?:[?#][^"',\s]*)?)/gi),
+    ].map((match) => String(match[1] || match[0]));
+  };
+
+  const playerNavigationUrls = (text: string) => [
+    ...text.matchAll(/\b(?:src|href|data-src|data-api)=["']([^"']+)["']/gi),
+    ...text.matchAll(/(?:["'](?:src|url|file|api|playerUrl|manifest|playlist)["']\s*[:=]\s*["'])([^"']+)["']/gi),
+  ].map((match) => String(match[1]).replace(/&amp;/g, '&').replace(/\\\//g, '/'));
+
+  const isKnownEmbedHop = (url: URL, root: URL) => {
+    const host = url.hostname.toLowerCase();
+    return url.origin === root.origin
+      || /(?:^|\.)garageband\.rocks$/.test(host)
+      || /(?:^|\.)cloudorchestranova\.com$/.test(host)
+      || /(?:^|\.)vidsrc\.sh$/.test(host);
+  };
+
   const scrapeGarageBandEmbeddedTracks = async (
     sourceUrl: string,
     imdbId: string,
     signal: AbortSignal,
   ): Promise<KurdSubRemoteTrack[]> => {
-    const source = new URL(sourceUrl);
-    const embedHeaders = {
-      ...KURDSUB_PROXY_HEADERS,
-      Accept: 'text/html,application/xhtml+xml,*/*;q=0.1',
-      Referer: sourceUrl,
-    };
-    const topResponse = await fetch(sourceUrl, { headers: embedHeaders, signal });
-    if (!topResponse.ok) return [];
-    const topHtml = await topResponse.text();
-    const tracksFromTop = directSubtitleTracks(htmlTrackSources(topHtml), imdbId);
-    if (tracksFromTop.length) return tracksFromTop;
+    const root = new URL(sourceUrl);
+    const seen = new Set<string>();
+    const queued = [{ url: root.toString(), referer: root.toString(), depth: 0 }];
+    const tracks = new Map<string, KurdSubRemoteTrack>();
 
-    const apiMatch = topHtml.match(/data-api=["']([^"']+)["']/i);
-    const gateUrl = absoluteUrl(apiMatch?.[1], sourceUrl);
-    if (!gateUrl || new URL(gateUrl).hostname !== source.hostname) return [];
-    const gateResponse = await fetch(gateUrl, { headers: { ...KURDSUB_PROXY_HEADERS, Referer: sourceUrl }, signal });
-    if (!gateResponse.ok) return [];
-    const gate = await gateResponse.json().catch(() => null) as { src?: string } | null;
-    const frameUrl = absoluteUrl(gate?.src, sourceUrl);
-    if (!frameUrl || !/(?:^|\.)cloudorchestranova\.com$/i.test(new URL(frameUrl).hostname)) return [];
+    // Six trusted hops cover the GarageBand gate, iframe and player-data chain
+    // without turning this endpoint into an unbounded remote fetcher.
+    while (queued.length && seen.size < 6) {
+      const current = queued.shift()!;
+      if (seen.has(current.url)) continue;
+      seen.add(current.url);
+      const response = await fetch(current.url, {
+        headers: {
+          ...KURDSUB_PROXY_HEADERS,
+          Accept: 'text/html,application/json,application/vnd.apple.mpegurl,text/plain,*/*;q=0.1',
+          Referer: current.referer,
+        },
+        signal,
+      });
+      if (!response.ok) continue;
+      const text = await response.text();
+      const discovered = directSubtitleTracks([
+        ...htmlTrackSources(text),
+        ...subtitleUrlsInText(text),
+      ], imdbId, current.url);
+      discovered.forEach((track) => tracks.set(track.downloadUrl, track));
 
-    const frameResponse = await fetch(frameUrl, { headers: { ...embedHeaders, Referer: sourceUrl }, signal });
-    if (!frameResponse.ok) return [];
-    const frameHtml = await frameResponse.text();
-    const cfg = parseInlineJson(frameHtml, 'CFG') as { playerUrl?: string } | null;
-    const playerUrl = absoluteUrl(cfg?.playerUrl, frameUrl);
-    if (!playerUrl || new URL(playerUrl).hostname !== new URL(frameUrl).hostname) return [];
-
-    const playerResponse = await fetch(playerUrl, { headers: { ...embedHeaders, Referer: frameUrl }, signal });
-    if (!playerResponse.ok) return [];
-    const playerHtml = await playerResponse.text();
-    const tracksFromPlayer = directSubtitleTracks(htmlTrackSources(playerHtml), imdbId);
-    if (tracksFromPlayer.length) return tracksFromPlayer;
-    const config = parseInlineJson(playerHtml, 'CONFIG') as { api?: string } | null;
-    const dataUrl = absoluteUrl(config?.api, playerUrl);
-    if (!dataUrl || new URL(dataUrl).hostname !== 'data.vidsrc.sh') return [];
-    const dataResponse = await fetch(dataUrl, { headers: { ...KURDSUB_PROXY_HEADERS, Referer: playerUrl }, signal });
-    if (!dataResponse.ok) return [];
-    const data = await dataResponse.json().catch(() => null);
-    return directSubtitleTracks(data?.data?.default_subs || data?.default_subs || [], imdbId);
+      if (current.depth >= 4) continue;
+      for (const rawUrl of playerNavigationUrls(text)) {
+        const nextUrl = absoluteUrl(rawUrl, current.url);
+        if (!nextUrl || seen.has(nextUrl)) continue;
+        const next = new URL(nextUrl);
+        if (!isKnownEmbedHop(next, root)) continue;
+        queued.push({ url: nextUrl, referer: current.url, depth: current.depth + 1 });
+      }
+    }
+    return [...tracks.values()];
   };
 
   const decodeKurdSubArchive = (bytes: Buffer) => {
