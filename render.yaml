@@ -38,6 +38,10 @@ services:
       # Do NOT commit the secret here.
       - key: FIREBASE_SERVICE_ACCOUNT
         sync: false
+      # Modern OpenSubtitles REST API key. Keep this server-side only; the
+      # KurdSub proxy sends it as Api-Key and never returns it to the client.
+      - key: OPENSUBTITLES_API_KEY
+        sync: false
       # Web Push (VAPID) — required for the notifications system. The PRIVATE key
       # must never reach the client or be committed. Generate locally with:
       #   npx web-push generate-vapid-keys --json
