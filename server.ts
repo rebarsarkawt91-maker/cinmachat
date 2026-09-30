@@ -13913,7 +13913,7 @@ async function startServer() {
   type KurdSubRemoteTrack = {
     id: string;
     downloadUrl: string;
-    provider: 'legacy' | 'official';
+    provider: 'legacy' | 'official' | 'embedded';
     fileId: string;
     language: string;
     languageCode: string;
@@ -14000,6 +14000,115 @@ async function startServer() {
       .filter((track): track is KurdSubRemoteTrack => Boolean(track));
   };
 
+  const parseInlineJson = (html: string, variable: 'CFG' | 'CONFIG') => {
+    const match = html.match(new RegExp(`window\\.${variable}\\s*=\\s*(\\{[\\s\\S]*?\\});`));
+    if (!match?.[1]) return null;
+    try { return JSON.parse(match[1]); } catch { return null; }
+  };
+
+  const absoluteUrl = (raw: unknown, base: string) => {
+    try {
+      const url = new URL(String(raw || ''), base);
+      validateHostOf(url);
+      return url.toString();
+    } catch {
+      return '';
+    }
+  };
+
+  const directSubtitleTracks = (value: unknown, imdbId: string): KurdSubRemoteTrack[] => {
+    const candidates: Array<{ url: string; label?: string; lang?: string; code?: string }> = [];
+    const seen = new Set<unknown>();
+    const visit = (entry: any) => {
+      if (typeof entry === 'string') {
+        if (/\.(?:vtt|srt)(?:[?#]|$)/i.test(entry.trim())) candidates.push({ url: entry.trim() });
+        return;
+      }
+      if (!entry || typeof entry !== 'object' || seen.has(entry)) return;
+      seen.add(entry);
+      if (Array.isArray(entry)) { entry.forEach(visit); return; }
+      const candidateUrl = String(entry.url || entry.src || entry.file || '').trim();
+      if (candidateUrl && /\.(?:vtt|srt)(?:[?#]|$)/i.test(candidateUrl)) {
+        candidates.push({ url: candidateUrl, label: entry.label || entry.name || entry.title, lang: entry.lang || entry.language, code: entry.code || entry.srclang });
+      }
+      Object.values(entry).forEach(visit);
+    };
+    visit(value);
+    return candidates
+      .map((candidate, index): KurdSubRemoteTrack | null => {
+        const url = absoluteUrl(candidate.url, 'https://data.vidsrc.sh/');
+        if (!url) return null;
+        const languageCode = String(candidate.code || candidate.lang || 'und').toLowerCase();
+        return {
+          id: `embedded-${crypto.createHash('sha256').update(`${imdbId}:${url}`).digest('hex').slice(0, 32)}`,
+          downloadUrl: url,
+          provider: 'embedded',
+          fileId: String(index),
+          language: String(candidate.lang || candidate.label || languageCode),
+          languageCode,
+          fileName: String(candidate.label || `embedded-${index + 1}.vtt`),
+          downloads: 0,
+          hearingImpaired: false,
+          fps: '',
+        };
+      })
+      .filter((track): track is KurdSubRemoteTrack => Boolean(track));
+  };
+
+  const htmlTrackSources = (html: string) =>
+    [...html.matchAll(/<track\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi)].map((match) => ({
+      url: match[1],
+      label: match[0].match(/\blabel=["']([^"']+)["']/i)?.[1],
+      code: match[0].match(/\bsrclang=["']([^"']+)["']/i)?.[1],
+    }));
+
+  const scrapeGarageBandEmbeddedTracks = async (
+    sourceUrl: string,
+    imdbId: string,
+    signal: AbortSignal,
+  ): Promise<KurdSubRemoteTrack[]> => {
+    const source = new URL(sourceUrl);
+    const embedHeaders = {
+      ...KURDSUB_PROXY_HEADERS,
+      Accept: 'text/html,application/xhtml+xml,*/*;q=0.1',
+      Referer: sourceUrl,
+    };
+    const topResponse = await fetch(sourceUrl, { headers: embedHeaders, signal });
+    if (!topResponse.ok) return [];
+    const topHtml = await topResponse.text();
+    const tracksFromTop = directSubtitleTracks(htmlTrackSources(topHtml), imdbId);
+    if (tracksFromTop.length) return tracksFromTop;
+
+    const apiMatch = topHtml.match(/data-api=["']([^"']+)["']/i);
+    const gateUrl = absoluteUrl(apiMatch?.[1], sourceUrl);
+    if (!gateUrl || new URL(gateUrl).hostname !== source.hostname) return [];
+    const gateResponse = await fetch(gateUrl, { headers: { ...KURDSUB_PROXY_HEADERS, Referer: sourceUrl }, signal });
+    if (!gateResponse.ok) return [];
+    const gate = await gateResponse.json().catch(() => null) as { src?: string } | null;
+    const frameUrl = absoluteUrl(gate?.src, sourceUrl);
+    if (!frameUrl || !/(?:^|\.)cloudorchestranova\.com$/i.test(new URL(frameUrl).hostname)) return [];
+
+    const frameResponse = await fetch(frameUrl, { headers: { ...embedHeaders, Referer: sourceUrl }, signal });
+    if (!frameResponse.ok) return [];
+    const frameHtml = await frameResponse.text();
+    const cfg = parseInlineJson(frameHtml, 'CFG') as { playerUrl?: string } | null;
+    const playerUrl = absoluteUrl(cfg?.playerUrl, frameUrl);
+    if (!playerUrl || new URL(playerUrl).hostname !== new URL(frameUrl).hostname) return [];
+
+    const playerResponse = await fetch(playerUrl, { headers: { ...embedHeaders, Referer: frameUrl }, signal });
+    if (!playerResponse.ok) return [];
+    const playerHtml = await playerResponse.text();
+    const tracksFromPlayer = directSubtitleTracks(htmlTrackSources(playerHtml), imdbId);
+    if (tracksFromPlayer.length) return tracksFromPlayer;
+    const config = parseInlineJson(playerHtml, 'CONFIG') as { api?: string } | null;
+    const dataUrl = absoluteUrl(config?.api, playerUrl);
+    if (!dataUrl || new URL(dataUrl).hostname !== 'data.vidsrc.sh') return [];
+    const dataResponse = await fetch(dataUrl, { headers: { ...KURDSUB_PROXY_HEADERS, Referer: playerUrl }, signal });
+    if (!dataResponse.ok) return [];
+    const data = await dataResponse.json().catch(() => null);
+    return directSubtitleTracks(data?.data?.default_subs || data?.default_subs || [], imdbId);
+  };
+
   const decodeKurdSubArchive = (bytes: Buffer) => {
     const archive = bytes[0] === 0x1f && bytes[1] === 0x8b
       ? gunzipSync(bytes, { maxOutputLength: 2 * 1024 * 1024 })
@@ -14046,6 +14155,7 @@ async function startServer() {
       const configuredApiKey = openSubtitlesApiKey();
       let tracks: KurdSubRemoteTrack[] = [];
       let legacyError = '';
+      let embeddedTracks: KurdSubRemoteTrack[] = [];
 
       // OpenSubtitles retired the .org API; use the supported v1 endpoint when
       // the deployment is configured with its application key. The legacy
@@ -14084,13 +14194,22 @@ async function startServer() {
         }
       }
 
+      // Some provider builds expose native VTT/SRT entries in their nested
+      // player/config JSON. Use them without any OpenSubtitles credential.
+      // The parser follows only the known GarageBand → cloudorchestra → vidsrc
+      // chain and accepts only direct subtitle-file URLs.
+      if (!tracks.length) {
+        embeddedTracks = await scrapeGarageBandEmbeddedTracks(source.url, source.imdbId, controller.signal).catch(() => []);
+        tracks = embeddedTracks;
+      }
+
       tracks = tracks
         .sort((a, b) => b.downloads - a.downloads)
         // Keep the Studio selector responsive and match the standalone Studio's
         // curated catalog size instead of rendering OpenSubtitles' full page.
         .slice(0, 28);
       if (!tracks.length && !configuredApiKey) {
-        throw new Error(`OpenSubtitles legacy API is unavailable (${legacyError}). Configure OPENSUBTITLES_API_KEY for the supported API.`);
+        throw new Error(`No embedded subtitle tracks were exposed and OpenSubtitles legacy API is unavailable (${legacyError}). Configure OPENSUBTITLES_API_KEY for the supported API.`);
       }
       if (!tracks.length) throw new Error('No subtitle tracks were found');
       return { imdbId: source.imdbId, tracks };
