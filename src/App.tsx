@@ -12413,12 +12413,17 @@ export default function App() {
   const [adminTab, setAdminTab] = useState<string>("overview");
   const [movieBeingEdited, setMovieBeingEdited] = useState<any | null>(null);
 
-  // The edit control is deliberately stricter than the wider admin dashboard:
-  // deputies/staff can keep their existing tools, but only the primary owner
-  // receives this callback and the server independently enforces the same rule.
+  // Movie metadata editing is available to the owner plus the delegated
+  // publishing roles. Destructive delete actions remain owner-only.
   const isPrimaryOwner =
     currentUser?.isOwner === true ||
     currentUser?.role?.toLowerCase() === "owner";
+  const canEditMovies = Boolean(
+    currentUser?.username &&
+      ["owner", "admin", "super_admin", "deputy_manager", "staff"].includes(
+        String(currentUser?.role || "").toLowerCase(),
+      ),
+  );
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -13113,8 +13118,8 @@ export default function App() {
   };
 
   const handleSaveMovieEdit = async (draft: any) => {
-    if (!isPrimaryOwner || !draft?.id) {
-      throw new Error("تەنها ئەدمینی سەرەکی دەتوانێت فیلم دەستکاری بکات");
+    if (!canEditMovies || !draft?.id) {
+      throw new Error("تەنها ئەدمینی ڕێگەپێدراو دەتوانێت فیلم دەستکاری بکات");
     }
 
     const adminName = currentUser?.username || "";
@@ -14734,7 +14739,7 @@ export default function App() {
                       onOpen={openMovieDetails}
                       onToggleFavorite={handleToggleFavorite}
                       onToggleLike={handleToggleLike}
-                      onEdit={isPrimaryOwner ? setMovieBeingEdited : undefined}
+                      onEdit={canEditMovies ? setMovieBeingEdited : undefined}
                       onDelete={isPrimaryOwner ? handleDeleteMovie : undefined}
                     />
                   );
@@ -14919,7 +14924,7 @@ export default function App() {
                           onOpen={openMovieDetails}
                           onToggleFavorite={handleToggleFavorite}
                           onToggleLike={handleToggleLike}
-                          onEdit={isPrimaryOwner ? setMovieBeingEdited : undefined}
+                          onEdit={canEditMovies ? setMovieBeingEdited : undefined}
                           onDelete={isPrimaryOwner ? handleDeleteMovie : undefined}
                         />
                       ))}
@@ -14966,7 +14971,7 @@ export default function App() {
                             onOpen={openMovieDetails}
                             onToggleFavorite={handleToggleFavorite}
                             onToggleLike={handleToggleLike}
-                            onEdit={isPrimaryOwner ? setMovieBeingEdited : undefined}
+                            onEdit={canEditMovies ? setMovieBeingEdited : undefined}
                             onDelete={isPrimaryOwner ? handleDeleteMovie : undefined}
                           />
                         </div>
@@ -15003,7 +15008,7 @@ export default function App() {
                               onOpen={openMovieDetails}
                               onToggleFavorite={handleToggleFavorite}
                               onToggleLike={handleToggleLike}
-                              onEdit={isPrimaryOwner ? setMovieBeingEdited : undefined}
+                              onEdit={canEditMovies ? setMovieBeingEdited : undefined}
                               onDelete={isPrimaryOwner ? handleDeleteMovie : undefined}
                             />
                             {/* Real resume progress bar */}
@@ -16907,7 +16912,7 @@ export default function App() {
                               onOpen={openMovieDetails}
                               onToggleFavorite={handleToggleFavorite}
                               onToggleLike={handleToggleLike}
-                              onEdit={isPrimaryOwner ? setMovieBeingEdited : undefined}
+                              onEdit={canEditMovies ? setMovieBeingEdited : undefined}
                               onDelete={isPrimaryOwner ? handleDeleteMovie : undefined}
                             />
                           </div>
@@ -17064,7 +17069,7 @@ export default function App() {
       />
 
       <AnimatePresence>
-        {isPrimaryOwner && movieBeingEdited && (
+        {canEditMovies && movieBeingEdited && (
           <MovieEditModal
             movie={movieBeingEdited}
             onClose={() => setMovieBeingEdited(null)}
@@ -17699,7 +17704,7 @@ const trailerId = movie.trailerUrl
                                   </div>
                                 </div>
                                 <div className="flex items-center gap-2">
-                                  {isPrimaryOwner && (
+                                  {canEditMovies && (
                                     <button
                                       type="button"
                                       onClick={() => setMovieBeingEdited(movie)}

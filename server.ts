@@ -2559,16 +2559,18 @@ async function deleteAuthRecord(adminApp: admin.app.App, uid: string): Promise<v
 const ADMIN_ACCOUNTS_COLLECTION = '_adminAccounts';
 const ADMIN_ACCOUNTS_DOC = 'current';
 
-async function persistAdminsToFirestore(adminApp: admin.app.App | null, admins: any[]): Promise<void> {
-  if (!adminApp) return;
+async function persistAdminsToFirestore(adminApp: admin.app.App | null, admins: any[]): Promise<boolean> {
+  if (!adminApp) return false;
   try {
     await admin
       .firestore(adminApp)
       .collection(ADMIN_ACCOUNTS_COLLECTION)
       .doc(ADMIN_ACCOUNTS_DOC)
       .set({ admins, updatedAt: new Date().toISOString() });
+    return true;
   } catch (err: any) {
     console.warn('[admin-backup] Firestore write failed:', err?.message || err);
+    return false;
   }
 }
 
@@ -4546,7 +4548,10 @@ async function startServer() {
   // main admin's current password survive Render redeploys that wipe db.json.
   // The local seed above still guarantees an 'admin' owner record exists, so a
   // restore that yields no snapshot simply keeps the local copy.
-  (async () => {
+  // Admin-auth and account-mutation routes await this promise. This prevents
+  // an early request after a deploy from reading the temporary seed-only list
+  // before the durable Firestore account snapshot finishes restoring.
+  const adminAccountsReady = (async () => {
     // Initialize Firebase Admin if it hasn't been yet at this early boot point,
     // so the durable restore/persist below can talk to Firestore.
     const adminApp = initializeFirebaseAdmin();
@@ -10575,6 +10580,7 @@ async function startServer() {
   });
 
   app.post('/api/admin/login', async (req, res) => {
+    await adminAccountsReady;
     const { username, password } = req.body;
     const identity = getClientIdentity(req);
     const cleanIp = identity.ip;
@@ -10776,7 +10782,8 @@ async function startServer() {
     }
   });
 
-  app.get('/api/admin/users', (req, res) => {
+  app.get('/api/admin/users', async (req, res) => {
+    await adminAccountsReady;
     res.json(db.admins.map((a: any) => ({
       username: a.username,
       isSuper: !!a.isSuper,
@@ -10811,6 +10818,7 @@ async function startServer() {
   const VALID_ROLES = ['staff', CINEMA_ROOM_ADMIN_ROLE, 'deputy_manager', 'super_admin'];
 
   app.post('/api/admin/users', async (req, res) => {
+    await adminAccountsReady;
     const { username, password, isSuper, role } = req.body || {};
     const requester = requesterInfo(req);
     if (requester.level < 2) {
@@ -10840,6 +10848,7 @@ async function startServer() {
 
     const secureHashedPassword = bcrypt.hashSync(safePassword, 10);
 
+    const adminsBeforeCreate = db.admins.slice();
     db.admins.push({
       username: safeUsername,
       password: secureHashedPassword,
@@ -10858,11 +10867,19 @@ async function startServer() {
 
     await addAuditLog(db, requester.name || 'system', "Create Admin", `ئەدمینی نوێ دروستکرا: "${safeUsername}" وەک "${requestedRole}"`);
     await saveDB(db);
-    await persistAdminsToFirestore(initializeFirebaseAdmin(), db.admins);
+    const persisted = await persistAdminsToFirestore(initializeFirebaseAdmin(), db.admins);
+    if (!persisted) {
+      // Do not claim a credential was created when the durable store rejected
+      // it; otherwise it would work only until the next Render restart.
+      db.admins = adminsBeforeCreate;
+      await saveDB(db);
+      return res.status(503).json({ error: 'پاشەکەوتکردنی هەمیشەیی ئەکاونت سەرکەوتوو نەبوو؛ تکایە دووبارە هەوڵبدەرەوە.' });
+    }
     res.json({ success: true });
   });
 
   app.delete('/api/admin/users/:username', async (req, res) => {
+    await adminAccountsReady;
     const { username } = req.params;
     const requester = requesterInfo(req);
     if (requester.level < 2) {
@@ -10890,6 +10907,7 @@ async function startServer() {
 
   // --- ADMIN MODULE 17: MULTI-LEVEL ADMIN AUTHORIZATION SYSTEM ENDPOINTS ---
   app.get('/api/admin/m17/status', async (req, res) => {
+    await adminAccountsReady;
     const requester = (req.query.adminName as string || req.headers['x-admin-username'] as string || '').trim().toLowerCase();
 
     // Strict Route Guard for Module 17
@@ -10919,6 +10937,7 @@ async function startServer() {
   });
 
   app.post('/api/admin/m17/admins/password', async (req, res) => {
+    await adminAccountsReady;
     const requester = requesterInfo(req);
     if (requester.level < 2) {
       return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیاری باڵا (بەڕێوەبەر) دەتوانێت وشەی تێپەڕی ئەدمینەکان بگۆڕێت.' });
@@ -10933,6 +10952,7 @@ async function startServer() {
     }
 
     const target = db.admins[adminIndex];
+    const targetBeforeUpdate = { ...target };
     // You may always reset your own password, or the password of an account
     // with strictly less privilege — never the platform owner's password.
     if (requester.name !== targetName) {
@@ -10959,7 +10979,12 @@ async function startServer() {
 
     await addAuditLog(db, requester.name || 'system', "Modify Admin Credentials", `دەسەڵات یان پاسوۆرد گۆڕدرا بۆ ئەدمینی "${target.username}"`);
     await saveDB(db);
-    await persistAdminsToFirestore(initializeFirebaseAdmin(), db.admins);
+    const persisted = await persistAdminsToFirestore(initializeFirebaseAdmin(), db.admins);
+    if (!persisted) {
+      db.admins[adminIndex] = targetBeforeUpdate;
+      await saveDB(db);
+      return res.status(503).json({ error: 'پاشەکەوتکردنی هەمیشەیی وشەی تێپەڕ سەرکەوتوو نەبوو؛ تکایە دووبارە هەوڵبدەرەوە.' });
+    }
     res.json({ success: true, message: 'ڕێکخستنەکان بە سەرکەوتوویی نوێکرانەوە ✓' });
   });
 
@@ -11821,12 +11846,16 @@ async function startServer() {
     const adminRecord = db.admins.find(
       (entry: any) => entry.username?.trim().toLowerCase() === cleanAdminName
     );
-    const isPrimaryOwner =
-      OWNER_USERNAMES.includes(cleanAdminName) || adminRecord?.role === 'owner';
-    if (!isPrimaryOwner) {
+    const canEditMovie = Boolean(
+      OWNER_USERNAMES.includes(cleanAdminName) ||
+      ['owner', 'admin', 'super_admin', 'deputy_manager', 'staff'].includes(
+        String(adminRecord?.role || '').toLowerCase(),
+      ),
+    );
+    if (!canEditMovie) {
       return res.status(403).json({
         success: false,
-        error: 'تەنها ئەدمینی سەرەکی دەتوانێت فیلم دەستکاری بکات',
+        error: 'تەنها ئەدمینی ڕێگەپێدراو دەتوانێت فیلم دەستکاری بکات',
       });
     }
 
