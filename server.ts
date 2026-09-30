@@ -13904,6 +13904,178 @@ async function startServer() {
     }
   });
 
+  // KurdSub Studio's GarageBand/VidSrc bridge.  An embed page is HTML rather
+  // than an SRT/VTT file, so it must never be sent through /api/subtitle/remote
+  // and parsed as a caption document.  This tightly-scoped API discovers the
+  // OpenSubtitles tracks for an IMDb-backed GarageBand embed, then downloads
+  // one selected gzip archive on demand.  It deliberately accepts only this
+  // provider family to avoid turning the subtitle tool into a general proxy.
+  type KurdSubRemoteTrack = {
+    id: string;
+    downloadUrl: string;
+    language: string;
+    languageCode: string;
+    fileName: string;
+    downloads: number;
+    hearingImpaired: boolean;
+    fps: string;
+  };
+
+  const KURDSUB_PROXY_HEADERS = {
+    'User-Agent': 'MPC-HC/1.9.24',
+    'X-User-Agent': 'MPC-HC/1.9.24',
+    Accept: 'application/json, text/plain, */*;q=0.1',
+    Origin: 'https://www.cinamachat.com',
+    Referer: 'https://www.cinamachat.com/',
+  };
+
+  const isKurdSubStudioRequester = (req: express.Request) => {
+    const username = String(req.headers['x-admin-username'] || req.body?.adminName || '').trim().toLowerCase();
+    const record = (db.admins || []).find(
+      (candidate: any) => String(candidate?.username || '').trim().toLowerCase() === username,
+    );
+    const role = String(record?.role || (record?.isSuper ? 'deputy_manager' : '')).toLowerCase();
+    return Boolean(
+      username &&
+      (OWNER_USERNAMES.includes(username) || ['owner', 'admin', 'super_admin', 'deputy_manager', 'staff'].includes(role)),
+    );
+  };
+
+  const garageBandEmbedInfo = (rawUrl: unknown) => {
+    const url = new URL(String(rawUrl || '').trim());
+    validateHostOf(url);
+    if (!/(?:^|\.)garageband\.rocks$/i.test(url.hostname)) {
+      throw new Error('Only GarageBand subtitle embeds are supported by this analyzer');
+    }
+    const match = url.pathname.match(/\/embed\/(?:movie|tv)\/(tt\d{7,10})/i);
+    if (!match) throw new Error('A GarageBand IMDb embed URL is required');
+    return { url: url.toString(), imdbId: match[1].toLowerCase(), imdbNumeric: match[1].slice(2) };
+  };
+
+  const kurdSubTrackId = (imdbId: string, downloadUrl: string) =>
+    crypto.createHash('sha256').update(`${imdbId}:${downloadUrl}`).digest('hex').slice(0, 32);
+
+  const decodeKurdSubArchive = (bytes: Buffer) => {
+    const archive = bytes[0] === 0x1f && bytes[1] === 0x8b
+      ? gunzipSync(bytes, { maxOutputLength: 2 * 1024 * 1024 })
+      : bytes;
+    if (archive.length > 2 * 1024 * 1024) throw new Error('Subtitle file is too large');
+
+    // UTF-8 is preferred; the fallback makes legacy Arabic/Kurdish subtitle
+    // uploads readable instead of filling the editor with replacement glyphs.
+    let text = new TextDecoder('utf-8', { fatal: false }).decode(archive);
+    const replacementRatio = (text.match(/\uFFFD/g)?.length || 0) / Math.max(text.length, 1);
+    if (replacementRatio > 0.002) {
+      for (const encoding of ['windows-1256', 'windows-1252']) {
+        try {
+          const decoded = new TextDecoder(encoding, { fatal: false }).decode(archive);
+          if ((decoded.match(/\uFFFD/g)?.length || 0) < (text.match(/\uFFFD/g)?.length || 0)) {
+            text = decoded;
+            break;
+          }
+        } catch {
+          // Encoding support differs by deployment runtime; keep the UTF-8 text.
+        }
+      }
+    }
+    return text.replace(/^\uFEFF/, '').trim();
+  };
+
+  const fetchGarageBandTracks = async (embedUrl: unknown): Promise<{ imdbId: string; tracks: KurdSubRemoteTrack[] }> => {
+    const source = garageBandEmbedInfo(embedUrl);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 25_000);
+    try {
+      // Fetch the actual embed first. Some proxy providers issue a gate only
+      // after seeing an MPC-HC-style request; this also catches dead sources.
+      const embedResponse = await fetch(source.url, {
+        headers: { ...KURDSUB_PROXY_HEADERS, Accept: 'text/html,application/xhtml+xml,*/*;q=0.1' },
+        signal: controller.signal,
+      });
+      if (!embedResponse.ok) throw new Error(`Embed source unavailable (HTTP ${embedResponse.status})`);
+      const embedHtml = await embedResponse.text();
+      if (!/data-api=|player_iframe|\/embed\//i.test(embedHtml)) {
+        throw new Error('The embed source did not return a playable provider page');
+      }
+
+      const searchResponse = await fetch(
+        `https://rest.opensubtitles.org/search/imdbid-${source.imdbNumeric}`,
+        { headers: KURDSUB_PROXY_HEADERS, signal: controller.signal },
+      );
+      if (!searchResponse.ok) throw new Error(`Subtitle search unavailable (HTTP ${searchResponse.status})`);
+      const records = await searchResponse.json() as any[];
+      const tracks = (Array.isArray(records) ? records : [])
+        .map((item: any): KurdSubRemoteTrack | null => {
+          const downloadUrl = String(item?.SubDownloadLink || '').trim();
+          if (!/^https:\/\/dl\.opensubtitles\.org\//i.test(downloadUrl)) return null;
+          const languageCode = String(item?.SubLanguageID || 'und').toLowerCase();
+          return {
+            id: kurdSubTrackId(source.imdbId, downloadUrl),
+            downloadUrl,
+            language: String(item?.LanguageName || languageCode),
+            languageCode,
+            fileName: String(item?.SubFileName || 'subtitle.srt'),
+            downloads: Number(item?.SubDownloadsCnt || 0),
+            hearingImpaired: String(item?.SubHearingImpaired || '0') === '1',
+            fps: String(item?.MovieFPS || ''),
+          };
+        })
+        .filter((track): track is KurdSubRemoteTrack => Boolean(track))
+        .sort((a, b) => b.downloads - a.downloads)
+        // Keep the Studio selector responsive and match the standalone Studio's
+        // curated catalog size instead of rendering OpenSubtitles' full page.
+        .slice(0, 28);
+      if (!tracks.length) throw new Error('No subtitle tracks were found');
+      return { imdbId: source.imdbId, tracks };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  app.post('/api/kurdsub/analyze', async (req, res) => {
+    if (!isKurdSubStudioRequester(req)) {
+      return res.status(403).json({ error: 'دەسەڵاتی ستۆدیۆی ژێرنووس بەردەست نییە' });
+    }
+    try {
+      const result = await fetchGarageBandTracks(req.body?.url);
+      res.setHeader('Access-Control-Allow-Origin', 'https://www.cinamachat.com');
+      res.setHeader('Cache-Control', 'private, max-age=60');
+      return res.json({ success: true, ...result });
+    } catch (error: any) {
+      return res.status(422).json({ error: error?.message || 'Subtitle track discovery failed' });
+    }
+  });
+
+  app.post('/api/kurdsub/fetch-track', async (req, res) => {
+    if (!isKurdSubStudioRequester(req)) {
+      return res.status(403).json({ error: 'دەسەڵاتی ستۆدیۆی ژێرنووس بەردەست نییە' });
+    }
+    try {
+      const { imdbId, trackId, url } = req.body || {};
+      const discovered = await fetchGarageBandTracks(url);
+      if (String(imdbId || '').toLowerCase() !== discovered.imdbId) throw new Error('Track source does not match the requested IMDb title');
+      const selected = discovered.tracks.find((track) => track.id === String(trackId || ''));
+      if (!selected) throw new Error('The requested subtitle track is no longer available');
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 25_000);
+      let archiveResponse: Response;
+      try {
+        archiveResponse = await fetch(selected.downloadUrl, { headers: KURDSUB_PROXY_HEADERS, signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+      if (!archiveResponse.ok) throw new Error(`Subtitle download unavailable (HTTP ${archiveResponse.status})`);
+      const bytes = Buffer.from(await archiveResponse.arrayBuffer());
+      if (bytes.length > 2 * 1024 * 1024) throw new Error('Subtitle archive is too large');
+      const srt = decodeKurdSubArchive(bytes);
+      if (!srt) throw new Error('Subtitle archive is empty');
+      return res.json({ success: true, track: { ...selected, downloadUrl: undefined }, srt });
+    } catch (error: any) {
+      return res.status(422).json({ error: error?.message || 'Subtitle track download failed' });
+    }
+  });
+
   // GET /api/subtitles — lists every persisted subtitle file (newest first).
   app.get('/api/subtitles', async (req, res) => {
     try {

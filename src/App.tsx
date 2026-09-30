@@ -17135,6 +17135,7 @@ export default function App() {
       {showKurdSubStudio && canUseKurdSubStudio && (
         <KurdSubStudioModal
           movies={movies}
+          adminName={currentUser?.username || ""}
           onClose={() => setShowKurdSubStudio(false)}
           onApply={handleApplyKurdSubStudioSubtitle}
         />

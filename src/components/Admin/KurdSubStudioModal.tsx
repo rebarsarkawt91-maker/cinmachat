@@ -7,9 +7,20 @@ type StudioCue = SubtitleCue & { id: string };
 
 interface KurdSubStudioModalProps {
   movies: Movie[];
+  adminName: string;
   onClose: () => void;
   onApply: (movieId: string, subtitleText: string) => Promise<void>;
 }
+
+type KurdSubRemoteTrack = {
+  id: string;
+  language: string;
+  languageCode: string;
+  fileName: string;
+  downloads: number;
+  hearingImpaired: boolean;
+  fps: string;
+};
 
 const STUDIO_DB = "kurdish_sub_studio_db";
 const STUDIO_STORE = "projects";
@@ -71,9 +82,11 @@ async function saveProject(project: Record<string, unknown>) {
   db.close();
 }
 
-export default function KurdSubStudioModal({ movies, onClose, onApply }: KurdSubStudioModalProps) {
+export default function KurdSubStudioModal({ movies, adminName, onClose, onApply }: KurdSubStudioModalProps) {
   const [source, setSource] = useState("");
   const [cues, setCues] = useState<StudioCue[]>([]);
+  const [remoteTracks, setRemoteTracks] = useState<KurdSubRemoteTrack[]>([]);
+  const [selectedTrackLanguage, setSelectedTrackLanguage] = useState("all");
   const [selectedMovieId, setSelectedMovieId] = useState("");
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
@@ -87,6 +100,15 @@ export default function KurdSubStudioModal({ movies, onClose, onApply }: KurdSub
   }, [cues, query]);
   const selectedMovie = movies.find((movie) => movie.id === selectedMovieId);
   const projectId = selectedMovieId || source.slice(0, 120) || "draft";
+  const remoteTrackLanguages = useMemo(() => {
+    const counts = new Map<string, number>();
+    remoteTracks.forEach((track) => counts.set(track.languageCode, (counts.get(track.languageCode) || 0) + 1));
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  }, [remoteTracks]);
+  const visibleRemoteTracks = useMemo(
+    () => remoteTracks.filter((track) => selectedTrackLanguage === "all" || track.languageCode === selectedTrackLanguage),
+    [remoteTracks, selectedTrackLanguage],
+  );
 
   useEffect(() => {
     if (!cues.length) return;
@@ -132,6 +154,20 @@ export default function KurdSubStudioModal({ movies, onClose, onApply }: KurdSub
     setBusy(true);
     setMessage("");
     try {
+      if (/^https?:\/\/(?:[^/]+\.)?garageband\.rocks\/embed\/(?:movie|tv)\/tt\d{7,10}/i.test(value)) {
+        const response = await fetch("/api/kurdsub/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Admin-Username": adminName },
+          body: JSON.stringify({ url: value, adminName }),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !Array.isArray(result?.tracks)) throw new Error(result?.error || "Subtitle track discovery failed");
+        setRemoteTracks(result.tracks);
+        setSelectedTrackLanguage("all");
+        setCues([]);
+        setMessage(`${result.tracks.length} ژێرنووس دۆزرایەوە. یەکێکیان هەڵبژێرە بۆ بارکردن.`);
+        return;
+      }
       // A YouTube watch/embed URL needs caption discovery, not a raw HTTP
       // download. The server route handles the provider-specific extraction
       // and returns the original timestamp-preserving SRT.
@@ -152,6 +188,31 @@ export default function KurdSubStudioModal({ movies, onClose, onApply }: KurdSub
       setSubtitleText(text);
     } catch (error: any) {
       setMessage(error?.message || "هێنانی ژێرنووس سەرکەوتوو نەبوو");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const loadRemoteTrack = async (track: KurdSubRemoteTrack) => {
+    setBusy(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/kurdsub/fetch-track", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Admin-Username": adminName },
+        body: JSON.stringify({
+          url: source.trim(),
+          imdbId: source.match(/tt\d{7,10}/i)?.[0]?.toLowerCase(),
+          trackId: track.id,
+          adminName,
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result?.srt) throw new Error(result?.error || "Subtitle track could not be downloaded");
+      setSubtitleText(result.srt);
+      setMessage(`${track.language} — ${track.fileName}`);
+    } catch (error: any) {
+      setMessage(error?.message || "بارکردنی ژێرنووس سەرکەوتوو نەبوو");
     } finally {
       setBusy(false);
     }
@@ -246,6 +307,29 @@ export default function KurdSubStudioModal({ movies, onClose, onApply }: KurdSub
             {[['original', 'سەرچاوە'], ['en', 'English'], ['ar', 'العربية'], ['ckb', 'سۆرانی']].map(([code, label]) => <span key={code} className={`rounded-full border px-3 py-1 text-xs font-black ${code === 'ckb' ? 'border-amber-400/50 bg-amber-400/10 text-amber-200' : 'border-white/10 text-slate-300'}`}>{label} {code === 'ckb' ? `(${cues.length} ڕستە)` : ''}</span>)}
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="گەڕان لە ڕستەکان…" className="mr-auto rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-xs text-white outline-none" />
           </section>
+
+          {remoteTracks.length > 0 && (
+            <section className="rounded-2xl border border-amber-400/25 bg-amber-400/[0.04] p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <h3 className="font-black text-white kurdish-text">تڕاکە دۆزراوەکان ({remoteTracks.length})</h3>
+                <span className="text-xs text-amber-200">OpenSubtitles · MPC-HC proxy</span>
+              </div>
+              <div className="mb-3 flex flex-wrap gap-2">
+                <button type="button" onClick={() => setSelectedTrackLanguage("all")} className={`rounded-full border px-3 py-1 text-xs font-black ${selectedTrackLanguage === 'all' ? 'border-amber-300 bg-amber-400/15 text-amber-100' : 'border-white/10 text-slate-300'}`}>هەموو ({remoteTracks.length})</button>
+                {remoteTrackLanguages.map(([language, count]) => (
+                  <button key={language} type="button" onClick={() => setSelectedTrackLanguage(language)} className={`rounded-full border px-3 py-1 text-xs font-black ${selectedTrackLanguage === language ? 'border-amber-300 bg-amber-400/15 text-amber-100' : 'border-white/10 text-slate-300'}`}>{language.toUpperCase()} ({count})</button>
+                ))}
+              </div>
+              <div className="grid max-h-48 gap-2 overflow-y-auto sm:grid-cols-2 lg:grid-cols-3">
+                {visibleRemoteTracks.map((track) => (
+                  <button key={track.id} type="button" disabled={busy} onClick={() => void loadRemoteTrack(track)} className="rounded-xl border border-white/10 bg-black/25 p-3 text-right transition-colors hover:border-amber-300/70 hover:bg-amber-400/10 disabled:opacity-50">
+                    <span className="block truncate text-sm font-black text-white" dir="ltr">{track.fileName}</span>
+                    <span className="mt-1 block text-[11px] text-slate-400">{track.languageCode.toUpperCase()} · {track.downloads.toLocaleString()} {track.hearingImpaired ? '· HI' : ''}</span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
 
           <section className="grid gap-4 lg:grid-cols-[1fr_260px]">
             <div className="overflow-hidden rounded-2xl border border-white/10">
