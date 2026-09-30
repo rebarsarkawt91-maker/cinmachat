@@ -4886,6 +4886,69 @@ async function startServer() {
     moviesCache = updater(moviesCache);
   }
 
+  // Background source probes are intentionally small and conservative. A card
+  // is marked unavailable only for a confirmed HTTP 404/410/5xx response; a
+  // timeout, auth wall, or provider that rejects HEAD requests is left alone.
+  // This keeps normal providers from being falsely labelled as broken.
+  const linkHealthLastChecked = new Map<string, number>();
+  let linkHealthScanCursor = 0;
+  const LINK_HEALTH_RECHECK_MS = 6 * 60 * 60 * 1000;
+  const LINK_HEALTH_BATCH_SIZE = 8;
+  const movieSourceForHealthCheck = (movie: any): string => {
+    const fields = [
+      movie.streamingUrl, movie.videoUrl, movie.embedUrl, movie.hdtodayUrl,
+      movie.vidsrcUrl, movie.vidmolyUrl, movie.streamwishUrl, movie.fileLrunUrl,
+      movie.youtubeMovieUrl, movie.otherVideoUrl, movie.externalMovieLink,
+    ];
+    return fields.map((value) => String(value || '').trim()).find((value) => /^https?:\/\/\S+$/i.test(value)) || '';
+  };
+  const isConfirmedBrokenResponse = (status: number) => status === 404 || status === 410 || status >= 500;
+  const persistAutomaticBrokenState = async (movieId: string): Promise<void> => {
+    const now = new Date().toISOString();
+    try {
+      const movieAdminApp = initializeFirebaseAdmin();
+      if (!movieAdminApp) return;
+      await admin.firestore(movieAdminApp).collection('movies').doc(movieId).set({
+        isBroken: true,
+        brokenDetectedAt: now,
+        updatedAt: now,
+      }, { merge: true });
+      if (firestoreMoviesCache[movieId]) {
+        firestoreMoviesCache[movieId] = { ...firestoreMoviesCache[movieId], isBroken: true, brokenDetectedAt: now };
+      }
+      const manualIndex = db.manualMovies.findIndex((movie: any) => movie.id === movieId);
+      if (manualIndex !== -1) db.manualMovies[manualIndex] = { ...db.manualMovies[manualIndex], isBroken: true, brokenDetectedAt: now };
+      setMoviesCache((previous) => previous.map((movie) => movie.id === movieId ? { ...movie, isBroken: true, brokenDetectedAt: now } : movie));
+      await saveDB(db);
+    } catch (error: any) {
+      console.warn(`[link-health] Could not persist broken state for ${movieId}:`, error?.message || error);
+    }
+  };
+  const checkMovieLinkHealth = async (movie: any): Promise<void> => {
+    const id = String(movie?.id || '');
+    const source = movieSourceForHealthCheck(movie);
+    if (!id || !source || movie?.isBroken || movie?.brokenLinkManualOverride) return;
+    const lastChecked = linkHealthLastChecked.get(id) || 0;
+    if (Date.now() - lastChecked < LINK_HEALTH_RECHECK_MS) return;
+    linkHealthLastChecked.set(id, Date.now());
+    try {
+      let response = await fetchWithTimeout(source, { method: 'HEAD', redirect: 'follow' }, 6000);
+      if (response.status === 405 || response.status === 501) {
+        response = await fetchWithTimeout(source, { method: 'GET', headers: { Range: 'bytes=0-1' }, redirect: 'follow' }, 6000);
+      }
+      if (isConfirmedBrokenResponse(response.status)) await persistAutomaticBrokenState(id);
+    } catch {
+      // Network/provider failures are not definitive and must not flag a card.
+    }
+  };
+  const scheduleMovieLinkHealthChecks = (movies: any[]) => {
+    const candidates = movies.filter((movie) => movieSourceForHealthCheck(movie) && !movie?.isBroken && !movie?.brokenLinkManualOverride);
+    if (!candidates.length) return;
+    const batch = Array.from({ length: Math.min(LINK_HEALTH_BATCH_SIZE, candidates.length) }, (_, index) => candidates[(linkHealthScanCursor + index) % candidates.length]);
+    linkHealthScanCursor = (linkHealthScanCursor + batch.length) % candidates.length;
+    void Promise.allSettled(batch.map(checkMovieLinkHealth));
+  };
+
   // ================================
   // MOVIE METRICS HELPERS
   // (user ratings, favorite counts, trending score)
@@ -11940,6 +12003,13 @@ async function startServer() {
         .filter(Boolean)
         .slice(0, 30);
     }
+    for (const field of ['isBroken', 'brokenLinkManualOverride'] as const) {
+      if (!(field in input)) continue;
+      if (typeof input[field] !== 'boolean') {
+        return res.status(400).json({ success: false, error: `Invalid ${field}` });
+      }
+      changes[field] = input[field];
+    }
     if (!String(changes.title ?? existing.title ?? '').trim()) {
       return res.status(400).json({ success: false, error: 'Title is required' });
     }
@@ -12593,6 +12663,10 @@ async function startServer() {
       const uniqueResults = Array.from(
         new Map([heroMovie, ...results].map(m => [m.id, m])).values()
       );
+
+      // Never delay the catalog response for third-party video probes. The
+      // small rotating batch writes only confirmed unavailable results.
+      scheduleMovieLinkHealthChecks(results);
 
       console.log(`[${new Date().toISOString()}] SUCCESS: Returning ${uniqueResults.length} movies from local DB`);
       res.json({

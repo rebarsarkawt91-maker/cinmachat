@@ -64,6 +64,10 @@ export interface Movie {
   language?: string;
   /** IMDb rating passed through for display (alias of rating). */
   imdbRating?: string;
+  /** True when the source is confirmed unavailable or manually flagged by an admin. */
+  isBroken?: boolean;
+  /** Prevents automated checks from overriding an explicit admin decision. */
+  brokenLinkManualOverride?: boolean;
 }
 
 export interface SocialUser {

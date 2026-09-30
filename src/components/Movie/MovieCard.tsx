@@ -6,6 +6,7 @@ import {
   Clock,
   Eye,
   Play,
+  AlertTriangle,
   Languages,
   Sparkles,
   TrendingUp,
@@ -189,6 +190,7 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
   const language = inferMovieLanguage(movie);
   const quality = movie.quality || "HD";
   const canPlay = movieCanPlay(movie);
+  const isBroken = Boolean(movie.isBroken);
   const posterCandidates = useMemo(() => getMoviePosterCandidates(movie), [
     movie.id,
     movie.image,
@@ -254,7 +256,7 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
       onKeyDown={handleKeyDown}
       role="button"
       tabIndex={0}
-      aria-label={`${movie.title}${year ? ` (${year})` : ""}${liveViewers > 0 ? `, ${liveViewers} watching now` : ""}${views > 0 ? `, ${views.toLocaleString()} total views` : ""}`}
+      aria-label={`${movie.title}${isBroken ? ", currently unavailable" : ""}${year ? ` (${year})` : ""}${liveViewers > 0 ? `, ${liveViewers} watching now` : ""}${views > 0 ? `, ${views.toLocaleString()} total views` : ""}`}
     >
       {/* Poster */}
       <div className="relative aspect-[2/3] rounded-2xl overflow-hidden bg-[#0b0b0d] ring-1 ring-white/10 shadow-[0_8px_30px_rgba(0,0,0,0.55)] transition-all duration-300 group-hover:-translate-y-1.5 group-hover:ring-brand-primary/60 group-hover:shadow-[0_22px_60px_-15px_rgba(229,9,20,0.45)]">
@@ -271,7 +273,7 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
               target.src = FALLBACK_POSTER;
             }
           }}
-          className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-[1.08]"
+          className={`w-full h-full object-cover transition-transform duration-700 group-hover:scale-[1.08] ${isBroken ? "brightness-50 blur-[0.6px]" : ""}`}
           alt=""
           aria-hidden="true"
         />
@@ -279,6 +281,15 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
         {/* Dark bottom gradient (premium card signature) */}
         <div className="absolute inset-x-0 bottom-0 h-[70%] bg-gradient-to-t from-black via-black/75 to-transparent pointer-events-none" />
         <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-black to-transparent pointer-events-none" />
+
+        {isBroken && (
+          <div className="pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-black/35 px-3 text-center backdrop-blur-[1px]">
+            <div className="rounded-2xl border border-amber-300/80 bg-black/70 px-3 py-2 shadow-[0_0_24px_rgba(250,204,21,0.38)]">
+              <AlertTriangle className="mx-auto h-10 w-10 text-yellow-300 drop-shadow" aria-hidden="true" />
+              <span className="mt-1 block text-[10px] font-black text-yellow-100 kurdish-text">ئەم ساتە کار ناکات</span>
+            </div>
+          </div>
+        )}
 
         {onDelete && (
           <button

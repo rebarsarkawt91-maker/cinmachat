@@ -223,6 +223,22 @@ export default function MovieEditModal({
           <textarea value={String(draft.subtitleText ?? "")} onChange={(event) => setField("subtitleText", event.target.value)} rows={8} dir="auto" spellCheck={false} className="w-full rounded-xl border border-white/10 bg-black/50 px-4 py-3 font-mono text-sm text-white outline-none focus:border-red-500" />
         </label>
 
+        <label className="mt-4 flex cursor-pointer items-center gap-3 rounded-xl border border-amber-400/30 bg-amber-400/10 p-4 text-sm font-black text-amber-100 kurdish-text">
+          <input
+            type="checkbox"
+            checked={Boolean(draft.isBroken)}
+            onChange={(event) => setDraft((current) => current ? {
+              ...current,
+              isBroken: event.target.checked,
+              // A deliberate admin choice must not be overwritten by a later
+              // background URL probe.
+              brokenLinkManualOverride: true,
+            } : current)}
+            className="h-4 w-4 accent-amber-400"
+          />
+          <span>فیلمەکە کار ناکات (Broken Link / Unavailable)</span>
+        </label>
+
         {error && <p role="alert" className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm font-bold text-red-300 kurdish-text">{error}</p>}
         <div className="mt-6 flex gap-3">
           <button type="submit" disabled={!canSave} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-red-600 px-5 py-3 font-black text-white transition-colors hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50 kurdish-text">
