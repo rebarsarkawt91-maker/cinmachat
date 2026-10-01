@@ -14411,8 +14411,12 @@ async function startServer() {
     return srt;
   };
 
+  const kurdSubDiscoveryCache = new Map<string, { expiresAt: number; result: { imdbId: string; tracks: KurdSubRemoteTrack[]; notice?: string } }>();
+
   const fetchGarageBandTracks = async (embedUrl: unknown): Promise<{ imdbId: string; tracks: KurdSubRemoteTrack[]; notice?: string }> => {
     const source = garageBandEmbedInfo(embedUrl);
+    const cached = kurdSubDiscoveryCache.get(source.url);
+    if (cached && cached.expiresAt > Date.now()) return cached.result;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 25_000);
     try {
@@ -14431,29 +14435,32 @@ async function startServer() {
 
       const configuredApiKey = openSubtitlesApiKey();
       let tracks: KurdSubRemoteTrack[] = [];
-      let embeddedTracks: KurdSubRemoteTrack[] = [];
 
       // Some provider builds expose native VTT/SRT entries in their nested
       // player/config JSON. Use them without any OpenSubtitles credential.
       // The parser follows only the known GarageBand → cloudorchestra → vidsrc
       // chain and accepts only direct subtitle-file URLs.
-      embeddedTracks = await scrapeGarageBandEmbeddedTracks(source.url, source.imdbId, controller.signal).catch(() => []);
-      tracks = embeddedTracks;
+      const embeddedTracks = await scrapeGarageBandEmbeddedTracks(source.url, source.imdbId, controller.signal).catch(() => []);
 
       // Tier C: REST v1 is used only with a real server-side provider key. A
       // media-player user agent does not replace OpenSubtitles authentication.
       // Any provider error is intentionally non-fatal so a public fallback can
       // still return subtitles without exposing a 403 to Studio users.
-      if (!tracks.length && configuredApiKey) {
-        tracks = await fetchOfficialOpenSubtitlesTracks(source.imdbNumeric, configuredApiKey, controller.signal)
-          .catch(() => []);
-      }
+      const officialTracks = configuredApiKey
+        ? await fetchOfficialOpenSubtitlesTracks(source.imdbNumeric, configuredApiKey, controller.signal)
+          .catch(() => [])
+        : [];
 
-      // Keyless fallback after Tier C: direct caption files supplied by the
-      // public catalog are cached to respect its guest request limit.
-      if (!tracks.length) {
-        tracks = await fetchPublicCatalogTracks(source.imdbId, controller.signal);
+      // Merge the keyless public catalog even when an embed exposes a handful
+      // of tracks. Its response is cached to respect the guest request limit.
+      const catalogTracks = await fetchPublicCatalogTracks(source.imdbId, controller.signal);
+      // Each source can expose a different subset. Merge instead of stopping at
+      // the first nonempty tier, keeping the original track IDs for downloads.
+      const distinctTracks = new Map<string, KurdSubRemoteTrack>();
+      for (const track of [...embeddedTracks, ...officialTracks, ...catalogTracks]) {
+        if (!distinctTracks.has(track.id)) distinctTracks.set(track.id, track);
       }
+      tracks = [...distinctTracks.values()];
 
       const rankedTracks = tracks.sort((a, b) => b.downloads - a.downloads);
       const englishTrack = rankedTracks.find((track) => /^(?:en|eng)(?:[-_]|$)/i.test(track.languageCode) || /english/i.test(track.language));
@@ -14463,17 +14470,22 @@ async function startServer() {
         .filter((track): track is KurdSubRemoteTrack => Boolean(track))
         .filter((track, index, list) => list.findIndex((candidate) => candidate.id === track.id) === index);
       const pinnedIds = new Set(pinnedTracks.map((track) => track.id));
-      // Keep each available primary language discoverable even when its
-      // download rank falls outside the 28-card responsive selector.
-      tracks = [...pinnedTracks, ...rankedTracks.filter((track) => !pinnedIds.has(track.id))].slice(0, 28);
+      // Keep every discovered track; the client renders the selected language
+      // group and requests cue counts in small batches instead of truncating.
+      tracks = [...pinnedTracks, ...rankedTracks.filter((track) => !pinnedIds.has(track.id))];
       if (!tracks.length) {
-        return {
+        const result = {
           imdbId: source.imdbId,
-          tracks: [],
+          tracks,
           notice: 'هیچ ژێرنووسێکی گشتی بۆ ئەم فیلمە نەدۆزرایەوە. دەتوانیت فایلێکی SRT/VTT باربکەیت.',
         };
+        kurdSubDiscoveryCache.set(source.url, { result, expiresAt: Date.now() + 30_000 });
+        return result;
       }
-      return { imdbId: source.imdbId, tracks };
+      const result = { imdbId: source.imdbId, tracks };
+      kurdSubDiscoveryCache.set(source.url, { result, expiresAt: Date.now() + 5 * 60_000 });
+      if (kurdSubDiscoveryCache.size > 200) kurdSubDiscoveryCache.delete(kurdSubDiscoveryCache.keys().next().value!);
+      return result;
     } finally {
       clearTimeout(timer);
     }
@@ -14535,9 +14547,9 @@ async function startServer() {
     }
     try {
       const requestedIds: string[] = Array.isArray(req.body?.trackIds)
-        ? [...new Set<string>((req.body.trackIds as unknown[]).map((id) => String(id)))].slice(0, 28)
+        ? [...new Set<string>((req.body.trackIds as unknown[]).map((id) => String(id)))]
         : [];
-      if (!requestedIds.length) return res.status(400).json({ error: 'Track IDs are required' });
+      if (!requestedIds.length || requestedIds.length > 8) return res.status(400).json({ error: 'Provide 1–8 track IDs per cue-count request' });
       const discovered = await fetchGarageBandTracks(req.body?.url);
       if (String(req.body?.imdbId || '').toLowerCase() !== discovered.imdbId) {
         return res.status(400).json({ error: 'Track source does not match the IMDb title' });
@@ -14591,8 +14603,8 @@ async function startServer() {
       return res.status(403).json({ error: 'دەسەڵاتی ستۆدیۆی ژێرنووس بەردەست نییە' });
     }
     const rawCues = req.body?.cues;
-    if (!Array.isArray(rawCues) || rawCues.length < 1 || rawCues.length > 20) {
-      return res.status(400).json({ error: 'Provide 1–20 subtitle cues per batch' });
+    if (!Array.isArray(rawCues) || rawCues.length < 1 || rawCues.length > 25) {
+      return res.status(400).json({ error: 'Provide 1–25 subtitle cues per batch' });
     }
     // The shared request sanitizer HTML-escapes short body strings. Restore
     // only subtitle-safe inline tags so Gemini can preserve their positions.
@@ -14614,8 +14626,9 @@ async function startServer() {
       !cue.text || cue.text.length > 2000 || /\d{2}:\d{2}:\d{2}[,.]\d{3}\s+-->/.test(cue.text))) {
       return res.status(400).json({ error: 'Invalid subtitle cue batch' });
     }
-    if (!process.env.GEMINI_API_KEY) {
-      return res.status(424).json({ error: 'GEMINI_API_KEY is not configured on the production backend' });
+    const serverGeminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    if (!serverGeminiApiKey) {
+      return res.status(424).json({ error: 'Configure GEMINI_API_KEY or GOOGLE_API_KEY on the production backend to enable Sorani translation' });
     }
     try {
       const source = cues.map((cue) =>
@@ -14623,11 +14636,11 @@ async function startServer() {
       ).join('\n\n');
       let translated: string;
       try {
-        translated = await translateSrtViaGemini(source, 'ckb');
+        translated = await translateSrtViaGemini(source, 'ckb', serverGeminiApiKey);
       } catch (error: any) {
         // A busy primary model must not strand an in-progress studio batch.
         if (!/Gemini API error (?:429|500|502|503|504)\b/.test(String(error?.message || ''))) throw error;
-        translated = await translateSrtViaGemini(source, 'ckb', undefined, 'gemini-flash-lite-latest');
+        translated = await translateSrtViaGemini(source, 'ckb', serverGeminiApiKey, 'gemini-flash-lite-latest');
       }
       const blocks = translated.replace(/^\uFEFF/, '').trim().split(/\n\s*\n/);
       if (blocks.length !== cues.length) throw new Error('Gemini changed the number of subtitle cues');

@@ -46,6 +46,10 @@ services:
       # the value in Render Environment; never use a VITE_ client-side key.
       - key: GEMINI_API_KEY
         sync: false
+      # Optional server-side alias for environments that use Google's generic
+      # API-key variable name. Never put this key in a VITE_ client variable.
+      - key: GOOGLE_API_KEY
+        sync: false
       # Web Push (VAPID) — required for the notifications system. The PRIVATE key
       # must never reach the client or be committed. Generate locally with:
       #   npx web-push generate-vapid-keys --json

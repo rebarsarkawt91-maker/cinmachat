@@ -32,7 +32,7 @@ interface KurdSubStudioModalProps {
 
 const STUDIO_DB = "kurdish_sub_studio_db";
 const STUDIO_STORE = "projects";
-const BATCH_SIZE = 18;
+const BATCH_SIZE = 20;
 
 function timestamp(seconds: number, separator: "." | ",") {
   const ms = Math.max(0, Math.round(seconds * 1000));
@@ -200,6 +200,8 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
   const pauseRequested = useRef(false);
   const translationController = useRef<AbortController | null>(null);
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const trackCountCache = useRef<Record<string, number | null>>({});
+  const trackCountSource = useRef("");
 
   useEffect(() => {
     let active = true;
@@ -211,7 +213,9 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
         setProjectKey(String(project.id || "draft"));
         setCues(normalizeStoredCues(project.cues));
         setSelectedMovieId(String(project.selectedMovieId || ""));
-        setRemoteTracks(Array.isArray(project.remoteTracks) ? project.remoteTracks : []);
+        const restoredTracks: RemoteTrack[] = Array.isArray(project.remoteTracks) ? project.remoteTracks : [];
+        setRemoteTracks(restoredTracks);
+        setCategory(restoredTracks.some((track) => trackCategory(track) === "english") ? "english" : "all");
         setAnalyzedUrl(String(project.analyzedUrl || ""));
       }
     }).catch(() => {}).finally(() => { if (active) setRestored(true); });
@@ -233,25 +237,65 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
     void saveQueue.current.catch(() => setMessage("پاشەکەوتکردنی دەستکاریکردنەکان سەرکەوتوو نەبوو"));
   }, [restored, projectKey, loadedSource, cues, selectedMovieId, remoteTracks, analyzedUrl]);
 
+  // Older saved projects kept only the first 28 discovered tracks. Refresh
+  // that list without replacing the editor's unsaved/translated cue text.
+  useEffect(() => {
+    if (!restored || !analyzedUrl || remoteTracks.length > 28) return;
+    const controller = new AbortController();
+    void fetch("/api/kurdsub/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Username": adminName },
+      body: JSON.stringify({ url: analyzedUrl, adminName }),
+      signal: controller.signal,
+    }).then((response) => response.json()).then((result) => {
+      if (!controller.signal.aborted && Array.isArray(result?.tracks) && result.tracks.length > remoteTracks.length) {
+        setRemoteTracks(result.tracks);
+        setCategory(result.tracks.some((track: RemoteTrack) => trackCategory(track) === "english") ? "english" : "all");
+      }
+    }).catch(() => {});
+    return () => controller.abort();
+  }, [restored, analyzedUrl, remoteTracks.length, adminName]);
+
   useEffect(() => {
     if (!analyzedUrl || !remoteTracks.length) return;
     const controller = new AbortController();
-    setTrackCounts({});
-    void fetch("/api/subtitles/tracks-counts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Admin-Username": adminName },
-      body: JSON.stringify({
-        url: analyzedUrl,
-        imdbId: analyzedUrl.match(/tt\d{7,10}/i)?.[0]?.toLowerCase(),
-        trackIds: remoteTracks.map((track) => track.id),
-        adminName,
-      }),
-      signal: controller.signal,
-    }).then((response) => response.json()).then((result) => {
-      if (!controller.signal.aborted && result?.success) setTrackCounts(result.counts || {});
-    }).catch(() => {});
+    if (trackCountSource.current !== analyzedUrl) {
+      trackCountSource.current = analyzedUrl;
+      trackCountCache.current = {};
+      setTrackCounts({});
+    }
+    const pendingIds = remoteTracks.filter((track) => matchesCategory(track, category))
+      .map((track) => track.id).filter((id) => !(id in trackCountCache.current));
+    const batches = Array.from({ length: Math.ceil(pendingIds.length / 8) }, (_, index) => pendingIds.slice(index * 8, index * 8 + 8));
+    let cursor = 0;
+    const countBatch = async () => {
+      while (!controller.signal.aborted && cursor < batches.length) {
+        const ids = batches[cursor++];
+        try {
+          const response = await fetch("/api/subtitles/tracks-counts", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Admin-Username": adminName },
+            body: JSON.stringify({
+              url: analyzedUrl,
+              imdbId: analyzedUrl.match(/tt\d{7,10}/i)?.[0]?.toLowerCase(),
+              trackIds: ids,
+              adminName,
+            }),
+            signal: controller.signal,
+          });
+          const result = await response.json();
+          if (controller.signal.aborted) return;
+          for (const id of ids) trackCountCache.current[id] = response.ok && typeof result?.counts?.[id] === "number" ? result.counts[id] : null;
+        } catch {
+          if (controller.signal.aborted) return;
+          for (const id of ids) trackCountCache.current[id] = null;
+        }
+        setTrackCounts({ ...trackCountCache.current });
+      }
+    };
+    void Promise.all(Array.from({ length: Math.min(2, batches.length) }, () => countBatch()));
     return () => controller.abort();
-  }, [adminName, analyzedUrl, remoteTracks]);
+  }, [adminName, analyzedUrl, remoteTracks, category]);
 
   const filteredCues = useMemo(() => {
     const needle = query.trim().toLowerCase();
