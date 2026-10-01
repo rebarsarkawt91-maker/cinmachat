@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Download, FileText, Loader2, Pause, RotateCcw, Sparkles, Subtitles, Upload, Wand2, X } from "lucide-react";
 import type { Movie } from "../../types";
+import { stripSubtitleHtmlTags } from "../../lib/subtitleText";
 
 type StudioCue = {
   id: string;
@@ -73,9 +74,9 @@ function parseStudioText(raw: string, alreadyTranslated = false) {
     const index = Number.isSafeInteger(sourceIndex) && sourceIndex > 0 && !usedIndices.has(sourceIndex)
       ? sourceIndex : cues.length + 1;
     usedIndices.add(index);
-    // Keep only supported inline subtitle formatting, without interpreting it as HTML.
-    const text = lines.slice(timingAt + 1).join("\n").trim()
-      .replace(/<(?!\/?(?:i|b)>)[^>]*>/gi, "");
+    // Studio edits plain dialogue; formatting markup must not enter the editor.
+    const text = stripSubtitleHtmlTags(lines.slice(timingAt + 1).join("\n").trim()
+      .replace(/<(?!\/?(?:i|b|font)\b)[^>]*>/gi, ""));
     cues.push({
       id: String(index) + "-" + String(Math.round(start * 1000)) + "-" + String(cues.length),
       index, start, end,
@@ -87,7 +88,7 @@ function parseStudioText(raw: string, alreadyTranslated = false) {
 }
 
 function outputText(cue: StudioCue) {
-  return cue.translatedText.trim() || cue.originalText.trim();
+  return stripSubtitleHtmlTags(cue.translatedText.trim() || cue.originalText.trim());
 }
 
 function exportSubtitle(cues: StudioCue[], asSrt: boolean) {
@@ -130,8 +131,8 @@ function normalizeStoredCues(value: unknown): StudioCue[] {
       index: Number(cue.index || position + 1),
       start: Number(cue.start),
       end: Number(cue.end),
-      originalText: String(cue.originalText ?? cue.text ?? ""),
-      translatedText: String(cue.translatedText ?? ""),
+      originalText: stripSubtitleHtmlTags(String(cue.originalText ?? cue.text ?? "")),
+      translatedText: stripSubtitleHtmlTags(String(cue.translatedText ?? "")),
     }));
 }
 
@@ -438,7 +439,7 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
       body: JSON.stringify({
         adminName,
         cues: batch.map((cue) => ({
-          index: cue.index, start: cue.start, end: cue.end, text: cue.originalText,
+          index: cue.index, start: cue.start, end: cue.end, text: stripSubtitleHtmlTags(cue.originalText),
         })),
       }),
       signal,
@@ -447,7 +448,9 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
     if (!response.ok || !Array.isArray(result?.cues) || result.cues.length !== batch.length) {
       throw new Error(result?.error || "Gemini translation failed");
     }
-    return result.cues as Array<{ index: number; text: string }>;
+    return (result.cues as Array<{ index: number; text: string }>).map((cue) => ({
+      ...cue, text: stripSubtitleHtmlTags(cue.text),
+    }));
   };
 
   const translateToSorani = async (singleCue?: StudioCue) => {
@@ -607,11 +610,11 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
                   return <div key={cue.id} className="grid grid-cols-1 gap-2 p-3 md:grid-cols-[116px_minmax(0,1fr)_minmax(0,1fr)_42px]">
                     <div className="pt-1 font-mono text-[10px] text-amber-200" dir="ltr"><span className="block">#{cue.index}</span>{timestamp(cue.start, ".")} → {timestamp(cue.end, ".")}</div>
                     <label className="min-w-0 text-[11px] font-bold text-slate-400 md:text-transparent">سەرچاوە
-                      <textarea value={cue.originalText} disabled={translating || singleCueBusy === cue.id} onChange={(event) => setCues((current) => current.map((item) => item.id === cue.id ? { ...item, originalText: event.target.value, translatedText: "" } : item))}
+                      <textarea value={cue.originalText} disabled={translating || singleCueBusy === cue.id} onChange={(event) => setCues((current) => current.map((item) => item.id === cue.id ? { ...item, originalText: stripSubtitleHtmlTags(event.target.value), translatedText: "" } : item))}
                         rows={2} dir="auto" className="mt-1 w-full resize-y rounded-lg border border-white/10 bg-black/25 p-2 text-sm text-white outline-none focus:border-amber-400" />
                     </label>
                     <label className="min-w-0 text-[11px] font-bold text-slate-400 md:text-transparent">سۆرانی
-                      <textarea value={cue.translatedText} disabled={translating || singleCueBusy === cue.id} onChange={(event) => setCues((current) => current.map((item) => item.id === cue.id ? { ...item, translatedText: event.target.value } : item))}
+                      <textarea value={cue.translatedText} disabled={translating || singleCueBusy === cue.id} onChange={(event) => setCues((current) => current.map((item) => item.id === cue.id ? { ...item, translatedText: stripSubtitleHtmlTags(event.target.value) } : item))}
                         rows={2} dir="rtl" placeholder="وەرگێڕانی سۆرانی…" className="mt-1 w-full resize-y rounded-lg border border-white/10 bg-black/25 p-2 text-sm text-white outline-none focus:border-amber-400 kurdish-text" />
                       {warning && <span className="mt-1 inline-flex items-center gap-1 rounded bg-amber-400/10 px-2 py-0.5 text-[10px] text-amber-200"><AlertTriangle className="h-3 w-3" />{!cue.originalText.trim() ? "دەقی سەرچاوە بەتاڵە" : "وەرگێڕان نەکراوە"}</span>}
                     </label>

@@ -16,6 +16,7 @@ import bcrypt from 'bcryptjs';
 import net from 'node:net';
 import { rateLimiter, sanitizationMiddleware, createAdminGuard, logFailedAttempt } from './security';
 import { generateSubtitle, translateSrtViaGemini } from './features/subtitles/subtitleGenerator.js';
+import { stripSubtitleHtmlTags } from './src/lib/subtitleText.js';
 import { getSearchConsoleStats } from './features/seo/searchConsole.js';
 import {
   SCHEMA_VERSION,
@@ -14606,20 +14607,11 @@ async function startServer() {
     if (!Array.isArray(rawCues) || rawCues.length < 1 || rawCues.length > 25) {
       return res.status(400).json({ error: 'Provide 1–25 subtitle cues per batch' });
     }
-    // The shared request sanitizer HTML-escapes short body strings. Restore
-    // only subtitle-safe inline tags so Gemini can preserve their positions.
-    const restoreSubtitleTags = (value: string) => value
-      .replace(/&lt;(i|b)&gt;/gi, '<$1>')
-      .replace(/&lt;(?:&#x2f;|&#47;|\/)(i|b)&gt;/gi, '</$1>')
-      .replace(/&quot;/gi, '"')
-      .replace(/&#x27;/gi, "'")
-      .replace(/&#x2f;/gi, '/')
-      .replace(/&amp;/gi, '&');
     const cues: KurdSubBatchCue[] = rawCues.map((cue: any) => ({
       index: Number(cue?.index),
       start: Number(cue?.start),
       end: Number(cue?.end),
-      text: restoreSubtitleTags(String(cue?.text || '').trim()),
+      text: stripSubtitleHtmlTags(String(cue?.text || '').trim()),
     }));
     if (cues.some((cue) => !Number.isSafeInteger(cue.index) || cue.index < 1 ||
       !Number.isFinite(cue.start) || !Number.isFinite(cue.end) || cue.start < 0 || cue.end <= cue.start ||
@@ -14636,11 +14628,11 @@ async function startServer() {
       ).join('\n\n');
       let translated: string;
       try {
-        translated = await translateSrtViaGemini(source, 'ckb', serverGeminiApiKey);
+        translated = await translateSrtViaGemini(source, 'ckb', serverGeminiApiKey, undefined, true);
       } catch (error: any) {
         // A busy primary model must not strand an in-progress studio batch.
         if (!/Gemini API error (?:429|500|502|503|504)\b/.test(String(error?.message || ''))) throw error;
-        translated = await translateSrtViaGemini(source, 'ckb', serverGeminiApiKey, 'gemini-flash-lite-latest');
+        translated = await translateSrtViaGemini(source, 'ckb', serverGeminiApiKey, 'gemini-flash-lite-latest', true);
       }
       const blocks = translated.replace(/^\uFEFF/, '').trim().split(/\n\s*\n/);
       if (blocks.length !== cues.length) throw new Error('Gemini changed the number of subtitle cues');
@@ -14650,9 +14642,8 @@ async function startServer() {
         if (lines[0] !== String(cues[position].index) || lines[1] !== timing) {
           throw new Error(`Gemini changed cue index or timing at ${cues[position].index}`);
         }
-        const text = lines.slice(2).join('\n').trim();
-        const tags = (value: string) => value.match(/<\/?(?:i|b)>/gi)?.map((tag) => tag.toLowerCase()) || [];
-        if (!text || JSON.stringify(tags(text)) !== JSON.stringify(tags(cues[position].text))) {
+        const text = stripSubtitleHtmlTags(lines.slice(2).join('\n').trim());
+        if (!text) {
           throw new Error(`Gemini returned an empty or malformed cue at ${cues[position].index}`);
         }
         return { index: cues[position].index, text };

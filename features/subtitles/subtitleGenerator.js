@@ -277,11 +277,15 @@ function validateTranslatedSubtitleStructure(sourceText, translatedText) {
   }
 }
 
-async function translateSrtViaGemini(srtText, targetLang, userApiKey, modelOverride) {
+async function translateSrtViaGemini(srtText, targetLang, userApiKey, modelOverride, stripFormattingTags = false) {
   const apiKey = userApiKey || process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY is not set; cannot translate subtitles");
   const model = modelOverride || GEMINI_MODEL;
-  const sanitizedSource = sanitizeSubtitleText(srtText);
+  // Studio sends already-clean cue text. Its dialogue can legitimately begin
+  // with a dash or music symbol, so do not run the generic metadata trimmer.
+  const sanitizedSource = stripFormattingTags
+    ? String(srtText || "").replace(/\r\n?/g, "\n").trim()
+    : sanitizeSubtitleText(srtText);
   if (!sanitizedSource) throw new Error("Subtitle file is empty after metadata cleanup");
 
   const translateChunk = async (subtitleChunk) => {
@@ -294,7 +298,9 @@ async function translateSrtViaGemini(srtText, targetLang, userApiKey, modelOverr
       `3. Keep a 1:1 mapping: each original cue must remain one translated cue in the same order. Do not merge, split, reorder, skip, or summarize cues.\n` +
       `4. Keep the same number of subtitle text lines inside each cue whenever possible. If a cue has two text lines, return two translated text lines.\n` +
       `5. Translate literally and conservatively according to the source text. Preserve names, brands, codes, and unclear words unchanged.\n` +
-      `6. Preserve every <i>, </i>, <b>, and </b> tag exactly, in the same cue and order. Translate only the text between tags.\n` +
+      (stripFormattingTags
+        ? `6. Remove all raw subtitle HTML formatting tags, including <i>, </i>, <b>, </b>, and <font>. Output only clean dialogue; preserve music symbols, dashes, and punctuation.\n`
+        : `6. Preserve every <i>, </i>, <b>, and </b> tag exactly, in the same cue and order. Translate only the text between tags.\n`) +
       `7. For Sorani, use natural contemporary Sulaymaniyah wording and grammar. Never transliterate the source language instead of translating it.\n` +
       `8. Return the complete raw subtitle file only. Do not use markdown fences or commentary.\n\n` +
       `Input subtitle file:\n\n${subtitleChunk}`;
@@ -326,7 +332,10 @@ async function translateSrtViaGemini(srtText, targetLang, userApiKey, modelOverr
     if (!response.ok) throw new Error(`Gemini API error ${response.status}: ${await response.text()}`);
 
     const data = await response.json();
-    const translated = sanitizeSubtitleText(data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join(""));
+    const rawTranslation = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("");
+    const translated = stripFormattingTags
+      ? String(rawTranslation || "").replace(/\r\n?/g, "\n").trim()
+      : sanitizeSubtitleText(rawTranslation);
     if (!translated || !translated.trim()) throw new Error("Gemini returned an empty translation");
     validateTranslatedSubtitleStructure(subtitleChunk, translated);
     return translated;

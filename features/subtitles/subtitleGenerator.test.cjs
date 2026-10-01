@@ -323,3 +323,19 @@ test("supports a fallback Gemini model without changing Sorani formatting rules"
   assert.match(prompt, /Sulaymaniyah/);
   assert.match(prompt, /<i>, <\/i>, <b>, and <\/b>/);
 });
+
+test("Studio translation prompt removes formatting tags but preserves music and dashes", async () => {
+  const source = "1\n00:00:01,000 --> 00:00:03,000\n- ♪ Hello? ♪";
+  const result = "1\n00:00:01,000 --> 00:00:03,000\n- ♪ سڵاو؟ ♪";
+  let prompt = "";
+  __setSubtitleTestHooks({
+    fetch: async (_url, request) => {
+      prompt = JSON.parse(String(request.body || "{}")).contents[0].parts[0].text;
+      return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: result }] } }] }) };
+    },
+  });
+
+  assert.equal(await translateSrtViaGemini(source, "ckb", "test-key", undefined, true), result);
+  assert.match(prompt, /Remove all raw subtitle HTML formatting tags/);
+  assert.match(prompt, /- ♪ Hello\? ♪/);
+});
