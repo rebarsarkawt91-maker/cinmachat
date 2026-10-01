@@ -14604,6 +14604,7 @@ async function startServer() {
       return res.status(403).json({ error: 'دەسەڵاتی ستۆدیۆی ژێرنووس بەردەست نییە' });
     }
     const rawCues = req.body?.cues;
+    const retryUntranslated = req.body?.retryUntranslated === true;
     if (!Array.isArray(rawCues) || rawCues.length < 1 || rawCues.length > 25) {
       return res.status(400).json({ error: 'Provide 1–25 subtitle cues per batch' });
     }
@@ -14628,11 +14629,11 @@ async function startServer() {
       ).join('\n\n');
       let translated: string;
       try {
-        translated = await translateSrtViaGemini(source, 'ckb', serverGeminiApiKey, undefined, true);
+        translated = await translateSrtViaGemini(source, 'ckb', serverGeminiApiKey, undefined, true, retryUntranslated);
       } catch (error: any) {
         // A busy primary model must not strand an in-progress studio batch.
         if (!/Gemini API error (?:429|500|502|503|504)\b/.test(String(error?.message || ''))) throw error;
-        translated = await translateSrtViaGemini(source, 'ckb', serverGeminiApiKey, 'gemini-flash-lite-latest', true);
+        translated = await translateSrtViaGemini(source, 'ckb', serverGeminiApiKey, 'gemini-flash-lite-latest', true, retryUntranslated);
       }
       const blocks = translated.replace(/^\uFEFF/, '').trim().split(/\n\s*\n/);
       if (blocks.length !== cues.length) throw new Error('Gemini changed the number of subtitle cues');

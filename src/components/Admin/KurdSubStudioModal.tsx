@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Download, FileText, Loader2, Pause, RotateCcw, Sparkles, Subtitles, Upload, Wand2, X } from "lucide-react";
 import type { Movie } from "../../types";
 import { stripSubtitleHtmlTags } from "../../lib/subtitleText";
+import { getUntranslatedStudioBatches, isUntranslatedStudioCue } from "../../lib/studioUntranslatedCues";
 
 type StudioCue = {
   id: string;
@@ -307,6 +308,8 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
   const selectedMovie = movies.find((movie) => movie.id === selectedMovieId);
   const completedCount = cues.filter((cue) => cue.translatedText.trim()).length;
   const missingCount = cues.filter((cue) => !cue.originalText.trim() || !cue.translatedText.trim()).length;
+  const untranslatedCues = useMemo(() => cues.filter((cue) =>
+    isUntranslatedStudioCue(cue.originalText, cue.translatedText)), [cues]);
 
   const setSubtitleText = (text: string, key: string, alreadyTranslated = false, displaySource = source.trim()) => {
     const parsed = parseStudioText(text, alreadyTranslated);
@@ -432,12 +435,13 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
     }
   };
 
-  const translateBatch = async (batch: StudioCue[], signal: AbortSignal) => {
+  const translateBatch = async (batch: StudioCue[], signal: AbortSignal, retryUntranslated = false) => {
     const response = await fetch("/api/kurdsub/translate-batch", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Admin-Username": adminName },
       body: JSON.stringify({
         adminName,
+        retryUntranslated,
         cues: batch.map((cue) => ({
           index: cue.index, start: cue.start, end: cue.end, text: stripSubtitleHtmlTags(cue.originalText),
         })),
@@ -461,7 +465,7 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
       }
       setSingleCueBusy(singleCue.id);
       try {
-        const result = await translateBatch([singleCue], new AbortController().signal);
+        const result = await translateBatch([singleCue], new AbortController().signal, true);
         setCues((current) => current.map((cue) =>
           cue.id === singleCue.id ? { ...cue, translatedText: result[0].text } : cue));
         setMessage("ئەم ڕستەیە دووبارە وەرگێڕدرا.");
@@ -507,6 +511,51 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
       if (!controller.signal.aborted) {
         setTranslationStatus("failed");
         setMessage(error?.message || "وەرگێڕان سەرکەوتوو نەبوو؛ دووبارە هەوڵ بدە.");
+      }
+    } finally {
+      setTranslating(false);
+      translationController.current = null;
+    }
+  };
+
+  const retranslateUntranslated = async () => {
+    const batches = getUntranslatedStudioBatches(cues, BATCH_SIZE);
+    if (!batches.length || translating || busy) return;
+    pauseRequested.current = false;
+    setTranslating(true);
+    setTranslationStatus("running");
+    setMessage("");
+    let remaining = batches.reduce((total, batch) => total + batch.length, 0);
+    setProgress({ done: cues.length - remaining, total: cues.length });
+    const controller = new AbortController();
+    translationController.current = controller;
+    try {
+      for (const batch of batches) {
+        if (pauseRequested.current) break;
+        const result = await translateBatch(batch, controller.signal, true);
+        const translatedByIndex = new Map(result.map((item) => [item.index, item.text]));
+        const originalByIndex = new Map(batch.map((cue) => [cue.index, cue.originalText]));
+        setCues((current) => current.map((cue) => {
+          const translated = translatedByIndex.get(cue.index);
+          return translated === undefined || cue.originalText !== originalByIndex.get(cue.index) ||
+            !isUntranslatedStudioCue(cue.originalText, cue.translatedText) ||
+            isUntranslatedStudioCue(cue.originalText, translated)
+            ? cue : { ...cue, translatedText: translated };
+        }));
+        remaining -= batch.filter((cue) => {
+          const translated = translatedByIndex.get(cue.index);
+          return translated !== undefined && !isUntranslatedStudioCue(cue.originalText, translated);
+        }).length;
+        setProgress({ done: cues.length - remaining, total: cues.length });
+      }
+      setTranslationStatus(pauseRequested.current ? "paused" : "complete");
+      setMessage(pauseRequested.current ? "وەرگێڕان وەستا؛ دەتوانیت بەردەوام بیت." :
+        remaining ? `${remaining} ڕستە هێشتا وەرنەگێڕدراون؛ دەتوانیت دووبارە هەوڵ بدەیت.` :
+          "هەموو ڕستە وەرنەگێڕدراوەکان بە سۆرانی وەرگێڕدران.");
+    } catch (error: any) {
+      if (!controller.signal.aborted) {
+        setTranslationStatus("failed");
+        setMessage(error?.message || "وەرگێڕانی دووبارە سەرکەوتوو نەبوو؛ دووبارە هەوڵ بدە.");
       }
     } finally {
       setTranslating(false);
@@ -593,6 +642,14 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
             <span className="rounded-full border border-white/10 px-3 py-1 text-xs font-black text-slate-300">سەرچاوە: {cues.length} دێڕ</span>
             <span className="rounded-full border border-amber-400/50 bg-amber-400/10 px-3 py-1 text-xs font-black text-amber-200">سۆرانی: {completedCount} دێڕ</span>
             {corruptCount > 0 && <span className="rounded-full border border-red-400/50 px-3 py-1 text-xs text-red-200">{corruptCount} بەشی تێکچوو</span>}
+            {untranslatedCues.length > 0 && <span role="status" className="rounded-full border border-purple-400/60 bg-purple-500/15 px-3 py-1 text-xs font-black text-purple-100 kurdish-text">
+              ⚠️ {untranslatedCues.length} ڕستەی ئینگلیزی نەبووە بە کوردی
+            </span>}
+            {untranslatedCues.length > 0 && <button type="button" onClick={() => void retranslateUntranslated()}
+              disabled={busy || translating || !!singleCueBusy}
+              className="rounded-lg border border-purple-400/50 bg-purple-600 px-3 py-1.5 text-xs font-black text-white hover:bg-purple-500 disabled:opacity-50 kurdish-text">
+              ✨ وەرگێڕانی ڕستە وەرنەگێڕدراوەکان (Retranslate Untranslated Cues)
+            </button>}
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="گەڕان لە ڕستەکان…" className="mr-auto rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-xs text-white outline-none" />
           </section>
 

@@ -325,8 +325,8 @@ test("supports a fallback Gemini model without changing Sorani formatting rules"
 });
 
 test("Studio translation prompt removes formatting tags but preserves music and dashes", async () => {
-  const source = "1\n00:00:01,000 --> 00:00:03,000\n- ♪ Hello? ♪";
-  const result = "1\n00:00:01,000 --> 00:00:03,000\n- ♪ سڵاو؟ ♪";
+  const source = "1\n00:00:01,000 --> 00:00:03,000\n- ♪ [cheering fades] ♪";
+  const result = "1\n00:00:01,000 --> 00:00:03,000\n- ♪ [هاوار و خۆشی کاڵ دەبێتەوە] ♪";
   let prompt = "";
   __setSubtitleTestHooks({
     fetch: async (_url, request) => {
@@ -335,7 +335,9 @@ test("Studio translation prompt removes formatting tags but preserves music and 
     },
   });
 
-  assert.equal(await translateSrtViaGemini(source, "ckb", "test-key", undefined, true), result);
+  assert.equal(await translateSrtViaGemini(source, "ckb", "test-key", undefined, true, true), result);
   assert.match(prompt, /Remove all raw subtitle HTML formatting tags/);
-  assert.match(prompt, /- ♪ Hello\? ♪/);
+  assert.match(prompt, /Translate bracketed English sound captions/);
+  assert.match(prompt, /Do not return any English line verbatim/);
+  assert.match(prompt, /- ♪ \[cheering fades\] ♪/);
 });

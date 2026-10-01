@@ -277,7 +277,7 @@ function validateTranslatedSubtitleStructure(sourceText, translatedText) {
   }
 }
 
-async function translateSrtViaGemini(srtText, targetLang, userApiKey, modelOverride, stripFormattingTags = false) {
+async function translateSrtViaGemini(srtText, targetLang, userApiKey, modelOverride, stripFormattingTags = false, retryUntranslated = false) {
   const apiKey = userApiKey || process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY is not set; cannot translate subtitles");
   const model = modelOverride || GEMINI_MODEL;
@@ -302,7 +302,13 @@ async function translateSrtViaGemini(srtText, targetLang, userApiKey, modelOverr
         ? `6. Remove all raw subtitle HTML formatting tags, including <i>, </i>, <b>, </b>, and <font>. Output only clean dialogue; preserve music symbols, dashes, and punctuation.\n`
         : `6. Preserve every <i>, </i>, <b>, and </b> tag exactly, in the same cue and order. Translate only the text between tags.\n`) +
       `7. For Sorani, use natural contemporary Sulaymaniyah wording and grammar. Never transliterate the source language instead of translating it.\n` +
-      `8. Return the complete raw subtitle file only. Do not use markdown fences or commentary.\n\n` +
+      (stripFormattingTags
+        ? `8. Translate bracketed English sound captions and descriptions, including [cheering fades] and [heartbeat thumping], into natural Sorani. Keep the square brackets and sound meaning; do not copy English caption text unchanged.\n`
+        : "") +
+      (retryUntranslated
+        ? `9. These cues were previously missed. Translate every English word in dialogue and sound captions. Do not return any English line verbatim, except proper names and codes.\n`
+        : "") +
+      `10. Return the complete raw subtitle file only. Do not use markdown fences or commentary.\n\n` +
       `Input subtitle file:\n\n${subtitleChunk}`;
 
     const headers = { "Content-Type": "application/json" };
