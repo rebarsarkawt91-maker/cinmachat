@@ -199,7 +199,7 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
     setBusy(true);
     setMessage("");
     try {
-      const response = await fetch("/api/kurdsub/fetch-track", {
+      const response = await fetch("/api/subtitles/proxy", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Admin-Username": adminName },
         body: JSON.stringify({
