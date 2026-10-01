@@ -13913,7 +13913,7 @@ async function startServer() {
   type KurdSubRemoteTrack = {
     id: string;
     downloadUrl: string;
-    provider: 'legacy' | 'official' | 'embedded';
+    provider: 'official' | 'embedded';
     fileId: string;
     language: string;
     languageCode: string;
@@ -14112,6 +14112,7 @@ async function startServer() {
       const discovered = directSubtitleTracks([
         ...htmlTrackSources(text),
         ...subtitleUrlsInText(text),
+        ...playerNavigationUrls(text),
       ], imdbId, current.url);
       discovered.forEach((track) => tracks.set(track.downloadUrl, track));
 
@@ -14172,53 +14173,20 @@ async function startServer() {
 
       const configuredApiKey = openSubtitlesApiKey();
       let tracks: KurdSubRemoteTrack[] = [];
-      let legacyError = '';
       let embeddedTracks: KurdSubRemoteTrack[] = [];
-
-      // OpenSubtitles retired the .org API; use the supported v1 endpoint when
-      // the deployment is configured with its application key. The legacy
-      // request remains only as a development fallback for older installations.
-      if (configuredApiKey) {
-        tracks = await fetchOfficialOpenSubtitlesTracks(source.imdbNumeric, configuredApiKey, controller.signal);
-      } else {
-        try {
-          const searchResponse = await fetch(
-            `https://rest.opensubtitles.org/search/imdbid-${source.imdbNumeric}`,
-            { headers: KURDSUB_PROXY_HEADERS, signal: controller.signal },
-          );
-          if (!searchResponse.ok) throw new Error(`HTTP ${searchResponse.status}`);
-          const records = await searchResponse.json() as any[];
-          tracks = (Array.isArray(records) ? records : [])
-            .map((item: any): KurdSubRemoteTrack | null => {
-              const downloadUrl = String(item?.SubDownloadLink || '').trim();
-              if (!/^https:\/\/dl\.opensubtitles\.org\//i.test(downloadUrl)) return null;
-              const languageCode = String(item?.SubLanguageID || 'und').toLowerCase();
-              return {
-                id: kurdSubTrackId(source.imdbId, downloadUrl),
-                downloadUrl,
-                provider: 'legacy',
-                fileId: String(item?.IDSubtitleFile || ''),
-                language: String(item?.LanguageName || languageCode),
-                languageCode,
-                fileName: String(item?.SubFileName || 'subtitle.srt'),
-                downloads: Number(item?.SubDownloadsCnt || 0),
-                hearingImpaired: String(item?.SubHearingImpaired || '0') === '1',
-                fps: String(item?.MovieFPS || ''),
-              };
-            })
-            .filter((track): track is KurdSubRemoteTrack => Boolean(track));
-        } catch (error: any) {
-          legacyError = error?.message || 'legacy API request failed';
-        }
-      }
 
       // Some provider builds expose native VTT/SRT entries in their nested
       // player/config JSON. Use them without any OpenSubtitles credential.
       // The parser follows only the known GarageBand → cloudorchestra → vidsrc
       // chain and accepts only direct subtitle-file URLs.
-      if (!tracks.length) {
-        embeddedTracks = await scrapeGarageBandEmbeddedTracks(source.url, source.imdbId, controller.signal).catch(() => []);
-        tracks = embeddedTracks;
+      embeddedTracks = await scrapeGarageBandEmbeddedTracks(source.url, source.imdbId, controller.signal).catch(() => []);
+      tracks = embeddedTracks;
+
+      // The legacy OpenSubtitles endpoint is retired and returns 403 from many
+      // hosting networks. Do not call it: use REST v1 only when the deployment
+      // has a real application key, after the provider-native scraper.
+      if (!tracks.length && configuredApiKey) {
+        tracks = await fetchOfficialOpenSubtitlesTracks(source.imdbNumeric, configuredApiKey, controller.signal);
       }
 
       tracks = tracks
@@ -14227,7 +14195,7 @@ async function startServer() {
         // curated catalog size instead of rendering OpenSubtitles' full page.
         .slice(0, 28);
       if (!tracks.length && !configuredApiKey) {
-        throw new Error(`No embedded subtitle tracks were exposed and OpenSubtitles legacy API is unavailable (${legacyError}). Configure OPENSUBTITLES_API_KEY for the supported API.`);
+        throw new Error('This provider did not expose embedded subtitle tracks. Configure OPENSUBTITLES_API_KEY on the server to search the supported OpenSubtitles REST API.');
       }
       if (!tracks.length) throw new Error('No subtitle tracks were found');
       return { imdbId: source.imdbId, tracks };
