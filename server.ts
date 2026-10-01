@@ -14455,11 +14455,17 @@ async function startServer() {
         tracks = await fetchPublicCatalogTracks(source.imdbId, controller.signal);
       }
 
-      tracks = tracks
-        .sort((a, b) => b.downloads - a.downloads)
-        // Keep the Studio selector responsive and match the standalone Studio's
-        // curated catalog size instead of rendering OpenSubtitles' full page.
-        .slice(0, 28);
+      const rankedTracks = tracks.sort((a, b) => b.downloads - a.downloads);
+      const englishTrack = rankedTracks.find((track) => /^(?:en|eng)(?:[-_]|$)/i.test(track.languageCode) || /english/i.test(track.language));
+      const soraniTrack = rankedTracks.find((track) => /^(?:ckb|sor)(?:[-_]|$)/i.test(track.languageCode) || /sorani|سۆرانی/i.test(track.language));
+      const kurdishTrack = rankedTracks.find((track) => /^(?:ku|kur|kmr|sdh)(?:[-_]|$)/i.test(track.languageCode) || /kurd|کورد/i.test(track.language));
+      const pinnedTracks = [englishTrack, soraniTrack, kurdishTrack]
+        .filter((track): track is KurdSubRemoteTrack => Boolean(track))
+        .filter((track, index, list) => list.findIndex((candidate) => candidate.id === track.id) === index);
+      const pinnedIds = new Set(pinnedTracks.map((track) => track.id));
+      // Keep each available primary language discoverable even when its
+      // download rank falls outside the 28-card responsive selector.
+      tracks = [...pinnedTracks, ...rankedTracks.filter((track) => !pinnedIds.has(track.id))].slice(0, 28);
       if (!tracks.length) {
         return {
           imdbId: source.imdbId,
