@@ -14038,6 +14038,9 @@ async function startServer() {
       .map((candidate, index): KurdSubRemoteTrack | null => {
         const url = absoluteUrl(candidate.url, baseUrl);
         if (!url) return null;
+        // Preview/storyboard VTT files are timing metadata for hover thumbnails,
+        // not dialogue captions. Never offer them as a subtitle track.
+        if (/(?:thumb|thumbnail|storyboard|sprite|preview)/i.test(new URL(url).pathname)) return null;
         const languageCode = String(candidate.code || candidate.lang || 'und').toLowerCase();
         return {
           id: `embedded-${crypto.createHash('sha256').update(`${imdbId}:${url}`).digest('hex').slice(0, 32)}`,
@@ -14073,7 +14076,10 @@ async function startServer() {
   const playerNavigationUrls = (text: string) => [
     ...text.matchAll(/\b(?:src|href|data-src|data-api)=["']([^"']+)["']/gi),
     ...text.matchAll(/(?:["'](?:src|url|file|api|playerUrl|manifest|playlist)["']\s*[:=]\s*["'])([^"']+)["']/gi),
-  ].map((match) => String(match[1]).replace(/&amp;/g, '&').replace(/\\\//g, '/'));
+  ].map((match) => String(match[1])
+    .replace(/&amp;/g, '&')
+    .replace(/\\\//g, '/')
+    .replace(/\\u([0-9a-f]{4})/gi, (_match, hex) => String.fromCharCode(Number.parseInt(hex, 16))));
 
   const isKnownEmbedHop = (url: URL, root: URL) => {
     const host = url.hostname.toLowerCase();
@@ -14081,6 +14087,13 @@ async function startServer() {
       || /(?:^|\.)garageband\.rocks$/.test(host)
       || /(?:^|\.)cloudorchestranova\.com$/.test(host)
       || /(?:^|\.)vidsrc\.sh$/.test(host);
+  };
+
+  const isRelevantEmbedNavigation = (url: URL) => {
+    const path = url.pathname.toLowerCase();
+    if (/\.(?:css|png|jpe?g|gif|webp|svg|ico|woff2?|map)$/i.test(path)) return false;
+    if (/\.(?:js|mjs)$/i.test(path) && !/(?:subtitles?|captions?|tracks?)/i.test(path)) return false;
+    return /(?:\/embed\/|\/player\/|vs_src\.php|api\.php|manifest|playlist|subtitles?|captions?|tracks?|\.m3u8$)/i.test(`${path}${url.search}`);
   };
 
   const scrapeGarageBandEmbeddedTracks = async (
@@ -14093,9 +14106,9 @@ async function startServer() {
     const queued = [{ url: root.toString(), referer: root.toString(), depth: 0 }];
     const tracks = new Map<string, KurdSubRemoteTrack>();
 
-    // Six trusted hops cover the GarageBand gate, iframe and player-data chain
+    // Twelve relevant hops cover the GarageBand gate, iframe and player-data chain
     // without turning this endpoint into an unbounded remote fetcher.
-    while (queued.length && seen.size < 6) {
+    while (queued.length && seen.size < 12) {
       const current = queued.shift()!;
       if (seen.has(current.url)) continue;
       seen.add(current.url);
@@ -14121,8 +14134,9 @@ async function startServer() {
         const nextUrl = absoluteUrl(rawUrl, current.url);
         if (!nextUrl || seen.has(nextUrl)) continue;
         const next = new URL(nextUrl);
-        if (!isKnownEmbedHop(next, root)) continue;
-        queued.push({ url: nextUrl, referer: current.url, depth: current.depth + 1 });
+        if (!isKnownEmbedHop(next, root) || !isRelevantEmbedNavigation(next)) continue;
+        // Prefer the actual player/API branch over lower-value remaining links.
+        queued.unshift({ url: nextUrl, referer: current.url, depth: current.depth + 1 });
       }
     }
     return [...tracks.values()];
