@@ -13913,7 +13913,7 @@ async function startServer() {
   type KurdSubRemoteTrack = {
     id: string;
     downloadUrl: string;
-    provider: 'official' | 'embedded';
+    provider: 'official' | 'embedded' | 'catalog';
     fileId: string;
     language: string;
     languageCode: string;
@@ -13959,6 +13959,68 @@ async function startServer() {
 
   const openSubtitlesApiKey = () =>
     String(process.env.OPENSUBTITLES_API_KEY || process.env.OPEN_SUBTITLES_API_KEY || '').trim();
+
+  const PUBLIC_SUBTITLE_CATALOG_ORIGIN = 'https://subtitles.website';
+  const PUBLIC_SUBTITLE_CATALOG_BASE = `${PUBLIC_SUBTITLE_CATALOG_ORIGIN}/strapi`;
+  const publicCatalogCache = new Map<string, { expiresAt: number; tracks: KurdSubRemoteTrack[] }>();
+
+  const fetchPublicCatalogTracks = async (
+    imdbId: string,
+    signal: AbortSignal,
+  ): Promise<KurdSubRemoteTrack[]> => {
+    const cached = publicCatalogCache.get(imdbId);
+    if (cached && cached.expiresAt > Date.now()) return cached.tracks;
+
+    try {
+      const response = await fetch(
+        `${PUBLIC_SUBTITLE_CATALOG_BASE}/api/search/subtitles?imdb=${encodeURIComponent(imdbId)}`,
+        {
+          headers: {
+            'User-Agent': 'CinemaChat KurdSub Studio v1.0',
+            Accept: 'application/json',
+          },
+          signal,
+        },
+      );
+      if (!response.ok) return [];
+      const payload = await response.json() as { data?: any[] };
+      const candidates = (Array.isArray(payload?.data) ? payload.data : [])
+        .filter((entry: any) => /^(?:srt|vtt)$/i.test(String(entry?.format || '')))
+        .map((entry: any) => ({
+          url: `${PUBLIC_SUBTITLE_CATALOG_BASE}${String(entry?.download_url || '')}`,
+          label: String(entry?.release || entry?.film_title || 'subtitle'),
+          lang: String(entry?.language?.name || entry?.language?.code || 'und'),
+          code: String(entry?.language?.code || 'und'),
+          catalogId: String(entry?.id || ''),
+          downloads: Number(entry?.downloads || 0),
+        }));
+      const candidateMetadata = new Map(candidates.map((candidate) => [
+        absoluteUrl(candidate.url, PUBLIC_SUBTITLE_CATALOG_BASE),
+        candidate,
+      ]));
+      const tracks = directSubtitleTracks(candidates, imdbId, PUBLIC_SUBTITLE_CATALOG_BASE)
+        .filter((track) => {
+          const url = new URL(track.downloadUrl);
+          return url.origin === PUBLIC_SUBTITLE_CATALOG_ORIGIN && url.pathname.startsWith('/strapi/uploads/');
+        })
+        .map((track, index) => {
+          const metadata = candidateMetadata.get(track.downloadUrl);
+          return {
+            ...track,
+            id: `catalog-${kurdSubTrackId(imdbId, track.downloadUrl)}`,
+            provider: 'catalog' as const,
+            fileId: String(metadata?.catalogId || index),
+            downloads: Number(metadata?.downloads || 0),
+          };
+        });
+      // Guest catalog requests are rate limited; cache even an empty result
+      // briefly to prevent repeated clicks from exhausting its public quota.
+      publicCatalogCache.set(imdbId, { tracks, expiresAt: Date.now() + 60 * 60_000 });
+      return tracks;
+    } catch {
+      return [];
+    }
+  };
 
   const fetchOfficialOpenSubtitlesTracks = async (
     imdbNumeric: string,
@@ -14031,7 +14093,11 @@ async function startServer() {
       if (candidateUrl && /\.(?:vtt|srt)(?:[?#]|$)/i.test(candidateUrl)) {
         candidates.push({ url: candidateUrl, label: entry.label || entry.name || entry.title, lang: entry.lang || entry.language, code: entry.code || entry.srclang });
       }
-      Object.values(entry).forEach(visit);
+      // The direct URL has already been collected above. Do not recurse into
+      // url/src/file again or object-shaped catalog entries become duplicates.
+      Object.entries(entry).forEach(([key, child]) => {
+        if (!['url', 'src', 'file'].includes(key)) visit(child);
+      });
     };
     visit(value);
     return candidates
@@ -14168,7 +14234,7 @@ async function startServer() {
     return text.replace(/^\uFEFF/, '').trim();
   };
 
-  const fetchGarageBandTracks = async (embedUrl: unknown): Promise<{ imdbId: string; tracks: KurdSubRemoteTrack[] }> => {
+  const fetchGarageBandTracks = async (embedUrl: unknown): Promise<{ imdbId: string; tracks: KurdSubRemoteTrack[]; notice?: string }> => {
     const source = garageBandEmbedInfo(embedUrl);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 25_000);
@@ -14196,11 +14262,19 @@ async function startServer() {
       embeddedTracks = await scrapeGarageBandEmbeddedTracks(source.url, source.imdbId, controller.signal).catch(() => []);
       tracks = embeddedTracks;
 
+      // Public catalog fallback: it exposes direct caption files by IMDb ID and
+      // works without an OpenSubtitles credential. It is intentionally queried
+      // only after provider-native tracks and is protected by a short cache.
+      if (!tracks.length) {
+        tracks = await fetchPublicCatalogTracks(source.imdbId, controller.signal);
+      }
+
       // The legacy OpenSubtitles endpoint is retired and returns 403 from many
       // hosting networks. Do not call it: use REST v1 only when the deployment
       // has a real application key, after the provider-native scraper.
       if (!tracks.length && configuredApiKey) {
-        tracks = await fetchOfficialOpenSubtitlesTracks(source.imdbNumeric, configuredApiKey, controller.signal);
+        tracks = await fetchOfficialOpenSubtitlesTracks(source.imdbNumeric, configuredApiKey, controller.signal)
+          .catch(() => []);
       }
 
       tracks = tracks
@@ -14208,10 +14282,13 @@ async function startServer() {
         // Keep the Studio selector responsive and match the standalone Studio's
         // curated catalog size instead of rendering OpenSubtitles' full page.
         .slice(0, 28);
-      if (!tracks.length && !configuredApiKey) {
-        throw new Error('This provider did not expose embedded subtitle tracks. Configure OPENSUBTITLES_API_KEY on the server to search the supported OpenSubtitles REST API.');
+      if (!tracks.length) {
+        return {
+          imdbId: source.imdbId,
+          tracks: [],
+          notice: 'هیچ ژێرنووسێکی گشتی بۆ ئەم فیلمە نەدۆزرایەوە. دەتوانیت فایلێکی SRT/VTT باربکەیت.',
+        };
       }
-      if (!tracks.length) throw new Error('No subtitle tracks were found');
       return { imdbId: source.imdbId, tracks };
     } finally {
       clearTimeout(timer);

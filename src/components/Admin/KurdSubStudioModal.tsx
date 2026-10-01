@@ -165,7 +165,9 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
         setRemoteTracks(result.tracks);
         setSelectedTrackLanguage("all");
         setCues([]);
-        setMessage(`${result.tracks.length} ژێرنووس دۆزرایەوە. یەکێکیان هەڵبژێرە بۆ بارکردن.`);
+        setMessage(result.tracks.length
+          ? `${result.tracks.length} ژێرنووس دۆزرایەوە. یەکێکیان هەڵبژێرە بۆ بارکردن.`
+          : (result.notice || "هیچ ژێرنووسێک نەدۆزرایەوە. دەتوانیت فایلێکی SRT/VTT باربکەیت."));
         return;
       }
       // A YouTube watch/embed URL needs caption discovery, not a raw HTTP
