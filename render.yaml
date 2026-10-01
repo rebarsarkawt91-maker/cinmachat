@@ -42,6 +42,10 @@ services:
       # KurdSub proxy sends it as Api-Key and never returns it to the client.
       - key: OPENSUBTITLES_API_KEY
         sync: false
+      # Required for KurdSub Studio's server-side Gemini translations. Supply
+      # the value in Render Environment; never use a VITE_ client-side key.
+      - key: GEMINI_API_KEY
+        sync: false
       # Web Push (VAPID) — required for the notifications system. The PRIVATE key
       # must never reach the client or be committed. Generate locally with:
       #   npx web-push generate-vapid-keys --json

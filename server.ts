@@ -14614,6 +14614,9 @@ async function startServer() {
       !cue.text || cue.text.length > 2000 || /\d{2}:\d{2}:\d{2}[,.]\d{3}\s+-->/.test(cue.text))) {
       return res.status(400).json({ error: 'Invalid subtitle cue batch' });
     }
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(424).json({ error: 'GEMINI_API_KEY is not configured on the production backend' });
+    }
     try {
       const source = cues.map((cue) =>
         `${cue.index}\n${kurdSubBatchTimestamp(cue.start)} --> ${kurdSubBatchTimestamp(cue.end)}\n${cue.text}`,
@@ -14644,7 +14647,9 @@ async function startServer() {
       res.setHeader('Cache-Control', 'no-store');
       return res.json({ success: true, cues: result });
     } catch (error: any) {
-      return res.status(502).json({ error: error?.message || 'Gemini translation failed' });
+      // Cloudflare replaces upstream 502 bodies with a generic page. 424 keeps
+      // the actionable provider error available to the Studio retry UI.
+      return res.status(424).json({ error: error?.message || 'Gemini translation failed' });
     }
   });
 
