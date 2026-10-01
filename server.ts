@@ -17,6 +17,7 @@ import net from 'node:net';
 import { rateLimiter, sanitizationMiddleware, createAdminGuard, logFailedAttempt } from './security';
 import { generateSubtitle, translateSrtViaGemini } from './features/subtitles/subtitleGenerator.js';
 import { stripSubtitleHtmlTags } from './src/lib/subtitleText.js';
+import { hasNonSoraniLetters } from './src/lib/studioUntranslatedCues.js';
 import { getSearchConsoleStats } from './features/seo/searchConsole.js';
 import {
   SCHEMA_VERSION,
@@ -14646,6 +14647,9 @@ async function startServer() {
         const text = stripSubtitleHtmlTags(lines.slice(2).join('\n').trim());
         if (!text) {
           throw new Error(`Gemini returned an empty or malformed cue at ${cues[position].index}`);
+        }
+        if (hasNonSoraniLetters(text)) {
+          throw new Error(`Gemini returned Latin or non-Sorani script at cue ${cues[position].index}`);
         }
         return { index: cues[position].index, text };
       });

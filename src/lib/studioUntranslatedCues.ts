@@ -2,12 +2,19 @@ import { stripSubtitleHtmlTags } from "./subtitleText";
 
 const normalizeLine = (text: string) => stripSubtitleHtmlTags(text).trim().replace(/\s+/g, " ").toLowerCase();
 
+/** Lettering in a finished Sorani cue must use the Arabic/Kurdish alphabet. */
+export function hasNonSoraniLetters(text: string): boolean {
+  return [...stripSubtitleHtmlTags(text)].some((character) =>
+    /\p{L}/u.test(character) && !/\p{Script=Arabic}/u.test(character));
+}
+
 /** A missing translation or an English line copied unchanged needs a Sorani retry. */
 export function isUntranslatedStudioCue(originalText: string, translatedText: string): boolean {
   const original = stripSubtitleHtmlTags(originalText).trim();
   if (!original) return false; // There is no source to send to Gemini.
   const translated = stripSubtitleHtmlTags(translatedText).trim();
   if (!translated) return true;
+  if (hasNonSoraniLetters(translated)) return true;
   if (!/[a-z]/i.test(original)) return false;
 
   const translatedLines = new Set(translated.split(/\r?\n/).map(normalizeLine).filter(Boolean));

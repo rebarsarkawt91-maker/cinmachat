@@ -297,16 +297,21 @@ async function translateSrtViaGemini(srtText, targetLang, userApiKey, modelOverr
       `2. Preserve every cue number, timestamp line, identifier, blank line, and file structure exactly as provided.\n` +
       `3. Keep a 1:1 mapping: each original cue must remain one translated cue in the same order. Do not merge, split, reorder, skip, or summarize cues.\n` +
       `4. Keep the same number of subtitle text lines inside each cue whenever possible. If a cue has two text lines, return two translated text lines.\n` +
-      `5. Translate literally and conservatively according to the source text. Preserve names, brands, codes, and unclear words unchanged.\n` +
+      (stripFormattingTags
+        ? `5. Translate literally and conservatively. Write names and borrowed words phonetically with Sorani Arabic letters; never leave Latin letters in translated cue text.\n`
+        : `5. Translate literally and conservatively according to the source text. Preserve names, brands, codes, and unclear words unchanged.\n`) +
       (stripFormattingTags
         ? `6. Remove all raw subtitle HTML formatting tags, including <i>, </i>, <b>, </b>, and <font>. Output only clean dialogue; preserve music symbols, dashes, and punctuation.\n`
         : `6. Preserve every <i>, </i>, <b>, and </b> tag exactly, in the same cue and order. Translate only the text between tags.\n`) +
       `7. For Sorani, use natural contemporary Sulaymaniyah wording and grammar. Never transliterate the source language instead of translating it.\n` +
       (stripFormattingTags
+        ? `STRICT REQUIREMENT: Translate ONLY into Standard Central Kurdish (Sorani - Sulaymaniyah Dialect) using Kurdish Sorani Arabic Script (ئەلفوبێی سۆرانی/عەرەبی). NEVER output Latin Kurdish script under any circumstances. Every word with letters in the output must use Sorani Arabic script.\n`
+        : "") +
+      (stripFormattingTags
         ? `8. Translate bracketed English sound captions and descriptions, including [cheering fades] and [heartbeat thumping], into natural Sorani. Keep the square brackets and sound meaning; do not copy English caption text unchanged.\n`
         : "") +
       (retryUntranslated
-        ? `9. These cues were previously missed. Translate every English word in dialogue and sound captions. Do not return any English line verbatim, except proper names and codes.\n`
+        ? `9. These cues were previously missed. Translate every English word in dialogue and sound captions. Do not return any English line verbatim; write names phonetically in Sorani Arabic script.\n`
         : "") +
       `10. Return the complete raw subtitle file only. Do not use markdown fences or commentary.\n\n` +
       `Input subtitle file:\n\n${subtitleChunk}`;

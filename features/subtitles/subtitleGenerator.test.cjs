@@ -337,6 +337,8 @@ test("Studio translation prompt removes formatting tags but preserves music and 
 
   assert.equal(await translateSrtViaGemini(source, "ckb", "test-key", undefined, true, true), result);
   assert.match(prompt, /Remove all raw subtitle HTML formatting tags/);
+  assert.match(prompt, /NEVER output Latin Kurdish script under any circumstances/);
+  assert.match(prompt, /using Kurdish Sorani Arabic Script/);
   assert.match(prompt, /Translate bracketed English sound captions/);
   assert.match(prompt, /Do not return any English line verbatim/);
   assert.match(prompt, /- ♪ \[cheering fades\] ♪/);

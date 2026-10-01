@@ -3,6 +3,7 @@ import { AlertTriangle, Download, FileText, Loader2, Pause, RotateCcw, Sparkles,
 import type { Movie } from "../../types";
 import { stripSubtitleHtmlTags } from "../../lib/subtitleText";
 import { getUntranslatedStudioBatches, isUntranslatedStudioCue } from "../../lib/studioUntranslatedCues";
+import { runResilientStudioBatches } from "../../lib/studioTranslationRetry";
 
 type StudioCue = {
   id: string;
@@ -306,7 +307,8 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
   }, [cues, query]);
   const visibleTracks = useMemo(() => remoteTracks.filter((track) => matchesCategory(track, category)), [remoteTracks, category]);
   const selectedMovie = movies.find((movie) => movie.id === selectedMovieId);
-  const completedCount = cues.filter((cue) => cue.translatedText.trim()).length;
+  const completedCount = cues.filter((cue) => cue.translatedText.trim() &&
+    !isUntranslatedStudioCue(cue.originalText, cue.translatedText)).length;
   const missingCount = cues.filter((cue) => !cue.originalText.trim() || !cue.translatedText.trim()).length;
   const untranslatedCues = useMemo(() => cues.filter((cue) =>
     isUntranslatedStudioCue(cue.originalText, cue.translatedText)), [cues]);
@@ -436,25 +438,102 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
   };
 
   const translateBatch = async (batch: StudioCue[], signal: AbortSignal, retryUntranslated = false) => {
-    const response = await fetch("/api/kurdsub/translate-batch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Admin-Username": adminName },
-      body: JSON.stringify({
-        adminName,
-        retryUntranslated,
-        cues: batch.map((cue) => ({
-          index: cue.index, start: cue.start, end: cue.end, text: stripSubtitleHtmlTags(cue.originalText),
-        })),
-      }),
-      signal,
-    });
+    const requestController = new AbortController();
+    const abortFromParent = () => requestController.abort();
+    if (signal.aborted) abortFromParent();
+    else signal.addEventListener("abort", abortFromParent, { once: true });
+    let timedOut = false;
+    // Covers the server's primary and fallback Gemini requests, then retries.
+    const timer = window.setTimeout(() => { timedOut = true; requestController.abort(); }, 135_000);
+    let response: Response;
+    try {
+      response = await fetch("/api/kurdsub/translate-batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Admin-Username": adminName },
+        body: JSON.stringify({
+          adminName,
+          retryUntranslated,
+          cues: batch.map((cue) => ({
+            index: cue.index, start: cue.start, end: cue.end, text: stripSubtitleHtmlTags(cue.originalText),
+          })),
+        }),
+        signal: requestController.signal,
+      });
+    } catch (error) {
+      if (timedOut) throw new Error("Gemini subtitle batch timed out; retrying automatically");
+      throw error;
+    } finally {
+      window.clearTimeout(timer);
+      signal.removeEventListener("abort", abortFromParent);
+    }
     const result = await response.json().catch(() => ({}));
     if (!response.ok || !Array.isArray(result?.cues) || result.cues.length !== batch.length) {
-      throw new Error(result?.error || "Gemini translation failed");
+      const error = new Error(result?.error || "Gemini translation failed") as Error & { status?: number };
+      error.status = response.status;
+      throw error;
     }
-    return (result.cues as Array<{ index: number; text: string }>).map((cue) => ({
+    const translated = (result.cues as Array<{ index: number; text: string }>).map((cue) => ({
       ...cue, text: stripSubtitleHtmlTags(cue.text),
     }));
+    if (translated.some((cue, index) => isUntranslatedStudioCue(batch[index].originalText, cue.text))) {
+      throw new Error("Gemini returned an untranslated or non-Sorani cue; retrying automatically");
+    }
+    return translated;
+  };
+
+  const runStudioTranslation = async (pending: StudioCue[], retryUntranslated: boolean) => {
+    if (!pending.length || translating || busy) return;
+    pauseRequested.current = false;
+    setTranslating(true);
+    setTranslationStatus("running");
+    setMessage("");
+    let done = completedCount;
+    setProgress({ done, total: cues.length });
+    const controller = new AbortController();
+    translationController.current = controller;
+    try {
+      const outcome = await runResilientStudioBatches(pending, {
+        signal: controller.signal,
+        shouldPause: () => pauseRequested.current,
+        translate: (batch, signal) => translateBatch(batch, signal, retryUntranslated),
+        onSuccess: (batch, result) => {
+          const translatedByIndex = new Map(result.map((item) => [item.index, item.text]));
+          const sourceByIndex = new Map(batch.map((cue) => [cue.index, cue.originalText]));
+          setCues((current) => current.map((cue) => {
+            const translated = translatedByIndex.get(cue.index);
+            return translated === undefined || cue.originalText !== sourceByIndex.get(cue.index) ||
+              !isUntranslatedStudioCue(cue.originalText, cue.translatedText)
+              ? cue : { ...cue, translatedText: translated };
+          }));
+          done += batch.length;
+          setProgress({ done, total: cues.length });
+        },
+        onRetry: (batch, attempt) => setMessage(`دووبارە هەوڵدانەوەی ${batch.length} ڕستە (${attempt}/3)…`),
+        shouldRetry: (error) => {
+          const status = (error as { status?: number })?.status;
+          return !/Configure GEMINI_API_KEY|not configured/i.test(String((error as Error)?.message || "")) &&
+            (status === undefined || status === 424 || status === 429 || status >= 500);
+        },
+      });
+      if (outcome.paused) {
+        setTranslationStatus("paused");
+        setMessage("وەرگێڕان وەستا؛ دەتوانیت بەردەوام بیت.");
+      } else if (outcome.failed.length) {
+        setTranslationStatus("failed");
+        setMessage(`${outcome.failed.length} ڕستە دوای هەوڵدانەوەی خۆکار هێشتا تەواو نەبوون؛ دەتوانیت دووبارە هەوڵ بدەیت.`);
+      } else {
+        setTranslationStatus("complete");
+        setMessage("وەرگێڕانی سۆرانی تەواو بوو.");
+      }
+    } catch (error: any) {
+      if (!controller.signal.aborted) {
+        setTranslationStatus("failed");
+        setMessage(error?.message || "وەرگێڕان سەرکەوتوو نەبوو؛ دووبارە هەوڵ بدە.");
+      }
+    } finally {
+      setTranslating(false);
+      translationController.current = null;
+    }
   };
 
   const translateToSorani = async (singleCue?: StudioCue) => {
@@ -477,90 +556,16 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
       return;
     }
 
-    const pending = cues.filter((cue) => cue.originalText.trim() && !cue.translatedText.trim());
+    const pending = untranslatedCues;
     if (!pending.length) {
       setMessage("هەموو ڕستەکان وەرگێڕدراون.");
       return;
     }
-    pauseRequested.current = false;
-    setTranslating(true);
-    setTranslationStatus("running");
-    setMessage("");
-    let done = completedCount;
-    setProgress({ done, total: cues.length });
-    const controller = new AbortController();
-    translationController.current = controller;
-    try {
-      for (let offset = 0; offset < pending.length; offset += BATCH_SIZE) {
-        if (pauseRequested.current) break;
-        const batch = pending.slice(offset, offset + BATCH_SIZE);
-        const result = await translateBatch(batch, controller.signal);
-        const translatedByIndex = new Map(result.map((item) => [item.index, item.text]));
-        const submittedTextByIndex = new Map(batch.map((cue) => [cue.index, cue.originalText]));
-        setCues((current) => current.map((cue) => {
-          const translated = translatedByIndex.get(cue.index);
-          return translated === undefined || cue.originalText !== submittedTextByIndex.get(cue.index) || cue.translatedText.trim()
-            ? cue : { ...cue, translatedText: translated };
-        }));
-        done += result.length;
-        setProgress({ done, total: cues.length });
-      }
-      setTranslationStatus(pauseRequested.current ? "paused" : "complete");
-      setMessage(pauseRequested.current ? "وەرگێڕان وەستا؛ دەتوانیت بەردەوام بیت." : "وەرگێڕانی سۆرانی تەواو بوو.");
-    } catch (error: any) {
-      if (!controller.signal.aborted) {
-        setTranslationStatus("failed");
-        setMessage(error?.message || "وەرگێڕان سەرکەوتوو نەبوو؛ دووبارە هەوڵ بدە.");
-      }
-    } finally {
-      setTranslating(false);
-      translationController.current = null;
-    }
+    await runStudioTranslation(pending, false);
   };
 
   const retranslateUntranslated = async () => {
-    const batches = getUntranslatedStudioBatches(cues, BATCH_SIZE);
-    if (!batches.length || translating || busy) return;
-    pauseRequested.current = false;
-    setTranslating(true);
-    setTranslationStatus("running");
-    setMessage("");
-    let remaining = batches.reduce((total, batch) => total + batch.length, 0);
-    setProgress({ done: cues.length - remaining, total: cues.length });
-    const controller = new AbortController();
-    translationController.current = controller;
-    try {
-      for (const batch of batches) {
-        if (pauseRequested.current) break;
-        const result = await translateBatch(batch, controller.signal, true);
-        const translatedByIndex = new Map(result.map((item) => [item.index, item.text]));
-        const originalByIndex = new Map(batch.map((cue) => [cue.index, cue.originalText]));
-        setCues((current) => current.map((cue) => {
-          const translated = translatedByIndex.get(cue.index);
-          return translated === undefined || cue.originalText !== originalByIndex.get(cue.index) ||
-            !isUntranslatedStudioCue(cue.originalText, cue.translatedText) ||
-            isUntranslatedStudioCue(cue.originalText, translated)
-            ? cue : { ...cue, translatedText: translated };
-        }));
-        remaining -= batch.filter((cue) => {
-          const translated = translatedByIndex.get(cue.index);
-          return translated !== undefined && !isUntranslatedStudioCue(cue.originalText, translated);
-        }).length;
-        setProgress({ done: cues.length - remaining, total: cues.length });
-      }
-      setTranslationStatus(pauseRequested.current ? "paused" : "complete");
-      setMessage(pauseRequested.current ? "وەرگێڕان وەستا؛ دەتوانیت بەردەوام بیت." :
-        remaining ? `${remaining} ڕستە هێشتا وەرنەگێڕدراون؛ دەتوانیت دووبارە هەوڵ بدەیت.` :
-          "هەموو ڕستە وەرنەگێڕدراوەکان بە سۆرانی وەرگێڕدران.");
-    } catch (error: any) {
-      if (!controller.signal.aborted) {
-        setTranslationStatus("failed");
-        setMessage(error?.message || "وەرگێڕانی دووبارە سەرکەوتوو نەبوو؛ دووبارە هەوڵ بدە.");
-      }
-    } finally {
-      setTranslating(false);
-      translationController.current = null;
-    }
+    await runStudioTranslation(getUntranslatedStudioBatches(cues, BATCH_SIZE).flat(), true);
   };
 
   const applyToMovie = async () => {
@@ -695,7 +700,7 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
                 وەرگێڕدراوە: {translating ? progress.done : completedCount} / {cues.length} دێڕ
                 <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-amber-400 transition-all" style={{ width: String(cues.length ? Math.round(100 * (translating ? progress.done : completedCount) / cues.length) : 0) + "%" }} /></div>
               </div>
-              <button type="button" disabled={busy || translating || !cues.length || !cues.some((cue) => cue.originalText.trim() && !cue.translatedText.trim())}
+              <button type="button" disabled={busy || translating || !cues.length || !untranslatedCues.length}
                 onClick={() => void translateToSorani()} className="flex w-full items-center justify-center gap-2 rounded-xl bg-amber-400 px-3 py-3 text-sm font-black text-black disabled:opacity-50 kurdish-text">
                 {translationStatus === "paused" || translationStatus === "failed" ? <RotateCcw className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}
                 {translationStatus === "paused" ? "بەردەوامبوون" : translationStatus === "failed" ? "دووبارە هەوڵدانەوە" : "وەرگێڕانی سۆرانی"}
