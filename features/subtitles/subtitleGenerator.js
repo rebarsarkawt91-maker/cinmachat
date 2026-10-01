@@ -156,7 +156,7 @@ async function runWhisper(wavFilePath, outputDir) {
 function subtitleTargetLanguageName(targetLang) {
   const code = String(targetLang || "").toLowerCase();
   if (code === "ckb" || code === "ku" || code === "kur" || code === "sorani") {
-    return `Kurdish Sorani (Central Kurdish, Arabic script; language code "${targetLang}")`;
+    return `modern, fluent Central Kurdish Sorani in the Sulaymaniyah dialect (Arabic script; language code "${targetLang}")`;
   }
   if (code === "en") return `English (language code "${targetLang}")`;
   return `language code "${targetLang}"`;
@@ -277,9 +277,10 @@ function validateTranslatedSubtitleStructure(sourceText, translatedText) {
   }
 }
 
-async function translateSrtViaGemini(srtText, targetLang, userApiKey) {
+async function translateSrtViaGemini(srtText, targetLang, userApiKey, modelOverride) {
   const apiKey = userApiKey || process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY is not set; cannot translate subtitles");
+  const model = modelOverride || GEMINI_MODEL;
   const sanitizedSource = sanitizeSubtitleText(srtText);
   if (!sanitizedSource) throw new Error("Subtitle file is empty after metadata cleanup");
 
@@ -293,7 +294,9 @@ async function translateSrtViaGemini(srtText, targetLang, userApiKey) {
       `3. Keep a 1:1 mapping: each original cue must remain one translated cue in the same order. Do not merge, split, reorder, skip, or summarize cues.\n` +
       `4. Keep the same number of subtitle text lines inside each cue whenever possible. If a cue has two text lines, return two translated text lines.\n` +
       `5. Translate literally and conservatively according to the source text. Preserve names, brands, codes, and unclear words unchanged.\n` +
-      `6. Return the complete raw subtitle file only. Do not use markdown fences or commentary.\n\n` +
+      `6. Preserve every <i>, </i>, <b>, and </b> tag exactly, in the same cue and order. Translate only the text between tags.\n` +
+      `7. For Sorani, use natural contemporary Sulaymaniyah wording and grammar. Never transliterate the source language instead of translating it.\n` +
+      `8. Return the complete raw subtitle file only. Do not use markdown fences or commentary.\n\n` +
       `Input subtitle file:\n\n${subtitleChunk}`;
 
     const headers = { "Content-Type": "application/json" };
@@ -304,7 +307,7 @@ async function translateSrtViaGemini(srtText, targetLang, userApiKey) {
     let response;
     try {
       response = await subtitleRuntime.fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
         {
           method: "POST",
           headers,
@@ -349,14 +352,14 @@ async function translateSrtViaGemini(srtText, targetLang, userApiKey) {
 
   const chunks = splitIntoChunks(sanitizedSource);
   if (chunks.length > 1) {
-    log(`step 3/3: translating ${sanitizedSource.trim().split("\n").length} lines in ${chunks.length} Gemini chunks to "${targetLang}" (${GEMINI_MODEL})`);
+    log(`step 3/3: translating ${sanitizedSource.trim().split("\n").length} lines in ${chunks.length} Gemini chunks to "${targetLang}" (${model})`);
     chunks.forEach((c, i) => log(`  Gemini chunk ${i + 1}/${chunks.length} (${c.length} chars)`));
     const results = await Promise.all(chunks.map((chunk) => translateChunk(chunk)));
     const translatedChunks = results.map((r) => r.replace(/\n+$/g, ""));
     const trailingNewline = /\n$/.test(sanitizedSource) ? "\n" : "";
     return `${translatedChunks.join("\n\n")}${trailingNewline}`;
   }
-  log(`step 3/3: translating ${sanitizedSource.trim().split("\n").length} lines to "${targetLang}" with Gemini (${GEMINI_MODEL})`);
+  log(`step 3/3: translating ${sanitizedSource.trim().split("\n").length} lines to "${targetLang}" with Gemini (${model})`);
   return translateChunk(sanitizedSource);
 }
 

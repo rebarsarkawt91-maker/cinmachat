@@ -14519,6 +14519,129 @@ async function startServer() {
   app.post('/api/subtitles/proxy', serveKurdSubTrack);
   app.post('/api/kurdsub/fetch-track', serveKurdSubTrack);
 
+  const kurdSubCueCountCache = new Map<string, { count: number; expiresAt: number }>();
+
+  // Counts are fetched in the background after discovery. The client supplies
+  // only IDs from a fresh server-side discovery, never download destinations.
+  app.post('/api/subtitles/tracks-counts', async (req, res) => {
+    if (!isKurdSubStudioRequester(req)) {
+      return res.status(403).json({ error: 'دەسەڵاتی ستۆدیۆی ژێرنووس بەردەست نییە' });
+    }
+    try {
+      const requestedIds: string[] = Array.isArray(req.body?.trackIds)
+        ? [...new Set<string>((req.body.trackIds as unknown[]).map((id) => String(id)))].slice(0, 28)
+        : [];
+      if (!requestedIds.length) return res.status(400).json({ error: 'Track IDs are required' });
+      const discovered = await fetchGarageBandTracks(req.body?.url);
+      if (String(req.body?.imdbId || '').toLowerCase() !== discovered.imdbId) {
+        return res.status(400).json({ error: 'Track source does not match the IMDb title' });
+      }
+      const allowed = new Map(discovered.tracks.map((track) => [track.id, track]));
+      if (requestedIds.some((id) => !allowed.has(id))) {
+        return res.status(400).json({ error: 'Unknown subtitle track' });
+      }
+      const counts: Record<string, number | null> = {};
+      let cursor = 0;
+      await Promise.all(Array.from({ length: Math.min(4, requestedIds.length) }, async () => {
+        while (cursor < requestedIds.length) {
+          const id = requestedIds[cursor++];
+          const cached = kurdSubCueCountCache.get(id);
+          if (cached && cached.expiresAt > Date.now()) {
+            counts[id] = cached.count;
+            continue;
+          }
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 20_000);
+          try {
+            const subtitle = await downloadKurdSubTrack(allowed.get(id)!, controller.signal);
+            const count = (subtitle.match(/\d{2}:\d{2}:\d{2}[,.]\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}[,.]\d{3}/g) || []).length;
+            counts[id] = count;
+            kurdSubCueCountCache.set(id, { count, expiresAt: Date.now() + 60 * 60_000 });
+          } catch {
+            counts[id] = null;
+          } finally {
+            clearTimeout(timer);
+          }
+        }
+      }));
+      res.setHeader('Cache-Control', 'private, max-age=60');
+      return res.json({ success: true, counts });
+    } catch (error: any) {
+      return res.status(422).json({ error: error?.message || 'Subtitle cue counts unavailable' });
+    }
+  });
+
+  type KurdSubBatchCue = { index: number; start: number; end: number; text: string };
+  const kurdSubBatchTimestamp = (seconds: number) => {
+    const milliseconds = Math.round(seconds * 1000);
+    const hours = Math.floor(milliseconds / 3_600_000);
+    const minutes = Math.floor((milliseconds % 3_600_000) / 60_000);
+    const wholeSeconds = Math.floor((milliseconds % 60_000) / 1000);
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(wholeSeconds).padStart(2, '0')},${String(milliseconds % 1000).padStart(3, '0')}`;
+  };
+
+  app.post('/api/kurdsub/translate-batch', async (req, res) => {
+    if (!isKurdSubStudioRequester(req)) {
+      return res.status(403).json({ error: 'دەسەڵاتی ستۆدیۆی ژێرنووس بەردەست نییە' });
+    }
+    const rawCues = req.body?.cues;
+    if (!Array.isArray(rawCues) || rawCues.length < 1 || rawCues.length > 20) {
+      return res.status(400).json({ error: 'Provide 1–20 subtitle cues per batch' });
+    }
+    // The shared request sanitizer HTML-escapes short body strings. Restore
+    // only subtitle-safe inline tags so Gemini can preserve their positions.
+    const restoreSubtitleTags = (value: string) => value
+      .replace(/&lt;(i|b)&gt;/gi, '<$1>')
+      .replace(/&lt;(?:&#x2f;|&#47;|\/)(i|b)&gt;/gi, '</$1>')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#x27;/gi, "'")
+      .replace(/&#x2f;/gi, '/')
+      .replace(/&amp;/gi, '&');
+    const cues: KurdSubBatchCue[] = rawCues.map((cue: any) => ({
+      index: Number(cue?.index),
+      start: Number(cue?.start),
+      end: Number(cue?.end),
+      text: restoreSubtitleTags(String(cue?.text || '').trim()),
+    }));
+    if (cues.some((cue) => !Number.isSafeInteger(cue.index) || cue.index < 1 ||
+      !Number.isFinite(cue.start) || !Number.isFinite(cue.end) || cue.start < 0 || cue.end <= cue.start ||
+      !cue.text || cue.text.length > 2000 || /\d{2}:\d{2}:\d{2}[,.]\d{3}\s+-->/.test(cue.text))) {
+      return res.status(400).json({ error: 'Invalid subtitle cue batch' });
+    }
+    try {
+      const source = cues.map((cue) =>
+        `${cue.index}\n${kurdSubBatchTimestamp(cue.start)} --> ${kurdSubBatchTimestamp(cue.end)}\n${cue.text}`,
+      ).join('\n\n');
+      let translated: string;
+      try {
+        translated = await translateSrtViaGemini(source, 'ckb');
+      } catch (error: any) {
+        // A busy primary model must not strand an in-progress studio batch.
+        if (!/Gemini API error (?:429|500|502|503|504)\b/.test(String(error?.message || ''))) throw error;
+        translated = await translateSrtViaGemini(source, 'ckb', undefined, 'gemini-flash-lite-latest');
+      }
+      const blocks = translated.replace(/^\uFEFF/, '').trim().split(/\n\s*\n/);
+      if (blocks.length !== cues.length) throw new Error('Gemini changed the number of subtitle cues');
+      const result = blocks.map((block, position) => {
+        const lines = block.trim().split(/\r?\n/);
+        const timing = `${kurdSubBatchTimestamp(cues[position].start)} --> ${kurdSubBatchTimestamp(cues[position].end)}`;
+        if (lines[0] !== String(cues[position].index) || lines[1] !== timing) {
+          throw new Error(`Gemini changed cue index or timing at ${cues[position].index}`);
+        }
+        const text = lines.slice(2).join('\n').trim();
+        const tags = (value: string) => value.match(/<\/?(?:i|b)>/gi)?.map((tag) => tag.toLowerCase()) || [];
+        if (!text || JSON.stringify(tags(text)) !== JSON.stringify(tags(cues[position].text))) {
+          throw new Error(`Gemini returned an empty or malformed cue at ${cues[position].index}`);
+        }
+        return { index: cues[position].index, text };
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({ success: true, cues: result });
+    } catch (error: any) {
+      return res.status(502).json({ error: error?.message || 'Gemini translation failed' });
+    }
+  });
+
   // GET /api/subtitles — lists every persisted subtitle file (newest first).
   app.get('/api/subtitles', async (req, res) => {
     try {

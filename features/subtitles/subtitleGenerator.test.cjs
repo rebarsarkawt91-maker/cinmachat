@@ -302,3 +302,24 @@ test("uses Kurdish Sorani target wording for ckb subtitles while preserving timi
   assert.match(geminiPrompt, /language code "ckb"/);
   assert.match(geminiPrompt, /Preserve every cue number/);
 });
+
+test("supports a fallback Gemini model without changing Sorani formatting rules", async () => {
+  process.env.GEMINI_API_KEY = "test-key";
+  let requestedUrl = "";
+  let prompt = "";
+  __setSubtitleTestHooks({
+    fetch: async (url, request) => {
+      requestedUrl = String(url);
+      prompt = JSON.parse(String(request.body || "{}")).contents[0].parts[0].text;
+      return {
+        ok: true,
+        json: async () => ({ candidates: [{ content: { parts: [{ text: SORANI_SRT }] } }] }),
+      };
+    },
+  });
+
+  assert.equal(await translateSrtViaGemini(ENGLISH_SRT, "ckb", undefined, "gemini-flash-lite-latest"), SORANI_SRT);
+  assert.match(requestedUrl, /models\/gemini-flash-lite-latest:generateContent/);
+  assert.match(prompt, /Sulaymaniyah/);
+  assert.match(prompt, /<i>, <\/i>, <b>, and <\/b>/);
+});
