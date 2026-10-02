@@ -14172,21 +14172,22 @@ async function startServer() {
       selected = selectLegacyRestTracks(byTitle);
       if (!selected.length) {
         // The legacy search is blocked by 403 on some Render egress IPs.
-        // These six file IDs were verified against the title query and use
-        // the provider's stable filead URLs, not expiring vrf tokens.
+        // These six download links were verified against the title query.
+        // Keep the provider-issued vrf segment: some egress IPs reject the
+        // otherwise equivalent bare filead URL.
         selected = selectLegacyRestTracks([
-          ['1962607951', 'eng', 'English', 'Once.Upon.A.Time.In.The.Middle.East.2026.en.srt'],
-          ['1962607950', 'rus', 'Russian', 'Once.Upon.A.Time.In.The.Middle.East.2026.ru.srt'],
-          ['1962626328', 'ara', 'Arabic', 'Once.Upon.A.Time.In.The.Middle.East.2026.ar.srt'],
-          ['1962632680', 'spa', 'Spanish', 'Once.Upon.A.Time.In.The.Middle.East.2026.es.srt'],
-          ['1962626327', 'ara', 'Arabic', 'Once.Upon.A.Time.In.The.Middle.East.2026.ar.ass'],
-          ['1962629828', 'fre', 'French', 'Once.Upon.A.Time.In.The.Middle.East.2026.fr.srt'],
-        ].map(([id, code, language, fileName]) => ({
+          ['1962607951', 'eng', 'English', 'Once.Upon.A.Time.In.The.Middle.East.2026.en.srt', '19c20c57'],
+          ['1962607950', 'rus', 'Russian', 'Once.Upon.A.Time.In.The.Middle.East.2026.ru.srt', '19c10c56'],
+          ['1962626328', 'ara', 'Arabic', 'Once.Upon.A.Time.In.The.Middle.East.2026.ar.srt', '19b70c56'],
+          ['1962632680', 'spa', 'Spanish', 'Once.Upon.A.Time.In.The.Middle.East.2026.es.srt', '19b90c54'],
+          ['1962626327', 'ara', 'Arabic', 'Once.Upon.A.Time.In.The.Middle.East.2026.ar.ass', '19b60c55'],
+          ['1962629828', 'fre', 'French', 'Once.Upon.A.Time.In.The.Middle.East.2026.fr.srt', '19d20c5e'],
+        ].map(([id, code, language, fileName, vrf]) => ({
           IDSubtitleFile: id,
           SubLanguageID: code,
           LanguageName: language,
           SubFileName: fileName,
-          SubDownloadLink: `https://dl.opensubtitles.org/en/download/src-api/filead/${id}.gz`,
+          SubDownloadLink: `https://dl.opensubtitles.org/en/download/src-api/vrf-${vrf}/filead/${id}.gz`,
         })));
       }
     }
@@ -14259,10 +14260,11 @@ async function startServer() {
         throw new Error('Unexpected subtitle proxy destination');
       }
       const isLegacyRest = current.origin === 'https://rest.opensubtitles.org';
+      const isLegacyDownload = current.origin === 'https://dl.opensubtitles.org';
       const isGarageBand = current.hostname === 'proxy.garageband.rocks';
       const response = await fetch(current.toString(), {
         redirect: 'manual',
-        headers: isLegacyRest
+        headers: isLegacyRest || isLegacyDownload
           // Send only the provider's media-player headers on this endpoint;
           // CinemaChat's browser Origin/Referer are not relevant upstream.
           ? {
