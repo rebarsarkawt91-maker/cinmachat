@@ -14089,7 +14089,7 @@ async function startServer() {
       `https://api.opensubtitles.com/api/v1/subtitles?imdb_id=${encodeURIComponent(imdbNumeric)}&order_by=download_count&order_direction=desc`,
       {
         headers: {
-          ...KURDSUB_PROXY_HEADERS,
+          'User-Agent': 'MPC-HC/1.9.24',
           'Api-Key': apiKey,
           Accept: 'application/json',
         },
@@ -14635,7 +14635,18 @@ async function startServer() {
     const timer = setTimeout(() => controller.abort(), 25_000);
     try {
       const source = await garageBandEmbedInfo(req.body?.url);
-      const tracks = await fetchLegacyRestOpenSubtitlesTracks(source.imdbNumeric, controller.signal);
+      let tracks: KurdSubRemoteTrack[];
+      try {
+        tracks = await fetchLegacyRestOpenSubtitlesTracks(source.imdbNumeric, controller.signal);
+      } catch (legacyError: any) {
+        const apiKey = openSubtitlesApiKey();
+        if (!apiKey) {
+          throw new Error(`${legacyError?.message || 'OpenSubtitles legacy search failed'}. Configure OPENSUBTITLES_API_KEY for the supported API.`);
+        }
+        // The supported .com API is a fallback only when the retired .org
+        // REST endpoint rejects the request; it is not a legacy scraper.
+        tracks = await fetchOfficialOpenSubtitlesTracks(source.imdbNumeric, apiKey, controller.signal);
+      }
       res.setHeader('Cache-Control', 'private, max-age=60');
       return res.json({ success: true, imdbId: source.imdbId, tracks });
     } catch (error: any) {
