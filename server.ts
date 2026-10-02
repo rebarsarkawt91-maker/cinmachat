@@ -20,6 +20,7 @@ import { stripSubtitleHtmlTags } from './src/lib/subtitleText.js';
 import { hasNonSoraniLetters } from './src/lib/studioUntranslatedCues.js';
 import { legacySubtitleFileUrl, parseLegacySubtitleListing } from './kurdSubLegacy';
 import { assSubtitleToSrt, legacyRestTitleQuery, selectLegacyRestTracks } from './kurdSubLegacyRest';
+import { parseSubdlTracks } from './subdlService';
 import { getSearchConsoleStats } from './features/seo/searchConsole.js';
 import {
   SCHEMA_VERSION,
@@ -13921,7 +13922,7 @@ async function startServer() {
   type KurdSubRemoteTrack = {
     id: string;
     downloadUrl: string;
-    provider: 'official' | 'embedded' | 'catalog' | 'legacy' | 'legacy-rest';
+    provider: 'official' | 'embedded' | 'catalog' | 'legacy' | 'legacy-rest' | 'subdl';
     fileId: string;
     language: string;
     languageCode: string;
@@ -14017,6 +14018,44 @@ async function startServer() {
 
   const openSubtitlesApiKey = () =>
     String(process.env.OPENSUBTITLES_API_KEY || process.env.OPEN_SUBTITLES_API_KEY || '').trim();
+
+  const subdlApiKey = () => String(process.env.SUBDL_API_KEY || '').trim();
+
+  const fetchSubdlTracks = async (imdbId: string, signal: AbortSignal): Promise<KurdSubRemoteTrack[]> => {
+    const key = subdlApiKey();
+    if (!key) return [];
+    const search = async (parameter: 'imdb_id' | 'film_name', value: string) => {
+      const url = new URL('https://api.subdl.com/api/v2/subtitles/search');
+      url.searchParams.set(parameter, value);
+      url.searchParams.set('type', 'movie');
+      url.searchParams.set('unpack', '1');
+      const response = await fetch(url, {
+        redirect: 'error',
+        headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
+        signal,
+      });
+      if (!response.ok) throw new Error(`SubDL search unavailable (HTTP ${response.status})`);
+      const payload = JSON.parse((await readKurdSubResponseBytes(response, KURDSUB_EMBED_MAX_BYTES)).toString('utf8'));
+      return parseSubdlTracks(payload, imdbId);
+    };
+    let results = await search('imdb_id', imdbId).catch(() => []);
+    if (!results.length) {
+      const title = await fetchVidsrcTitle(imdbId, signal).catch(() => '');
+      if (title) results = await search('film_name', title).catch(() => []);
+    }
+    return results.map((entry) => ({
+      id: `subdl-${entry.nId}`,
+      downloadUrl: `https://api.subdl.com/api/v2/subtitles/${entry.nId}/download?format=file`,
+      provider: 'subdl' as const,
+      fileId: entry.nId,
+      language: entry.language,
+      languageCode: entry.languageCode,
+      fileName: entry.fileName,
+      downloads: entry.downloads,
+      hearingImpaired: entry.hearingImpaired,
+      fps: entry.fps,
+    }));
+  };
 
   const PUBLIC_SUBTITLE_CATALOG_ORIGIN = 'https://subtitles.website';
   const PUBLIC_SUBTITLE_CATALOG_BASE = `${PUBLIC_SUBTITLE_CATALOG_ORIGIN}/strapi`;
@@ -14563,7 +14602,34 @@ async function startServer() {
   const downloadKurdSubTrack = async (selected: KurdSubRemoteTrack, signal: AbortSignal) => {
     const subtitleAccept = 'text/vtt,application/x-subrip,text/plain;q=0.9,*/*;q=0.1';
     let archiveResponse: Response;
-    if (selected.provider === 'official') {
+    if (selected.provider === 'subdl') {
+      const key = subdlApiKey();
+      if (!key || !/^[A-Za-z0-9_]{1,80}$/.test(selected.fileId)) {
+        throw new Error('SubDL subtitle credentials or track ID are invalid');
+      }
+      const endpoint = new URL(`https://api.subdl.com/api/v2/subtitles/${selected.fileId}/download?format=file`);
+      archiveResponse = await fetch(endpoint, {
+        redirect: 'manual',
+        headers: { Authorization: `Bearer ${key}`, Accept: subtitleAccept },
+        signal,
+      });
+      if (archiveResponse.status >= 300 && archiveResponse.status < 400) {
+        const location = archiveResponse.headers.get('location');
+        if (!location) throw new Error('SubDL download redirect was missing');
+        const destination = new URL(location, endpoint);
+        if (destination.origin !== 'https://dl.subdl.com' && destination.origin !== 'https://api.subdl.com') {
+          throw new Error('Unexpected SubDL download destination');
+        }
+        // Never forward the API key to the public download host.
+        archiveResponse = await fetch(destination, {
+          redirect: 'error',
+          headers: destination.origin === endpoint.origin
+            ? { Authorization: `Bearer ${key}`, Accept: subtitleAccept }
+            : { Accept: subtitleAccept },
+          signal,
+        });
+      }
+    } else if (selected.provider === 'official') {
       const configuredApiKey = openSubtitlesApiKey();
       if (!configuredApiKey) throw new Error('OpenSubtitles API key is not configured');
       const downloadRequest = await fetch('https://api.opensubtitles.com/api/v1/download', {
@@ -14625,7 +14691,11 @@ async function startServer() {
     const bytes = await readKurdSubResponseBytes(archiveResponse, KURDSUB_TRACK_MAX_BYTES);
     const srt = decodeKurdSubArchive(bytes);
     if (!srt) throw new Error('Subtitle archive is empty');
-    return assSubtitleToSrt(srt);
+    const normalized = assSubtitleToSrt(srt);
+    if (selected.provider === 'subdl' && !looksLikeSubtitleText(normalized)) {
+      throw new Error('SubDL did not return readable subtitle cues');
+    }
+    return normalized;
   };
 
   const kurdSubDiscoveryCache = new Map<string, { expiresAt: number; result: { imdbId: string; tracks: KurdSubRemoteTrack[]; notice?: string } }>();
@@ -14640,7 +14710,8 @@ async function startServer() {
       // A valid GarageBand URL already carries the canonical IMDb ID. Query
       // the public JSON result first, before a blocked iframe can consume the
       // whole timeout. No REST API key is needed for this legacy search.
-      let tracks = await fetchLegacyRestOpenSubtitlesTracks(source.imdbNumeric, controller.signal).catch(() => []);
+      let tracks = await fetchSubdlTracks(source.imdbId, controller.signal).catch(() => []);
+      if (!tracks.length) tracks = await fetchLegacyRestOpenSubtitlesTracks(source.imdbNumeric, controller.signal).catch(() => []);
       if (!tracks.length) {
         const configuredApiKey = openSubtitlesApiKey();
         // Keep the existing embed, REST v1, HTML-listing, and catalog paths as
