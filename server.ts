@@ -13963,7 +13963,10 @@ async function startServer() {
     if (!/^\/embed\/(?:movie|tv)(?:\/|$)/i.test(url.pathname)) {
       throw new Error('A GarageBand IMDb embed URL is required');
     }
-    let imdbId = url.pathname.match(/\/embed\/(?:movie|tv)\/(tt\d{7,10})(?:\/|$)/i)?.[1]?.toLowerCase();
+    const canonicalImdbId = (value: unknown) => String(value || '').match(/tt\d{7,10}/i)?.[0]?.toLowerCase();
+    let imdbId = canonicalImdbId(url.pathname) ||
+      canonicalImdbId(url.searchParams.get('imdb')) ||
+      canonicalImdbId(url.searchParams.get('mediaId'));
     if (!imdbId) {
       // Some embeds keep the IMDb ID in a player API response instead of the
       // path. Follow at most two trusted HTML/API hops; never evaluate scripts.
@@ -13979,14 +13982,23 @@ async function startServer() {
           });
           if (!response.ok) break;
           const body = (await readKurdSubResponseBytes(response, KURDSUB_EMBED_MAX_BYTES)).toString('utf8');
-          for (const match of body.matchAll(/(?:window\.)?(?:CFG|CONFIG)\s*=\s*/gi)) {
-            const config = extractBalancedJson(body, match.index + match[0].length) as Record<string, unknown> | null;
-            const configuredId = String(config?.imdb || config?.mediaId || '');
-            imdbId = configuredId.match(/tt\d{7,10}/i)?.[0]?.toLowerCase();
-            if (imdbId) break;
+          const dataApi = body.match(/<iframe\b[^>]*\bdata-api=["']([^"']+)["']/i)?.[1];
+          const dataApiUrl = dataApi && absoluteUrl(dataApi.replace(/&amp;/g, '&'), current);
+          if (dataApiUrl && isKnownEmbedHop(new URL(dataApiUrl), url)) {
+            const apiUrl = new URL(dataApiUrl);
+            imdbId = canonicalImdbId(apiUrl.pathname) ||
+              canonicalImdbId(apiUrl.searchParams.get('imdb')) ||
+              canonicalImdbId(apiUrl.searchParams.get('mediaId'));
+          }
+          if (!imdbId) {
+            for (const match of body.matchAll(/(?:window\.)?(?:CFG|CONFIG)\s*=\s*/gi)) {
+              const config = extractBalancedJson(body, match.index + match[0].length) as Record<string, unknown> | null;
+              imdbId = canonicalImdbId(config?.imdb) || canonicalImdbId(config?.mediaId);
+              if (imdbId) break;
+            }
           }
           if (!imdbId) imdbId = body.match(/["'](?:imdb|mediaId)["']\s*:\s*["'](tt\d{7,10})["']/i)?.[1]?.toLowerCase();
-          const next = playerNavigationUrls(body)
+          const next = (dataApiUrl && isKnownEmbedHop(new URL(dataApiUrl), url) ? dataApiUrl : '') || playerNavigationUrls(body)
             .map((candidate) => absoluteUrl(candidate, current))
             .find((candidate) => candidate && isKnownEmbedHop(new URL(candidate), url) && isRelevantEmbedNavigation(new URL(candidate)));
           if (!next || next === current) break;

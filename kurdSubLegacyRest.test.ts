@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { selectLegacyRestTracks } from './kurdSubLegacyRest';
 
-test('deduplicates and caps legacy REST tracks to two per language', () => {
+test('deduplicates legacy REST tracks without dropping releases from one language', () => {
   const entry = (id: number, code: string) => ({
     IDSubtitleFile: id,
     SubDownloadLink: `https://dl.opensubtitles.org/en/download/src-api/filead/${id}.gz`,
@@ -11,7 +11,7 @@ test('deduplicates and caps legacy REST tracks to two per language', () => {
     SubFileName: `release-${id}.srt`,
   });
   const tracks = selectLegacyRestTracks([entry(1, 'eng'), entry(1, 'eng'), entry(2, 'eng'), entry(3, 'eng'), entry(4, 'fre')]);
-  assert.deepEqual(tracks.map((track) => track.fileId), ['1', '2', '4']);
+  assert.deepEqual(tracks.map((track) => track.fileId), ['1', '2', '3', '4']);
   assert.equal(tracks[0].languageCode, 'eng');
 });
 
