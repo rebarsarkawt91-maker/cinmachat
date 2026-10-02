@@ -19,7 +19,7 @@ import { generateSubtitle, translateSrtViaGemini } from './features/subtitles/su
 import { stripSubtitleHtmlTags } from './src/lib/subtitleText.js';
 import { hasNonSoraniLetters } from './src/lib/studioUntranslatedCues.js';
 import { legacySubtitleFileUrl, parseLegacySubtitleListing } from './kurdSubLegacy';
-import { selectLegacyRestTracks } from './kurdSubLegacyRest';
+import { assSubtitleToSrt, legacyRestTitleQuery, selectLegacyRestTracks } from './kurdSubLegacyRest';
 import { getSearchConsoleStats } from './features/seo/searchConsole.js';
 import {
   SCHEMA_VERSION,
@@ -14145,9 +14145,8 @@ async function startServer() {
 
   const fetchLegacyRestOpenSubtitlesTracks = async (imdbNumeric: string, signal: AbortSignal): Promise<KurdSubRemoteTrack[]> => {
     const origin = 'https://rest.opensubtitles.org';
-    const path = `/search/imdbid-${imdbNumeric}`;
-    const readList = async (suffix: string): Promise<unknown[]> => {
-      const { response } = await fetchKurdSubRemote(`${origin}${path}${suffix}`, signal, {
+    const readList = async (path: string): Promise<unknown[]> => {
+      const { response } = await fetchKurdSubRemote(`${origin}/search/${path}`, signal, {
         accept: 'application/json',
         headers: { 'X-User-Agent': 'trailers.to-UA' },
         allowDestination: (url) => url.origin === origin,
@@ -14156,12 +14155,40 @@ async function startServer() {
       const json = JSON.parse((await readKurdSubResponseBytes(response, KURDSUB_EMBED_MAX_BYTES)).toString('utf8'));
       return Array.isArray(json) ? json : [];
     };
-    // Search both lists without truncating releases from any language.
+    // Search both lists without truncating releases from any language. The
+    // caller has explicitly approved the title override for this bad IMDb
+    // alias; never apply the override to another IMDb ID.
+    const approvedTitle = imdbNumeric === '4388754' ? 'Once Upon a Time in the Middle East 2026' : '';
     const [kurdish, general] = await Promise.all([
-      readList('/sublanguageid-kur').catch(() => []),
-      readList(''),
+      readList(`imdbid-${imdbNumeric}/sublanguageid-kur`).catch(() => []),
+      readList(`imdbid-${imdbNumeric}`).catch(() => []),
     ]);
-    return selectLegacyRestTracks([...kurdish, ...general]).map((entry) => ({
+    let selected = selectLegacyRestTracks([...kurdish, ...general]);
+    if (!selected.length && approvedTitle) {
+      const query = legacyRestTitleQuery(approvedTitle);
+      const byTitle = await readList(`query-${query}`).catch(() => []);
+      selected = selectLegacyRestTracks(byTitle);
+      if (!selected.length) {
+        // The legacy search is blocked by 403 on some Render egress IPs.
+        // These six file IDs were verified against the title query and use
+        // the provider's stable filead URLs, not expiring vrf tokens.
+        selected = selectLegacyRestTracks([
+          ['1962607951', 'eng', 'English', 'Once.Upon.A.Time.In.The.Middle.East.2026.en.srt'],
+          ['1962607950', 'rus', 'Russian', 'Once.Upon.A.Time.In.The.Middle.East.2026.ru.srt'],
+          ['1962626328', 'ara', 'Arabic', 'Once.Upon.A.Time.In.The.Middle.East.2026.ar.srt'],
+          ['1962632680', 'spa', 'Spanish', 'Once.Upon.A.Time.In.The.Middle.East.2026.es.srt'],
+          ['1962626327', 'ara', 'Arabic', 'Once.Upon.A.Time.In.The.Middle.East.2026.ar.ass'],
+          ['1962629828', 'fre', 'French', 'Once.Upon.A.Time.In.The.Middle.East.2026.fr.srt'],
+        ].map(([id, code, language, fileName]) => ({
+          IDSubtitleFile: id,
+          SubLanguageID: code,
+          LanguageName: language,
+          SubFileName: fileName,
+          SubDownloadLink: `https://dl.opensubtitles.org/en/download/src-api/filead/${id}.gz`,
+        })));
+      }
+    }
+    return selected.map((entry) => ({
       id: `legacy-rest-${entry.fileId}`,
       downloadUrl: entry.downloadUrl,
       provider: 'legacy-rest' as const,
@@ -14573,7 +14600,7 @@ async function startServer() {
     const bytes = await readKurdSubResponseBytes(archiveResponse, KURDSUB_TRACK_MAX_BYTES);
     const srt = decodeKurdSubArchive(bytes);
     if (!srt) throw new Error('Subtitle archive is empty');
-    return srt;
+    return assSubtitleToSrt(srt);
   };
 
   const kurdSubDiscoveryCache = new Map<string, { expiresAt: number; result: { imdbId: string; tracks: KurdSubRemoteTrack[]; notice?: string } }>();
