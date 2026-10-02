@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Download, FileText, Loader2, Pause, RotateCcw, Sparkles, Subtitles, Upload, Wand2, X } from "lucide-react";
+import { AlertTriangle, Download, FileText, Loader2, Pause, RotateCcw, Search, Sparkles, Subtitles, Upload, Wand2, X } from "lucide-react";
 import type { Movie } from "../../types";
+import { searchKurdSubMovies } from "../../lib/kurdSubMovieSearch";
 import { stripSubtitleHtmlTags } from "../../lib/subtitleText";
 import { getUntranslatedStudioBatches, isUntranslatedStudioCue } from "../../lib/studioUntranslatedCues";
 import { runResilientStudioBatches } from "../../lib/studioTranslationRetry";
@@ -190,6 +191,10 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
   const [selectedTrackId, setSelectedTrackId] = useState("");
   const [category, setCategory] = useState<TrackCategory>("all");
   const [selectedMovieId, setSelectedMovieId] = useState("");
+  const [movieQuery, setMovieQuery] = useState("");
+  const [moviePickerOpen, setMoviePickerOpen] = useState(false);
+  const [activeMovieIndex, setActiveMovieIndex] = useState(0);
+  const [successToast, setSuccessToast] = useState("");
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [translating, setTranslating] = useState(false);
@@ -307,6 +312,12 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
   }, [cues, query]);
   const visibleTracks = useMemo(() => remoteTracks.filter((track) => matchesCategory(track, category)), [remoteTracks, category]);
   const selectedMovie = movies.find((movie) => movie.id === selectedMovieId);
+  const matchingMovies = useMemo(() => searchKurdSubMovies(movies, movieQuery), [movies, movieQuery]);
+  useEffect(() => {
+    if (!successToast) return;
+    const timeout = window.setTimeout(() => setSuccessToast(""), 5000);
+    return () => window.clearTimeout(timeout);
+  }, [successToast]);
   const completedCount = cues.filter((cue) => cue.translatedText.trim() &&
     !isUntranslatedStudioCue(cue.originalText, cue.translatedText)).length;
   const missingCount = cues.filter((cue) => !cue.originalText.trim() || !cue.translatedText.trim()).length;
@@ -574,9 +585,11 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
       return;
     }
     setBusy(true);
+    setSuccessToast("");
     try {
       await onApply(selectedMovieId, exportSubtitle(cues, false));
-      setMessage("ژێرنووسی کوردی بە سەرکەوتوویی جێگیرکرا لەسەر فیلمەکە.");
+      setMessage("");
+      setSuccessToast("✨ ژێرنووسەکە بەسەرکەوتوویی لەسەر فیلمەکە جێگیرکرا");
     } catch (error: any) {
       setMessage(error?.message || "جێگیرکردنی ژێرنووس سەرکەوتوو نەبوو");
     } finally {
@@ -691,11 +704,42 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
             </div>
 
             <aside className="space-y-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <label className="block text-xs font-black text-slate-300 kurdish-text">جێگیرکردن لەسەر فیلم
-                <select value={selectedMovieId} onChange={(event) => setSelectedMovieId(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/40 p-3 text-sm text-white">
-                  <option value="">فیلم هەڵبژێرە</option>{movies.map((movie) => <option key={movie.id} value={movie.id}>{movie.title}</option>)}
-                </select>
-              </label>
+              <div className="relative text-xs font-black text-slate-300 kurdish-text" onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node)) setMoviePickerOpen(false);
+              }}>
+                <label htmlFor="kurdsub-movie-search">جێگیرکردن لەسەر فیلم</label>
+                <div className="relative mt-2">
+                  <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <input id="kurdsub-movie-search" type="text" role="combobox" autoComplete="off"
+                    aria-autocomplete="list" aria-expanded={moviePickerOpen} aria-controls="kurdsub-movie-options"
+                    aria-activedescendant={moviePickerOpen && matchingMovies[activeMovieIndex] ? `kurdsub-movie-${matchingMovies[activeMovieIndex].id}` : undefined}
+                    value={moviePickerOpen ? movieQuery : selectedMovie?.title || movieQuery}
+                    onFocus={() => { setMovieQuery(""); setActiveMovieIndex(0); setMoviePickerOpen(true); }}
+                    onChange={(event) => { setMovieQuery(event.target.value); setSelectedMovieId(""); setActiveMovieIndex(0); setMoviePickerOpen(true); }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") { setMoviePickerOpen(false); return; }
+                      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                        event.preventDefault();
+                        setMoviePickerOpen(true);
+                        setActiveMovieIndex((index) => Math.max(0, Math.min(matchingMovies.length - 1, index + (event.key === "ArrowDown" ? 1 : -1))));
+                      } else if (event.key === "Enter" && moviePickerOpen && matchingMovies[activeMovieIndex]) {
+                        event.preventDefault();
+                        setSelectedMovieId(matchingMovies[activeMovieIndex].id);
+                        setMovieQuery(matchingMovies[activeMovieIndex].title);
+                        setMoviePickerOpen(false);
+                      }
+                    }}
+                    placeholder="فیلم هەڵبژێرە / ناوی فیلم بنووسە"
+                    className="w-full rounded-xl border border-white/10 bg-black/40 py-3 pl-10 pr-3 text-sm text-white outline-none focus:border-amber-400/60" />
+                </div>
+                {moviePickerOpen && <div id="kurdsub-movie-options" role="listbox" className="absolute bottom-full z-30 mb-2 max-h-56 w-full overflow-y-auto rounded-xl border border-white/20 bg-slate-950 p-1 shadow-2xl">
+                  {matchingMovies.length ? matchingMovies.map((movie, index) => <button key={movie.id} id={`kurdsub-movie-${movie.id}`} type="button" role="option"
+                    aria-selected={movie.id === selectedMovieId} onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => { setSelectedMovieId(movie.id); setMovieQuery(movie.title); setMoviePickerOpen(false); }}
+                    className={`block w-full rounded-lg px-3 py-2 text-start text-sm text-white hover:bg-white/10 ${index === activeMovieIndex ? "bg-white/10" : ""}`}>{movie.title}</button>)
+                    : <p className="px-3 py-2 text-sm text-slate-400">هیچ فیلمێک نەدۆزرایەوە</p>}
+                </div>}
+              </div>
               <div role="status" aria-live="polite" className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-3 text-xs font-black text-amber-100 kurdish-text">
                 وەرگێڕدراوە: {translating ? progress.done : completedCount} / {cues.length} دێڕ
                 <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-amber-400 transition-all" style={{ width: String(cues.length ? Math.round(100 * (translating ? progress.done : completedCount) / cues.length) : 0) + "%" }} /></div>
@@ -718,6 +762,7 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
             </aside>
           </section>
           {message && <p role="alert" className="rounded-xl border border-amber-400/20 bg-amber-400/10 p-3 text-sm font-bold text-amber-100 kurdish-text">{message}</p>}
+          {successToast && <div role="status" aria-live="polite" className="fixed bottom-6 right-6 z-[100] max-w-sm rounded-xl border border-emerald-400/40 bg-emerald-950 px-4 py-3 text-sm font-bold text-emerald-100 shadow-2xl kurdish-text">{successToast}</div>}
         </div>
       </div>
     </div>

@@ -11808,10 +11808,9 @@ async function startServer() {
     res.json({ success: true, firestoreDeleted });
   });
 
-  // Full movie editor. This route is intentionally owner-only even though
-  // some other dashboard actions are available to deputies. Fields are
-  // allowlisted, and an explicit empty string means "clear this field".
-  app.patch('/api/admin/movies/:id/subtitle', async (req, res) => {
+  // Keep POST (Studio apply) and PATCH (existing uploads) on the same
+  // subtitle-only persistence path so both update the movie record.
+  const saveMovieSubtitle = async (req: express.Request, res: express.Response) => {
     const { id } = req.params;
     const adminName = String(req.headers['x-admin-username'] || '').trim();
     const normalizedAdminName = adminName.toLowerCase();
@@ -11900,8 +11899,13 @@ async function startServer() {
       console.error(`[movies] subtitle upload failed for ${id}:`, error?.message || error);
       return res.status(500).json({ success: false, error: 'Subtitle save failed' });
     }
-  });
+  };
+  app.post('/api/admin/movies/:id/subtitle', saveMovieSubtitle);
+  app.patch('/api/admin/movies/:id/subtitle', saveMovieSubtitle);
 
+  // Full movie editor. This route is intentionally owner-only even though
+  // some other dashboard actions are available to deputies. Fields are
+  // allowlisted, and an explicit empty string means "clear this field".
   app.patch('/api/admin/movies/:id', async (req, res) => {
     const { id } = req.params;
     const rawAdminName = String(

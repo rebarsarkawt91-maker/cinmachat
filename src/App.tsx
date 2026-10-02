@@ -13166,18 +13166,17 @@ export default function App() {
       throw new Error("دەسەڵات یان داتای ژێرنووس بەردەست نییە");
     }
 
-    // The existing protected movie PATCH endpoint persists inline VTT in both
-    // the primary store and Firestore, making this track available to viewers.
-    const response = await fetchApi(`/api/admin/movies/${encodeURIComponent(movieId)}`, {
-      method: "PATCH",
+    // The subtitle-specific endpoint persists the finished VTT on this movie.
+    const response = await fetchApi(`/api/admin/movies/${encodeURIComponent(movieId)}/subtitle`, {
+      method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Admin-Username": currentUser?.username || "",
       },
-      body: JSON.stringify({ subtitleText, adminName: currentUser?.username || "" }),
+      body: JSON.stringify({ subtitleText, movie: movies.find((movie) => movie.id === movieId), adminName: currentUser?.username || "" }),
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok || !payload?.movie) {
+    if (!response.ok || !payload?.success || !payload?.movie || payload.movie.id !== movieId) {
       throw new Error(payload?.error || "جێگیرکردنی ژێرنووس سەرکەوتوو نەبوو");
     }
 
