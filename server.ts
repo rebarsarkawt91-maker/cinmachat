@@ -14229,19 +14229,27 @@ async function startServer() {
       if (options.allowDestination && !options.allowDestination(current)) {
         throw new Error('Unexpected subtitle proxy destination');
       }
+      const isLegacyRest = current.origin === 'https://rest.opensubtitles.org';
+      const isGarageBand = current.hostname === 'proxy.garageband.rocks';
       const response = await fetch(current.toString(), {
         redirect: 'manual',
-        headers: {
-          ...KURDSUB_PROXY_HEADERS,
-          ...(current.hostname === 'proxy.garageband.rocks'
-            ? { Origin: 'https://proxy.garageband.rocks', Referer: 'https://proxy.garageband.rocks/' }
-            : {}),
-          Accept: options.accept,
-          ...(current.hostname === 'proxy.garageband.rocks'
-            ? {}
-            : { Referer: options.referer || KURDSUB_PROXY_HEADERS.Referer }),
-          ...options.headers,
-        },
+        headers: isLegacyRest
+          // Send only the provider's media-player headers on this endpoint;
+          // CinemaChat's browser Origin/Referer are not relevant upstream.
+          ? {
+              'User-Agent': 'MPC-HC/1.9.24',
+              'X-User-Agent': 'trailers.to-UA',
+              Accept: options.accept,
+              ...options.headers,
+            }
+          : {
+              ...KURDSUB_PROXY_HEADERS,
+              ...(isGarageBand
+                ? { Origin: 'https://proxy.garageband.rocks', Referer: 'https://proxy.garageband.rocks/' }
+                : { Referer: options.referer || KURDSUB_PROXY_HEADERS.Referer }),
+              Accept: options.accept,
+              ...options.headers,
+            },
         signal,
       });
       if (response.status < 300 || response.status >= 400) {
