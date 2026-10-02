@@ -14155,10 +14155,10 @@ async function startServer() {
       const json = JSON.parse((await readKurdSubResponseBytes(response, KURDSUB_EMBED_MAX_BYTES)).toString('utf8'));
       return Array.isArray(json) ? json : [];
     };
-    // Search both lists without truncating releases from any language. The
-    // caller has explicitly approved the title override for this bad IMDb
-    // alias; never apply the override to another IMDb ID.
-    const approvedTitle = ['4388754', '34386754'].includes(imdbNumeric)
+    // Search by the URL's IMDb ID first. A title query is only a fallback;
+    // for ordinary IDs, verify the query results against the same IMDb ID.
+    const isApprovedAlias = ['4388754', '34386754'].includes(imdbNumeric);
+    const approvedTitle = isApprovedAlias
       ? 'Once Upon a Time in the Middle East 2026'
       : '';
     const [kurdish, general] = await Promise.all([
@@ -14166,11 +14166,21 @@ async function startServer() {
       readList(`imdbid-${imdbNumeric}`).catch(() => []),
     ]);
     let selected = selectLegacyRestTracks([...kurdish, ...general]);
-    if (!selected.length && approvedTitle) {
-      const query = legacyRestTitleQuery(approvedTitle);
-      const byTitle = await readList(`query-${query}`).catch(() => []);
-      selected = selectLegacyRestTracks(byTitle);
-      if (!selected.length) {
+    if (!selected.length) {
+      const fallbackTitle = approvedTitle || await fetchVidsrcTitle(`tt${imdbNumeric}`, signal).catch(() => '');
+      const query = legacyRestTitleQuery(fallbackTitle);
+      if (query) {
+        const byTitle = await readList(`query-${query}`).catch(() => []);
+        const matched = byTitle.filter((value) => {
+          if (isApprovedAlias) return true;
+          if (!value || typeof value !== 'object') return false;
+          const entry = value as Record<string, unknown>;
+          const resultId = String(entry.IDMovieImdb || '').replace(/^tt/i, '');
+          return resultId === imdbNumeric || (!resultId && String(entry.MovieName || '').trim().toLowerCase() === fallbackTitle.toLowerCase());
+        });
+        selected = selectLegacyRestTracks(matched);
+      }
+      if (!selected.length && isApprovedAlias) {
         // The legacy search is blocked by 403 on some Render egress IPs.
         // These six download links were verified against the title query.
         // Keep the provider-issued vrf segment: some egress IPs reject the
@@ -14418,6 +14428,17 @@ async function startServer() {
     if (!response.ok) return [];
     const payload = JSON.parse((await readKurdSubResponseBytes(response, KURDSUB_EMBED_MAX_BYTES)).toString('utf8'));
     return directSubtitleTracks(payload?.default_subs || payload?.subtitle_tracks || [], imdbId, origin);
+  };
+
+  const fetchVidsrcTitle = async (imdbId: string, signal: AbortSignal): Promise<string> => {
+    const origin = 'https://data.vidsrc.sh';
+    const { response } = await fetchKurdSubRemote(`${origin}/api.php?type=movie&imdb=${encodeURIComponent(imdbId)}`, signal, {
+      accept: 'application/json',
+      allowDestination: (url) => url.origin === origin && url.pathname === '/api.php',
+    });
+    if (!response.ok) return '';
+    const payload = JSON.parse((await readKurdSubResponseBytes(response, KURDSUB_EMBED_MAX_BYTES)).toString('utf8'));
+    return String(payload?.data?.title || '').trim().slice(0, 200);
   };
 
   const htmlTrackSources = (html: string) =>
@@ -14669,42 +14690,18 @@ async function startServer() {
     }
   };
 
-  // Studio analysis prefers OpenSubtitles, then the provider's own subtitle
-  // metadata. An upstream 403 must not hide valid embedded caption tracks.
+  // Use the same discovery pipeline as track download and cue counts. A
+  // separate analyzer path previously skipped the HTML/title fallbacks.
   app.post('/api/subtitles/analyze', async (req, res) => {
     if (!isKurdSubStudioRequester(req)) {
       return res.status(403).json({ error: 'دەسەڵاتی ستۆدیۆی ژێرنووس بەردەست نییە' });
     }
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 25_000);
     try {
-      const source = await garageBandEmbedInfo(req.body?.url);
-      let tracks: KurdSubRemoteTrack[] = [];
-      try {
-        tracks = await fetchLegacyRestOpenSubtitlesTracks(source.imdbNumeric, controller.signal);
-      } catch {
-        const apiKey = openSubtitlesApiKey();
-        if (apiKey) {
-          // Use the supported API when configured; do not make it a hard
-          // requirement for discovering tracks exposed by the video provider.
-          tracks = await fetchOfficialOpenSubtitlesTracks(source.imdbNumeric, apiKey, controller.signal).catch(() => []);
-        }
-      }
-      if (!tracks.length) {
-        tracks = await fetchVidsrcDefaultTracks(source.imdbId, controller.signal).catch(() => []);
-      }
-      if (!tracks.length) tracks = await scrapeGarageBandEmbeddedTracks(source.url, source.imdbId, controller.signal);
+      const result = await fetchGarageBandTracks(req.body?.url);
       res.setHeader('Cache-Control', 'private, max-age=60');
-      return res.json({
-        success: true,
-        imdbId: source.imdbId,
-        tracks,
-        ...(!tracks.length ? { notice: 'هیچ ژێرنووسێکی بەردەست لە سەرچاوەکەدا نەدۆزرایەوە. دەتوانیت فایلێکی SRT/VTT باربکەیت.' } : {}),
-      });
+      return res.json({ success: true, ...result });
     } catch (error: any) {
       return res.status(422).json({ error: error?.message || 'Subtitle track discovery failed' });
-    } finally {
-      clearTimeout(timer);
     }
   });
 
