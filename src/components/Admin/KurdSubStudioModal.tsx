@@ -257,7 +257,7 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
   useEffect(() => {
     if (!restored || !analyzedUrl || remoteTracks.length > 28) return;
     const controller = new AbortController();
-    void fetch("/api/kurdsub/analyze", {
+    void fetch("/api/subtitles/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Admin-Username": adminName },
       body: JSON.stringify({ url: analyzedUrl, adminName }),
@@ -391,7 +391,7 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
     setMessage("");
     try {
       if (/^https?:\/\/(?:[^/]+\.)?garageband\.rocks\/embed\/(?:movie|tv)\/tt\d{7,10}/i.test(value)) {
-        const response = await fetch("/api/kurdsub/analyze", {
+        const response = await fetch("/api/subtitles/analyze", {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Admin-Username": adminName },
           body: JSON.stringify({ url: value, adminName }),

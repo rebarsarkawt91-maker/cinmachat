@@ -14152,14 +14152,14 @@ async function startServer() {
         headers: { 'X-User-Agent': 'trailers.to-UA' },
         allowDestination: (url) => url.origin === origin,
       });
-      if (!response.ok) return [];
+      if (!response.ok) throw new Error(`OpenSubtitles search unavailable (HTTP ${response.status})`);
       const json = JSON.parse((await readKurdSubResponseBytes(response, KURDSUB_EMBED_MAX_BYTES)).toString('utf8'));
       return Array.isArray(json) ? json : [];
     };
-    // Ask for Kurdish first so those tracks survive the two-per-language cap.
+    // Search both lists without truncating releases from any language.
     const [kurdish, general] = await Promise.all([
       readList('/sublanguageid-kur').catch(() => []),
-      readList('').catch(() => []),
+      readList(''),
     ]);
     return selectLegacyRestTracks([...kurdish, ...general]).map((entry) => ({
       id: `legacy-rest-${entry.fileId}`,
@@ -14233,8 +14233,13 @@ async function startServer() {
         redirect: 'manual',
         headers: {
           ...KURDSUB_PROXY_HEADERS,
+          ...(current.hostname === 'proxy.garageband.rocks'
+            ? { Origin: 'https://proxy.garageband.rocks', Referer: 'https://proxy.garageband.rocks/' }
+            : {}),
           Accept: options.accept,
-          Referer: options.referer || KURDSUB_PROXY_HEADERS.Referer,
+          ...(current.hostname === 'proxy.garageband.rocks'
+            ? {}
+            : { Referer: options.referer || KURDSUB_PROXY_HEADERS.Referer }),
           ...options.headers,
         },
         signal,
@@ -14611,6 +14616,26 @@ async function startServer() {
       clearTimeout(timer);
     }
   };
+
+  // Studio analysis uses the keyless REST results directly. A failed REST
+  // request must be surfaced, not silently replaced with unrelated listings.
+  app.post('/api/subtitles/analyze', async (req, res) => {
+    if (!isKurdSubStudioRequester(req)) {
+      return res.status(403).json({ error: 'دەسەڵاتی ستۆدیۆی ژێرنووس بەردەست نییە' });
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 25_000);
+    try {
+      const source = await garageBandEmbedInfo(req.body?.url);
+      const tracks = await fetchLegacyRestOpenSubtitlesTracks(source.imdbNumeric, controller.signal);
+      res.setHeader('Cache-Control', 'private, max-age=60');
+      return res.json({ success: true, imdbId: source.imdbId, tracks });
+    } catch (error: any) {
+      return res.status(422).json({ error: error?.message || 'Subtitle track discovery failed' });
+    } finally {
+      clearTimeout(timer);
+    }
+  });
 
   app.post('/api/kurdsub/analyze', async (req, res) => {
     if (!isKurdSubStudioRequester(req)) {
