@@ -14377,6 +14377,18 @@ async function startServer() {
       .filter((track): track is KurdSubRemoteTrack => Boolean(track));
   };
 
+  const fetchVidsrcDefaultTracks = async (imdbId: string, signal: AbortSignal): Promise<KurdSubRemoteTrack[]> => {
+    const origin = 'https://data.vidsrc.sh';
+    const endpoint = `${origin}/api.php?type=movie&imdb=${encodeURIComponent(imdbId)}`;
+    const { response } = await fetchKurdSubRemote(endpoint, signal, {
+      accept: 'application/json',
+      allowDestination: (url) => url.origin === origin && url.pathname === '/api.php',
+    });
+    if (!response.ok) return [];
+    const payload = JSON.parse((await readKurdSubResponseBytes(response, KURDSUB_EMBED_MAX_BYTES)).toString('utf8'));
+    return directSubtitleTracks(payload?.default_subs || payload?.subtitle_tracks || [], imdbId, origin);
+  };
+
   const htmlTrackSources = (html: string) =>
     [...html.matchAll(/<track\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi)].flatMap((match) => {
       const kind = match[0].match(/\bkind=["']([^"']+)["']/i)?.[1]?.toLowerCase();
@@ -14581,7 +14593,8 @@ async function startServer() {
         const configuredApiKey = openSubtitlesApiKey();
         // Keep the existing embed, REST v1, HTML-listing, and catalog paths as
         // fallbacks when the public JSON service is unavailable or empty.
-        const [embeddedTracks, officialTracks, legacyTracks, catalogTracks] = await Promise.all([
+        const [providerTracks, embeddedTracks, officialTracks, legacyTracks, catalogTracks] = await Promise.all([
+          fetchVidsrcDefaultTracks(source.imdbId, controller.signal).catch(() => []),
           scrapeGarageBandEmbeddedTracks(source.url, source.imdbId, controller.signal).catch(() => []),
           configuredApiKey
             ? fetchOfficialOpenSubtitlesTracks(source.imdbNumeric, configuredApiKey, controller.signal).catch(() => [])
@@ -14590,7 +14603,7 @@ async function startServer() {
           fetchPublicCatalogTracks(source.imdbId, controller.signal),
         ]);
         const distinctTracks = new Map<string, KurdSubRemoteTrack>();
-        for (const track of [...embeddedTracks, ...officialTracks, ...legacyTracks, ...catalogTracks]) {
+        for (const track of [...providerTracks, ...embeddedTracks, ...officialTracks, ...legacyTracks, ...catalogTracks]) {
           if (!distinctTracks.has(track.id)) distinctTracks.set(track.id, track);
         }
         tracks = [...distinctTracks.values()];
@@ -14645,6 +14658,9 @@ async function startServer() {
           // requirement for discovering tracks exposed by the video provider.
           tracks = await fetchOfficialOpenSubtitlesTracks(source.imdbNumeric, apiKey, controller.signal).catch(() => []);
         }
+      }
+      if (!tracks.length) {
+        tracks = await fetchVidsrcDefaultTracks(source.imdbId, controller.signal).catch(() => []);
       }
       if (!tracks.length) tracks = await scrapeGarageBandEmbeddedTracks(source.url, source.imdbId, controller.signal);
       res.setHeader('Cache-Control', 'private, max-age=60');
