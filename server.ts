@@ -14275,11 +14275,11 @@ async function startServer() {
       const response = await fetch(current.toString(), {
         redirect: 'manual',
         headers: isLegacyRest || isLegacyDownload
-          // Send only the provider's media-player headers on this endpoint;
-          // CinemaChat's browser Origin/Referer are not relevant upstream.
+          // Legacy search and file downloads expect different X-User-Agent
+          // values. Keep browser Origin/Referer out of these requests.
           ? {
               'User-Agent': 'MPC-HC/1.9.24',
-              'X-User-Agent': 'trailers.to-UA',
+              'X-User-Agent': isLegacyDownload ? 'MPC-HC/1.9.24' : 'trailers.to-UA',
               Accept: options.accept,
               ...options.headers,
             }
