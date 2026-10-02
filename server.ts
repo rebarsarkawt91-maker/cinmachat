@@ -14158,7 +14158,9 @@ async function startServer() {
     // Search both lists without truncating releases from any language. The
     // caller has explicitly approved the title override for this bad IMDb
     // alias; never apply the override to another IMDb ID.
-    const approvedTitle = imdbNumeric === '4388754' ? 'Once Upon a Time in the Middle East 2026' : '';
+    const approvedTitle = ['4388754', '34386754'].includes(imdbNumeric)
+      ? 'Once Upon a Time in the Middle East 2026'
+      : '';
     const [kurdish, general] = await Promise.all([
       readList(`imdbid-${imdbNumeric}/sublanguageid-kur`).catch(() => []),
       readList(`imdbid-${imdbNumeric}`).catch(() => []),
