@@ -18,6 +18,7 @@ import { rateLimiter, sanitizationMiddleware, createAdminGuard, logFailedAttempt
 import { generateSubtitle, translateSrtViaGemini } from './features/subtitles/subtitleGenerator.js';
 import { stripSubtitleHtmlTags } from './src/lib/subtitleText.js';
 import { hasNonSoraniLetters } from './src/lib/studioUntranslatedCues.js';
+import { legacySubtitleFileUrl, parseLegacySubtitleListing } from './kurdSubLegacy';
 import { getSearchConsoleStats } from './features/seo/searchConsole.js';
 import {
   SCHEMA_VERSION,
@@ -13919,7 +13920,7 @@ async function startServer() {
   type KurdSubRemoteTrack = {
     id: string;
     downloadUrl: string;
-    provider: 'official' | 'embedded' | 'catalog';
+    provider: 'official' | 'embedded' | 'catalog' | 'legacy';
     fileId: string;
     language: string;
     languageCode: string;
@@ -14069,6 +14070,29 @@ async function startServer() {
         };
       })
       .filter((track): track is KurdSubRemoteTrack => Boolean(track));
+  };
+
+  const fetchLegacyOpenSubtitlesTracks = async (imdbId: string, signal: AbortSignal): Promise<KurdSubRemoteTrack[]> => {
+    const numericId = imdbId.replace(/^tt/i, '');
+    const searchUrl = `https://api.opensubtitles.org/en/search/sublanguageid-all/imdbid-${numericId}`;
+    const { response } = await fetchKurdSubRemote(searchUrl, signal, {
+      accept: 'text/html',
+      allowDestination: (url) => url.origin === 'https://api.opensubtitles.org',
+    });
+    if (!response.ok) return [];
+    const html = (await readKurdSubResponseBytes(response, KURDSUB_EMBED_MAX_BYTES)).toString('utf8');
+    return parseLegacySubtitleListing(html).map((entry) => ({
+      id: `legacy-${entry.subtitleId}`,
+      downloadUrl: entry.detailUrl,
+      provider: 'legacy' as const,
+      fileId: entry.subtitleId,
+      language: entry.language,
+      languageCode: entry.languageCode,
+      fileName: entry.fileName,
+      downloads: entry.downloads,
+      hearingImpaired: false,
+      fps: '',
+    }));
   };
 
   const absoluteUrl = (raw: unknown, base: string) => {
@@ -14401,6 +14425,24 @@ async function startServer() {
         throw new Error('Official subtitle download link was invalid');
       }
       ({ response: archiveResponse } = await fetchKurdSubRemote(downloadPayload.link, signal, { accept: subtitleAccept }));
+    } else if (selected.provider === 'legacy') {
+      const detailUrl = new URL(selected.downloadUrl);
+      if (detailUrl.origin !== 'https://api.opensubtitles.org' ||
+        !new RegExp(`^/en/subtitles/${selected.fileId}/[a-z0-9-]+$`, 'i').test(detailUrl.pathname)) {
+        throw new Error('Unexpected public subtitle detail URL');
+      }
+      const { response: detailResponse } = await fetchKurdSubRemote(detailUrl.toString(), signal, {
+        accept: 'text/html',
+        allowDestination: (url) => url.origin === 'https://api.opensubtitles.org',
+      });
+      if (!detailResponse.ok) throw new Error(`Subtitle detail unavailable (HTTP ${detailResponse.status})`);
+      const detailHtml = (await readKurdSubResponseBytes(detailResponse, KURDSUB_EMBED_MAX_BYTES)).toString('utf8');
+      const fileUrl = legacySubtitleFileUrl(detailHtml);
+      if (!fileUrl) throw new Error('Subtitle file link was not exposed');
+      ({ response: archiveResponse } = await fetchKurdSubRemote(fileUrl, signal, {
+        accept: subtitleAccept,
+        allowDestination: (url) => url.origin === 'https://dl.opensubtitles.org' && /^\/en\/download\/file\/\d+$/.test(url.pathname),
+      }));
     } else {
       const selectedUrl = new URL(selected.downloadUrl);
       if (selected.provider === 'catalog' && (
@@ -14440,33 +14482,23 @@ async function startServer() {
       }
 
       const configuredApiKey = openSubtitlesApiKey();
-      let tracks: KurdSubRemoteTrack[] = [];
-
-      // Some provider builds expose native VTT/SRT entries in their nested
-      // player/config JSON. Use them without any OpenSubtitles credential.
-      // The parser follows only the known GarageBand → cloudorchestra → vidsrc
-      // chain and accepts only direct subtitle-file URLs.
-      const embeddedTracks = await scrapeGarageBandEmbeddedTracks(source.url, source.imdbId, controller.signal).catch(() => []);
-
-      // Tier C: REST v1 is used only with a real server-side provider key. A
-      // media-player user agent does not replace OpenSubtitles authentication.
-      // Any provider error is intentionally non-fatal so a public fallback can
-      // still return subtitles without exposing a 403 to Studio users.
-      const officialTracks = configuredApiKey
-        ? await fetchOfficialOpenSubtitlesTracks(source.imdbNumeric, configuredApiKey, controller.signal)
-          .catch(() => [])
-        : [];
-
-      // Merge the keyless public catalog even when an embed exposes a handful
-      // of tracks. Its response is cached to respect the guest request limit.
-      const catalogTracks = await fetchPublicCatalogTracks(source.imdbId, controller.signal);
+      // Discover independent sources concurrently so a slow embed hop cannot
+      // consume the whole request budget before the IMDb listing is queried.
+      const [embeddedTracks, officialTracks, legacyTracks, catalogTracks] = await Promise.all([
+        scrapeGarageBandEmbeddedTracks(source.url, source.imdbId, controller.signal).catch(() => []),
+        configuredApiKey
+          ? fetchOfficialOpenSubtitlesTracks(source.imdbNumeric, configuredApiKey, controller.signal).catch(() => [])
+          : Promise.resolve([] as KurdSubRemoteTrack[]),
+        fetchLegacyOpenSubtitlesTracks(source.imdbId, controller.signal).catch(() => []),
+        fetchPublicCatalogTracks(source.imdbId, controller.signal),
+      ]);
       // Each source can expose a different subset. Merge instead of stopping at
       // the first nonempty tier, keeping the original track IDs for downloads.
       const distinctTracks = new Map<string, KurdSubRemoteTrack>();
-      for (const track of [...embeddedTracks, ...officialTracks, ...catalogTracks]) {
+      for (const track of [...embeddedTracks, ...officialTracks, ...legacyTracks, ...catalogTracks]) {
         if (!distinctTracks.has(track.id)) distinctTracks.set(track.id, track);
       }
-      tracks = [...distinctTracks.values()];
+      let tracks = [...distinctTracks.values()];
 
       const rankedTracks = tracks.sort((a, b) => b.downloads - a.downloads);
       const englishTrack = rankedTracks.find((track) => /^(?:en|eng)(?:[-_]|$)/i.test(track.languageCode) || /english/i.test(track.language));
@@ -14508,6 +14540,70 @@ async function startServer() {
       return res.json({ success: true, ...result });
     } catch (error: any) {
       return res.status(422).json({ error: error?.message || 'Subtitle track discovery failed' });
+    }
+  });
+
+  // Dedicated Studio search: a URL/ID targets one video, while search terms
+  // inspect a few YouTube results and return only videos exposing captions.
+  app.post('/api/kurdsub/youtube-search', async (req, res) => {
+    if (!isKurdSubStudioRequester(req)) return res.status(403).json({ error: 'Studio access required' });
+    const query = String(req.body?.query || '').trim();
+    if (!query || query.length > 250) return res.status(400).json({ error: 'Enter a YouTube URL, video ID, or search terms' });
+    try {
+      const directId = /^[A-Za-z0-9_-]{11}$/.test(query) ? query : extractYoutubeVideoId(query);
+      const candidates = directId ? [directId] : [];
+      if (!directId) {
+        const searchHtml = await fetchTextWithTimeout(
+          `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`, 12_000,
+        );
+        for (const match of searchHtml.matchAll(/"videoId":"([A-Za-z0-9_-]{11})"/g)) {
+          if (!candidates.includes(match[1])) candidates.push(match[1]);
+          if (candidates.length >= 4) break;
+        }
+      }
+      for (const videoId of candidates) {
+        const captions = await fetchYouTubeCaptionTracks(videoId).catch(() => []);
+        if (!captions.length) continue;
+        const tracks = captions.map((track, index) => ({
+          id: `${getTrackLang(track) || 'und'}:${track.kind || 'manual'}:${index}`,
+          languageCode: getTrackLang(track) || 'und',
+          label: String((track as any).name?.simpleText || getTrackLang(track) || 'Subtitle'),
+          kind: track.kind || 'manual',
+        }));
+        return res.json({ success: true, videoId, tracks });
+      }
+      return res.json({ success: true, videoId: candidates[0] || '', tracks: [], notice: 'هیچ ژێرنووسێکی یوتیوب بۆ ئەم گەڕانە نەدۆزرایەوە.' });
+    } catch (error: any) {
+      return res.status(502).json({ error: error?.message || 'YouTube subtitle search failed' });
+    }
+  });
+
+  app.post('/api/kurdsub/youtube-track', async (req, res) => {
+    if (!isKurdSubStudioRequester(req)) return res.status(403).json({ error: 'Studio access required' });
+    const videoId = String(req.body?.videoId || '');
+    const trackId = String(req.body?.trackId || '');
+    if (!/^[A-Za-z0-9_-]{11}$/.test(videoId) || !/^[a-zA-Z0-9_-]{2,12}:(?:asr|manual):\d{1,3}$/.test(trackId)) {
+      return res.status(400).json({ error: 'Invalid YouTube caption selection' });
+    }
+    try {
+      const available = await fetchYouTubeCaptionTracks(videoId);
+      const selected = available.find((track, index) =>
+        `${getTrackLang(track) || 'und'}:${track.kind || 'manual'}:${index}` === trackId);
+      if (!selected) return res.status(404).json({ error: 'Caption track is no longer available' });
+      const languageCode = getTrackLang(selected) || 'und';
+      for (const captionUrl of buildTrackTimedtextCandidates(selected, videoId, languageCode)) {
+        const target = new URL(captionUrl);
+        if (!['www.youtube.com', 'youtube.com', 'video.google.com'].includes(target.hostname)) continue;
+        try {
+          const payload = await fetchTextWithTimeout(target.toString(), 12_000);
+          if (!isLikelyCaptionPayload(payload)) continue;
+          const srt = captionPayloadToSrt(payload);
+          if (looksLikeSubtitleText(srt)) return res.json({ success: true, videoId, languageCode, srt });
+        } catch { /* Try the next timedtext URL for this selected track. */ }
+      }
+      return res.status(422).json({ error: 'Selected caption track did not contain readable subtitle cues' });
+    } catch (error: any) {
+      return res.status(502).json({ error: error?.message || 'YouTube caption download failed' });
     }
   });
 

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Download, FileText, Loader2, Pause, RotateCcw, Search, Sparkles, Subtitles, Upload, Wand2, X } from "lucide-react";
+import { AlertTriangle, Download, FileText, Loader2, Pause, RotateCcw, Search, Sparkles, Subtitles, Upload, Wand2, X, Youtube } from "lucide-react";
 import type { Movie } from "../../types";
 import { searchKurdSubMovies } from "../../lib/kurdSubMovieSearch";
 import { stripSubtitleHtmlTags } from "../../lib/subtitleText";
@@ -23,6 +23,8 @@ type RemoteTrack = {
   downloads: number;
   hearingImpaired: boolean;
 };
+
+type YouTubeStudioTrack = { id: string; languageCode: string; label: string; kind: string };
 
 type TrackCategory = "all" | "english" | "kurdish" | "sorani" | "other";
 type TranslationStatus = "idle" | "running" | "paused" | "failed" | "complete";
@@ -182,6 +184,11 @@ async function latestProject(): Promise<any | null> {
 
 export default function KurdSubStudioModal({ movies, adminName, onClose, onApply }: KurdSubStudioModalProps) {
   const [source, setSource] = useState("");
+  const [youtubeInput, setYoutubeInput] = useState("");
+  const [youtubeVideoId, setYoutubeVideoId] = useState("");
+  const [youtubeTracks, setYoutubeTracks] = useState<YouTubeStudioTrack[]>([]);
+  const [youtubeBusy, setYoutubeBusy] = useState(false);
+  const [youtubeNotice, setYoutubeNotice] = useState("");
   const [loadedSource, setLoadedSource] = useState("");
   const [projectKey, setProjectKey] = useState("draft");
   const [cues, setCues] = useState<StudioCue[]>([]);
@@ -431,6 +438,53 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
     }
   };
 
+  const searchYouTubeSubtitles = async () => {
+    if (!youtubeInput.trim()) { setYoutubeNotice("تکایە لینک، ID یان ناوی ڤیدیۆ بنووسە."); return; }
+    setYoutubeBusy(true);
+    setYoutubeTracks([]);
+    setYoutubeNotice("");
+    try {
+      const response = await fetch("/api/kurdsub/youtube-search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Admin-Username": adminName },
+        body: JSON.stringify({ query: youtubeInput.trim(), adminName }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !Array.isArray(result?.tracks)) throw new Error(result?.error || "YouTube subtitle search failed");
+      setYoutubeVideoId(String(result.videoId || ""));
+      setYoutubeTracks(result.tracks as YouTubeStudioTrack[]);
+      setYoutubeNotice(result.tracks.length ? `${result.tracks.length} ژێرنووسی یوتیوب دۆزرایەوە` : result.notice || "هیچ ژێرنووسێک نەدۆزرایەوە.");
+    } catch (error: any) {
+      setYoutubeNotice(error?.message || "گەڕانی ژێرنووسی یوتیوب سەرکەوتوو نەبوو");
+    } finally {
+      setYoutubeBusy(false);
+    }
+  };
+
+  const loadYouTubeTrack = async (track: YouTubeStudioTrack) => {
+    if (!youtubeVideoId) return;
+    setYoutubeBusy(true);
+    setYoutubeNotice("");
+    try {
+      const response = await fetch("/api/kurdsub/youtube-track", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Admin-Username": adminName },
+        body: JSON.stringify({ videoId: youtubeVideoId, trackId: track.id, adminName }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result?.srt) throw new Error(result?.error || "YouTube caption download failed");
+      const videoUrl = `https://www.youtube.com/watch?v=${youtubeVideoId}`;
+      setSource(videoUrl);
+      setRemoteTracks([]);
+      setAnalyzedUrl("");
+      setSubtitleText(result.srt, `${videoUrl}#${track.id}`, false, videoUrl);
+    } catch (error: any) {
+      setYoutubeNotice(error?.message || "هێنانی ژێرنووسی یوتیوب سەرکەوتوو نەبوو");
+    } finally {
+      setYoutubeBusy(false);
+    }
+  };
+
   const importFile = async (file?: File) => {
     if (!file) return;
     if (!/\.(srt|vtt)$/i.test(file.name)) {
@@ -625,6 +679,26 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
               <button type="button" onClick={() => void loadFromUrl()} disabled={busy || translating} className="rounded-xl bg-amber-400 px-4 py-3 text-sm font-black text-black disabled:opacity-50 kurdish-text">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "شیکردنەوە / هێنان"}</button>
               <button type="button" onClick={() => inputRef.current?.click()} disabled={translating} className="flex items-center justify-center gap-2 rounded-xl border border-white/15 px-4 py-3 text-sm font-black text-white kurdish-text"><Upload className="h-4 w-4" /> فایل</button>
               <input ref={inputRef} type="file" accept=".srt,.vtt,text/vtt,application/x-subrip" className="hidden" onChange={(event) => void importFile(event.target.files?.[0])} />
+            </div>
+            <div className="mt-3 border-t border-red-500/25 pt-3">
+              <label htmlFor="kurdsub-youtube-search" className="mb-2 block text-sm font-black text-red-400 kurdish-text">گەڕانی تایبەت بە ژێرنووسی یوتیوب (YouTube Subtitles)</label>
+              <div className="flex flex-col gap-2 md:flex-row">
+                <input id="kurdsub-youtube-search" value={youtubeInput} onChange={(event) => { setYoutubeInput(event.target.value); setYoutubeTracks([]); setYoutubeNotice(""); }}
+                  onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void searchYouTubeSubtitles(); } }}
+                  placeholder="...لینکی ڤیدیۆی یوتیوب یاخود ناوی ڤیدیۆکە بنووسە"
+                  className="min-w-0 flex-1 rounded-xl border border-red-500/30 bg-black/35 px-4 py-3 text-sm text-white outline-none focus:border-red-400" />
+                <button type="button" onClick={() => void searchYouTubeSubtitles()} disabled={busy || translating || youtubeBusy}
+                  className="flex items-center justify-center gap-2 rounded-xl bg-red-600 px-4 py-3 text-sm font-black text-white disabled:opacity-50 kurdish-text">
+                  {youtubeBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Youtube className="h-4 w-4" />} گەڕانی یوتیوب
+                </button>
+              </div>
+              {youtubeNotice && <p role="status" className="mt-2 text-xs text-slate-300 kurdish-text">{youtubeNotice}</p>}
+              {!!youtubeTracks.length && <div className="mt-2 flex flex-wrap gap-2" aria-label="YouTube caption tracks">
+                {youtubeTracks.map((track) => <button key={track.id} type="button" disabled={busy || translating || youtubeBusy}
+                  onClick={() => void loadYouTubeTrack(track)} className="rounded-full border border-red-400/40 px-3 py-1.5 text-xs font-bold text-white hover:bg-red-500/15 disabled:opacity-50">
+                  {track.label} ({track.languageCode}){track.kind === "asr" ? " · auto" : ""}
+                </button>)}
+              </div>}
             </div>
           </section>
 
