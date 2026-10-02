@@ -19,6 +19,7 @@ import { generateSubtitle, translateSrtViaGemini } from './features/subtitles/su
 import { stripSubtitleHtmlTags } from './src/lib/subtitleText.js';
 import { hasNonSoraniLetters } from './src/lib/studioUntranslatedCues.js';
 import { legacySubtitleFileUrl, parseLegacySubtitleListing } from './kurdSubLegacy';
+import { selectLegacyRestTracks } from './kurdSubLegacyRest';
 import { getSearchConsoleStats } from './features/seo/searchConsole.js';
 import {
   SCHEMA_VERSION,
@@ -13920,7 +13921,7 @@ async function startServer() {
   type KurdSubRemoteTrack = {
     id: string;
     downloadUrl: string;
-    provider: 'official' | 'embedded' | 'catalog' | 'legacy';
+    provider: 'official' | 'embedded' | 'catalog' | 'legacy' | 'legacy-rest';
     fileId: string;
     language: string;
     languageCode: string;
@@ -13953,15 +13954,50 @@ async function startServer() {
     );
   };
 
-  const garageBandEmbedInfo = (rawUrl: unknown) => {
+  const garageBandEmbedInfo = async (rawUrl: unknown) => {
     const url = new URL(String(rawUrl || '').trim());
     validateHostOf(url);
     if (!/(?:^|\.)garageband\.rocks$/i.test(url.hostname)) {
       throw new Error('Only GarageBand subtitle embeds are supported by this analyzer');
     }
-    const match = url.pathname.match(/\/embed\/(?:movie|tv)\/(tt\d{7,10})/i);
-    if (!match) throw new Error('A GarageBand IMDb embed URL is required');
-    return { url: url.toString(), imdbId: match[1].toLowerCase(), imdbNumeric: match[1].slice(2) };
+    if (!/^\/embed\/(?:movie|tv)(?:\/|$)/i.test(url.pathname)) {
+      throw new Error('A GarageBand IMDb embed URL is required');
+    }
+    let imdbId = url.pathname.match(/\/embed\/(?:movie|tv)\/(tt\d{7,10})(?:\/|$)/i)?.[1]?.toLowerCase();
+    if (!imdbId) {
+      // Some embeds keep the IMDb ID in a player API response instead of the
+      // path. Follow at most two trusted HTML/API hops; never evaluate scripts.
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8_000);
+      try {
+        let current = url.toString();
+        for (let hop = 0; hop < 2 && !imdbId; hop += 1) {
+          const { response } = await fetchKurdSubRemote(current, controller.signal, {
+            accept: 'text/html,application/json',
+            referer: url.toString(),
+            allowDestination: (candidate) => isKnownEmbedHop(candidate, url),
+          });
+          if (!response.ok) break;
+          const body = (await readKurdSubResponseBytes(response, KURDSUB_EMBED_MAX_BYTES)).toString('utf8');
+          for (const match of body.matchAll(/(?:window\.)?(?:CFG|CONFIG)\s*=\s*/gi)) {
+            const config = extractBalancedJson(body, match.index + match[0].length) as Record<string, unknown> | null;
+            const configuredId = String(config?.imdb || config?.mediaId || '');
+            imdbId = configuredId.match(/tt\d{7,10}/i)?.[0]?.toLowerCase();
+            if (imdbId) break;
+          }
+          if (!imdbId) imdbId = body.match(/["'](?:imdb|mediaId)["']\s*:\s*["'](tt\d{7,10})["']/i)?.[1]?.toLowerCase();
+          const next = playerNavigationUrls(body)
+            .map((candidate) => absoluteUrl(candidate, current))
+            .find((candidate) => candidate && isKnownEmbedHop(new URL(candidate), url) && isRelevantEmbedNavigation(new URL(candidate)));
+          if (!next || next === current) break;
+          current = next;
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    if (!imdbId) throw new Error('A GarageBand IMDb embed URL is required');
+    return { url: url.toString(), imdbId, imdbNumeric: imdbId.slice(2) };
   };
 
   const kurdSubTrackId = (imdbId: string, downloadUrl: string) =>
@@ -14095,6 +14131,38 @@ async function startServer() {
     }));
   };
 
+  const fetchLegacyRestOpenSubtitlesTracks = async (imdbNumeric: string, signal: AbortSignal): Promise<KurdSubRemoteTrack[]> => {
+    const origin = 'https://rest.opensubtitles.org';
+    const path = `/search/imdbid-${imdbNumeric}`;
+    const readList = async (suffix: string): Promise<unknown[]> => {
+      const { response } = await fetchKurdSubRemote(`${origin}${path}${suffix}`, signal, {
+        accept: 'application/json',
+        headers: { 'X-User-Agent': 'trailers.to-UA' },
+        allowDestination: (url) => url.origin === origin,
+      });
+      if (!response.ok) return [];
+      const json = JSON.parse((await readKurdSubResponseBytes(response, KURDSUB_EMBED_MAX_BYTES)).toString('utf8'));
+      return Array.isArray(json) ? json : [];
+    };
+    // Ask for Kurdish first so those tracks survive the two-per-language cap.
+    const [kurdish, general] = await Promise.all([
+      readList('/sublanguageid-kur').catch(() => []),
+      readList('').catch(() => []),
+    ]);
+    return selectLegacyRestTracks([...kurdish, ...general]).map((entry) => ({
+      id: `legacy-rest-${entry.fileId}`,
+      downloadUrl: entry.downloadUrl,
+      provider: 'legacy-rest' as const,
+      fileId: entry.fileId,
+      language: entry.language,
+      languageCode: entry.languageCode,
+      fileName: entry.fileName,
+      downloads: entry.downloads,
+      hearingImpaired: false,
+      fps: '',
+    }));
+  };
+
   const absoluteUrl = (raw: unknown, base: string) => {
     try {
       const url = new URL(String(raw || ''), base);
@@ -14138,6 +14206,7 @@ async function startServer() {
     options: {
       accept: string;
       referer?: string;
+      headers?: Record<string, string>;
       allowDestination?: (url: URL) => boolean;
     },
   ) => {
@@ -14154,6 +14223,7 @@ async function startServer() {
           ...KURDSUB_PROXY_HEADERS,
           Accept: options.accept,
           Referer: options.referer || KURDSUB_PROXY_HEADERS.Referer,
+          ...options.headers,
         },
         signal,
       });
@@ -14305,7 +14375,7 @@ async function startServer() {
 
   const playerNavigationUrls = (text: string) => [
     ...text.matchAll(/\b(?:src|href|data-src|data-api)=["']([^"']+)["']/gi),
-    ...text.matchAll(/(?:["'](?:src|url|file|api|playerUrl|manifest|playlist)["']\s*[:=]\s*["'])([^"']+)["']/gi),
+    ...text.matchAll(/(?:["'](?:src|url|file|api|metaApi|dataApi|playerUrl|manifest|playlist)["']\s*[:=]\s*["'])([^"']+)["']/gi),
   ].map((match) => String(match[1])
     .replace(/&amp;/g, '&')
     .replace(/\\\//g, '/')
@@ -14425,6 +14495,16 @@ async function startServer() {
         throw new Error('Official subtitle download link was invalid');
       }
       ({ response: archiveResponse } = await fetchKurdSubRemote(downloadPayload.link, signal, { accept: subtitleAccept }));
+    } else if (selected.provider === 'legacy-rest') {
+      const directUrl = new URL(selected.downloadUrl);
+      if (directUrl.origin !== 'https://dl.opensubtitles.org' ||
+        !/^\/en\/download\//.test(directUrl.pathname) || !directUrl.pathname.endsWith('.gz')) {
+        throw new Error('Unexpected OpenSubtitles download URL');
+      }
+      ({ response: archiveResponse } = await fetchKurdSubRemote(directUrl.toString(), signal, {
+        accept: subtitleAccept,
+        allowDestination: (url) => url.origin === 'https://dl.opensubtitles.org' && /^\/en\/download\//.test(url.pathname),
+      }));
     } else if (selected.provider === 'legacy') {
       const detailUrl = new URL(selected.downloadUrl);
       if (detailUrl.origin !== 'https://api.opensubtitles.org' ||
@@ -14462,43 +14542,34 @@ async function startServer() {
   const kurdSubDiscoveryCache = new Map<string, { expiresAt: number; result: { imdbId: string; tracks: KurdSubRemoteTrack[]; notice?: string } }>();
 
   const fetchGarageBandTracks = async (embedUrl: unknown): Promise<{ imdbId: string; tracks: KurdSubRemoteTrack[]; notice?: string }> => {
-    const source = garageBandEmbedInfo(embedUrl);
+    const source = await garageBandEmbedInfo(embedUrl);
     const cached = kurdSubDiscoveryCache.get(source.url);
     if (cached && cached.expiresAt > Date.now()) return cached.result;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 25_000);
     try {
-      // Fetch the actual embed first. Some proxy providers issue a gate only
-      // after seeing an MPC-HC-style request; this also catches dead sources.
-      const sourceRoot = new URL(source.url);
-      const { response: embedResponse } = await fetchKurdSubRemote(source.url, controller.signal, {
-        accept: 'text/html,application/xhtml+xml,*/*;q=0.1',
-        allowDestination: (candidate) => isKnownEmbedHop(candidate, sourceRoot),
-      });
-      if (!embedResponse.ok) throw new Error(`Embed source unavailable (HTTP ${embedResponse.status})`);
-      const embedHtml = (await readKurdSubResponseBytes(embedResponse, KURDSUB_EMBED_MAX_BYTES)).toString('utf8');
-      if (!/data-api=|player_iframe|\/embed\//i.test(embedHtml)) {
-        throw new Error('The embed source did not return a playable provider page');
+      // A valid GarageBand URL already carries the canonical IMDb ID. Query
+      // the public JSON result first, before a blocked iframe can consume the
+      // whole timeout. No REST API key is needed for this legacy search.
+      let tracks = await fetchLegacyRestOpenSubtitlesTracks(source.imdbNumeric, controller.signal).catch(() => []);
+      if (!tracks.length) {
+        const configuredApiKey = openSubtitlesApiKey();
+        // Keep the existing embed, REST v1, HTML-listing, and catalog paths as
+        // fallbacks when the public JSON service is unavailable or empty.
+        const [embeddedTracks, officialTracks, legacyTracks, catalogTracks] = await Promise.all([
+          scrapeGarageBandEmbeddedTracks(source.url, source.imdbId, controller.signal).catch(() => []),
+          configuredApiKey
+            ? fetchOfficialOpenSubtitlesTracks(source.imdbNumeric, configuredApiKey, controller.signal).catch(() => [])
+            : Promise.resolve([] as KurdSubRemoteTrack[]),
+          fetchLegacyOpenSubtitlesTracks(source.imdbId, controller.signal).catch(() => []),
+          fetchPublicCatalogTracks(source.imdbId, controller.signal),
+        ]);
+        const distinctTracks = new Map<string, KurdSubRemoteTrack>();
+        for (const track of [...embeddedTracks, ...officialTracks, ...legacyTracks, ...catalogTracks]) {
+          if (!distinctTracks.has(track.id)) distinctTracks.set(track.id, track);
+        }
+        tracks = [...distinctTracks.values()];
       }
-
-      const configuredApiKey = openSubtitlesApiKey();
-      // Discover independent sources concurrently so a slow embed hop cannot
-      // consume the whole request budget before the IMDb listing is queried.
-      const [embeddedTracks, officialTracks, legacyTracks, catalogTracks] = await Promise.all([
-        scrapeGarageBandEmbeddedTracks(source.url, source.imdbId, controller.signal).catch(() => []),
-        configuredApiKey
-          ? fetchOfficialOpenSubtitlesTracks(source.imdbNumeric, configuredApiKey, controller.signal).catch(() => [])
-          : Promise.resolve([] as KurdSubRemoteTrack[]),
-        fetchLegacyOpenSubtitlesTracks(source.imdbId, controller.signal).catch(() => []),
-        fetchPublicCatalogTracks(source.imdbId, controller.signal),
-      ]);
-      // Each source can expose a different subset. Merge instead of stopping at
-      // the first nonempty tier, keeping the original track IDs for downloads.
-      const distinctTracks = new Map<string, KurdSubRemoteTrack>();
-      for (const track of [...embeddedTracks, ...officialTracks, ...legacyTracks, ...catalogTracks]) {
-        if (!distinctTracks.has(track.id)) distinctTracks.set(track.id, track);
-      }
-      let tracks = [...distinctTracks.values()];
 
       const rankedTracks = tracks.sort((a, b) => b.downloads - a.downloads);
       const englishTrack = rankedTracks.find((track) => /^(?:en|eng)(?:[-_]|$)/i.test(track.languageCode) || /english/i.test(track.language));
