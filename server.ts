@@ -14309,7 +14309,7 @@ async function startServer() {
         return;
       }
       Object.entries(candidate as Record<string, unknown>).forEach(([key, value]) => {
-        if (['tracks', 'captions', 'subtitles'].includes(key.toLowerCase())) values.push(value);
+        if (['tracks', 'captions', 'subtitles', 'default_subs', 'defaultsubs', 'subtitle_tracks'].includes(key.toLowerCase())) values.push(value);
         collectNamedValues(value, seen);
       });
     };
@@ -14324,7 +14324,7 @@ async function startServer() {
       const parsed = extractBalancedJson(normalized, match.index + match[0].length);
       if (parsed) collectNamedValues(parsed);
     }
-    for (const match of normalized.matchAll(/(?:["']?(?:tracks|captions|subtitles)["']?)\s*[:=]\s*/gi)) {
+    for (const match of normalized.matchAll(/(?:["']?(?:tracks|captions|subtitles|default_subs|defaultSubs|subtitle_tracks)["']?)\s*[:=]\s*/gi)) {
       const parsed = extractBalancedJson(normalized, match.index + match[0].length);
       if (parsed) values.push(parsed);
     }
@@ -14625,8 +14625,8 @@ async function startServer() {
     }
   };
 
-  // Studio analysis uses the keyless REST results directly. A failed REST
-  // request must be surfaced, not silently replaced with unrelated listings.
+  // Studio analysis prefers OpenSubtitles, then the provider's own subtitle
+  // metadata. An upstream 403 must not hide valid embedded caption tracks.
   app.post('/api/subtitles/analyze', async (req, res) => {
     if (!isKurdSubStudioRequester(req)) {
       return res.status(403).json({ error: 'دەسەڵاتی ستۆدیۆی ژێرنووس بەردەست نییە' });
@@ -14635,20 +14635,25 @@ async function startServer() {
     const timer = setTimeout(() => controller.abort(), 25_000);
     try {
       const source = await garageBandEmbedInfo(req.body?.url);
-      let tracks: KurdSubRemoteTrack[];
+      let tracks: KurdSubRemoteTrack[] = [];
       try {
         tracks = await fetchLegacyRestOpenSubtitlesTracks(source.imdbNumeric, controller.signal);
-      } catch (legacyError: any) {
+      } catch {
         const apiKey = openSubtitlesApiKey();
-        if (!apiKey) {
-          throw new Error(`${legacyError?.message || 'OpenSubtitles legacy search failed'}. Configure OPENSUBTITLES_API_KEY for the supported API.`);
+        if (apiKey) {
+          // Use the supported API when configured; do not make it a hard
+          // requirement for discovering tracks exposed by the video provider.
+          tracks = await fetchOfficialOpenSubtitlesTracks(source.imdbNumeric, apiKey, controller.signal).catch(() => []);
         }
-        // The supported .com API is a fallback only when the retired .org
-        // REST endpoint rejects the request; it is not a legacy scraper.
-        tracks = await fetchOfficialOpenSubtitlesTracks(source.imdbNumeric, apiKey, controller.signal);
       }
+      if (!tracks.length) tracks = await scrapeGarageBandEmbeddedTracks(source.url, source.imdbId, controller.signal);
       res.setHeader('Cache-Control', 'private, max-age=60');
-      return res.json({ success: true, imdbId: source.imdbId, tracks });
+      return res.json({
+        success: true,
+        imdbId: source.imdbId,
+        tracks,
+        ...(!tracks.length ? { notice: 'هیچ ژێرنووسێکی بەردەست لە سەرچاوەکەدا نەدۆزرایەوە. دەتوانیت فایلێکی SRT/VTT باربکەیت.' } : {}),
+      });
     } catch (error: any) {
       return res.status(422).json({ error: error?.message || 'Subtitle track discovery failed' });
     } finally {
