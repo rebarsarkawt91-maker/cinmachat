@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseSubdlTracks } from './subdlService';
+import JSZip from 'jszip';
+import { parseSubdlTracks, unpackSubdlSubtitleArchive } from './subdlService';
 
 test('maps SubDL results without dropping languages or exposing credentials', () => {
   const tracks = parseSubdlTracks({
@@ -13,6 +14,7 @@ test('maps SubDL results without dropping languages or exposing credentials', ()
   }, 'tt9601292');
   assert.equal(tracks.length, 2);
   assert.equal(tracks[0].nId, 'abc123');
+  assert.equal(tracks[0].downloadUrl, 'https://dl.subdl.com/subtitle/abc123-file.zip');
   assert.equal(tracks[0].language, 'English');
   assert.equal(tracks[1].nId, '456');
   assert.equal(tracks[1].languageCode, 'ar');
@@ -25,4 +27,13 @@ test('extracts subtitle id from a provider URL and rejects a different movie', (
   };
   assert.equal(parseSubdlTracks(payload, 'tt9601292')[0].nId, '98765');
   assert.deepEqual(parseSubdlTracks(payload, 'tt34386754'), []);
+});
+
+test('reads a subtitle from a ZIP without extracting files to disk', async () => {
+  const zip = new JSZip();
+  zip.file('movie.srt', '1\n00:00:01,000 --> 00:00:02,000\nHello\n');
+  const archive = await zip.generateAsync({ type: 'nodebuffer' });
+  const file = await unpackSubdlSubtitleArchive(archive, 1024);
+  assert.match(file.toString('utf8'), /Hello/);
+  await assert.rejects(() => unpackSubdlSubtitleArchive(archive, 10), /too large/);
 });

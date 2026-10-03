@@ -20,7 +20,7 @@ import { stripSubtitleHtmlTags } from './src/lib/subtitleText.js';
 import { hasNonSoraniLetters } from './src/lib/studioUntranslatedCues.js';
 import { legacySubtitleFileUrl, parseLegacySubtitleListing } from './kurdSubLegacy';
 import { assSubtitleToSrt, legacyRestTitleQuery, selectLegacyRestTracks } from './kurdSubLegacyRest';
-import { parseSubdlTracks } from './subdlService';
+import { parseSubdlTracks, unpackSubdlSubtitleArchive } from './subdlService';
 import { getSearchConsoleStats } from './features/seo/searchConsole.js';
 import {
   SCHEMA_VERSION,
@@ -14044,8 +14044,8 @@ async function startServer() {
       if (title) results = await search('film_name', title).catch(() => []);
     }
     return results.map((entry) => ({
-      id: `subdl-${entry.nId}`,
-      downloadUrl: `https://api.subdl.com/api/v2/subtitles/${entry.nId}/download?format=file`,
+      id: `subdl-${kurdSubTrackId(imdbId, entry.downloadUrl)}`,
+      downloadUrl: entry.downloadUrl,
       provider: 'subdl' as const,
       fileId: entry.nId,
       language: entry.language,
@@ -14603,32 +14603,17 @@ async function startServer() {
     const subtitleAccept = 'text/vtt,application/x-subrip,text/plain;q=0.9,*/*;q=0.1';
     let archiveResponse: Response;
     if (selected.provider === 'subdl') {
-      const key = subdlApiKey();
-      if (!key || !/^[A-Za-z0-9_]{1,80}$/.test(selected.fileId)) {
-        throw new Error('SubDL subtitle credentials or track ID are invalid');
-      }
-      const endpoint = new URL(`https://api.subdl.com/api/v2/subtitles/${selected.fileId}/download?format=file`);
-      archiveResponse = await fetch(endpoint, {
-        redirect: 'manual',
-        headers: { Authorization: `Bearer ${key}`, Accept: subtitleAccept },
+      const destination = new URL(selected.downloadUrl);
+      if (destination.origin !== 'https://dl.subdl.com' ||
+        !/^\/subtitle\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)?(?:\.zip)?$/.test(destination.pathname) ||
+        destination.search || destination.hash) throw new Error('Unexpected SubDL download destination');
+      // The documented free download URL uses the provider's anonymous quota.
+      // The API key stays only on api.subdl.com search requests.
+      archiveResponse = await fetch(destination, {
+        redirect: 'error',
+        headers: { Accept: subtitleAccept },
         signal,
       });
-      if (archiveResponse.status >= 300 && archiveResponse.status < 400) {
-        const location = archiveResponse.headers.get('location');
-        if (!location) throw new Error('SubDL download redirect was missing');
-        const destination = new URL(location, endpoint);
-        if (destination.origin !== 'https://dl.subdl.com' && destination.origin !== 'https://api.subdl.com') {
-          throw new Error('Unexpected SubDL download destination');
-        }
-        // Never forward the API key to the public download host.
-        archiveResponse = await fetch(destination, {
-          redirect: 'error',
-          headers: destination.origin === endpoint.origin
-            ? { Authorization: `Bearer ${key}`, Accept: subtitleAccept }
-            : { Accept: subtitleAccept },
-          signal,
-        });
-      }
     } else if (selected.provider === 'official') {
       const configuredApiKey = openSubtitlesApiKey();
       if (!configuredApiKey) throw new Error('OpenSubtitles API key is not configured');
@@ -14688,7 +14673,10 @@ async function startServer() {
       ({ response: archiveResponse } = await fetchKurdSubRemote(selectedUrl.toString(), signal, { accept: subtitleAccept }));
     }
     if (!archiveResponse.ok) throw new Error(`Subtitle download unavailable (HTTP ${archiveResponse.status})`);
-    const bytes = await readKurdSubResponseBytes(archiveResponse, KURDSUB_TRACK_MAX_BYTES);
+    const archiveBytes = await readKurdSubResponseBytes(archiveResponse, KURDSUB_TRACK_MAX_BYTES);
+    const bytes = selected.provider === 'subdl'
+      ? await unpackSubdlSubtitleArchive(archiveBytes, KURDSUB_TRACK_MAX_BYTES)
+      : archiveBytes;
     const srt = decodeKurdSubArchive(bytes);
     if (!srt) throw new Error('Subtitle archive is empty');
     const normalized = assSubtitleToSrt(srt);
