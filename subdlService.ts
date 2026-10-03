@@ -25,12 +25,12 @@ function subtitleIdFromUrl(raw: string) {
   }
 }
 
-function safeDownloadUrl(raw: string) {
+export function safeSubdlDownloadUrl(raw: string) {
   try {
     const url = new URL(raw, 'https://dl.subdl.com');
     if (url.origin !== 'https://dl.subdl.com' ||
-      !/^\/subtitle\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)?(?:\.zip)?$/.test(url.pathname) ||
-      url.search || url.hash) return '';
+      !/^\/subtitle\/(?:[A-Za-z0-9_-]+\/)?[A-Za-z0-9][A-Za-z0-9._-]*\.zip$/.test(url.pathname) ||
+      url.search.length > 2048 || url.hash || url.username || url.password) return '';
     return url.toString();
   } catch {
     return '';
@@ -59,7 +59,7 @@ export function parseSubdlTracks(payload: unknown, imdbId: string): SubdlTrack[]
     if (!value || typeof value !== 'object') continue;
     const entry = value as Record<string, unknown>;
     const rawUrl = text(entry.url);
-    const downloadUrl = safeDownloadUrl(rawUrl);
+    const downloadUrl = safeSubdlDownloadUrl(rawUrl);
     const nId = identifier(entry.n_id ?? entry.nId) || subtitleIdFromUrl(rawUrl);
     if (!downloadUrl || !/^[A-Za-z0-9_]{1,80}$/.test(nId) || seen.has(downloadUrl)) continue;
     seen.add(downloadUrl);

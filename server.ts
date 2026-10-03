@@ -20,7 +20,7 @@ import { stripSubtitleHtmlTags } from './src/lib/subtitleText.js';
 import { hasNonSoraniLetters } from './src/lib/studioUntranslatedCues.js';
 import { legacySubtitleFileUrl, parseLegacySubtitleListing } from './kurdSubLegacy';
 import { assSubtitleToSrt, legacyRestTitleQuery, selectLegacyRestTracks } from './kurdSubLegacyRest';
-import { parseSubdlTracks, unpackSubdlSubtitleArchive } from './subdlService';
+import { parseSubdlTracks, safeSubdlDownloadUrl, unpackSubdlSubtitleArchive } from './subdlService';
 import { getSearchConsoleStats } from './features/seo/searchConsole.js';
 import {
   SCHEMA_VERSION,
@@ -14633,10 +14633,8 @@ async function startServer() {
     const subtitleAccept = 'text/vtt,application/x-subrip,text/plain;q=0.9,*/*;q=0.1';
     let archiveResponse: Response;
     if (selected.provider === 'subdl') {
+      if (!safeSubdlDownloadUrl(selected.downloadUrl)) throw new Error('Unexpected SubDL download destination');
       const destination = new URL(selected.downloadUrl);
-      if (destination.origin !== 'https://dl.subdl.com' ||
-        !/^\/subtitle\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)?(?:\.zip)?$/.test(destination.pathname) ||
-        destination.search || destination.hash) throw new Error('Unexpected SubDL download destination');
       // The documented free download URL uses the provider's anonymous quota.
       // The API key stays only on api.subdl.com search requests.
       archiveResponse = await fetch(destination, {
@@ -14788,7 +14786,7 @@ async function startServer() {
     try {
       const result = await fetchGarageBandTracks(req.body?.url);
       res.setHeader('Cache-Control', 'private, max-age=60');
-      return res.json({ success: true, ...result });
+      return res.json({ success: true, ...result, tracks: result.tracks.map(({ downloadUrl, ...track }) => track) });
     } catch (error: any) {
       return res.status(422).json({ error: error?.message || 'Subtitle track discovery failed' });
     }
@@ -14802,7 +14800,7 @@ async function startServer() {
       const result = await fetchGarageBandTracks(req.body?.url);
       res.setHeader('Access-Control-Allow-Origin', 'https://www.cinamachat.com');
       res.setHeader('Cache-Control', 'private, max-age=60');
-      return res.json({ success: true, ...result });
+      return res.json({ success: true, ...result, tracks: result.tracks.map(({ downloadUrl, ...track }) => track) });
     } catch (error: any) {
       return res.status(422).json({ error: error?.message || 'Subtitle track discovery failed' });
     }

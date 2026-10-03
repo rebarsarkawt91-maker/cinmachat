@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import JSZip from 'jszip';
-import { parseSubdlTracks, unpackSubdlSubtitleArchive } from './subdlService';
+import { parseSubdlTracks, safeSubdlDownloadUrl, unpackSubdlSubtitleArchive } from './subdlService';
 
 test('maps SubDL results without dropping languages or exposing credentials', () => {
   const tracks = parseSubdlTracks({
@@ -43,6 +43,21 @@ test('accepts a numeric IMDb result ID without mixing different movies', () => {
   assert.equal(tracks.length, 1);
   assert.equal(tracks[0].downloadUrl, 'https://dl.subdl.com/subtitle/3194821-the-fix-2026-english.zip');
   assert.deepEqual(parseSubdlTracks(payload, 'tt34386754'), []);
+});
+
+test('keeps provider ZIP query parameters while rejecting other destinations', () => {
+  const payload = {
+    results: [{ imdb_id: 'tt9601292' }],
+    subtitles: [{
+      lang: 'English',
+      url: '/subtitle/3194821-the.fix-2026-english.zip?token=provider-signature',
+    }],
+  };
+  const tracks = parseSubdlTracks(payload, 'tt9601292');
+  assert.equal(tracks.length, 1);
+  assert.equal(tracks[0].downloadUrl, 'https://dl.subdl.com/subtitle/3194821-the.fix-2026-english.zip?token=provider-signature');
+  assert.equal(safeSubdlDownloadUrl('https://other.example/subtitle/file.zip?token=x'), '');
+  assert.equal(safeSubdlDownloadUrl('https://dl.subdl.com/private/file.zip?token=x'), '');
 });
 
 test('reads a subtitle from a ZIP without extracting files to disk', async () => {
