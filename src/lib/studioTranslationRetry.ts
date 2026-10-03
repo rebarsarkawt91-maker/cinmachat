@@ -6,6 +6,7 @@ type BatchOptions<T, R> = {
   onRetry?: (batch: T[], attempt: number) => void;
   onFailure?: (batch: T[], error: unknown) => void;
   shouldRetry?: (error: unknown) => boolean;
+  shouldSplit?: (error: unknown) => boolean;
   wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
 };
 
@@ -52,6 +53,9 @@ export async function runResilientStudioBatches<T, R>(items: T[], options: Batch
     }
     if (succeeded) continue;
     if (options.shouldPause()) return { completed, failed, paused: true };
+    // A provider-wide quota/rate limit cannot be repaired by splitting 20 cues
+    // into dozens of requests. Preserve completed work and let the UI retry later.
+    if (options.shouldSplit && !options.shouldSplit(lastError)) throw lastError;
 
     // 20 -> 10 -> 1: a permanently bad cue must not strand its neighbors.
     if (batch.length > 1) {

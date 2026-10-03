@@ -40,6 +40,11 @@ const STUDIO_DB = "kurdish_sub_studio_db";
 const STUDIO_STORE = "projects";
 const BATCH_SIZE = 20;
 
+function isGeminiCapacityFailure(error: unknown) {
+  const message = String((error as Error)?.message || "");
+  return /Gemini API error 429|RESOURCE_EXHAUSTED|quota|rate.?limit|too many requests/i.test(message);
+}
+
 function timestamp(seconds: number, separator: "." | ",") {
   const ms = Math.max(0, Math.round(seconds * 1000));
   const hours = Math.floor(ms / 3_600_000);
@@ -584,6 +589,7 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
           return !/Configure GEMINI_API_KEY|not configured/i.test(String((error as Error)?.message || "")) &&
             (status === undefined || status === 424 || status === 429 || status >= 500);
         },
+        shouldSplit: (error) => !isGeminiCapacityFailure(error),
       });
       if (outcome.paused) {
         setTranslationStatus("paused");
@@ -598,7 +604,9 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
     } catch (error: any) {
       if (!controller.signal.aborted) {
         setTranslationStatus("failed");
-        setMessage(error?.message || "وەرگێڕان سەرکەوتوو نەبوو؛ دووبارە هەوڵ بدە.");
+        setMessage(isGeminiCapacityFailure(error)
+          ? "سنووری داواکاریی Gemini پڕ بووە. ڕستە وەرگێڕدراوەکان پارێزراون؛ کاتێک سنوورەکە نوێ بووەوە، دوگمەی دووبارە هەوڵدانەوە دابگرە."
+          : error?.message || "وەرگێڕان سەرکەوتوو نەبوو؛ دووبارە هەوڵ بدە.");
       }
     } finally {
       setTranslating(false);
@@ -837,7 +845,7 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
                 {translationStatus === "paused" || translationStatus === "failed" ? <RotateCcw className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}
                 {translationStatus === "paused" ? "بەردەوامبوون" : translationStatus === "failed" ? "دووبارە هەوڵدانەوە" : "وەرگێڕانی سۆرانی"}
               </button>
-              {translating && <button type="button" onClick={() => { pauseRequested.current = true; setTranslationStatus("paused"); }}
+              {translating && <button type="button" onClick={() => { pauseRequested.current = true; translationController.current?.abort(); setTranslationStatus("paused"); }}
                 className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/15 px-3 py-3 text-sm font-black text-white kurdish-text">
                 <Pause className="h-4 w-4" /> وەستان
               </button>}

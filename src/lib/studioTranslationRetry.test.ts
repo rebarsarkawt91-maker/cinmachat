@@ -65,3 +65,22 @@ test("honors pause before the next batch without reporting it as failed", async 
   });
   assert.deepEqual(outcome, { completed: 20, failed: [], paused: true });
 });
+
+test("stops retrying on provider quota without fanning out into one-cue requests", async () => {
+  const attempts: number[] = [];
+  const accepted: number[] = [];
+  await assert.rejects(runResilientStudioBatches(Array.from({ length: 60 }, (_, index) => index), {
+    signal: new AbortController().signal,
+    shouldPause: () => false,
+    translate: async (batch) => {
+      attempts.push(batch.length);
+      if (batch[0] >= 40) throw new Error("Gemini API error 429: quota exceeded");
+      return batch;
+    },
+    onSuccess: (batch) => accepted.push(...batch),
+    shouldSplit: (error) => !/quota/i.test((error as Error).message),
+    wait: async () => {},
+  }), /quota exceeded/);
+  assert.deepEqual(accepted, Array.from({ length: 40 }, (_, index) => index));
+  assert.deepEqual(attempts, [20, 20, 20, 20, 20, 20]);
+});
