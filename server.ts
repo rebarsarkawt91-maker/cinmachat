@@ -14041,8 +14041,21 @@ async function startServer() {
       const rawCount = Array.isArray(payload?.subtitles) ? payload.subtitles.length : 0;
       if (rawCount && !parsed.length) {
         const sample = payload.subtitles[0];
+        const resultId = Array.isArray(payload?.results) ? payload.results[0]?.imdb_id : undefined;
+        const sampleUrl = typeof sample?.url === 'string' ? sample.url : '';
+        let urlShape: { host: string; segments: number; extension: string; hasQuery: boolean } | null = null;
+        try {
+          const parsedUrl = new URL(sampleUrl, 'https://dl.subdl.com');
+          urlShape = {
+            host: parsedUrl.hostname,
+            segments: parsedUrl.pathname.split('/').filter(Boolean).length,
+            extension: parsedUrl.pathname.match(/\.[a-z0-9]+$/i)?.[0] || '',
+            hasQuery: Boolean(parsedUrl.search),
+          };
+        } catch { /* Only log the URL shape, never a provider token or full URL. */ }
         console.warn('[KurdSub] SubDL returned tracks that could not be mapped', {
-          imdbId, rawCount, fields: sample && typeof sample === 'object' ? Object.keys(sample) : [],
+          imdbId, rawCount, resultId, urlShape,
+          fields: sample && typeof sample === 'object' ? Object.keys(sample) : [],
         });
       }
       return parsed;

@@ -14,6 +14,7 @@ export type SubdlTrack = {
 const text = (value: unknown) => typeof value === 'string' ? value.trim() : '';
 const identifier = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value)
   ? String(value) : text(value);
+const imdbNumber = (value: unknown) => identifier(value).toLowerCase().replace(/^tt/, '').replace(/^0+(?=\d)/, '');
 
 function subtitleIdFromUrl(raw: string) {
   try {
@@ -47,8 +48,9 @@ export function parseSubdlTracks(payload: unknown, imdbId: string): SubdlTrack[]
   const results = Array.isArray(data.results) ? data.results : [];
   const first = results[0] && typeof results[0] === 'object'
     ? results[0] as Record<string, unknown> : null;
-  const resultImdbId = text(first?.imdb_id).toLowerCase();
-  if (resultImdbId && resultImdbId !== imdbId.toLowerCase()) return [];
+  // SubDL may return the same IMDb ID as a number, numeric string, or tt-prefixed string.
+  const resultImdbId = imdbNumber(first?.imdb_id);
+  if (resultImdbId && resultImdbId !== imdbNumber(imdbId)) return [];
 
   const subtitles = Array.isArray(data.subtitles) ? data.subtitles : [];
   const seen = new Set<string>();

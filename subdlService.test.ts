@@ -29,6 +29,22 @@ test('extracts subtitle id from a provider URL and rejects a different movie', (
   assert.deepEqual(parseSubdlTracks(payload, 'tt34386754'), []);
 });
 
+test('accepts a numeric IMDb result ID without mixing different movies', () => {
+  const payload = {
+    results: [{ imdb_id: 9601292 }],
+    subtitles: [{
+      release_name: 'The.Fix.2026.1080p.WEBRip.x264-AAC',
+      lang: 'English',
+      url: '/subtitle/3194821-the-fix-2026-english.zip',
+      unpack_files: ['The.Fix.2026.1080p.WEBRip.x264-AAC.srt'],
+    }],
+  };
+  const tracks = parseSubdlTracks(payload, 'tt9601292');
+  assert.equal(tracks.length, 1);
+  assert.equal(tracks[0].downloadUrl, 'https://dl.subdl.com/subtitle/3194821-the-fix-2026-english.zip');
+  assert.deepEqual(parseSubdlTracks(payload, 'tt34386754'), []);
+});
+
 test('reads a subtitle from a ZIP without extracting files to disk', async () => {
   const zip = new JSZip();
   zip.file('movie.srt', '1\n00:00:01,000 --> 00:00:02,000\nHello\n');
