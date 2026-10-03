@@ -59,20 +59,20 @@ function parseStudioText(raw: string, alreadyTranslated = false) {
   const blocks = raw.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").split(/\n\s*\n/);
   const cues: StudioCue[] = [];
   const usedIndices = new Set<number>();
-  let corrupt = 0;
+  const corruptBlocks: string[] = [];
   for (const block of blocks) {
     const lines = block.trim().split("\n");
     if (!lines[0] || /^(?:WEBVTT|NOTE|STYLE|REGION)(?:\s|$)/i.test(lines[0])) continue;
     const timingAt = lines.findIndex((line) => /\d{2}:\d{2}:\d{2}[,.]\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}[,.]\d{3}/.test(line));
     if (timingAt < 0) {
-      corrupt += 1;
+      corruptBlocks.push(block.trim());
       continue;
     }
     const timing = lines[timingAt].match(/(\d{2}:\d{2}:\d{2}[,.]\d{3})\s+-->\s+(\d{2}:\d{2}:\d{2}[,.]\d{3})/);
     const start = parseTime(timing?.[1] || "");
     const end = parseTime(timing?.[2] || "");
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
-      corrupt += 1;
+      corruptBlocks.push(block.trim());
       continue;
     }
     const sourceIndex = Number(lines[0]);
@@ -89,7 +89,7 @@ function parseStudioText(raw: string, alreadyTranslated = false) {
       translatedText: alreadyTranslated ? text : "",
     });
   }
-  return { cues, corrupt };
+  return { cues, corrupt: corruptBlocks.length, corruptBlocks };
 }
 
 function outputText(cue: StudioCue) {
@@ -210,6 +210,7 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [message, setMessage] = useState("");
   const [corruptCount, setCorruptCount] = useState(0);
+  const [corruptBlocks, setCorruptBlocks] = useState<string[]>([]);
   const [restored, setRestored] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const pauseRequested = useRef(false);
@@ -227,6 +228,10 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
         setLoadedSource(String(project.source || ""));
         setProjectKey(String(project.id || "draft"));
         setCues(normalizeStoredCues(project.cues));
+        const restoredCorruptBlocks = Array.isArray(project.corruptBlocks)
+          ? project.corruptBlocks.filter((block: unknown): block is string => typeof block === "string") : [];
+        setCorruptBlocks(restoredCorruptBlocks);
+        setCorruptCount(Math.max(restoredCorruptBlocks.length, Number(project.corruptCount) || 0));
         setSelectedMovieId(String(project.selectedMovieId || ""));
         const restoredTracks: RemoteTrack[] = Array.isArray(project.remoteTracks) ? project.remoteTracks : [];
         setRemoteTracks(restoredTracks);
@@ -244,13 +249,13 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
   useEffect(() => {
     if (!restored) return;
     const project = {
-      id: projectKey, source: loadedSource, cues, selectedMovieId, remoteTracks, analyzedUrl,
+      id: projectKey, source: loadedSource, cues, selectedMovieId, remoteTracks, analyzedUrl, corruptCount, corruptBlocks,
       updatedAt: new Date().toISOString(),
     };
     // Serialize writes so rapid inline edits cannot finish out of order.
     saveQueue.current = saveQueue.current.catch(() => {}).then(() => saveProject(project));
     void saveQueue.current.catch(() => setMessage("پاشەکەوتکردنی دەستکاریکردنەکان سەرکەوتوو نەبوو"));
-  }, [restored, projectKey, loadedSource, cues, selectedMovieId, remoteTracks, analyzedUrl]);
+  }, [restored, projectKey, loadedSource, cues, selectedMovieId, remoteTracks, analyzedUrl, corruptCount, corruptBlocks]);
 
   // Older saved projects kept only the first 28 discovered tracks. Refresh
   // that list without replacing the editor's unsaved/translated cue text.
@@ -327,7 +332,6 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
   }, [successToast]);
   const completedCount = cues.filter((cue) => cue.translatedText.trim() &&
     !isUntranslatedStudioCue(cue.originalText, cue.translatedText)).length;
-  const missingCount = cues.filter((cue) => !cue.originalText.trim() || !cue.translatedText.trim()).length;
   const untranslatedCues = useMemo(() => cues.filter((cue) =>
     isUntranslatedStudioCue(cue.originalText, cue.translatedText)), [cues]);
 
@@ -337,6 +341,7 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
     setCues(parsed.cues);
     setLoadedSource(displaySource);
     setCorruptCount(parsed.corrupt);
+    setCorruptBlocks(parsed.corruptBlocks);
     setProjectKey(key);
     setTranslationStatus("idle");
     setProgress({ done: alreadyTranslated ? parsed.cues.length : 0, total: parsed.cues.length });
@@ -634,10 +639,15 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
   };
 
   const applyToMovie = async () => {
-    if (!selectedMovieId || !cues.length || missingCount || corruptCount) {
-      setMessage("تکایە فیلم هەڵبژێرە و ڕستە بەتاڵ و تێکچووەکان چاک بکە.");
+    if (!selectedMovie || !cues.length) {
+      setMessage("تکایە فیلمەکە لە لیستی گەڕان هەڵبژێرە و ژێرنووسێک باربکە.");
       return;
     }
+    // Applying must use the exact VTT that the download button produces. Warn
+    // about skipped or untranslated content, but do not silently block it.
+    if ((corruptCount || untranslatedCues.length) && !window.confirm(
+      `ئەم VTT ـە ${corruptCount} بەشی تێکچووی تێدا نییە و ${untranslatedCues.length} ڕستەی وەرنەگێڕدراوی بە دەقی سەرچاوە دەمێننەوە. دەتەوێت لەسەر «${selectedMovie.title}» جێگیری بکەیت؟`
+    )) return;
     setBusy(true);
     setSuccessToast("");
     try {
@@ -751,8 +761,12 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
                 <span>کات / ژمارە</span><span>دەقی سەرچاوە</span><span>وەرگێڕانی سۆرانی</span><span>AI</span>
               </div>
               <div className="max-h-[48vh] divide-y divide-white/5 overflow-y-auto">
-                {corruptCount > 0 && <div role="alert" className="flex items-center gap-2 bg-red-400/10 p-3 text-xs font-bold text-red-200 kurdish-text">
-                  <AlertTriangle className="h-4 w-4 shrink-0" /> {corruptCount} بەشی ژێرنووس نەخوێندرایەوە؛ تکایە فایلی سەرچاوە چاک بکە و دووبارە باربکە.
+                {corruptCount > 0 && <div role="alert" className="bg-red-400/10 p-3 text-xs font-bold text-red-200 kurdish-text">
+                  <div className="flex items-center gap-2"><AlertTriangle className="h-4 w-4 shrink-0" /> {corruptCount} بەشی ژێرنووس نەخوێندرایەوە و لە VTT ـی دەرچوو نییە.</div>
+                  {corruptBlocks.length > 0 && <details className="mt-2 font-normal"><summary className="cursor-pointer font-bold">پیشاندانی بەشە نەخوێندراوەکان</summary>
+                    <ol className="mt-2 max-h-48 list-decimal space-y-2 overflow-y-auto pl-5" dir="ltr">{corruptBlocks.map((block, index) =>
+                      <li key={index} className="whitespace-pre-wrap break-all rounded bg-black/30 p-2 font-mono text-[11px] text-white">{block}</li>)}</ol>
+                  </details>}
                 </div>}
                 {filteredCues.map((cue) => {
                   const warning = !cue.originalText.trim() || !cue.translatedText.trim() || cue.end <= cue.start;
@@ -827,7 +841,7 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
                 className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/15 px-3 py-3 text-sm font-black text-white kurdish-text">
                 <Pause className="h-4 w-4" /> وەستان
               </button>}
-              <button type="button" disabled={busy || translating || !selectedMovie || !cues.length || missingCount > 0 || corruptCount > 0}
+              <button type="button" disabled={busy || translating || !cues.length}
                 onClick={() => void applyToMovie()} className="w-full rounded-xl bg-red-600 px-3 py-3 text-sm font-black text-white disabled:opacity-50 kurdish-text">ئەم ژێرنووسە جێگیر بکە لەسەر فیلمەکە</button>
               <button type="button" disabled={!cues.length} onClick={() => downloadText(exportSubtitle(cues, false), (selectedMovie?.title || "kurdsub") + ".vtt", "text/vtt;charset=utf-8")}
                 className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/15 px-3 py-2 text-xs font-black text-white"><Download className="h-4 w-4" /> VTT</button>
