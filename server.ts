@@ -14036,12 +14036,26 @@ async function startServer() {
       });
       if (!response.ok) throw new Error(`SubDL search unavailable (HTTP ${response.status})`);
       const payload = JSON.parse((await readKurdSubResponseBytes(response, KURDSUB_EMBED_MAX_BYTES)).toString('utf8'));
-      return parseSubdlTracks(payload, imdbId);
+      const parsed = parseSubdlTracks(payload, imdbId);
+      const rawCount = Array.isArray(payload?.subtitles) ? payload.subtitles.length : 0;
+      if (rawCount && !parsed.length) {
+        const sample = payload.subtitles[0];
+        console.warn('[KurdSub] SubDL returned tracks that could not be mapped', {
+          imdbId, rawCount, fields: sample && typeof sample === 'object' ? Object.keys(sample) : [],
+        });
+      }
+      return parsed;
     };
-    let results = await search('imdb_id', imdbId).catch(() => []);
+    let results = await search('imdb_id', imdbId).catch((error: Error) => {
+      console.warn('[KurdSub] SubDL IMDb search failed', imdbId, error.message);
+      return [];
+    });
     if (!results.length) {
       const title = await fetchVidsrcTitle(imdbId, signal).catch(() => '');
-      if (title) results = await search('film_name', title).catch(() => []);
+      if (title) results = await search('film_name', title).catch((error: Error) => {
+        console.warn('[KurdSub] SubDL title search failed', imdbId, error.message);
+        return [];
+      });
     }
     return results.map((entry) => ({
       id: `subdl-${kurdSubTrackId(imdbId, entry.downloadUrl)}`,
