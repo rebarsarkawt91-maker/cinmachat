@@ -14024,6 +14024,7 @@ async function startServer() {
   const fetchSubdlTracks = async (imdbId: string, signal: AbortSignal): Promise<KurdSubRemoteTrack[]> => {
     const key = subdlApiKey();
     if (!key) return [];
+    const subdlSignal = AbortSignal.any([signal, AbortSignal.timeout(8_000)]);
     const search = async (parameter: 'imdb_id' | 'film_name', value: string) => {
       const url = new URL('https://api.subdl.com/api/v2/subtitles/search');
       url.searchParams.set(parameter, value);
@@ -14032,7 +14033,7 @@ async function startServer() {
       const response = await fetch(url, {
         redirect: 'error',
         headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
-        signal,
+        signal: subdlSignal,
       });
       if (!response.ok) throw new Error(`SubDL search unavailable (HTTP ${response.status})`);
       const payload = JSON.parse((await readKurdSubResponseBytes(response, KURDSUB_EMBED_MAX_BYTES)).toString('utf8'));
@@ -14046,12 +14047,14 @@ async function startServer() {
       }
       return parsed;
     };
+    let authenticationFailed = false;
     let results = await search('imdb_id', imdbId).catch((error: Error) => {
+      authenticationFailed = /HTTP 401|HTTP 403/.test(error.message);
       console.warn('[KurdSub] SubDL IMDb search failed', imdbId, error.message);
       return [];
     });
-    if (!results.length) {
-      const title = await fetchVidsrcTitle(imdbId, signal).catch(() => '');
+    if (!results.length && !authenticationFailed && !subdlSignal.aborted) {
+      const title = await fetchVidsrcTitle(imdbId, subdlSignal).catch(() => '');
       if (title) results = await search('film_name', title).catch((error: Error) => {
         console.warn('[KurdSub] SubDL title search failed', imdbId, error.message);
         return [];
