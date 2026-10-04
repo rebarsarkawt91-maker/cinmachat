@@ -7794,13 +7794,18 @@ export default function App() {
 
   useEffect(() => {
     const handleFsChange = () => {
-      setIsIframeFullscreen(!!document.fullscreenElement);
+      const nativeVideo = modalPlayerRef.current?.querySelector<HTMLVideoElement>("video") as (HTMLVideoElement & { webkitDisplayingFullscreen?: boolean }) | null;
+      setIsIframeFullscreen(!!document.fullscreenElement || !!nativeVideo?.webkitDisplayingFullscreen);
     };
     document.addEventListener("fullscreenchange", handleFsChange);
     document.addEventListener("webkitfullscreenchange", handleFsChange);
+    document.addEventListener("webkitbeginfullscreen", handleFsChange, true);
+    document.addEventListener("webkitendfullscreen", handleFsChange, true);
     return () => {
       document.removeEventListener("fullscreenchange", handleFsChange);
       document.removeEventListener("webkitfullscreenchange", handleFsChange);
+      document.removeEventListener("webkitbeginfullscreen", handleFsChange, true);
+      document.removeEventListener("webkitendfullscreen", handleFsChange, true);
     };
   }, []);
 
@@ -8445,6 +8450,9 @@ export default function App() {
   const toggleIframeMute = () => {
     const isMuted = !isIframeMuted;
     setIsIframeMuted(isMuted);
+    modalPlayerRef.current?.querySelectorAll<HTMLVideoElement>("video").forEach((video) => {
+      video.muted = isMuted;
+    });
 
     // 1. Control Plyr
     if (plyrRef.current?.plyr) {
@@ -8507,12 +8515,32 @@ export default function App() {
   };
 
   const toggleFullscreenMain = () => {
-    if (modalPlayerRef.current) {
-      if (!document.fullscreenElement) {
-        modalPlayerRef.current.requestFullscreen().catch(() => {});
-      } else {
-        document.exitFullscreen().catch(() => {});
-      }
+    const container = modalPlayerRef.current;
+    if (!container) return;
+    const video = container.querySelector<HTMLVideoElement>("video") as (HTMLVideoElement & {
+      webkitEnterFullscreen?: () => void;
+      webkitExitFullscreen?: () => void;
+      webkitDisplayingFullscreen?: boolean;
+    }) | null;
+    if (video?.webkitDisplayingFullscreen) {
+      video.webkitExitFullscreen?.();
+      return;
+    }
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => {});
+      return;
+    }
+    // iPhone Safari does not support fullscreen on arbitrary container nodes.
+    if (/iPhone|iPod/i.test(navigator.userAgent) && video?.webkitEnterFullscreen) {
+      video.webkitEnterFullscreen();
+      return;
+    }
+    if (container.requestFullscreen) {
+      void container.requestFullscreen().catch(() => {
+        video?.webkitEnterFullscreen?.();
+      });
+    } else {
+      video?.webkitEnterFullscreen?.();
     }
   };
 
@@ -9100,6 +9128,23 @@ export default function App() {
     const time = playerCurrentTime + SUBTITLE_SYNC_LEAD_S;
     return mainMovieSubtitleCues.find((cue) => time >= cue.start && time <= cue.end)?.text || "";
   }, [mainMovieSubtitleCues, playerCurrentTime]);
+
+  // Re-anchor the custom VTT cue lookup to the native media clock after stalls,
+  // pauses and seeks. The existing clock remains authoritative for embeds.
+  useEffect(() => {
+    if (!showPlayer || !activeServerUrl) return;
+    const videos = Array.from(modalPlayerRef.current?.querySelectorAll<HTMLVideoElement>("video") || []);
+    const syncCue = (event: Event) => {
+      const time = (event.currentTarget as HTMLVideoElement).currentTime;
+      if (Number.isFinite(time)) setPlayerCurrentTime(time);
+    };
+    videos.forEach((video) => {
+      ["pause", "playing", "seeked", "waiting"].forEach((event) => video.addEventListener(event, syncCue));
+    });
+    return () => videos.forEach((video) => {
+      ["pause", "playing", "seeked", "waiting"].forEach((event) => video.removeEventListener(event, syncCue));
+    });
+  }, [showPlayer, activeServerUrl, youtubePlayerMode]);
 
   const plyrSource = React.useMemo(
     () => ({
@@ -11181,9 +11226,9 @@ export default function App() {
     const root = modalPlayerRef.current;
     root?.querySelectorAll<HTMLVideoElement>("video").forEach((video) => {
       Array.from(video.textTracks).forEach((track) => {
-        const language = String(track.language || "").toLowerCase();
-        const isCinemaChatTrack = language === "ckb" || language === "ku";
-        if (!isCinemaChatTrack && !ccSettings.showOriginal) track.mode = "disabled";
+        // Custom Kurdish captions are rendered by our own overlay, so every
+        // browser-native track must obey this switch to avoid duplicate lines.
+        track.mode = ccSettings.showOriginal ? "showing" : "disabled";
       });
     });
     root?.querySelectorAll<HTMLIFrameElement>("iframe").forEach((frame) => {
@@ -15442,7 +15487,7 @@ export default function App() {
                         <div
                           data-testid="main-movie-kurdish-subtitle"
                           className="pointer-events-none absolute inset-x-0 z-[55] flex justify-center px-4 sm:px-8"
-                          style={{ bottom: ccSubtitleBottomPercent(ccSettings.subtitleOffsetY) }}
+                          style={{ bottom: `max(104px, ${ccSubtitleBottomPercent(ccSettings.subtitleOffsetY)})` }}
                         >
                           <div
                             dir="rtl"
@@ -15587,13 +15632,13 @@ export default function App() {
                           button at the absolute top-right (full quit); this
                           header no longer renders its own duplicate X that
                           bounced users into the details/rating view. */}
-                      <div className="absolute top-0 inset-x-0 p-3 sm:p-6 flex items-center justify-between gap-3 z-50 bg-gradient-to-b from-black/90 to-transparent pointer-events-none font-sans">
+                      <div className="absolute top-0 inset-x-0 p-2 sm:p-6 flex items-center justify-between gap-2 sm:gap-3 z-50 bg-gradient-to-b from-black/90 to-transparent pointer-events-none font-sans">
                         <div className="flex items-center gap-2 min-w-0 pointer-events-auto">
                           <div className="flex flex-col min-w-0">
-                            <span className="text-[10px] md:text-sm font-black text-brand-primary kurdish-text tracking-wider drop-shadow-md truncate">
+                            <span className="cinema-player-header-kicker text-[8px] md:text-sm font-black text-brand-primary kurdish-text tracking-wider drop-shadow-md truncate">
                               سینەما چات • CinemaChat
                             </span>
-                            <h2 className="text-sm md:text-lg font-bold text-white kurdish-text drop-shadow-lg leading-snug truncate max-w-[62vw] sm:max-w-[45vw] lg:max-w-xl">
+                            <h2 className="cinema-player-header-title text-[10px] md:text-lg font-bold text-white kurdish-text drop-shadow-lg leading-snug truncate max-w-[42vw] sm:max-w-[45vw] lg:max-w-xl">
                               {selectedMovie.title}
                             </h2>
                           </div>
@@ -15920,13 +15965,13 @@ export default function App() {
                               type="button"
                               data-testid="catalog-subtitle-settings-button"
                               onClick={() => setShowCcPanel((visible) => !visible)}
-                              className={`min-w-10 h-10 md:h-11 px-2.5 flex items-center justify-center rounded-full border transition-all active:scale-95 shadow-lg backdrop-blur-md ${
-                                showCcPanel ? "bg-brand-primary text-white border-brand-primary" : "bg-black/60 hover:bg-white/10 text-white border-white/10"
+                              className={`min-w-10 h-10 md:h-11 px-2.5 flex items-center justify-center rounded-full border-2 transition-all active:scale-95 shadow-lg backdrop-blur-md ${
+                                ccSettings.showOriginal ? "bg-emerald-600 text-white border-emerald-300" : showCcPanel ? "bg-brand-primary text-white border-brand-primary" : "bg-black/60 hover:bg-white/10 text-white border-white/40"
                               }`}
                               title="ڕێکخستنی ژێرنووس"
                               aria-label="ڕێکخستنی ژێرنووس"
                             >
-                              <span className="text-[10px] font-black">CC</span>
+                              <span className="text-[11px] font-black underline decoration-2 underline-offset-2">CC</span>
                             </button>
 
                             {showCcPanel && (
