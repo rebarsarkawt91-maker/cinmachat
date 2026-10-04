@@ -107,7 +107,7 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
     setLoading(true);
     setError("");
     try {
-      const res = await fetch("/api/admin/m17/status", {
+      const res = await fetch("/api/admin/m17/status?adminName=admin", {
         method: "POST", headers: { "Content-Type": "text/plain" },
         body: JSON.stringify({ m17Session }),
       });
@@ -136,7 +136,7 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
     setUnlockBusy(true);
     setUnlockError("");
     try {
-      const response = await fetch("/api/admin/m17/unlock", {
+      const response = await fetch("/api/admin/m17/unlock?adminName=admin", {
         method: "POST", headers: { "Content-Type": "text/plain" },
         body: JSON.stringify({ password: unlockPassword }),
       });
@@ -160,7 +160,7 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
     // Enforce the hierarchy locally: non-privileged admins may only create staff
     const roleToCreate = isPrivileged ? newRole : "staff";
     try {
-      const res = await fetch("/api/admin/users", {
+      const res = await fetch("/api/admin/users?adminName=admin", {
         method: "POST",
         headers: { "Content-Type": "text/plain" },
         body: JSON.stringify({
@@ -197,7 +197,7 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
     setError("");
     setSuccessMsg("");
     try {
-      const res = await fetch(`/api/admin/users/${encodeURIComponent(usernameToDelete)}`, {
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(usernameToDelete)}?adminName=admin`, {
         method: "DELETE", headers: { "Content-Type": "text/plain" },
         body: JSON.stringify({ m17Session }),
       });
@@ -222,7 +222,7 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
     setError("");
     setSuccessMsg("");
     try {
-      const res = await fetch("/api/admin/m17/admins/password", {
+      const res = await fetch("/api/admin/m17/admins/password?adminName=admin", {
         method: "POST",
         headers: { "Content-Type": "text/plain" },
         body: JSON.stringify({
@@ -249,7 +249,7 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
     setError("");
     setSuccessMsg("");
     try {
-      const res = await fetch("/api/admin/m17/notifications/clear", {
+      const res = await fetch("/api/admin/m17/notifications/clear?adminName=admin", {
         method: "POST", headers: { "Content-Type": "text/plain" },
         body: JSON.stringify({ m17Session }),
       });
