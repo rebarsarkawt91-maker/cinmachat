@@ -277,7 +277,7 @@ function validateTranslatedSubtitleStructure(sourceText, translatedText) {
   }
 }
 
-async function translateSrtViaGemini(srtText, targetLang, userApiKey, modelOverride, stripFormattingTags = false, retryUntranslated = false) {
+async function translateSrtViaGemini(srtText, targetLang, userApiKey, modelOverride, stripFormattingTags = false, retryUntranslated = false, onUsage) {
   const apiKey = userApiKey || process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY is not set; cannot translate subtitles");
   const model = modelOverride || GEMINI_MODEL;
@@ -343,6 +343,14 @@ async function translateSrtViaGemini(srtText, targetLang, userApiKey, modelOverr
     if (!response.ok) throw new Error(`Gemini API error ${response.status}: ${await response.text()}`);
 
     const data = await response.json();
+    if (typeof onUsage === "function") {
+      const usage = data?.usageMetadata || {};
+      onUsage({
+        promptTokens: Number(usage.promptTokenCount) || 0,
+        outputTokens: Number(usage.candidatesTokenCount) || 0,
+        totalTokens: Number(usage.totalTokenCount) || 0,
+      });
+    }
     const rawTranslation = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("");
     const translated = stripFormattingTags
       ? String(rawTranslation || "").replace(/\r\n?/g, "\n").trim()

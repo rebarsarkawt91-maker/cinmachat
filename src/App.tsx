@@ -12431,7 +12431,7 @@ export default function App() {
   // the same delegated publishing roles that may edit a movie record.
   const canUseKurdSubStudio = Boolean(
     currentUser?.username &&
-      ["owner", "admin", "deputy_manager", "staff"].includes(
+      ["owner", "admin", "super_admin", "deputy_manager", "staff"].includes(
         String(currentUser?.role || "").toLowerCase(),
       ),
   );

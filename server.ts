@@ -16,6 +16,7 @@ import bcrypt from 'bcryptjs';
 import net from 'node:net';
 import { rateLimiter, sanitizationMiddleware, createAdminGuard, logFailedAttempt } from './security';
 import { generateSubtitle, translateSrtViaGemini } from './features/subtitles/subtitleGenerator.js';
+import { GeminiKeyVault } from './geminiKeyVault';
 import { stripSubtitleHtmlTags } from './src/lib/subtitleText.js';
 import { hasNonSoraniLetters } from './src/lib/studioUntranslatedCues.js';
 import { legacySubtitleFileUrl, parseLegacySubtitleListing } from './kurdSubLegacy';
@@ -14014,6 +14015,84 @@ async function startServer() {
     );
   };
 
+  // Studio key vault sessions are separate from the legacy adminName header.
+  // A sub-admin must prove their own password before storing or using pooled
+  // keys; nobody can read another admin's plaintext key back from this API.
+  const geminiVault = new GeminiKeyVault(() => {
+    const app = initializeFirebaseAdmin();
+    return app ? admin.firestore(app) : null;
+  });
+  const geminiVaultSessions = new Map<string, { username: string; passwordHash: string; expiresAt: number }>();
+  const geminiVaultFailures = new Map<string, { count: number; until: number }>();
+  const geminiVaultIdentity = (req: express.Request) => {
+    const token = String(req.body?.geminiKeySession || '');
+    if (!/^[A-Za-z0-9_-]{40,100}$/.test(token)) return null;
+    const id = crypto.createHash('sha256').update(token).digest('hex');
+    const session = geminiVaultSessions.get(id);
+    if (!session || session.expiresAt < Date.now()) return null;
+    const account = db.admins.find((item: any) => String(item.username || '').toLowerCase() === session.username);
+    if (!account || account.password !== session.passwordHash) return null;
+    return session.username;
+  };
+  app.post('/api/kurdsub/keys/unlock', async (req, res) => {
+    if (!(await ensureAdminStoreReady())) return res.status(503).json({ error: 'Admin account storage unavailable' });
+    const client = getClientIdentity(req);
+    const attempt = geminiVaultFailures.get(client.key);
+    if (attempt && attempt.count >= 5 && attempt.until > Date.now()) return res.status(429).json({ error: 'Too many attempts; try again later' });
+    const username = String(req.body?.adminName || '').trim().toLowerCase();
+    const password = String(req.body?.password || '');
+    const account = db.admins.find((item: any) => String(item.username || '').trim().toLowerCase() === username);
+    const stored = String(account?.password || '');
+    const passwordMatches = Boolean(password && stored && (
+      (stored.startsWith('$2a$') || stored.startsWith('$2b$') || stored.startsWith('$2y$'))
+        ? bcrypt.compareSync(password, stored)
+        : stored === password || stored === crypto.createHash('sha256').update(password).digest('hex')
+    ));
+    if (!account || !passwordMatches) {
+      geminiVaultFailures.set(client.key, { count: (attempt?.until || 0) > Date.now() ? (attempt?.count || 0) + 1 : 1, until: Date.now() + 15 * 60_000 });
+      return res.status(401).json({ error: 'Admin password is incorrect' });
+    }
+    try { await geminiVault.load(); }
+    catch { return res.status(503).json({ error: 'Gemini key storage is unavailable' }); }
+    geminiVaultFailures.delete(client.key);
+    const token = crypto.randomBytes(32).toString('base64url');
+    geminiVaultSessions.set(crypto.createHash('sha256').update(token).digest('hex'), {
+      username, passwordHash: account.password, expiresAt: Date.now() + 60 * 60_000,
+    });
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ geminiKeySession: token });
+  });
+  app.post('/api/kurdsub/keys/status', async (req, res) => {
+    const username = geminiVaultIdentity(req);
+    if (!username) return res.status(403).json({ error: 'Unlock Gemini keys first' });
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json(await geminiVault.status(username, OWNER_USERNAMES.includes(username)));
+    } catch { return res.status(503).json({ error: 'Gemini key storage is unavailable' }); }
+  });
+  app.post('/api/kurdsub/keys/save', async (req, res) => {
+    const username = geminiVaultIdentity(req);
+    if (!username) return res.status(403).json({ error: 'Unlock Gemini keys first' });
+    try {
+      await geminiVault.save(username, String(req.body?.apiKey || ''));
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({ success: true });
+    } catch (error: any) {
+      const invalid = error?.message === 'Invalid Gemini API key' || error?.message === 'This Gemini key is already registered';
+      return res.status(invalid ? 400 : 503).json({ error: invalid ? error.message : 'Could not save Gemini key durably' });
+    }
+  });
+  app.post('/api/kurdsub/keys/remove', async (req, res) => {
+    const username = geminiVaultIdentity(req);
+    if (!username) return res.status(403).json({ error: 'Unlock Gemini keys first' });
+    const target = String(req.body?.target || username).trim().toLowerCase();
+    if (target !== username && !OWNER_USERNAMES.includes(username)) return res.status(403).json({ error: 'Only the owner may remove another admin key' });
+    try {
+      await geminiVault.remove(target);
+      return res.json({ success: true });
+    } catch { return res.status(503).json({ error: 'Could not remove Gemini key durably' }); }
+  });
+
   const garageBandEmbedInfo = async (rawUrl: unknown) => {
     const url = new URL(String(rawUrl || '').trim());
     validateHostOf(url);
@@ -15026,6 +15105,10 @@ async function startServer() {
     if (!isKurdSubStudioRequester(req)) {
       return res.status(403).json({ error: 'دەسەڵاتی ستۆدیۆی ژێرنووس بەردەست نییە' });
     }
+    const vaultUsername = geminiVaultIdentity(req);
+    if (!vaultUsername || vaultUsername !== String(req.body?.adminName || '').trim().toLowerCase()) {
+      return res.status(403).json({ error: 'Unlock Gemini translation with your admin password first' });
+    }
     const rawCues = req.body?.cues;
     const retryUntranslated = req.body?.retryUntranslated === true;
     if (!Array.isArray(rawCues) || rawCues.length < 1 || rawCues.length > 25) {
@@ -15042,22 +15125,39 @@ async function startServer() {
       !cue.text || cue.text.length > 2000 || /\d{2}:\d{2}:\d{2}[,.]\d{3}\s+-->/.test(cue.text))) {
       return res.status(400).json({ error: 'Invalid subtitle cue batch' });
     }
-    const serverGeminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-    if (!serverGeminiApiKey) {
-      return res.status(424).json({ error: 'Configure GEMINI_API_KEY or GOOGLE_API_KEY on the production backend to enable Sorani translation' });
-    }
     try {
+      const activeAdmins = new Set(db.admins.map((item: any) => String(item.username || '').trim().toLowerCase()));
+      const candidates = await geminiVault.candidates(true, activeAdmins);
+      if (!candidates.length) return res.status(429).json({ error: 'All Gemini keys are unavailable or cooling down' });
       const source = cues.map((cue) =>
         `${cue.index}\n${kurdSubBatchTimestamp(cue.start)} --> ${kurdSubBatchTimestamp(cue.end)}\n${cue.text}`,
       ).join('\n\n');
-      let translated: string;
-      try {
-        translated = await translateSrtViaGemini(source, 'ckb', serverGeminiApiKey, undefined, true, retryUntranslated);
-      } catch (error: any) {
-        // A busy primary model must not strand an in-progress studio batch.
-        if (!/Gemini API error (?:429|500|502|503|504)\b/.test(String(error?.message || ''))) throw error;
-        translated = await translateSrtViaGemini(source, 'ckb', serverGeminiApiKey, 'gemini-flash-lite-latest', true, retryUntranslated);
+      let translated = '';
+      let lastError: any;
+      for (const candidate of candidates) {
+        let tokensUsed = 0;
+        const onUsage = (usage: { totalTokens: number }) => { tokensUsed += usage.totalTokens; };
+        try {
+          try {
+            translated = await translateSrtViaGemini(source, 'ckb', candidate.key, undefined, true, retryUntranslated, onUsage);
+          } catch (error: any) {
+            if (!/Gemini API error (?:500|502|503|504)\b/.test(String(error?.message || ''))) throw error;
+            translated = await translateSrtViaGemini(source, 'ckb', candidate.key, 'gemini-flash-lite-latest', true, retryUntranslated, onUsage);
+          }
+          geminiVault.recordUse(candidate, tokensUsed);
+          break;
+        } catch (error: any) {
+          if (tokensUsed > 0) geminiVault.recordUse(candidate, tokensUsed);
+          lastError = error;
+          const message = String(error?.message || '');
+          if (/Gemini API error (?:400|401|403|429)\b|RESOURCE_EXHAUSTED|quota_exceeded/i.test(message)) {
+            geminiVault.recordQuota(candidate, /Gemini API error (?:400|401|403)\b|requests.?per.?day|RPD|daily quota/i.test(message));
+            continue;
+          }
+          throw error;
+        }
       }
+      if (!translated) throw lastError || new Error('All Gemini keys are unavailable');
       const blocks = translated.replace(/^\uFEFF/, '').trim().split(/\n\s*\n/);
       if (blocks.length !== cues.length) throw new Error('Gemini changed the number of subtitle cues');
       const result = blocks.map((block, position) => {
@@ -15080,7 +15180,12 @@ async function startServer() {
     } catch (error: any) {
       // Cloudflare replaces upstream 502 bodies with a generic page. 424 keeps
       // the actionable provider error available to the Studio retry UI.
-      return res.status(424).json({ error: error?.message || 'Gemini translation failed' });
+      const providerError = String(error?.message || 'Gemini translation failed');
+      const exhausted = /429|quota|RESOURCE_EXHAUSTED/i.test(providerError);
+      const safeError = /^(?:Gemini returned|Gemini changed|Gemini API timed out)/.test(providerError)
+        ? providerError : 'Gemini translation failed; check the key and retry';
+      return res.status(exhausted ? 429 : 424)
+        .json({ error: exhausted ? 'Gemini key quota reached; retry later or add a key from another project' : safeError });
     }
   });
 
