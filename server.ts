@@ -2582,21 +2582,23 @@ async function persistAdminsToFirestore(adminApp: admin.app.App | null, admins: 
 // Read the durable admin-account snapshot back from Firestore. Returns null
 // when it has never been written (e.g. first deploy) so boot can keep the
 // local seed / db.json copy.
-async function restoreAdminsFromFirestore(adminApp: admin.app.App | null): Promise<any[] | null> {
-  if (!adminApp) return null;
+async function restoreAdminsFromFirestore(adminApp: admin.app.App | null): Promise<{ ok: true; admins: any[] | null } | { ok: false }> {
+  if (!adminApp) return { ok: false };
   try {
     const snap = await admin
       .firestore(adminApp)
       .collection(ADMIN_ACCOUNTS_COLLECTION)
       .doc(ADMIN_ACCOUNTS_DOC)
       .get();
-    if (!snap.exists) return null;
+    if (!snap.exists) return { ok: true, admins: null };
     const data = snap.data() as any;
-    if (Array.isArray(data?.admins) && data.admins.length > 0) return data.admins;
-    return null;
+    if (Array.isArray(data?.admins) && data.admins.length > 0) return { ok: true, admins: data.admins };
+    // An existing but malformed snapshot is NOT a fresh installation.
+    console.error('[admin-backup] Refusing to replace a malformed admin snapshot.');
+    return { ok: false };
   } catch (err: any) {
     console.warn('[admin-backup] Firestore read failed:', err?.message || err);
-    return null;
+    return { ok: false };
   }
 }
 
@@ -4529,11 +4531,13 @@ async function startServer() {
     };
     db.admins.push(adminAccount);
   } else {
-    // Update existing admin password if it's not bcrypt hashed
-    // Check if existing password is not bcrypt, then update
-    if (adminAccount.password && !adminAccount.password.startsWith('$2a$') && !adminAccount.password.startsWith('$2b$') && !adminAccount.password.startsWith('$2y$')) { // Added
+    // A configured owner password remains valid even while Firestore is down.
+    const fixedOwnerPassword = process.env.OWNER_DEFAULT_PASSWORD || process.env.ADMIN_INITIAL_PASSWORD;
+    if (fixedOwnerPassword && !bcrypt.compareSync(fixedOwnerPassword, String(adminAccount.password || ''))) {
       adminAccount.password = ownerUserSeedPassHash;
-    } else if (!adminAccount.password) { // Handle case where password might be empty
+    } else if (adminAccount.password && !adminAccount.password.startsWith('$2a$') && !adminAccount.password.startsWith('$2b$') && !adminAccount.password.startsWith('$2y$')) {
+      adminAccount.password = ownerUserSeedPassHash;
+    } else if (!adminAccount.password) {
       adminAccount.password = ownerUserSeedPassHash;
     }
     adminAccount.isSuper = true;
@@ -4548,39 +4552,55 @@ async function startServer() {
   // which silently wiped newly created sub-admin accounts such as "nazyar".)
   console.log(`[Module 17] Multi-level admin model active. ${db.admins.length} admin account(s) registered.`);
 
-  // Durable admin-account restore: re-hydrate `db.admins` from the Firestore
-  // backup (the authoritative cross-deploy copy) so sub-admin accounts and the
-  // main admin's current password survive Render redeploys that wipe db.json.
-  // The local seed above still guarantees an 'admin' owner record exists, so a
-  // restore that yields no snapshot simply keeps the local copy.
-  // Admin-auth and account-mutation routes await this promise. This prevents
-  // an early request after a deploy from reading the temporary seed-only list
-  // before the durable Firestore account snapshot finishes restoring.
-  const adminAccountsReady = (async () => {
-    // Initialize Firebase Admin if it hasn't been yet at this early boot point,
-    // so the durable restore/persist below can talk to Firestore.
+  // Firestore is authoritative. A failed read must never be mistaken for an
+  // absent document: writing the temporary seed in that case erased accounts.
+  let adminStoreReady = false;
+  let lastAdminRestoreAttempt = Date.now();
+  const restoreAdminAccounts = async (): Promise<void> => {
     const adminApp = initializeFirebaseAdmin();
     if (!adminApp) {
-      console.warn(
-        '[Module 17] Durable admin backup DISABLED: Firebase Admin could not be initialized ' +
-        '(missing FIREBASE_SERVICE_ACCOUNT / GOOGLE_APPLICATION_CREDENTIALS). ' +
-        'On Render, admin accounts + the main admin password will reset after every redeploy.',
-      );
+      console.error('[Module 17] Admin store unavailable; refusing account changes.');
       return;
     }
     const restored = await restoreAdminsFromFirestore(adminApp);
-    if (restored && restored.length > 0) {
-      db.admins = restored;
-      // Re-assert the mandatory owner record in case the snapshot predates it.
-      if (!db.admins.some((a: any) => String(a?.username || '').trim().toLowerCase() === 'admin')) {
-        db.admins.push({ username: 'admin', password: ownerUserSeedPassHash, isSuper: true, isOwner: true, role: 'owner' });
-      }
+    if (!restored.ok) return;
+    if (restored.admins) {
+      db.admins = restored.admins;
       console.log(`[Module 17] Restored ${db.admins.length} admin account(s) from durable Firestore backup.`);
     }
-    // Ensure the restored/re-seeded set is mirrored back and persisted locally.
-    await persistAdminsToFirestore(adminApp, db.admins);
-    fs.writeFile(DB_PATH, JSON.stringify(db, null, 2)).catch(console.error);
-  })();
+    let owner = db.admins.find((a: any) => String(a?.username || '').trim().toLowerCase() === 'admin');
+    let changed = !restored.admins;
+    if (!owner) {
+      owner = { username: 'admin', password: ownerUserSeedPassHash, isSuper: true, isOwner: true, role: 'owner' };
+      db.admins.push(owner);
+      changed = true;
+    }
+    if (!owner.isSuper || !owner.isOwner || owner.role !== 'owner') changed = true;
+    owner.isSuper = true;
+    owner.isOwner = true;
+    owner.role = 'owner';
+    // A configured owner password is the stable authority across restarts.
+    // Never put its plaintext in source control or the Firestore document.
+    const fixedOwnerPassword = process.env.OWNER_DEFAULT_PASSWORD || process.env.ADMIN_INITIAL_PASSWORD;
+    if (fixedOwnerPassword && !bcrypt.compareSync(fixedOwnerPassword, String(owner.password || ''))) {
+      owner.password = bcrypt.hashSync(fixedOwnerPassword, 10);
+      changed = true;
+    }
+    if (changed && !(await persistAdminsToFirestore(adminApp, db.admins))) return;
+    adminStoreReady = true;
+    await fs.writeFile(DB_PATH, JSON.stringify(db, null, 2)).catch(console.error);
+  };
+  let adminAccountsReady = restoreAdminAccounts();
+  const ensureAdminStoreReady = async (): Promise<boolean> => {
+    await adminAccountsReady;
+    if (adminStoreReady) return true;
+    // Retry after a transient Firestore quota outage without hammering it.
+    if (Date.now() - lastAdminRestoreAttempt < 30_000) return false;
+    lastAdminRestoreAttempt = Date.now();
+    adminAccountsReady = restoreAdminAccounts();
+    await adminAccountsReady;
+    return adminStoreReady;
+  };
 
   fs.writeFile(DB_PATH, JSON.stringify(db, null, 2)).catch(console.error);
   if (!db.ownerNotifications) db.ownerNotifications = [];
@@ -10587,6 +10607,9 @@ async function startServer() {
     if (!sysSecret || secret !== sysSecret) {
       return res.status(401).json({ success: false, message: "کۆدی نهێنی هەڵەیە!" });
     }
+    if (!(await ensureAdminStoreReady())) {
+      return res.status(503).json({ success: false, message: 'Permanent admin storage is temporarily unavailable' });
+    }
 
     try {
       const dbInstance = getAdminDb();
@@ -10619,6 +10642,7 @@ async function startServer() {
 
       const displayName = name || "Admin User";
       if (!db.admins) db.admins = [];
+      const adminsBeforePromotion = db.admins.map((account: any) => ({ ...account }));
       const hasAdmin = db.admins.find((a: any) => a.username?.toLowerCase() === displayName.toLowerCase());
       if (!hasAdmin) {
         db.admins.push({
@@ -10634,7 +10658,11 @@ async function startServer() {
 
       await addAuditLog(db, displayName, "Role Promotion via Key", `سەرکەوتووانە ڕۆڵی یوزەر گۆڕدرا بۆ ئەدمینی گشتی (Super Admin) لە ڕێگەی کۆدی نهێنی.`);
       await saveDB(db);
-      await persistAdminsToFirestore(initializeFirebaseAdmin(), db.admins);
+      if (!(await persistAdminsToFirestore(initializeFirebaseAdmin(), db.admins))) {
+        db.admins = adminsBeforePromotion;
+        await saveDB(db);
+        return res.status(503).json({ success: false, message: 'Permanent admin promotion failed; try again later' });
+      }
 
       res.json({
         success: true,
@@ -10648,7 +10676,9 @@ async function startServer() {
   });
 
   app.post('/api/admin/login', async (req, res) => {
-    await adminAccountsReady;
+    if (!(await ensureAdminStoreReady()) && !OWNER_USERNAMES.includes(String(req.body?.username || '').trim().toLowerCase())) {
+      return res.status(503).json({ success: false, message: 'Admin account storage is temporarily unavailable; no temporary login was created' });
+    }
     const { username, password } = req.body;
     const identity = getClientIdentity(req);
     const cleanIp = identity.ip;
@@ -10876,22 +10906,51 @@ async function startServer() {
     if (OWNER_USERNAMES.includes(name) || admin.role === 'owner') return 4;
     return ROLE_LEVEL[admin.role || ''] || (admin.isSuper ? 2 : 1);
   };
-  const requesterInfo = (req: any) => {
-    const name = (req.query.adminName as string || req.headers['x-admin-username'] as string || '').trim().toLowerCase();
-    const record = db.admins.find((a: any) => a.username?.toLowerCase() === name) || null;
-    let level = roleLevel(record);
-    if (!record && OWNER_USERNAMES.includes(name)) level = 4;
-    return { name, record, level };
-  };
   const VALID_ROLES = ['staff', CINEMA_ROOM_ADMIN_ROLE, 'deputy_manager', 'super_admin'];
 
+  // Module 17 has its own short-lived owner unlock. A username in a query or
+  // localStorage is never proof of ownership for account mutations.
+  const m17Sessions = new Map<string, { passwordHash: string; expiresAt: number }>();
+  const m17FailedUnlocks = new Map<string, { count: number; until: number }>();
+  const m17Owner = (req: express.Request): boolean => {
+    const token = String(req.body?.m17Session || '');
+    if (!/^[A-Za-z0-9_-]{40,100}$/.test(token)) return false;
+    const id = crypto.createHash('sha256').update(token).digest('hex');
+    const session = m17Sessions.get(id);
+    const owner = db.admins.find((a: any) => String(a?.username || '').trim().toLowerCase() === 'admin');
+    if (!session || !owner || session.expiresAt < Date.now() || session.passwordHash !== owner.password) {
+      m17Sessions.delete(id);
+      return false;
+    }
+    return true;
+  };
+  app.post('/api/admin/m17/unlock', async (req, res) => {
+    if (!(await ensureAdminStoreReady())) return res.status(503).json({ error: 'Admin account storage is temporarily unavailable' });
+    const identity = getClientIdentity(req);
+    const attempt = m17FailedUnlocks.get(identity.key);
+    if (attempt && attempt.count >= 5 && attempt.until > Date.now()) return res.status(429).json({ error: 'Too many attempts; try again later' });
+    const owner = db.admins.find((a: any) => String(a?.username || '').trim().toLowerCase() === 'admin');
+    const password = String(req.body?.password || '');
+    if (!owner || !password || !bcrypt.compareSync(password, String(owner.password || ''))) {
+      m17FailedUnlocks.set(identity.key, { count: (attempt?.until || 0) > Date.now() ? (attempt?.count || 0) + 1 : 1, until: Date.now() + 15 * 60_000 });
+      return res.status(401).json({ error: 'Owner password is incorrect' });
+    }
+    m17FailedUnlocks.delete(identity.key);
+    const token = crypto.randomBytes(32).toString('base64url');
+    m17Sessions.set(crypto.createHash('sha256').update(token).digest('hex'), {
+      passwordHash: owner.password, expiresAt: Date.now() + 30 * 60_000,
+    });
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ success: true, m17Session: token });
+  });
+
   app.post('/api/admin/users', async (req, res) => {
-    await adminAccountsReady;
+    if (!(await ensureAdminStoreReady())) return res.status(503).json({ error: 'Admin account storage is temporarily unavailable' });
     const { username, password, isSuper, role } = req.body || {};
-    const requester = requesterInfo(req);
-    if (requester.level < 2) {
+    if (!m17Owner(req)) {
       return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیار (بەڕێوەبەری سەرەکی کەنالەکە) دەتوانێت ئەدمین بەڕێوەببات.' });
     }
+    const requester = { name: 'admin', level: 4 };
 
     // Input validation — strict length + charset, never expose internals
     const safeUsername = String(username || '').trim();
@@ -10947,12 +11006,12 @@ async function startServer() {
   });
 
   app.delete('/api/admin/users/:username', async (req, res) => {
-    await adminAccountsReady;
+    if (!(await ensureAdminStoreReady())) return res.status(503).json({ error: 'Admin account storage is temporarily unavailable' });
     const { username } = req.params;
-    const requester = requesterInfo(req);
-    if (requester.level < 2) {
+    if (!m17Owner(req)) {
       return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیار (بەڕێوەبەر) دەتوانێت ئەدمین بسڕێتەوە.' });
     }
+    const requester = { name: 'admin', level: 4 };
 
     const targetName = String(username || '').trim().toLowerCase();
     const target = db.admins.find((a: any) => a.username?.toLowerCase() === targetName);
@@ -10966,23 +11025,22 @@ async function startServer() {
       return res.status(403).json({ error: 'ناتوانیت ئەدمین بە ئاستی یەکسان یان بەرزتر لە خۆت بسڕیتەوە' });
     }
 
+    const adminsBeforeDelete = db.admins.slice();
     db.admins = db.admins.filter((a: any) => a.username?.toLowerCase() !== targetName);
     await addAuditLog(db, requester.name || 'system', "Delete Admin", `ئەدمینی سڕایەوە: "${target.username}"`);
     await saveDB(db);
-    await persistAdminsToFirestore(initializeFirebaseAdmin(), db.admins);
+    if (!(await persistAdminsToFirestore(initializeFirebaseAdmin(), db.admins))) {
+      db.admins = adminsBeforeDelete;
+      await saveDB(db);
+      return res.status(503).json({ error: 'Permanent admin deletion failed; no account was removed' });
+    }
     res.json({ success: true });
   });
 
   // --- ADMIN MODULE 17: MULTI-LEVEL ADMIN AUTHORIZATION SYSTEM ENDPOINTS ---
-  app.get('/api/admin/m17/status', async (req, res) => {
-    await adminAccountsReady;
-    const requester = (req.query.adminName as string || req.headers['x-admin-username'] as string || '').trim().toLowerCase();
-
-    // Strict Route Guard for Module 17
-    const adminRecord = db.admins.find((a: any) => a.username?.toLowerCase() === requester);
-    const requesterRole = adminRecord?.role || (OWNER_USERNAMES.includes(requester) ? 'super_admin' : (adminRecord?.isSuper ? 'deputy_manager' : 'staff'));
-    const isAuthorized = OWNER_USERNAMES.includes(requester) || requesterRole === 'super_admin' || requesterRole === 'deputy_manager' || requesterRole === 'owner';
-    if (!isAuthorized) {
+  app.post('/api/admin/m17/status', async (req, res) => {
+    if (!(await ensureAdminStoreReady())) return res.status(503).json({ error: 'Admin account storage is temporarily unavailable' });
+    if (!m17Owner(req)) {
       return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیاری باڵا (بەڕێوەبەر) دەتوانێت بچێتە ناو بەشی ڕێگەپێدانی ئاستەکان.' });
     }
 
@@ -11005,11 +11063,11 @@ async function startServer() {
   });
 
   app.post('/api/admin/m17/admins/password', async (req, res) => {
-    await adminAccountsReady;
-    const requester = requesterInfo(req);
-    if (requester.level < 2) {
+    if (!(await ensureAdminStoreReady())) return res.status(503).json({ error: 'Admin account storage is temporarily unavailable' });
+    if (!m17Owner(req)) {
       return res.status(403).json({ error: 'شایستەی دەسەڵاتی پێویست نییە! تەنها خاوەن سەرپەرشتیاری باڵا (بەڕێوەبەر) دەتوانێت وشەی تێپەڕی ئەدمینەکان بگۆڕێت.' });
     }
+    const requester = { name: 'admin', level: 4 };
 
     const { targetUsername, newPassword, isSuper } = req.body || {};
     const targetName = String(targetUsername || '').trim().toLowerCase();
@@ -11021,6 +11079,9 @@ async function startServer() {
 
     const target = db.admins[adminIndex];
     const targetBeforeUpdate = { ...target };
+    if (targetName === 'admin' && (process.env.OWNER_DEFAULT_PASSWORD || process.env.ADMIN_INITIAL_PASSWORD)) {
+      return res.status(403).json({ error: 'Owner password is fixed by the server environment; change it there instead' });
+    }
     // You may always reset your own password, or the password of an account
     // with strictly less privilege — never the platform owner's password.
     if (requester.name !== targetName) {
@@ -11057,8 +11118,7 @@ async function startServer() {
   });
 
   app.post('/api/admin/m17/notifications/clear', async (req, res) => {
-    const requester = requesterInfo(req);
-    if (requester.level < 3) {
+    if (!m17Owner(req)) {
       return res.status(403).json({ error: 'کردارەکە ڕەتکرایەوە چونکە دەسەڵاتی پێویستت نییە!' });
     }
 

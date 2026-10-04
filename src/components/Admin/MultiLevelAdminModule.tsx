@@ -15,7 +15,6 @@ import {
   Eye,
   EyeOff
 } from "lucide-react";
-import { useSocialAuth } from "../../context/SocialAuthContext";
 
 interface AdminUser {
   username: string;
@@ -39,19 +38,12 @@ interface Module17Stats {
 }
 
 export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => {
-  const { socialProfile } = useSocialAuth();
-  const isOwner = currentUser?.username?.toLowerCase() === "dekan@123" || 
-                  currentUser?.username?.toLowerCase() === "admin" ||
-                  currentUser?.role === "owner" ||
-                  currentUser?.role === "admin" ||
-                  currentUser?.role === "super_admin" ||
-                  currentUser?.role === "deputy_manager" ||
-                  socialProfile?.role === "super_admin" || 
-                  socialProfile?.userRole === "super_admin" || 
-                  socialProfile?.role === "deputy_manager" ||
-                  socialProfile?.userRole === "deputy_manager" ||
-                  socialProfile?.role === "admin" ||
-                  socialProfile?.userRole === "admin";
+  const isOwner = String(currentUser?.username || "").toLowerCase() === "admin" &&
+    (currentUser?.role === "owner" || currentUser?.isOwner === true);
+  const [m17Session, setM17Session] = useState("");
+  const [unlockPassword, setUnlockPassword] = useState("");
+  const [unlockBusy, setUnlockBusy] = useState(false);
+  const [unlockError, setUnlockError] = useState("");
   
   const [admins, setAdmins] = useState<AdminUser[]>([]);
   const [notifications, setNotifications] = useState<NotificationAlert[]>([]);
@@ -111,17 +103,21 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
   }, [isPrivileged, newRole]);
 
   const fetchModule17Data = async () => {
-    if (!isOwner) return;
+    if (!isOwner || !m17Session) return;
     setLoading(true);
     setError("");
     try {
-      const res = await fetch(`/api/admin/m17/status?adminName=${encodeURIComponent(currentUser.username)}`);
+      const res = await fetch("/api/admin/m17/status", {
+        method: "POST", headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify({ m17Session }),
+      });
       const data = await res.json();
       if (res.ok && data.success) {
         setAdmins(data.admins || []);
         setNotifications(data.notifications || []);
         setStats(data.systemStats || { totalAdmins: 0, superAdmins: 0, deputyManagers: 0, staff: 0 });
       } else {
+        if (res.status === 403) setM17Session("");
         setError(data.error || "خطأ في تحميل البيانات");
       }
     } catch (err) {
@@ -132,8 +128,26 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
   };
 
   useEffect(() => {
-    fetchModule17Data();
-  }, [currentUser]);
+    if (m17Session) void fetchModule17Data();
+  }, [m17Session]);
+
+  const handleUnlock = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setUnlockBusy(true);
+    setUnlockError("");
+    try {
+      const response = await fetch("/api/admin/m17/unlock", {
+        method: "POST", headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify({ password: unlockPassword }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result?.m17Session) throw new Error(result?.error || "ناتوانرێت ئەم بەشە بکرێتەوە");
+      setUnlockPassword("");
+      setM17Session(result.m17Session);
+    } catch (error: any) {
+      setUnlockError(error?.message || "ناتوانرێت ئەم بەشە بکرێتەوە");
+    } finally { setUnlockBusy(false); }
+  };
 
   const handleCreateSubAdmin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -146,10 +160,11 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
     // Enforce the hierarchy locally: non-privileged admins may only create staff
     const roleToCreate = isPrivileged ? newRole : "staff";
     try {
-      const res = await fetch(`/api/admin/users?adminName=${encodeURIComponent(currentUser.username)}`, {
+      const res = await fetch("/api/admin/users", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "text/plain" },
         body: JSON.stringify({
+          m17Session,
           username: newUsername,
           password: newPassword,
           isSuper: roleToCreate === "deputy_manager",
@@ -182,8 +197,9 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
     setError("");
     setSuccessMsg("");
     try {
-      const res = await fetch(`/api/admin/users/${encodeURIComponent(usernameToDelete)}?adminName=${encodeURIComponent(currentUser.username)}`, {
-        method: "DELETE"
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(usernameToDelete)}`, {
+        method: "DELETE", headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify({ m17Session }),
       });
       const data = await res.json();
       if (res.ok && data.success) {
@@ -206,10 +222,11 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
     setError("");
     setSuccessMsg("");
     try {
-      const res = await fetch(`/api/admin/m17/admins/password?adminName=${encodeURIComponent(currentUser.username)}`, {
+      const res = await fetch("/api/admin/m17/admins/password", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "text/plain" },
         body: JSON.stringify({
+          m17Session,
           targetUsername: targetUser,
           newPassword: editPassword
         })
@@ -232,8 +249,9 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
     setError("");
     setSuccessMsg("");
     try {
-      const res = await fetch(`/api/admin/m17/notifications/clear?adminName=${encodeURIComponent(currentUser.username)}`, {
-        method: "POST"
+      const res = await fetch("/api/admin/m17/notifications/clear", {
+        method: "POST", headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify({ m17Session }),
       });
       if (res.ok) {
         setNotifications([]);
@@ -271,6 +289,22 @@ export const MultiLevelAdminModule = ({ currentUser }: { currentUser: any }) => 
         </div>
       </motion.div>
     );
+  }
+
+  if (!m17Session) {
+    return <div className="mx-auto max-w-lg rounded-3xl border border-amber-500/25 bg-[#0c0d12]/80 p-8 text-white">
+      <h2 className="mb-2 text-xl font-black kurdish-text">بەشی بەڕێوەبردنی ئەدمینەکان</h2>
+      <p className="mb-5 text-sm text-gray-400 kurdish-text">بۆ کردنەوەی ئەم بەشە، وشەی تێپەڕی ئەدمینی سەرەکی بنووسە. هەژمارەکان تەنها کاتێک دادەنرێن کە پاشەکەوتی هەمیشەیی بەردەست بێت.</p>
+      <form onSubmit={handleUnlock} className="space-y-3">
+        <input type="password" value={unlockPassword} onChange={(event) => setUnlockPassword(event.target.value)}
+          autoComplete="current-password" aria-label="Owner password" required
+          className="w-full rounded-xl border border-white/15 bg-black/40 px-4 py-3 text-white outline-none focus:border-amber-500" />
+        <button type="submit" disabled={unlockBusy} className="rounded-xl bg-amber-500 px-5 py-3 font-black text-black disabled:opacity-50 kurdish-text">
+          {unlockBusy ? "چاوەڕێ بە…" : "کردنەوەی بەشی ئەدمینەکان"}
+        </button>
+        {unlockError && <p role="alert" className="text-sm text-red-400 kurdish-text">{unlockError}</p>}
+      </form>
+    </div>;
   }
 
   return (
