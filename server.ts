@@ -5878,8 +5878,8 @@ async function startServer() {
         return res.status(400).json({ error: 'داتاکە گونجاو نییە، پێویستە لیستی لایەنگری ئەدمین و فۆرماتە دروستەکانی تێدابێت' });
       }
 
-      // Overwrite
-      db.admins = backupData.admins;
+      // General database restores must not silently replace the durable admin
+      // ledger. Admin accounts are changed only through owner-unlocked Module 17.
       if (backupData.manualMovies) db.manualMovies = backupData.manualMovies;
       if (backupData.categories) db.categories = backupData.categories;
       if (backupData.bannedIps) db.bannedIps = backupData.bannedIps;
@@ -5896,13 +5896,12 @@ async function startServer() {
 
       await addAuditLog(db, adminName || "Admin", "Restore Database", "بنکەدراوەی گشتی بە سەرکەوتوویی لە دروستکراوەیەکی کۆن گەڕێندرایەوە");
       await saveDB(db);
-      await persistAdminsToFirestore(initializeFirebaseAdmin(), db.admins);
 
       if (db.manualMovies) {
         setMoviesCache(() => [...db.manualMovies]);
       }
 
-      res.json({ success: true, message: 'داتابەیس بە سەرکەوتوویی گەڕێندرایەوە' });
+      res.json({ success: true, adminAccountsRestored: false, message: 'داتابەیس گەڕێندرایەوە؛ هەژمارەکانی ئەدمین پارێزراون و نەگۆڕاون' });
     } catch (err: any) {
       res.status(500).json({ error: `شکست لە گەڕاندنەوەی داتابەیس: ${err.message}` });
     }
