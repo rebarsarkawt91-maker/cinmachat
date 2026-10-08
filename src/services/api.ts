@@ -10,6 +10,12 @@ export { resolveApiUrl };
 // read quota is temporarily exhausted. This file is generated from the local
 // admin catalog at release time and is only used when the API has no real
 // movies (the hero placeholder does not count as a movie).
+//
+// IMPORTANT: this module never reads or writes localStorage — the movie catalog
+// is derived from the live server/Firestore response, never from a per-browser
+// cache (which is what made the total count differ between browsers). The
+// fallback is fetched with an explicit revalidation so a stale copy can never be
+// served from the browser/SW caches either.
 let publicCatalogFallback: any[] | null = null;
 
 const loadPublicCatalogFallback = async (): Promise<any[]> => {
@@ -17,7 +23,7 @@ const loadPublicCatalogFallback = async (): Promise<any[]> => {
   try {
     const response = await fetch("/catalog-fallback.json", {
       headers: { Accept: "application/json" },
-      cache: "force-cache",
+      cache: "no-store",
     });
     if (!response.ok) return [];
     const payload = await response.json();

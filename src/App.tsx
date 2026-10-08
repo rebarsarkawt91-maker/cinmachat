@@ -196,6 +196,40 @@ const DELETED_MOVIE_IDS_CACHE_KEY = "cinemachat:deleted-movie-ids:v1";
 // reviving it before the refreshed fallback file arrives.
 const RETIRED_MOVIE_IDS = new Set(["manual-1789312564413"]);
 
+// FORCE PURGE of every movie-catalog cache key at boot. The catalog total MUST
+// come from the live Firestore snapshot (or the shared server/static fallback)
+// and never from a per-browser localStorage copy. Each browser accumulated a
+// slightly different cached catalog over time, which is exactly what made the
+// "سەرجەم فیلمەکان" counter read 93 / 90 / 82 on different browsers. This runs
+// at module load — before the component reads any cached catalog — and is
+// deliberately idempotent so it also heals browsers that reload mid-session.
+// Deletion tombstones (DELETED_MOVIE_IDS_CACHE_KEY) are intentionally kept.
+const LEGACY_MOVIE_CATALOG_CACHE_KEYS = [
+  MOVIE_CATALOG_CACHE_KEY,
+  "cinemachat:movie-catalog",
+  "movies",
+  "publicMovies",
+  "movieCatalog",
+  "movie-catalog",
+  "catalog",
+  "catalogMovies",
+  "cinemachat_movies",
+  "cinemachat.movie-catalog",
+];
+
+const purgeMovieCatalogCache = () => {
+  if (typeof window === "undefined") return;
+  for (const key of LEGACY_MOVIE_CATALOG_CACHE_KEYS) {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // Storage can be unavailable in private mode; nothing to purge.
+    }
+  }
+};
+
+purgeMovieCatalogCache();
+
 const readDeletedMovieIds = (): Set<string> => {
   const ids = new Set(RETIRED_MOVIE_IDS);
   if (typeof window === "undefined") return ids;
@@ -7500,16 +7534,17 @@ export default function App() {
   );
 
   // STRICT movie/drama separation. The main "سەرجەم فیلمەکان" (All Movies)
-  // listing and its counter must contain ONLY films — never a drama card and
-  // never a drama that is assigned to a Drama Room. The set is sourced from the
-  // authoritative Firestore snapshot once it lands (identical on every browser),
-  // falling back to the merged local catalog only until that first sync.
-  const nonDramaMovies = useMemo(() => {
-    const source = firestoreCatalog.length > 0 ? firestoreCatalog : publicMovies;
-    return source.filter(
-      (m: any) => !m?.isDrama && !isDramaMovie(m) && !assignedDramaIds.has(m.id),
-    );
-  }, [firestoreCatalog, publicMovies, assignedDramaIds]);
+  // listing and its header counter derive 100% from the authoritative
+  // `firestoreCatalog` snapshot — never from a per-browser localStorage cache.
+  // The snapshot is identical on every browser/session once Firestore syncs, so
+  // the resulting `nonDramaMovies.length` is identical too.
+  const nonDramaMovies = useMemo(
+    () =>
+      firestoreCatalog.filter(
+        (m: any) => !m?.isDrama && !isDramaMovie(m) && !assignedDramaIds.has(m.id),
+      ),
+    [firestoreCatalog, assignedDramaIds],
+  );
 
   // Movies shown in the Drama Room edit selection list: drama-tagged posts only
   // (no normal movie posts), plus any already-assigned dramas so they can
@@ -13217,6 +13252,35 @@ const handleWebkitEndFullscreen = () => {
   // Apply a list to `movies`: dedupe, drop tombstones, sanitize stored URLs,
   // sort newest-first. This only ever sets state from real data — it never
   // clears the grid.
+  // Normalize any catalog list into the single authoritative shape used for the
+  // grid and the "سەرجەم فیلمەکان" counter: dedupe by id, drop tombstones,
+  // sanitize stored URLs, newest-first. Shared by the API seed and the live
+  // Firestore snapshot so both produce an identical set.
+  const buildAuthoritativeCatalog = (list: any[]): Movie[] => {
+    const unique = Array.from(
+      new Map(
+        (Array.isArray(list) ? list : [])
+          .filter((m: any) => m && m.id && String(m.title || "").trim())
+          .filter((m: any) => !deletedMovieIdsRef.current.has(m.id))
+          .map((m: any) => [String(m.id), m]),
+      ).values(),
+    );
+    return unique
+      .map((m: any) => ({
+        ...m,
+        image: decodeStoredUrl(m.image),
+        posterUrl: decodeStoredUrl(m.posterUrl),
+      }))
+      .sort((a: any, b: any) => {
+        const idA = parseInt(String(a.id).replace("manual-", ""));
+        const idB = parseInt(String(b.id).replace("manual-", ""));
+        if (!isNaN(idA) && !isNaN(idB)) return idB - idA;
+        const timeA = a.date ? new Date(a.date).getTime() : 0;
+        const timeB = b.date ? new Date(b.date).getTime() : 0;
+        return timeB - timeA;
+      }) as Movie[];
+  };
+
   const applyMovies = (list: any[]) => {
     setMovies((previous) => {
       // Never let a cold/partial API response replace a fuller catalog already
@@ -13293,6 +13357,14 @@ const handleWebkitEndFullscreen = () => {
         : [];
       if (serverMovies.length > 0) {
         applyMovies(serverMovies);
+        // Seed the authoritative catalog from the shared server/static response
+        // so the grid and counter populate immediately — never from a
+        // per-browser localStorage cache. The live Firestore snapshot REPLACES
+        // this seed the moment it lands, and API polls never override it once
+        // Firestore data exists.
+        setFirestoreCatalog((prev) =>
+          prev.length > 0 ? prev : buildAuthoritativeCatalog(serverMovies),
+        );
         setErrorMsg(null);
       }
       releaseLoading();
@@ -13571,26 +13643,10 @@ const handleWebkitEndFullscreen = () => {
           );
           if (durable.length === 0) return;
 
-          // Authoritative catalog: dedupe by id, sanitize stored URLs, sort
-          // newest-first. REPLACES the previous authoritative list so the count
-          // and grid always reflect exactly what Firestore currently holds.
-          const authoritative = Array.from(
-            new Map(durable.map((movie) => [String(movie.id), movie])).values(),
-          )
-            .map((movie) => ({
-              ...movie,
-              image: decodeStoredUrl(movie.image),
-              posterUrl: decodeStoredUrl(movie.posterUrl),
-            }))
-            .sort((a: any, b: any) => {
-              const idA = parseInt(String(a.id).replace("manual-", ""));
-              const idB = parseInt(String(b.id).replace("manual-", ""));
-              if (!isNaN(idA) && !isNaN(idB)) return idB - idA;
-              const timeA = a.date ? new Date(a.date).getTime() : 0;
-              const timeB = b.date ? new Date(b.date).getTime() : 0;
-              return timeB - timeA;
-            });
-          setFirestoreCatalog(authoritative as Movie[]);
+          // Authoritative catalog: the live Firestore snapshot REPLACES the
+          // previous authoritative list, so the count and grid always reflect
+          // exactly what Firestore currently holds (identical on every browser).
+          setFirestoreCatalog(buildAuthoritativeCatalog(durable));
 
           setMovies((previous) => {
             const incomingById = new Map(durable.map((movie) => [movie.id, movie]));
