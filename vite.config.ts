@@ -6,6 +6,7 @@ import {VitePWA} from 'vite-plugin-pwa';
 
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
+  const buildId = Date.now().toString(36);
   return {
     base: env.VITE_BASE_PATH || '/',
     plugins: [
@@ -81,9 +82,9 @@ export default defineConfig(({mode}) => {
           // always references assets that still resolve. Mirrors Vite's
           // defaults — kept explicit so future config drift cannot silently
           // drop hashing from entry/chunk/asset names.
-          entryFileNames: 'assets/[name]-[hash].js',
-          chunkFileNames: 'assets/[name]-[hash].js',
-          assetFileNames: 'assets/[name]-[hash].[ext]',
+          entryFileNames: `assets/[name]-[hash]-${buildId}.js`,
+          chunkFileNames: `assets/[name]-[hash]-${buildId}.js`,
+          assetFileNames: `assets/[name]-[hash]-${buildId}.[ext]`,
         },
       },
     },

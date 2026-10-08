@@ -3,8 +3,8 @@ import Hls from "hls.js";
 
 /**
  * HlsVideoPlayer — plays .m3u8 HLS streams using hls.js (with native HLS
- * fallback for Safari). Renders a standard <video> element with Plyr-style
- * controls so it integrates seamlessly into the movie modal.
+ * fallback for Safari). Renders a standard <video> element that integrates
+ * with the movie modal's shared custom controls.
  *
  * Unlike ImmersiveShieldedPlayer (sandboxed iframe) this plays the stream
  * natively — no cross-origin sandbox issues, no blocked autoplay, and full
@@ -38,32 +38,50 @@ export function seekActiveHlsPlayer(seconds: number, reload = false) {
   });
 }
 
+// iOS (incl. iPadOS, which reports a desktop "MacIntel" UA when touch is
+// present) must use the platform's native HLS engine: hls.js attaches via
+// ManagedMediaSource on iOS 17.1+, but webkitEnterFullscreen() only presents
+// reliably with the built-in pipeline. Android/desktop keep hls.js.
+const isIOSNativeHlsDevice = (): boolean =>
+  typeof navigator !== "undefined" &&
+  (/iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1));
+
 interface HlsVideoPlayerProps {
   url: string;
   autoPlay?: boolean;
-  muted?: boolean;
+  onFullscreenChange?: (isFullscreen: boolean) => void;
   onTimeUpdate?: (time: number) => void;
   onDurationChange?: (duration: number) => void;
   onPlay?: () => void;
   onPause?: () => void;
   onEnded?: () => void;
   onError?: (msg: string) => void;
+  onVideoElementChange?: (video: HTMLVideoElement | null) => void;
   className?: string;
 }
 
 export default function HlsVideoPlayer({
   url,
   autoPlay = true,
-  muted = false,
   onTimeUpdate,
   onDurationChange,
   onPlay,
   onPause,
   onEnded,
   onError,
+  onVideoElementChange,
+  onFullscreenChange,
   className,
 }: HlsVideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const handleVideoRef = React.useCallback(
+    (video: HTMLVideoElement | null) => {
+      videoRef.current = video;
+      onVideoElementChange?.(video);
+    },
+    [onVideoElementChange],
+  );
   const hlsRef = useRef<Hls | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const stallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -167,7 +185,12 @@ export default function HlsVideoPlayer({
     stallBudgetRef.current = 0;
     cancelStallRecovery();
 
-    if (Hls.isSupported()) {
+    if (isIOSNativeHlsDevice() && video.canPlayType("application/vnd.apple.mpegurl")) {
+      // iOS / iPadOS: hand the .m3u8 straight to the native HLS pipeline so
+      // webkitEnterFullscreen() presents correctly (MSE-backed hls.js does not).
+      video.src = url;
+      if (autoPlay) video.play().catch(() => {});
+    } else if (Hls.isSupported()) {
       const hls = new Hls({
         enableWorker: true,
         lowLatencyMode: false,
@@ -177,7 +200,6 @@ export default function HlsVideoPlayer({
         // The source stream is kept at its highest advertised level so CSS
         // layout cannot silently turn an HD source into a lower-bitrate stream.
         capLevelToPlayerSize: false,
-        autoLevelCapping: -1,
       });
       hlsRef.current = hls;
       activeHlsInstances.add(hls);
@@ -241,20 +263,41 @@ export default function HlsVideoPlayer({
     };
   }, [url, autoPlay]);
 
+  // iOS fires webkitbeginfullscreen / webkitendfullscreen on the <video> when
+  // native presentation starts/stops. Forward that so the custom controls can
+  // mirror the real fullscreen state (the app's document-level listeners miss
+  // the non-bubbling case on some iOS builds).
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !onFullscreenChange) return;
+    const handleBegin = () => onFullscreenChange(true);
+    const handleEnd = () => onFullscreenChange(false);
+    video.addEventListener("webkitbeginfullscreen", handleBegin);
+    video.addEventListener("webkitendfullscreen", handleEnd);
+    return () => {
+      video.removeEventListener("webkitbeginfullscreen", handleBegin);
+      video.removeEventListener("webkitendfullscreen", handleEnd);
+    };
+  }, [onFullscreenChange]);
+
   return (
-    <div className={`relative w-full h-full flex items-center justify-center bg-black ${className || ""}`}>
+    <div className={`relative w-full h-full flex items-center justify-center bg-black overflow-hidden ${className || ""}`}>
       {loadError ? (
         <div className="flex flex-col items-center gap-3 p-6 text-center">
           <p className="text-sm font-bold text-red-400 kurdish-text">{loadError}</p>
         </div>
       ) : (
         <video
-          ref={videoRef}
+          ref={handleVideoRef}
           id="room-player-hls-video"
-          className="w-full h-full object-contain [filter:none] [transform:none]"
-          muted={muted}
-          controls
+          className="cinemachat-hls-video w-full h-full object-contain [filter:none] [transform:none]"
+          muted={false}
           playsInline
+          webkit-playsinline="true"
+          x5-playsinline="true"
+          disablePictureInPicture
+          disableRemotePlayback
+          controls={false}
           onTimeUpdate={() => {
             cancelStallRecovery();
             onTimeUpdate?.(videoRef.current?.currentTime || 0);

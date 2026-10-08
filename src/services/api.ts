@@ -177,13 +177,22 @@ export const api = {
   },
 
   async getMovies() {
+    // Fetch the COMPLETE, unpaginated catalog in a single request. A generous
+    // safety abort is kept only so a genuinely dead server cannot hang first
+    // paint forever; it must be long enough that a slow (mobile Safari /
+    // throttled) device still receives the full response instead of bailing to
+    // a possibly-stale local cache — which is what made the movie count differ
+    // between browsers until Firestore finished syncing.
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 6000);
+    const timeout = setTimeout(() => controller.abort(), 20000);
     try {
       // The public catalog also comes from Firestore. Do not make the first
       // paint wait through baseFetch's long cold-server retry sequence.
       const response = await fetch(api.resolveApiUrl('/api/movies'), {
         headers: { 'Accept': 'application/json' },
+        // Never let a browser HTTP cache serve a stale/partial catalog: the
+        // server already marks this endpoint no-store, this reinforces it.
+        cache: 'no-store',
         signal: controller.signal
       });
       if (!response.ok) return [];

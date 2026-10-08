@@ -152,7 +152,7 @@ interface CinemaChatRoomProps {
   /** Whether CC settings panel is open. */
   showCcPanel?: boolean;
   /** Callback to update CC settings from the panel. */
-  onUpdateCcSettings?: (updater: (prev: { fontSize: 'sm' | 'md' | 'lg' | 'xl'; bgOpacity: number; textColor: string; showSubtitle: boolean; showOriginal: boolean; subtitleOffsetY?: number }) => { fontSize: 'sm' | 'md' | 'lg' | 'xl'; bgOpacity: number; textColor: string; showSubtitle: boolean; showOriginal: boolean; subtitleOffsetY?: number }) => void;
+  onUpdateCcSettings?: (updater: (prev: any) => any) => void;
 }
 const PLAYBACK_HEARTBEAT_MS = 8000;
 const MAX_VOICE_SECONDS = 12;

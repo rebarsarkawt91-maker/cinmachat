@@ -56,6 +56,8 @@ interface YouTubeResilientPlayerProps {
   className?: string;
   /** Called whenever the active playback mode changes (used to toggle parent CSS masks). */
   onModeChange?: (mode: PlayerMode) => void;
+  onVideoElementChange?: (video: HTMLVideoElement | null) => void;
+  hideNativeControls?: boolean;
 }
 
 export default function YouTubeResilientPlayer({
@@ -64,6 +66,8 @@ export default function YouTubeResilientPlayer({
   title,
   className,
   onModeChange,
+  onVideoElementChange,
+  hideNativeControls = false,
 }: YouTubeResilientPlayerProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   // Live flags read inside the message listener / stall timer so they never go stale.
@@ -363,15 +367,16 @@ export default function YouTubeResilientPlayer({
         <div className="relative w-full h-full flex items-center justify-center bg-black">
           <video
             key={`${streamUrl}:${directVideoReloadKey}`}
+            ref={onVideoElementChange}
             id="room-player-direct-video"
             src={streamUrl}
             poster={poster}
-            controls
+            controls={!hideNativeControls}
             autoPlay
             muted
             playsInline
             preload="auto"
-            className="w-full h-full max-h-full"
+            className={`w-full h-full max-h-full ${hideNativeControls ? "ios-hide-native-controls" : ""}`}
             onLoadStart={() => {
               setDirectVideoStatus("loading");
               armDirectVideoSlowTimer();

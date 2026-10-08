@@ -7383,6 +7383,19 @@ const DramaRoomGallery = ({ rooms, onOpenRoom, liveViewersMap, ratingsMap }: any
 
 const preloadedMoviePosterUrls = new Set<string>();
 
+type WebKitVideoElement = HTMLVideoElement & {
+  webkitEnterFullscreen?: () => void;
+  webkitExitFullscreen?: () => void;
+  webkitDisplayingFullscreen?: boolean;
+};
+
+function isIOSWebKitDevice(): boolean {
+  return (
+    /iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
+}
+
 export default function App() {
   const { setSensitiveActivity } = usePwaInstall();
   const { t: tr } = useI18n();
@@ -7476,9 +7489,20 @@ export default function App() {
   const publicMovies = useMemo(
     () =>
       movies.filter(
-        (m: any) => !isDramaMovie(m) && !assignedDramaIds.has(m.id),
+        (m: any) => !m?.isDrama && !isDramaMovie(m) && !assignedDramaIds.has(m.id),
       ),
     [movies, assignedDramaIds],
+  );
+
+  // STRICT movie/drama separation. The main "سەرجەم فیلمەکان" (All Movies)
+  // listing and its counter must contain ONLY films — never a drama card and
+  // never a drama that is assigned to a Drama Room. This is the single source
+  // of truth for every non-drama surface (home grid, all-films page, counter)
+  // and is derived purely from the fetched catalog, so the resulting set (and
+  // therefore its length) is identical on every browser once Firestore syncs.
+  const nonDramaMovies = useMemo(
+    () => publicMovies.filter((m: any) => !m?.isDrama && !isDramaMovie(m)),
+    [publicMovies],
   );
 
   // Movies shown in the Drama Room edit selection list: drama-tagged posts only
@@ -7749,21 +7773,33 @@ export default function App() {
   // (opens on hover / focus, closes on leave — standard player UX).
   const [volumeSliderOpen, setVolumeSliderOpen] = useState(false);
   const [isIframeFullscreen, setIsIframeFullscreen] = useState(false);
+  const iosFullscreenFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Immersive cinematic player: zoom multiplier and active menu.
   const [immersiveScale, setImmersiveScale] = useState(1);
   const [playerMenu, setPlayerMenu] = useState<null | "quality" | "speed" | "subtitle">(null);
   const [playerControlsVisible, setPlayerControlsVisible] = useState(true);
   const playerControlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Mirrors the active player's playing state so the auto-hide timer only
+  // slides the chrome away while media is actually playing (paused controls
+  // stay on screen). Kept in a ref so revealPlayerControls stays stable.
+  const playerPlayingRef = useRef(true);
 
   const revealPlayerControls = useCallback(() => {
     setPlayerControlsVisible(true);
     if (playerControlsTimerRef.current) clearTimeout(playerControlsTimerRef.current);
     playerControlsTimerRef.current = setTimeout(() => {
-      setPlayerControlsVisible(false);
+      // Only auto-hide during active playback; while paused the controls remain
+      // visible for the user to resume or seek.
+      if (playerPlayingRef.current) setPlayerControlsVisible(false);
       playerControlsTimerRef.current = null;
-    }, 3500);
+    }, 2500);
   }, []);
+
+  // Keep the playing-state ref in sync with the transport state.
+  useEffect(() => {
+    playerPlayingRef.current = isIframePlaying;
+  }, [isIframePlaying]);
 
   // Progress / seek bar state.
   const [playerCurrentTime, setPlayerCurrentTime] = useState(0);
@@ -7795,17 +7831,54 @@ export default function App() {
   useEffect(() => {
     const handleFsChange = () => {
       const nativeVideo = modalPlayerRef.current?.querySelector<HTMLVideoElement>("video") as (HTMLVideoElement & { webkitDisplayingFullscreen?: boolean }) | null;
-      setIsIframeFullscreen(!!document.fullscreenElement || !!nativeVideo?.webkitDisplayingFullscreen);
+      const nativeFullscreen = !!document.fullscreenElement || !!nativeVideo?.webkitDisplayingFullscreen;
+      if (nativeFullscreen && iosFullscreenFallbackTimerRef.current) {
+        clearTimeout(iosFullscreenFallbackTimerRef.current);
+        iosFullscreenFallbackTimerRef.current = null;
+      }
+      const container = modalPlayerRef.current;
+      setIsIframeFullscreen(
+        nativeFullscreen ||
+          !!container?.classList.contains("ios-fullscreen-overlay") ||
+          !!container?.classList.contains("ios-fullscreen-fallback"),
+      );
+    };
+    const clearForcedFullscreen = () => {
+      [movieModalRef.current, modalPlayerRef.current].forEach((el) => {
+        if (el) el.classList.remove("ios-forced-fullscreen");
+      });
+    };
+    const handleWebkitBeginFullscreen = () => {
+      if (iosFullscreenFallbackTimerRef.current) {
+        clearTimeout(iosFullscreenFallbackTimerRef.current);
+        iosFullscreenFallbackTimerRef.current = null;
+      }
+      setIsIframeFullscreen(true);
+    };
+const handleWebkitEndFullscreen = () => {
+      const container = modalPlayerRef.current;
+      if (container?.classList.contains("ios-fullscreen-fallback")) {
+        container.classList.remove("ios-fullscreen-fallback");
+      }
+      clearForcedFullscreen();
+      if (iosFullscreenFallbackTimerRef.current) {
+        iosFullscreenFallbackTimerRef.current = null;
+      }
+      setIsIframeFullscreen(false);
     };
     document.addEventListener("fullscreenchange", handleFsChange);
     document.addEventListener("webkitfullscreenchange", handleFsChange);
-    document.addEventListener("webkitbeginfullscreen", handleFsChange, true);
-    document.addEventListener("webkitendfullscreen", handleFsChange, true);
+    document.addEventListener("webkitbeginfullscreen", handleWebkitBeginFullscreen, true);
+    document.addEventListener("webkitendfullscreen", handleWebkitEndFullscreen, true);
     return () => {
+      if (iosFullscreenFallbackTimerRef.current) {
+        clearTimeout(iosFullscreenFallbackTimerRef.current);
+        iosFullscreenFallbackTimerRef.current = null;
+      }
       document.removeEventListener("fullscreenchange", handleFsChange);
       document.removeEventListener("webkitfullscreenchange", handleFsChange);
-      document.removeEventListener("webkitbeginfullscreen", handleFsChange, true);
-      document.removeEventListener("webkitendfullscreen", handleFsChange, true);
+      document.removeEventListener("webkitbeginfullscreen", handleWebkitBeginFullscreen, true);
+      document.removeEventListener("webkitendfullscreen", handleWebkitEndFullscreen, true);
     };
   }, []);
 
@@ -8448,11 +8521,32 @@ export default function App() {
   }, [showPlayer, activeServerUrl, youtubePlayerMode]);
 
   const toggleIframeMute = () => {
-    const isMuted = !isIframeMuted;
-    setIsIframeMuted(isMuted);
-    modalPlayerRef.current?.querySelectorAll<HTMLVideoElement>("video").forEach((video) => {
+    if (isIOSWebKitDevice()) {
+      const video = (
+        videoRef.current ??
+        (plyrRef.current?.plyr?.media as HTMLVideoElement | undefined) ??
+        null
+      ) as WebKitVideoElement | null;
+      if (video) {
+        videoRef.current = video;
+        video.setAttribute("playsinline", "");
+        video.setAttribute("webkit-playsinline", "true");
+        const isMuted = !videoRef.current.muted;
+        videoRef.current.muted = isMuted;
+        setIsIframeMuted(isMuted);
+        return;
+      }
+    }
+
+    const videos = Array.from(
+      modalPlayerRef.current?.querySelectorAll<HTMLVideoElement>("video") || [],
+    );
+    const activeVideo = videos[0];
+    const isMuted = activeVideo ? !activeVideo.muted : !isIframeMuted;
+    videos.forEach((video) => {
       video.muted = isMuted;
     });
+    setIsIframeMuted(isMuted);
 
     // 1. Control Plyr
     if (plyrRef.current?.plyr) {
@@ -8478,6 +8572,21 @@ export default function App() {
     // 3. Control the cinematic shielded embed (mute / unmute) if active
     postVideoCommand("streaming-player", isMuted ? "mute" : "unMute");
   };
+
+  useEffect(() => {
+    if (!showPlayer) return;
+    const videos = Array.from(
+      modalPlayerRef.current?.querySelectorAll<HTMLVideoElement>("video") || [],
+    );
+    const onVolumeChange = (event: Event) => {
+      setIsIframeMuted((event.currentTarget as HTMLVideoElement).muted);
+    };
+    videos.forEach((video) => {
+      video.addEventListener("volumechange", onVolumeChange);
+      setIsIframeMuted(video.muted);
+    });
+    return () => videos.forEach((video) => video.removeEventListener("volumechange", onVolumeChange));
+  }, [showPlayer, activeServerUrl, youtubePlayerMode]);
 
   // Apply a volume level to every controllable player surface. Cross-origin
   // embeds (ImmersiveShieldedPlayer) can't be scripted, so they simply ignore
@@ -8514,12 +8623,93 @@ export default function App() {
     );
   };
 
+  // iOS custom-fullscreen: force the whole dialog (root + player wrapper) to
+  // fill the viewport with pure CSS. The dialog ROOT is targeted because the
+  // Framer-Motion dialog leaves a transform behind that would otherwise trap a
+  // position:fixed child and keep the player boxed in the center.
+  const setIOSForcedFullscreen = (on: boolean) => {
+    [movieModalRef.current, modalPlayerRef.current].forEach((el) => {
+      if (el) el.classList.toggle("ios-forced-fullscreen", on);
+    });
+  };
+
   const toggleFullscreenMain = () => {
     const container = modalPlayerRef.current;
     if (!container) return;
+    if (isIOSWebKitDevice()) {
+      // Resolve the actual <video> element instance. Prefer the captured ref
+      // (HLS / direct players register it), then fall back to the first live
+      // <video> inside the player container so the call is never skipped.
+      const video = (
+        videoRef.current ??
+        (container.querySelector("video") as HTMLVideoElement | null) ??
+        (plyrRef.current?.plyr?.media as HTMLVideoElement | undefined) ??
+        null
+      ) as WebKitVideoElement | null;
+
+      // iOS native fullscreen: the video is currently presented fullscreen.
+      if (video?.webkitDisplayingFullscreen) {
+        try { video.webkitExitFullscreen?.(); } catch { /* ignore */ }
+        setIOSForcedFullscreen(false);
+        setIsIframeFullscreen(false);
+        return;
+      }
+
+      // Already in the CSS fallback — leave it.
+      if (container.classList.contains("ios-fullscreen-fallback")) {
+        container.classList.remove("ios-fullscreen-fallback");
+        setIOSForcedFullscreen(false);
+        setIsIframeFullscreen(false);
+        if (iosFullscreenFallbackTimerRef.current) {
+          clearTimeout(iosFullscreenFallbackTimerRef.current);
+          iosFullscreenFallbackTimerRef.current = null;
+        }
+        return;
+      }
+
+      if (video) {
+        videoRef.current = video;
+        // iOS requires these attributes to stay on the element or native
+        // presentation is refused.
+        video.setAttribute("playsinline", "");
+        video.setAttribute("webkit-playsinline", "true");
+        video.setAttribute("x5-playsinline", "true");
+
+        // PRIMARY iOS PATH: call webkitEnterFullscreen() DIRECTLY on the
+        // <video> instance inside the user gesture. Must be synchronous.
+        if (typeof video.webkitEnterFullscreen === "function") {
+          try {
+            video.webkitEnterFullscreen();
+            setIsIframeFullscreen(true);
+            // Verify native presentation actually took over; if it did not
+            // (blocked / unsupported), fall back to the CSS overlay.
+            iosFullscreenFallbackTimerRef.current = setTimeout(() => {
+              iosFullscreenFallbackTimerRef.current = null;
+              if (!video.webkitDisplayingFullscreen && !document.fullscreenElement) {
+                container.classList.add("ios-fullscreen-fallback");
+                setIOSForcedFullscreen(true);
+                setIsIframeFullscreen(true);
+              }
+            }, 750);
+            return;
+          } catch {
+            // webkitEnterFullscreen threw — use the CSS fallback below.
+          }
+        }
+      }
+
+      // FALLBACK: webkitEnterFullscreen unavailable or blocked. Fill the
+      // viewport with the container so our custom controls remain reachable.
+      container.classList.add("ios-fullscreen-fallback");
+      setIOSForcedFullscreen(true);
+      setIsIframeFullscreen(true);
+      return;
+    }
+
     const video = container.querySelector<HTMLVideoElement>("video") as (HTMLVideoElement & {
       webkitEnterFullscreen?: () => void;
       webkitExitFullscreen?: () => void;
+      webkitSupportsFullscreen?: boolean;
       webkitDisplayingFullscreen?: boolean;
     }) | null;
     if (video?.webkitDisplayingFullscreen) {
@@ -8530,17 +8720,24 @@ export default function App() {
       void document.exitFullscreen().catch(() => {});
       return;
     }
-    // iPhone Safari does not support fullscreen on arbitrary container nodes.
-    if (/iPhone|iPod/i.test(navigator.userAgent) && video?.webkitEnterFullscreen) {
-      video.webkitEnterFullscreen();
-      return;
+    if (video?.webkitEnterFullscreen) {
+      try {
+        video.webkitEnterFullscreen();
+        return;
+      } catch {
+        // Try the standard fullscreen API below.
+      }
     }
     if (container.requestFullscreen) {
       void container.requestFullscreen().catch(() => {
-        video?.webkitEnterFullscreen?.();
+        if (video?.webkitEnterFullscreen && video.webkitSupportsFullscreen !== false) {
+          try { video.webkitEnterFullscreen(); } catch { /* ignore */ }
+        }
       });
-    } else {
-      video?.webkitEnterFullscreen?.();
+      return;
+    }
+    if (video?.webkitEnterFullscreen && video.webkitSupportsFullscreen !== false) {
+      try { video.webkitEnterFullscreen(); } catch { /* ignore */ }
     }
   };
 
@@ -8778,6 +8975,19 @@ export default function App() {
   const playerContainerRef = React.useRef<HTMLDivElement>(null);
   const modalPlayerRef = React.useRef<HTMLDivElement>(null);
   const plyrRef = React.useRef<any>(null);
+  const videoRef = React.useRef<HTMLVideoElement | null>(null);
+  const setPlayerVideoElement = useCallback((video: HTMLVideoElement | null) => {
+    videoRef.current = video;
+    if (video && isIOSWebKitDevice()) {
+      // These attributes must remain on the element or iOS Safari refuses
+      // both inline playback and webkitEnterFullscreen().
+      video.setAttribute("playsinline", "");
+      video.setAttribute("webkit-playsinline", "true");
+      video.setAttribute("x5-playsinline", "true");
+      video.setAttribute("disablepictureinpicture", "true");
+      video.setAttribute("disableremoteplayback", "true");
+    }
+  }, []);
 
   // -------------------------------------------------------------------------
   // Playback speed control (shared across Plyr / YouTube / embed players).
@@ -9020,6 +9230,7 @@ export default function App() {
   const [mainMovieSubtitleCues, setMainMovieSubtitleCues] = useState<SubtitleCue[]>([]);
   const [importedMovieSubtitleText, setImportedMovieSubtitleText] = useState("");
   const [movieSubtitleImportMessage, setMovieSubtitleImportMessage] = useState("");
+  const [ccSettings, setCcSettings] = useState<CcSettings>(loadCcSettings);
   const movieSubtitleFileInputRef = useRef<HTMLInputElement>(null);
 
   const importMovieSubtitleFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -9134,6 +9345,12 @@ export default function App() {
   useEffect(() => {
     if (!showPlayer || !activeServerUrl) return;
     const videos = Array.from(modalPlayerRef.current?.querySelectorAll<HTMLVideoElement>("video") || []);
+    if (isIOSWebKitDevice()) {
+      videos.forEach((video) => {
+        video.controls = false;
+        video.classList.add("ios-hide-native-controls");
+      });
+    }
     const syncCue = (event: Event) => {
       const time = (event.currentTarget as HTMLVideoElement).currentTime;
       if (Number.isFinite(time)) setPlayerCurrentTime(time);
@@ -9143,6 +9360,7 @@ export default function App() {
     });
     return () => videos.forEach((video) => {
       ["pause", "playing", "seeked", "waiting"].forEach((event) => video.removeEventListener(event, syncCue));
+      video.classList.remove("ios-hide-native-controls");
     });
   }, [showPlayer, activeServerUrl, youtubePlayerMode]);
 
@@ -9184,24 +9402,19 @@ export default function App() {
       media = (player?.media as HTMLVideoElement | undefined) || null;
       if (!media) return;
 
-      media.querySelectorAll("track").forEach((track, index) => {
-        const language = String(track.srclang || "").toLowerCase();
-        const isKurdish = language === "ckb" || language === "ku" || index === 0;
-        track.default = isKurdish;
-        if (isKurdish) track.setAttribute("default", "");
+      media.querySelectorAll("track").forEach((track) => {
+        if (track.src === resolvedSubtitleTrackUrl) {
+          track.default = false;
+          track.removeAttribute("default");
+        }
       });
-      Array.from(media.textTracks).forEach((track, index) => {
-        const language = String(track.language || "").toLowerCase();
-        track.mode = language === "ckb" || language === "ku" || index === 0 ? "showing" : "disabled";
+      const customTrack = Array.from(media.querySelectorAll("track"))
+        .find((track) => track.src === resolvedSubtitleTrackUrl)?.track;
+      Array.from(media.textTracks).forEach((track) => {
+        track.mode = track === customTrack
+          ? "disabled"
+          : ccSettings.showOriginal ? "showing" : "disabled";
       });
-      try {
-        player.captions.active = true;
-        player.captions.language = "ckb";
-        if (media.textTracks.length) player.currentTrack = 0;
-      } catch {
-        // The native TextTrack mode above is sufficient on browsers where
-        // Plyr does not expose mutable caption preferences.
-      }
     };
 
     player = plyrRef.current?.plyr;
@@ -9218,17 +9431,16 @@ export default function App() {
       media?.removeEventListener("loadedmetadata", showKurdishTrack);
       media?.textTracks?.removeEventListener?.("addtrack", showKurdishTrack);
     };
-  }, [activeServerUrl, resolvedSubtitleTrackUrl, showPlayer]);
+  }, [activeServerUrl, resolvedSubtitleTrackUrl, showPlayer, ccSettings.showOriginal]);
 
   const plyrOptions = React.useMemo(
     () => ({
       autoplay: true,
       loop: { active: true },
       muted: isRoomMuted,
-      controls: [
+      controls: isIOSWebKitDevice() ? [] : [
         "play-large",
         "play",
-        "progress",
         "current-time",
         "mute",
         "volume",
@@ -11151,7 +11363,6 @@ export default function App() {
     try { localStorage.setItem("cinemachat_room_subtitle_lang", cinemaWindowSubtitleLang); } catch { /* Optional. */ }
   }, [cinemaWindowSubtitleLang]);
   const [cinemaWindowSubtitleRetryKey, setCinemaWindowSubtitleRetryKey] = useState(0);
-  const [ccSettings, setCcSettings] = useState<CcSettings>(loadCcSettings);
   const [showCcPanel, setShowCcPanel] = useState(false);
   useEffect(() => { saveCcSettings(ccSettings); }, [ccSettings]);
   const isCinemaWindowRoomActive = socialTab === "cinema_window" && !!activeCinemaWindowRoom && !showPlayer;
@@ -11198,7 +11409,8 @@ export default function App() {
   const isCatalogMoviePlayer = isRoomModalActive && !selectedDramaRoom && !activeSyncGroup?.isVIP;
 
   // Keep the chrome visible while the user is interacting with a popup/slider;
-  // otherwise reveal it on activity and slide it away after 3.5 seconds.
+  // otherwise reveal it on activity and slide it away after 2.5 seconds of
+  // inactivity while the video is playing.
   useEffect(() => {
     if (!showPlayer) {
       if (playerControlsTimerRef.current) clearTimeout(playerControlsTimerRef.current);
@@ -11224,12 +11436,24 @@ export default function App() {
   useEffect(() => {
     if (!showPlayer || !isCatalogMoviePlayer) return;
     const root = modalPlayerRef.current;
-    root?.querySelectorAll<HTMLVideoElement>("video").forEach((video) => {
+    const videos = Array.from(root?.querySelectorAll<HTMLVideoElement>("video") || []);
+    const applyTrackModes = (video: HTMLVideoElement) => {
+      const customTracks = new Set(
+        Array.from(video.querySelectorAll("track"))
+          .filter((track) => resolvedSubtitleTrackUrl && track.src === resolvedSubtitleTrackUrl)
+          .map((track) => track.track),
+      );
       Array.from(video.textTracks).forEach((track) => {
-        // Custom Kurdish captions are rendered by our own overlay, so every
-        // browser-native track must obey this switch to avoid duplicate lines.
-        track.mode = ccSettings.showOriginal ? "showing" : "disabled";
+        track.mode = customTracks.has(track)
+          ? "disabled"
+          : ccSettings.showOriginal ? "showing" : "disabled";
       });
+    };
+    const trackListeners = videos.map((video) => {
+      const onAddTrack = () => applyTrackModes(video);
+      video.textTracks.addEventListener("addtrack", onAddTrack);
+      applyTrackModes(video);
+      return { video, onAddTrack };
     });
     root?.querySelectorAll<HTMLIFrameElement>("iframe").forEach((frame) => {
       const commands = ccSettings.showOriginal
@@ -11242,7 +11466,10 @@ export default function App() {
         try { frame.contentWindow?.postMessage(JSON.stringify(command), "*"); } catch { /* Cross-origin providers may ignore it. */ }
       });
     });
-  }, [showPlayer, isCatalogMoviePlayer, ccSettings.showOriginal, activeServerUrl]);
+    return () => trackListeners.forEach(({ video, onAddTrack }) => {
+      video.textTracks.removeEventListener("addtrack", onAddTrack);
+    });
+  }, [showPlayer, isCatalogMoviePlayer, ccSettings.showOriginal, activeServerUrl, resolvedSubtitleTrackUrl]);
   const subtitleSourceUrl = isCinemaWindowRoomActive ? activeCinemaWindowSourceUrl : isRoomModalActive ? activeServerUrl || "" : "";
   const subtitlePlaybackTime = isCinemaWindowRoomActive ? cinemaWindowPlaybackTime : playerCurrentTime;
   const activeSubtitleMovie = isCinemaWindowRoomActive && activeCinemaWindowRoom?.movieId
@@ -13411,7 +13638,7 @@ export default function App() {
     if (searchMode === "ai" && aiResults) {
       // Hide dramas currently assigned to a Drama Room from AI search too.
       return aiResults.filter(
-        (m: any) => !isDramaMovie(m) && !assignedDramaIds.has(m.id),
+        (m: any) => !m?.isDrama && !isDramaMovie(m) && !assignedDramaIds.has(m.id),
       );
     }
 
@@ -13419,7 +13646,8 @@ export default function App() {
     // Shared canonical matching: both sides normalized (trim + lowercase) and
     // the record's own `category` field checked as a fallback, so legacy movies
     // (" ئاکشن ", category-only records) still filter under the right chip.
-    let list = publicMovies.filter((movie) => movieMatchesCategory(movie, tab));
+    // Derived from `nonDramaMovies` so the main grid can never show a drama.
+    let list = nonDramaMovies.filter((movie) => movieMatchesCategory(movie, tab));
 
     if (searchMode === "genre") {
       if (selectedGenres.length > 0) {
@@ -13436,7 +13664,7 @@ export default function App() {
       }
     }
     return list;
-  }, [publicMovies, searchQuery, activeTab, searchMode, selectedGenres, aiResults, assignedDramaIds]);
+  }, [nonDramaMovies, searchQuery, activeTab, searchMode, selectedGenres, aiResults, assignedDramaIds]);
 
   const sortedMovies = useMemo(() => {
     const arr = [...filteredMovies];
@@ -13448,30 +13676,37 @@ export default function App() {
     return arr;
   }, [filteredMovies, sortBy, getMovieTrendingScore, getMovieLiveViewers]);
 
-  // The main movie grid shows the FULL sorted catalog (all movies). It renders
-  // immediately below the Search section; the trending/favorites/continue
-  // rows appear after it, so no movie cards render above the Search section.
+  // The main movie grid shows the sorted NON-DRAMA catalog (films only). It
+  // renders immediately below the Search section; the trending/favorites/
+  // continue rows appear after it, so no movie cards render above the Search
+  // section.
   const paginatedMovies = useMemo(() => {
     const startIndex = (currentPage - 1) * moviesPerPage;
     return sortedMovies.slice(startIndex, startIndex + moviesPerPage);
   }, [sortedMovies, currentPage]);
 
+  // Authoritative counter for "سەرجەم فیلمەکان": counted AFTER the non-drama
+  // filter (the shared `nonDramaMovies` list defined above), so it can never
+  // include a drama row and matches the rendered grid on every browser.
+  const nonDramaMovieCount = nonDramaMovies.length;
+
   // Dedicated all-films page. This is display-only: it never mutates Drama
-  // Rooms or their membership. Explicit drama posts stay in their own rooms.
+  // Rooms or their membership. Dramas stay in their dedicated Drama Rooms
+  // section; only films are rendered here.
   const allFilmsPageMovies = useMemo(() => {
-    const list = publicMovies.filter((movie) => !isDramaMovie(movie));
+    const list = [...nonDramaMovies];
     if (sortBy === "trending") {
-      return [...list].sort(
+      return list.sort(
         (a, b) => getMovieTrendingScore(b) - getMovieTrendingScore(a),
       );
     }
     if (sortBy === "live") {
-      return [...list].sort(
+      return list.sort(
         (a, b) => getMovieLiveViewers(b) - getMovieLiveViewers(a),
       );
     }
     return list;
-  }, [publicMovies, sortBy, getMovieTrendingScore, getMovieLiveViewers]);
+  }, [nonDramaMovies, sortBy, getMovieTrendingScore, getMovieLiveViewers]);
 
   // Clamp the page when the list shrinks (search/filter changes) so the user is
   // never left on an out-of-range page showing "no movies".
@@ -14992,7 +15227,7 @@ export default function App() {
                           سەرجەم فیلمەکان
                         </h2>
                         <p className="mt-1 text-xs text-gray-500 kurdish-text">
-                          {allFilmsPageMovies.length} فیلم
+                          {nonDramaMovieCount} فیلم
                         </p>
                       </div>
                       <button
@@ -15361,7 +15596,7 @@ export default function App() {
               >
                 <div
                   ref={modalPlayerRef}
-                  className={`${showPlayer ? "w-full h-full relative bg-black shadow-2xl aspect-video md:aspect-[21/9]" : "absolute inset-0 h-full w-full bg-black"}`}
+                  className={`${showPlayer ? "w-full h-full relative overflow-hidden bg-black shadow-2xl aspect-video md:aspect-[21/9]" : "absolute inset-0 h-full w-full overflow-hidden bg-black"}`}
                   onPointerDown={(event) => { revealPlayerControls(); onPlayerPointerDown(event); }}
                   onPointerMove={(event) => { revealPlayerControls(); onPlayerPointerMove(event); }}
                   onPointerUp={onPlayerPointerUp}
@@ -15380,6 +15615,8 @@ export default function App() {
                             <YouTubeResilientPlayer
                               url={activeServerUrl}
                               iframeId="room-player"
+                              onVideoElementChange={setPlayerVideoElement}
+                              hideNativeControls={isIOSWebKitDevice()}
                               title={`${selectedMovie?.title || "CinemaChat"} — YouTube Player`}
                               onModeChange={(mode) => {
                                 setYoutubePlayerMode(mode);
@@ -15402,7 +15639,15 @@ export default function App() {
                             <HlsVideoPlayer
                               url={activeServerUrl}
                               autoPlay
-                              muted={isRoomMuted}
+                              onVideoElementChange={setPlayerVideoElement}
+                              onFullscreenChange={(isFs) => {
+                                setIsIframeFullscreen(isFs);
+                                if (!isFs) {
+                                  modalPlayerRef.current?.classList.remove("ios-fullscreen-fallback");
+                                  movieModalRef.current?.classList.remove("ios-forced-fullscreen");
+                                  modalPlayerRef.current?.classList.remove("ios-forced-fullscreen");
+                                }
+                              }}
                             />
                           );
                         }
@@ -15410,7 +15655,7 @@ export default function App() {
                         // 4. Direct video (MP4/WebM) → Plyr
                         if (srcType === "direct-video") {
                           return (
-                            <div className="relative w-full h-full flex items-center justify-center bg-black">
+                            <div className={`relative w-full h-full flex items-center justify-center bg-black ${isIOSWebKitDevice() ? "ios-player-no-native-controls" : ""}`}>
                               <Plyr
                                 ref={plyrRef}
                                 source={plyrSource}
@@ -15755,6 +16000,8 @@ export default function App() {
                                 : "bg-black/60 hover:bg-white/10 text-white border-white/10"
                             }`}
                             title="ڕاگرتنی دەنگ (Mute)"
+                            aria-label={isIframeMuted ? "Unmute video" : "Mute video"}
+                            aria-pressed={isIframeMuted}
                           >
                             {isIframeMuted ? (
                               <VolumeX className="w-4.5 h-4.5 md:w-5 md:h-5" />
@@ -15964,14 +16211,37 @@ export default function App() {
                             <button
                               type="button"
                               data-testid="catalog-subtitle-settings-button"
-                              onClick={() => setShowCcPanel((visible) => !visible)}
+                              onClick={() => {
+                                const showSubtitle = !ccSettings.showSubtitle;
+                                if (!showSubtitle) {
+                                  modalPlayerRef.current
+                                    ?.querySelectorAll<HTMLVideoElement>("video")
+                                    .forEach((video) => {
+                                      Array.from(video.textTracks).forEach((track) => {
+                                        track.mode = "disabled";
+                                      });
+                                    });
+                                }
+                                setCcSettings((settings) => ({ ...settings, showSubtitle }));
+                              }}
                               className={`min-w-10 h-10 md:h-11 px-2.5 flex items-center justify-center rounded-full border-2 transition-all active:scale-95 shadow-lg backdrop-blur-md ${
-                                ccSettings.showOriginal ? "bg-emerald-600 text-white border-emerald-300" : showCcPanel ? "bg-brand-primary text-white border-brand-primary" : "bg-black/60 hover:bg-white/10 text-white border-white/40"
+                                ccSettings.showSubtitle ? "bg-emerald-600 text-white border-emerald-300 ring-2 ring-emerald-300/30" : "bg-black/60 hover:bg-white/10 text-white border-white/50"
                               }`}
-                              title="ڕێکخستنی ژێرنووس"
-                              aria-label="ڕێکخستنی ژێرنووس"
+                              title={ccSettings.showSubtitle ? "Turn subtitles off" : "Turn subtitles on"}
+                              aria-label="Toggle subtitles"
+                              aria-pressed={ccSettings.showSubtitle}
                             >
-                              <span className="text-[11px] font-black underline decoration-2 underline-offset-2">CC</span>
+                              <span className="text-xs font-black underline decoration-2 underline-offset-2">CC</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setShowCcPanel((visible) => !visible)}
+                              className="ml-1 h-10 w-10 md:h-11 md:w-11 flex items-center justify-center rounded-full border border-white/20 bg-black/60 text-white shadow-lg backdrop-blur-md transition-all hover:bg-white/10 active:scale-95"
+                              title="Subtitle settings"
+                              aria-label="Open subtitle settings"
+                              aria-expanded={showCcPanel}
+                            >
+                              <Settings className="h-4 w-4 md:h-5 md:w-5" />
                             </button>
 
                             {showCcPanel && (

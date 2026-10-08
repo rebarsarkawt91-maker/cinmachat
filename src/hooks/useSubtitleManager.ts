@@ -21,7 +21,7 @@ export type SubtitlePayload = {
 };
 
 export type CcSettings = {
-  fontSize: "sm" | "md" | "lg" | "xl";
+  fontSize: "xs" | "sm" | "md" | "lg" | "xl" | "2xl";
   bgOpacity: number;
   textColor: string;
   showSubtitle: boolean;
