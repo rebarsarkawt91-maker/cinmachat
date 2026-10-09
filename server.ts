@@ -18,6 +18,7 @@ import { rateLimiter, sanitizationMiddleware, createAdminGuard, logFailedAttempt
 import { generateSubtitle, translateSrtViaGemini } from './features/subtitles/subtitleGenerator.js';
 import { GeminiKeyVault } from './geminiKeyVault';
 import { classifyGeminiFailure } from './geminiFailure';
+import { compressedAssets } from './staticAssetCompression';
 import { createStudioAdminSessions } from './studioAdminSession';
 import { stripSubtitleHtmlTags } from './src/lib/subtitleText.js';
 import { hasNonSoraniLetters } from './src/lib/studioUntranslatedCues.js';
@@ -16446,6 +16447,7 @@ let videoDownloaded = false;
     //   • /assets/*  → Vite content-hashed files ⇒ immutable long cache.
     //   • index.html, icons, any other dist entry AND the SPA fallback ⇒
     //     strict no-cache so every launch fetches the current build.
+    app.use('/assets', compressedAssets(path.join(distPath, 'assets')));
     app.use('/assets', express.static(path.join(distPath, 'assets'), {
       maxAge: '365d',
       immutable: true,

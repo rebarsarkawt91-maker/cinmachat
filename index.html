@@ -2,7 +2,18 @@
 <html lang="ckb" dir="rtl">
   <head>
     <meta charset="UTF-8" />
-    <script src="/catalog-start.js"></script>
+    <script>
+      // Start alongside the bundle, without a blocking script round trip.
+      (function () {
+        var controller = new AbortController();
+        var timer = setTimeout(function () { controller.abort(); }, 20000);
+        window.__cinemaCatalogRequest = fetch('/api/movies', {
+          headers: { Accept: 'application/json' }, cache: 'no-store', signal: controller.signal
+        }).then(function (response) {
+          return response.ok ? response.json() : null;
+        }).catch(function () { return null; }).finally(function () { clearTimeout(timer); });
+      })();
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#e50914" />
     <meta name="mobile-web-app-capable" content="yes" />

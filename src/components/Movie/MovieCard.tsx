@@ -25,6 +25,8 @@ import type { Movie } from "../../types";
  */
 
 export interface MovieCardProps {
+  /** Load the first visible row ahead of offscreen posters. */
+  priority?: boolean;
   movie: Movie;
   /** Current concurrent viewers for this movie (server-computed). */
   liveViewers: number;
@@ -168,6 +170,7 @@ export function movieCanPlay(movie: Movie): boolean {
 }
 
 export const MovieCardBase: React.FC<MovieCardProps> = ({
+  priority = false,
   movie,
   liveViewers,
   isTopLive,
@@ -262,7 +265,8 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
       <div className="relative aspect-[2/3] rounded-2xl overflow-hidden bg-[#0b0b0d] ring-1 ring-white/10 shadow-[0_8px_30px_rgba(0,0,0,0.55)] transition-all duration-300 group-hover:-translate-y-1.5 group-hover:ring-brand-primary/60 group-hover:shadow-[0_22px_60px_-15px_rgba(229,9,20,0.45)]">
         <img
           src={posterSrc}
-          loading="lazy"
+          loading={priority ? "eager" : "lazy"}
+          fetchPriority={priority ? "high" : "auto"}
           decoding="async"
           referrerPolicy="no-referrer"
           onError={(e) => {

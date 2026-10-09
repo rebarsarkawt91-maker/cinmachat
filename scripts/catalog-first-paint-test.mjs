@@ -27,10 +27,14 @@ try {
     });
     const page = await context.newPage();
     const errors = [];
+    const requests = [];
+    page.on('request', request => requests.push(request.url()));
     page.on('pageerror', error => errors.push(error.message));
     await page.goto('http://studio.test/');
     await page.getByText(movie.title, { exact: true }).first().waitFor({ timeout: 10000 });
     assert.ok(!errors.some(error => /before initialization|not defined|Invalid hook/.test(error)), errors.join('\n'));
+    assert.ok(!requests.some(url => /\/SyncRoom-[^/]+\.js/.test(url)), 'closed watch-room SDK must not delay homepage cards');
+    assert.equal(await page.locator('[role="button"] img[fetchpriority="high"]').count(), 1, 'visible first row must prioritize its poster');
     console.log(`PASS: ${warm ? 'warm cache' : 'fresh API'} card renders with Firestore unavailable`);
     await context.close();
   }

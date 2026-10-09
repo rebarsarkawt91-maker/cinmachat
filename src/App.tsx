@@ -419,7 +419,8 @@ import { CinemaWindowModal } from "./components/Social/CinemaWindowModal";
 import { AccountCenter } from "./components/Social/AccountCenter";
 import { ProfileCard } from "./components/Social/ProfileCard";
 import { WatchPartyManager } from "./components/Social/WatchPartyManager";
-import { SyncRoom } from "./components/Social/SyncRoom";
+// The voice SDK belongs to an opened watch room, not the homepage bundle.
+const SyncRoom = lazyWithRetry(() => import("./components/Social/SyncRoom").then(m => ({ default: m.SyncRoom })), "SyncRoom");
 import { CameHereRoom } from "./components/Social/CameHereRoom";
 import { BroadcastRoom } from "./components/Social/BroadcastRoom";
 import { BroadcastPreviewCard } from "./components/Social/BroadcastPreviewCard";
@@ -15151,6 +15152,7 @@ const handleWebkitEndFullscreen = () => {
                   const movieCard = (
                     <MovieCard
                       key={movie.id}
+                      priority={idx < 6}
                       movie={resolvedMovies[movie.id] ?? movie}
                       liveViewers={getMovieLiveViewers(movie)}
                       isTopLive={topLiveId === movie.id}
