@@ -327,12 +327,6 @@ const clearGenreTagDeleted = (tag: string) => {
   }
 };
 
-// Inline base64 image (a "data:" URL). Firestore movie docs still carry these
-// as the durable poster copy; the API server materializes them into small
-// /uploads URLs, so base64 blobs must never win a merge against those URLs.
-const isDataUrl = (value: any): boolean =>
-  typeof value === "string" && value.startsWith("data:");
-
 const readCachedMovieCatalog = (): Movie[] => {
   if (typeof window === "undefined") return [];
   try {
@@ -7442,13 +7436,15 @@ export default function App() {
     initialMovieCatalogRef.current = readCachedMovieCatalog();
   }
   const [movies, setMovies] = useState<Movie[]>(initialMovieCatalogRef.current);
-  // Authoritative, Firestore-only catalog. It is REPLACED (never unioned with
-  // the per-browser localStorage cache) on every live snapshot, so every browser
-  // and every session converges to the exact same set. This is the single source
-  // of truth for the "سەرجەم فیلمەکان" counter and the main movie grid.
-  const [firestoreCatalog, setFirestoreCatalog] = useState<Movie[]>([]);
-  // True only once the FIRST server-confirmed Firestore snapshot has populated
-  // the authoritative catalog. Until then the "سەرجەم فیلمەکان" counter and grid
+  // Single authoritative "films only" catalog. It is populated EXACTLY ONCE when
+  // the complete Firestore getDocs() query resolves — never streamed
+  // progressively and never unioned with a per-browser cache — so the
+  // "سەرجەم فیلمەکان" grid and header counter render all movies at once,
+  // identically on every device (no 48 → 83 climbing while chunks arrive).
+  const [nonDramaMovies, setNonDramaMovies] = useState<Movie[]>([]);
+  // True only once the complete getDocs() query has resolved and populated the
+  // catalog. Until then the "سەرجەم فیلمەکان" counter and grid render skeletons
+  // instead of a partial seed that would otherwise jump once the full set lands.
   // render a skeleton instead of a partial seed count that would otherwise jump
   // (e.g. 48 → 93) once the rest of the collection streams in on slow devices.
   const [catalogHydrated, setCatalogHydrated] = useState(false);
@@ -7572,19 +7568,6 @@ export default function App() {
         (m: any) => !m?.isDrama && !isDramaMovie(m) && !assignedDramaIds.has(m.id),
       ),
     [movies, assignedDramaIds],
-  );
-
-  // STRICT movie/drama separation. The main "سەرجەم فیلمەکان" (All Movies)
-  // listing and its header counter derive 100% from the authoritative
-  // `firestoreCatalog` snapshot — never from a per-browser localStorage cache.
-  // The snapshot is identical on every browser/session once Firestore syncs, so
-  // the resulting `nonDramaMovies.length` is identical too.
-  const nonDramaMovies = useMemo(
-    () =>
-      firestoreCatalog.filter(
-        (m: any) => !m?.isDrama && !isDramaMovie(m) && !assignedDramaIds.has(m.id),
-      ),
-    [firestoreCatalog, assignedDramaIds],
   );
 
   // Movies shown in the Drama Room edit selection list: drama-tagged posts only
@@ -13390,14 +13373,10 @@ const handleWebkitEndFullscreen = () => {
         : [];
       if (serverMovies.length > 0) {
         applyMovies(serverMovies);
-        // Seed the authoritative catalog from the shared server/static response
-        // so the grid and counter populate immediately — never from a
-        // per-browser localStorage cache. The live Firestore snapshot REPLACES
-        // this seed the moment it lands, and API polls never override it once
-        // Firestore data exists.
-        setFirestoreCatalog((prev) =>
-          prev.length > 0 ? prev : buildAuthoritativeCatalog(serverMovies),
-        );
+        // NOTE: this NEVER seeds `nonDramaMovies`. The authoritative films-only
+        // grid is set EXACTLY ONCE by the complete getDocs() query so it can
+        // never render a partial warm-up number; the server list here only feeds
+        // the `movies` state (Drama Rooms, admin lists, live card metrics).
         setErrorMsg(null);
       }
       releaseLoading();
@@ -13507,7 +13486,7 @@ const handleWebkitEndFullscreen = () => {
       alert(
         "سڕینەوەکە تەواو نەبوو — فیلمەکە نەتوانرا لە سێرڤەر یان بنکەدراوە بسڕدرێتەوە. تکایە دووبارە هەوڵبدەرەوە",
       );
-      fetchMovies();
+      refreshCatalog();
     }
   };
 
@@ -13611,7 +13590,7 @@ const handleWebkitEndFullscreen = () => {
     setSelectedMovieIds([]);
 
     // Reload from the real source of truth instead of only trusting the rows.
-    fetchMovies();
+    refreshCatalog();
 
     if (failed === 0) {
       alert(`${succeeded} فیلم بە سەرکەوتوویی سڕانەوە`);
@@ -13634,87 +13613,66 @@ const handleWebkitEndFullscreen = () => {
     );
   };
 
-  // Stream the durable movie catalog live and IMMEDIATELY — in parallel with the
-  // API fetch, never queued behind it — so the authoritative Firestore snapshot
-  // (and therefore the "سەرجەم فیلمەکان" counter) hydrates as fast as the
-  // network allows on slow devices. The API still paints the first grid; the
-  // snapshot then prepends genuinely-new movies and patches changed fields in
-  // place, so it can never reshuffle the grid after the user has started
-  // browsing. The catalog is only ever trusted once the SERVER confirms it.
+  // Fetch the authoritative catalog with a SINGLE one-shot getDocs() — no live
+  // onSnapshot listener, no progressive streaming, no local-cache partials.
+  // getDocs resolves ATOMICALLY with the complete collection (or rejects), so
+  // the "سەرجەم فیلمەکان" grid can only ever render the FULL set at once — there
+  // is no chunked window in which a partial 48/51 count could display before the
+  // rest arrives. Films-only filtering happens HERE, during the fetch, and the
+  // result is stored in the single `nonDramaMovies` state. This is the ONLY
+  // writer of that state.
+  const fetchAuthoritativeCatalog = async () => {
+    try {
+      // No orderBy() on purpose — Firestore silently DROPS documents that are
+      // missing the ordered field (legacy movies without `createdAt`), which is
+      // exactly what made the total count differ across browsers. The list is
+      // sorted client-side after the full query resolves.
+      const q = query(collection(realDb, "movies"));
+      const snapshot = await getDocs(q);
+      const incoming: any[] = [];
+      snapshot.forEach((entry) => {
+        const data = entry.data() as any;
+        // Older movie documents sometimes use an auto-generated Firestore
+        // document id while keeping the public `manual-*` id in the data.
+        // Preserve that canonical id so cards are keyed consistently.
+        incoming.push({ ...data, id: String(data?.id || entry.id) });
+      });
+      const durable = incoming.filter(
+        (movie) =>
+          movie?.id &&
+          String(movie.title || "").trim() &&
+          movie.id !== "hero-promo" &&
+          !deletedMovieIdsRef.current.has(movie.id),
+      );
+      // Strip to films only right here (drama flag + the shared multi-field
+      // heuristic). Room-assigned ids are drama entries and are already
+      // excluded by that same heuristic, so none can leak into the film count.
+      const filmsOnly = buildAuthoritativeCatalog(durable).filter(
+        (m: any) => !m?.isDrama && !isDramaMovie(m),
+      );
+      setNonDramaMovies(filmsOnly);
+      setErrorMsg(null);
+      setCatalogHydrated(true);
+    } catch (err) {
+      console.warn("[Movies] getDocs catalog fetch failed:", err);
+      // Firestore outage -> keep the loading skeleton active (the deadline below
+      // releases it); the server count endpoint still feeds the header number.
+    }
+  };
+
+  // One-shot authoritative fetch on mount, in parallel with the API request.
+  // The skeleton stays visible until THIS complete query resolves.
   useEffect(() => {
-    let cancelled = false;
-    // Keep the live catalog unbounded: every movie document is streamed.
-    // Pagination is presentation-only and must never cap the stored catalog.
-    // No orderBy() here on purpose — Firestore silently DROPS documents that
-    // are missing the ordered field (legacy movies without `createdAt`),
-    // which is exactly what made the total count differ across browsers. The
-    // authoritative list is sorted client-side after the full snapshot.
-    const q = query(collection(realDb, "movies"));
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        if (cancelled) return;
-        const incoming: any[] = [];
-        snapshot.forEach((entry) => {
-          const data = entry.data() as any;
-          // Older movie documents sometimes use an auto-generated Firestore
-          // document id while keeping the public `manual-*` id in the data.
-          // Preserve that canonical id so cards are patched in place instead
-          // of briefly duplicating/reordering on every live snapshot.
-          incoming.push({ ...data, id: String(data?.id || entry.id) });
-        });
-        const durable = incoming.filter(
-          (movie) =>
-            movie?.id &&
-            String(movie.title || "").trim() &&
-            movie.id !== "hero-promo" &&
-            !deletedMovieIdsRef.current.has(movie.id),
-        );
-
-        // A local-cache snapshot (metadata.fromCache === true) can be stale or
-        // partial. Only a SERVER snapshot proves the collection is fully
-        // hydrated, so the counter stays on its skeleton until that lands —
-        // it can never flash 48/85 before settling on the real total.
-        if (!snapshot.metadata?.fromCache) {
-          setCatalogHydrated(true);
-        }
-
-        if (durable.length === 0) return;
-
-        // Authoritative catalog: the live Firestore snapshot REPLACES the
-        // previous authoritative list, so the count and grid always reflect
-        // exactly what Firestore currently holds (identical on every browser).
-        setFirestoreCatalog(buildAuthoritativeCatalog(durable));
-
-        setMovies((previous) => {
-          const incomingById = new Map(durable.map((movie) => [movie.id, movie]));
-          const previousIds = new Set(previous.map((movie: any) => movie.id));
-          const newMovies = durable.filter((movie) => !previousIds.has(movie.id));
-          const patchedExisting = previous.map((known: any) => {
-            const fresh = incomingById.get(known.id);
-            if (!fresh) return known;
-            return {
-              ...known,
-              ...fresh,
-              image: isDataUrl(fresh.image) && !isDataUrl(known.image) ? known.image : fresh.image,
-              posterUrl:
-                isDataUrl(fresh.posterUrl) && !isDataUrl(known.posterUrl)
-                  ? known.posterUrl
-                  : fresh.posterUrl,
-            };
-          });
-          return [...newMovies, ...patchedExisting];
-        });
-        setErrorMsg(null);
-      },
-      (error) => console.warn("[Movies] Firestore live update failed:", error),
-    );
-
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
+    void fetchAuthoritativeCatalog();
   }, []);
+
+  // Admin mutations (post/edit/delete) re-run BOTH refreshes so the change is
+  // durable: the server mirror merges it into /api/movies and this one-shot
+  // getDocs re-populates `nonDramaMovies` from the now-current Firestore.
+  const refreshCatalog = () => {
+    void fetchMovies();
+    void fetchAuthoritativeCatalog();
+  };
 
   useEffect(() => {
     fetchMovies();
@@ -17924,7 +17882,7 @@ const handleWebkitEndFullscreen = () => {
                             lastAddedMovie={lastAddedMovie}
                             config={config}
                             onSyncNow={() => {
-                              fetchMovies();
+                              refreshCatalog();
                               alert("سەرجەم ئامێرەکان دەستبەجێ ئەپدێت کرانەوە");
                             }} // Refresh all movies
                             onPost={async (movie: any) => {
@@ -18033,6 +17991,10 @@ const trailerId = movie.trailerUrl
                                   } catch (fsErr) {
                                     console.warn("[Firestore] Failed to save movie to Firestore (non-fatal):", fsErr);
                                   }
+                                  // Re-run the complete getDocs query so the
+                                  // single `nonDramaMovies` state includes the
+                                  // new film immediately (never a partial read).
+                                  void fetchAuthoritativeCatalog();
                                 } else {
                                   const errData = await res.json();
                                   throw new Error(
@@ -18254,7 +18216,7 @@ const trailerId = movie.trailerUrl
                                             }),
                                           },
                                         );
-                                        if (res.ok) fetchMovies();
+                                        if (res.ok) refreshCatalog();
                                       }}
                                     >
                                       <option value="هەمووی">گۆڕین</option>
