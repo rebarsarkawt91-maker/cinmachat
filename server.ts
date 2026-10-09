@@ -3025,6 +3025,22 @@ const firestorePaymentsUrl = (query: string) =>
 // manual-* ids, so they landed on later pages that were never fetched. The loop
 // is bounded below so a pathological payload can never hang the boot sync.
 const loadFirestoreMovies = async (): Promise<any[]> => {
+  // Use the server's authenticated SDK. The public REST endpoint can be denied
+  // by Firestore rules while the signed-in browser still reads the collection,
+  // leaving /api/movies with only local posts until that slower browser read.
+  const firebaseApp = initializeFirebaseAdmin();
+  if (firebaseApp) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const snapshot = await Promise.race([
+        admin.firestore(firebaseApp).collection('movies').get(),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('catalog read timeout')), 10000); }),
+      ]);
+      return snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+    } catch {
+      console.warn('[Movies] Authenticated catalog read unavailable; trying REST fallback');
+    } finally { if (timer) clearTimeout(timer); }
+  }
   const movies: any[] = [];
   const seen = new Set<string>();
   let pageToken: string | undefined;
