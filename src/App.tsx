@@ -105,6 +105,7 @@ import { ROOM_SUBTITLE_LANGUAGES, loadRoomSubtitleLanguage } from "./lib/roomSub
 import { api } from "./services/api";
 import { useI18n } from "./i18n";
 import { lazyWithRetry } from "./utils/lazyWithRetry";
+import { providerAction, setNativePlayerMuted, enterIOSVideoFullscreen } from "./utils/playerControls";
 
 const MOVIE_URL_PARAM = "movieId";
 const SITE_ORIGIN = "https://www.cinamachat.com";
@@ -7438,6 +7439,8 @@ type WebKitVideoElement = HTMLVideoElement & {
   webkitEnterFullscreen?: () => void;
   webkitExitFullscreen?: () => void;
   webkitDisplayingFullscreen?: boolean;
+  webkitPresentationMode?: string;
+  webkitSetPresentationMode?: (mode: string) => void;
 };
 
 function isIOSWebKitDevice(): boolean {
@@ -8502,7 +8505,7 @@ const handleWebkitEndFullscreen = () => {
   const postVideoCommand = (id: string, func: string) => {
     const frame = document.getElementById(id) as HTMLIFrameElement | null;
     if (!frame?.contentWindow) return;
-    const action = func === "playVideo" ? "play" : func === "pauseVideo" ? "pause" : func;
+    const action = providerAction(func);
     const commands = [
       { event: "command", func, args: [] },
       // VidSrc/proxy.garageband transport (the same provider that emits the
@@ -8614,7 +8617,7 @@ const handleWebkitEndFullscreen = () => {
   const toggleIframeMute = () => {
     if (isIOSWebKitDevice()) {
       const video = (
-        videoRef.current ??
+        modalPlayerRef.current?.querySelector<HTMLVideoElement>("video") ??
         (plyrRef.current?.plyr?.media as HTMLVideoElement | undefined) ??
         null
       ) as WebKitVideoElement | null;
@@ -8623,7 +8626,7 @@ const handleWebkitEndFullscreen = () => {
         video.setAttribute("playsinline", "");
         video.setAttribute("webkit-playsinline", "true");
         const isMuted = !videoRef.current.muted;
-        videoRef.current.muted = isMuted;
+        setNativePlayerMuted(videoRef.current, isMuted, true, iframeVolume);
         setIsIframeMuted(isMuted);
         return;
       }
@@ -8635,7 +8638,7 @@ const handleWebkitEndFullscreen = () => {
     const activeVideo = videos[0];
     const isMuted = activeVideo ? !activeVideo.muted : !isIframeMuted;
     videos.forEach((video) => {
-      video.muted = isMuted;
+      setNativePlayerMuted(video, isMuted, false, iframeVolume);
     });
     setIsIframeMuted(isMuted);
 
@@ -8732,15 +8735,17 @@ const handleWebkitEndFullscreen = () => {
       // (HLS / direct players register it), then fall back to the first live
       // <video> inside the player container so the call is never skipped.
       const video = (
-        videoRef.current ??
         (container.querySelector("video") as HTMLVideoElement | null) ??
         (plyrRef.current?.plyr?.media as HTMLVideoElement | undefined) ??
         null
       ) as WebKitVideoElement | null;
 
       // iOS native fullscreen: the video is currently presented fullscreen.
-      if (video?.webkitDisplayingFullscreen) {
-        try { video.webkitExitFullscreen?.(); } catch { /* ignore */ }
+      if (video?.webkitDisplayingFullscreen || video?.webkitPresentationMode === 'fullscreen') {
+        try {
+          if (video.webkitExitFullscreen) video.webkitExitFullscreen();
+          else video.webkitSetPresentationMode?.('inline');
+        } catch { /* ignore */ }
         setIOSForcedFullscreen(false);
         setIsIframeFullscreen(false);
         return;
@@ -8768,15 +8773,14 @@ const handleWebkitEndFullscreen = () => {
 
         // PRIMARY iOS PATH: call webkitEnterFullscreen() DIRECTLY on the
         // <video> instance inside the user gesture. Must be synchronous.
-        if (typeof video.webkitEnterFullscreen === "function") {
+        if (enterIOSVideoFullscreen(video)) {
           try {
-            video.webkitEnterFullscreen();
             setIsIframeFullscreen(true);
             // Verify native presentation actually took over; if it did not
             // (blocked / unsupported), fall back to the CSS overlay.
             iosFullscreenFallbackTimerRef.current = setTimeout(() => {
               iosFullscreenFallbackTimerRef.current = null;
-              if (!video.webkitDisplayingFullscreen && !document.fullscreenElement) {
+              if (!video.webkitDisplayingFullscreen && video.webkitPresentationMode !== 'fullscreen' && !document.fullscreenElement) {
                 container.classList.add("ios-fullscreen-fallback");
                 setIOSForcedFullscreen(true);
                 setIsIframeFullscreen(true);
