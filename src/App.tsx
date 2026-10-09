@@ -16091,7 +16091,10 @@ const handleWebkitEndFullscreen = () => {
                             toggle mute; drag the slider to fine-tune level. */}
                         <div
                           className="relative flex items-center"
-                          onMouseEnter={() => setVolumeSliderOpen(true)}
+                          onMouseEnter={() => {
+                            // Touch Safari synthesizes hover after a tap; do not pin controls open.
+                            if (window.matchMedia('(hover: hover) and (pointer: fine)').matches) setVolumeSliderOpen(true);
+                          }}
                           onMouseLeave={() => setVolumeSliderOpen(false)}
                           onBlur={(e) => {
                             // Close when focus leaves the mute + slider group
@@ -16383,7 +16386,7 @@ const handleWebkitEndFullscreen = () => {
                             {showCcPanel && (
                               <>
                                 <div className="fixed inset-0 z-[65]" onClick={() => setShowCcPanel(false)} />
-                                <div className="absolute bottom-full right-0 mb-24 z-[70] w-64 rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-3 shadow-2xl space-y-4 kurdish-text">
+                                <div data-testid="player-subtitle-settings" className="absolute bottom-full right-0 mb-3 z-[70] w-64 rounded-2xl border border-white/10 bg-[#0a0a0c]/95 backdrop-blur-xl p-3 shadow-2xl space-y-4 kurdish-text">
                                   <div className="flex items-center justify-between">
                                     <span className="text-xs font-black text-white">ڕێکخستنی ژێرنووس</span>
                                     <button type="button" onClick={() => setShowCcPanel(false)} className="text-zinc-400 hover:text-white">✕</button>

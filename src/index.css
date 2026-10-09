@@ -381,6 +381,38 @@ video {
   pointer-events: none !important;
 }
 
+/* Keep the custom controls and settings reachable on portrait phones and short landscape screens. */
+[data-testid="player-subtitle-settings"] {
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 110px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+@media (max-width: 480px) {
+  [data-testid="player-control-bar"] {
+    width: 100%;
+    padding-left: 8px;
+    padding-right: 8px;
+    gap: 2px;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 64px;
+    padding-top: 4px;
+    padding-bottom: 4px;
+  }
+  [data-testid="player-control-bar"] button:not([data-testid="player-subtitle-settings"] button) {
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+    flex-shrink: 0;
+  }
+  [data-testid="player-control-bar"] button svg { width: 16px; height: 16px; }
+  [data-testid="player-subtitle-settings"] button { min-width: 0; }
+  [data-testid="player-branding"] { display: none; }
+  [data-testid="player-progress-bar"] { bottom: 80px; }
+}
+
 .ios-player-no-native-controls .plyr__controls {
   display: none !important;
   visibility: hidden !important;
