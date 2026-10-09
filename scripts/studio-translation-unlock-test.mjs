@@ -17,19 +17,19 @@ const browser = await chromium.launch({ headless: true });
 try {
   const page = await browser.newPage();
   let batches = 0;
-  let rejectPassword = true;
+  let signedIn = false;
   await page.route('http://studio.test/**', async route => {
     const path = new URL(route.request().url()).pathname;
     if (path === '/') return route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' });
-    if (path === '/api/kurdsub/keys/unlock') {
-      return route.fulfill({ status: rejectPassword ? 401 : 200, json: rejectPassword
-        ? { error: 'Admin password is incorrect' } : { geminiKeySession: 'test-session' } });
+    if (path === '/api/kurdsub/keys/session') {
+      return route.fulfill({ status: signedIn ? 200 : 403, json: signedIn
+        ? { geminiKeySession: 'admin-session' } : { error: 'Admin login required' } });
     }
     // A statistics outage must not block translation after authentication.
     if (path === '/api/kurdsub/keys/status') return route.fulfill({ status: 503, json: { error: 'Stats unavailable' } });
     if (path === '/api/kurdsub/translate-batch') {
       const body = route.request().postDataJSON();
-      assert.equal(body.geminiKeySession, 'test-session');
+      assert.equal(body.geminiKeySession, 'admin-session');
       batches++;
       return route.fulfill({ json: { cues: body.cues.map(cue => ({ index: cue.index, text: 'سڵاو لە تۆ' })) } });
     }
@@ -40,20 +40,12 @@ try {
   await page.locator('input[type=file]').setInputFiles({ name: 'test.srt', mimeType: 'text/plain', buffer: Buffer.from('1\n00:00:01,000 --> 00:00:03,000\nHello there\n') });
   const translate = page.getByRole('button', { name: 'وەرگێڕانی سۆرانی', exact: true });
   await translate.click();
-  const dialog = page.getByRole('dialog', { name: 'دەستپێکردنی وەرگێڕانی سۆرانی', exact: true });
-  await dialog.waitFor();
+  await page.getByRole('alert').filter({ hasText: 'Admin login required' }).waitFor();
   assert.equal(batches, 0);
-  await dialog.getByRole('button', { name: 'پاشگەزبوونەوە' }).click();
-  assert.equal(batches, 0);
+  signedIn = true;
   await translate.click();
-  await dialog.locator('input').fill('fake-password');
-  await dialog.getByRole('button', { name: 'دەستپێکردنی وەرگێڕان', exact: true }).click();
-  await dialog.getByRole('alert').filter({ hasText: 'Admin password is incorrect' }).waitFor();
-  assert.equal(batches, 0);
-  rejectPassword = false;
-  await dialog.getByRole('button', { name: 'دەستپێکردنی وەرگێڕان', exact: true }).click();
   await page.getByRole('alert').filter({ hasText: 'وەرگێڕانی سۆرانی تەواو بوو.' }).waitFor();
   assert.equal(batches, 1);
-  assert.equal(await dialog.count(), 0);
-  console.log('PASS: locked button, cancel, invalid password, fresh-token resume, and statistics outage');
+  assert.equal(await page.getByRole('dialog').count(), 1); // Only Studio, no password dialog.
+  console.log('PASS: unsigned requests blocked; signed-in admin translates without a password prompt');
 } finally { await browser.close(); }

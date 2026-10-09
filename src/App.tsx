@@ -98,6 +98,7 @@ import {
   type SubtitleCue,
 } from "./hooks/useSubtitleManager";
 import YouTubeResilientPlayer from "./components/Player/YouTubeResilientPlayer";
+import { createYoutubePost, youtubePostId } from "./lib/youtubePost";
 import SubtitleJobStatus from "./components/Player/RoomSubtitleStatus";
 import { useRoomSubtitles } from "./hooks/useRoomSubtitles";
 import { ROOM_SUBTITLE_LANGUAGES, loadRoomSubtitleLanguage } from "./lib/roomSubtitleCore";
@@ -196,16 +197,9 @@ const DELETED_MOVIE_IDS_CACHE_KEY = "cinemachat:deleted-movie-ids:v1";
 // reviving it before the refreshed fallback file arrives.
 const RETIRED_MOVIE_IDS = new Set(["manual-1789312564413"]);
 
-// FORCE PURGE of every movie-catalog cache key at boot. The catalog total MUST
-// come from the live Firestore snapshot (or the shared server/static fallback)
-// and never from a per-browser localStorage copy. Each browser accumulated a
-// slightly different cached catalog over time, which is exactly what made the
-// "سەرجەم فیلمەکان" counter read 93 / 90 / 82 on different browsers. This runs
-// at module load — before the component reads any cached catalog — and is
-// deliberately idempotent so it also heals browsers that reload mid-session.
-// Deletion tombstones (DELETED_MOVIE_IDS_CACHE_KEY) are intentionally kept.
+// Retire legacy cache shapes, but retain the validated, age-limited v1 catalog
+// for immediate cards on reload. The total still comes from the server.
 const LEGACY_MOVIE_CATALOG_CACHE_KEYS = [
-  MOVIE_CATALOG_CACHE_KEY,
   "cinemachat:movie-catalog",
   "movies",
   "publicMovies",
@@ -1807,6 +1801,14 @@ const ContentModule = ({
 
   const [isExtracting, setIsExtracting] = useState(false);
   const [isPosting, setIsPosting] = useState(false);
+  const [youtubePostTitle, setYoutubePostTitle] = useState("");
+  const [youtubePostUrl, setYoutubePostUrl] = useState("");
+  const [youtubePostDetails, setYoutubePostDetails] = useState({ description: "", poster: "", category: "YouTube", year: "", duration: "" });
+  const [isPostingYoutubeVideo, setIsPostingYoutubeVideo] = useState(false);
+  const [youtubePostStatus, setYoutubePostStatus] = useState<{
+    type: "success" | "error" | null;
+    message: string;
+  }>({ type: null, message: "" });
   const [isImdbFetching, setIsImdbFetching] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   // Detected dimensions of the uploaded poster (used for the 500x750 / 2:3 guidance)
@@ -2328,6 +2330,41 @@ const ContentModule = ({
     }
   };
 
+  const handleYoutubeVideoPost = async () => {
+    const title = youtubePostTitle.trim();
+    const url = youtubePostUrl.trim();
+    if (!title) {
+      setYoutubePostStatus({ type: "error", message: "ناونیشانی ڤیدیۆ پێویستە." });
+      return;
+    }
+
+    const videoId = youtubePostId(url);
+    if (!videoId) {
+      setYoutubePostStatus({ type: "error", message: "لینکەکە دەبێت لینکی ڤیدیۆی YouTube بێت." });
+      return;
+    }
+
+    setIsPostingYoutubeVideo(true);
+    setYoutubePostStatus({ type: null, message: "" });
+    try {
+      await onPost({
+        ...createYoutubePost({ title, url, ...youtubePostDetails }),
+        whatsappLink: config.socialLinks.whatsapp || config.socialLinks.group || "https://chat.whatsapp.com/Cinmachat",
+      });
+      setYoutubePostStatus({ type: "success", message: "ڤیدیۆی YouTube بە سەرکەوتوویی پۆست کرا." });
+      setYoutubePostTitle("");
+      setYoutubePostUrl("");
+      setYoutubePostDetails({ description: "", poster: "", category: "YouTube", year: "", duration: "" });
+    } catch (error) {
+      setYoutubePostStatus({
+        type: "error",
+        message: error instanceof Error ? `پۆست نەکرا: ${error.message}` : "پۆستکردنی ڤیدیۆی YouTube سەرکەوتوو نەبوو.",
+      });
+    } finally {
+      setIsPostingYoutubeVideo(false);
+    }
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -2577,77 +2614,61 @@ const ContentModule = ({
             </div>
           </div>
 
-          <div className="p-8 bg-zinc-900/50 border border-white/10 rounded-[2.5rem] space-y-4">
-            <label className="text-xs font-black text-red-500 kurdish-text uppercase tracking-widest flex items-center gap-2 mb-2">
+          <div className="p-8 bg-red-500/5 border border-red-500/20 rounded-[2.5rem] space-y-4">
+            <label className="text-xs font-black text-red-400 kurdish-text uppercase tracking-widest flex items-center gap-2">
               <Youtube className="w-4 h-4" />
-              ١. سەرچاوەی ترایلەر
+              پۆستکردنی ڤیدیۆی YouTube
             </label>
-            <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={youtubePostTitle}
+              onChange={(e) => setYoutubePostTitle(e.target.value)}
+              placeholder="ناونیشانی ڤیدیۆ..."
+              aria-label="ناونیشانی ڤیدیۆی YouTube"
+              className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-3 text-white kurdish-text outline-none focus:border-red-500 transition-all text-xs"
+            />
+            <div className="flex flex-col md:flex-row items-stretch gap-2">
               <input
-                type="text"
-                placeholder="لینکی یوتوبی ترایلەر..."
-                value={formData.trailerUrl}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  if (/imdb\.com\/title\//i.test(val)) {
-                    setPostStatus({ type: "error", message: "ئەم لینکە پەڕەی زانیاریی IMDb ـە، نەک ترایلەر. تکایە لینکی یوتوب دابنێ." });
-                    return;
-                  }
-                  setFormData({ ...formData, trailerUrl: val });
+                type="url"
+                value={youtubePostUrl}
+                onChange={(e) => setYoutubePostUrl(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !isPostingYoutubeVideo) void handleYoutubeVideoPost();
                 }}
-                className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-6 py-3 text-white kurdish-text outline-none focus:border-red-500 transition-all text-xs"
-              />
-              <CategoryDropdown
-                value={formData.category}
-                onChange={(v: string) =>
-                  setFormData({ ...formData, category: v })
-                }
-                categories={genreList.map((g) => ({
-                  value: g.tag,
-                  label: g.name,
-                }))}
+                placeholder="لینکی ڤیدیۆی YouTube..."
+                aria-label="لینکی ڤیدیۆی YouTube"
+                className="flex-1 min-w-0 bg-black/40 border border-white/10 rounded-2xl px-6 py-3 text-white outline-none focus:border-red-500 transition-all text-xs"
               />
               <button
-                onClick={handlePublish}
-                className="px-4 py-3 bg-red-600 hover:bg-red-700 text-white rounded-2xl text-xs font-bold"
+                type="button"
+                onClick={() => void handleYoutubeVideoPost()}
+                disabled={isPostingYoutubeVideo || !youtubePostTitle.trim() || !youtubePostUrl.trim()}
+                className="px-5 py-3 bg-red-600 hover:bg-red-700 text-white rounded-2xl text-xs font-bold disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
-                بڵاوکردنەوە
+                {isPostingYoutubeVideo ? <Loader2 className="w-4 h-4 animate-spin" /> : <Youtube className="w-4 h-4" />}
+                پۆستی YouTube
               </button>
             </div>
-          </div>
-
-          <div className="p-8 bg-zinc-900/50 border border-white/10 rounded-[2.5rem] space-y-4">
-            <label className="text-xs font-black text-red-400 kurdish-text uppercase tracking-widest flex items-center gap-2 mb-2">
-              <Play className="w-4 h-4" />
-              ترایلەری سەرەکی
-            </label>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                placeholder="لینکی ترایلەری سەرەکی..."
-                value={formData.mainTrailerUrl}
-                onChange={(e) =>
-                  setFormData({ ...formData, mainTrailerUrl: e.target.value })
-                }
-                className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-6 py-3 text-white kurdish-text outline-none focus:border-red-400 transition-all text-xs"
-              />
-              <CategoryDropdown
-                value={formData.category}
-                onChange={(v: string) =>
-                  setFormData({ ...formData, category: v })
-                }
-                categories={genreList.map((g) => ({
-                  value: g.tag,
-                  label: g.name,
-                }))}
-              />
-              <button
-                onClick={handlePublish}
-                className="px-4 py-3 bg-red-500 hover:bg-red-600 text-white rounded-2xl text-xs font-bold"
-              >
-                بڵاوکردنەوە
-              </button>
+            {youtubePostStatus.message && (
+              <p className={`text-xs font-bold kurdish-text ${youtubePostStatus.type === "success" ? "text-emerald-400" : "text-red-400"}`}>
+                {youtubePostStatus.message}
+              </p>
+            )}
+            <textarea value={youtubePostDetails.description} onChange={(event) => setYoutubePostDetails(details => ({ ...details, description: event.target.value }))}
+              aria-label="زانیاری ڤیدیۆی YouTube" placeholder="زانیاری ڤیدیۆ…" className="w-full rounded-xl border border-white/10 bg-black/40 p-3 text-sm text-white" />
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {([
+                ['poster', 'لینکی وێنە (ئارەزوومەندانە)'], ['category', 'پۆلێن'], ['year', 'ساڵ'], ['duration', 'ماوەی ڤیدیۆ'],
+              ] as const).map(([field, label]) => <input key={field} value={youtubePostDetails[field]}
+                onChange={(event) => setYoutubePostDetails(details => ({ ...details, [field]: event.target.value }))}
+                aria-label={`${label} — YouTube`} placeholder={label} className="min-w-0 rounded-xl border border-white/10 bg-black/40 p-3 text-sm text-white" />)}
             </div>
+            {youtubePostId(youtubePostUrl) && <div className="space-y-2 rounded-xl border border-white/10 p-3">
+              <p className="text-xs text-zinc-400 kurdish-text">پێشبینینی ڤیدیۆ</p>
+              <iframe title="پێشبینینی ڤیدیۆی YouTube" src={`https://www.youtube.com/embed/${youtubePostId(youtubePostUrl)}`}
+                className="aspect-video w-full rounded-lg" allow="encrypted-media; picture-in-picture; fullscreen" allowFullScreen />
+              <p className="text-sm font-bold text-white">{youtubePostTitle}</p>
+            </div>}
           </div>
 
           <div className="p-8 bg-zinc-900/50 border border-white/10 rounded-[2.5rem] space-y-4">
@@ -6147,10 +6168,11 @@ const RoomSection: React.FC<{
 const DRAMA_GENRE_TAG = "دراما";
 const DRAMA_POST_TYPE = "دراما";
 const FILM_POST_TYPE = "فیلم";
+const YOUTUBE_POST_TYPE = "youtube";
 const isDramaMovie = (m: any) => {
   const postType = String(m?.postType || "").trim().toLowerCase();
   if (postType === DRAMA_POST_TYPE) return true;
-  if (postType === FILM_POST_TYPE) return false;
+  if (postType === FILM_POST_TYPE || postType === YOUTUBE_POST_TYPE) return false;
   const type = String(m?.type || "").trim().toLowerCase();
   if (["drama", "series", "episode"].includes(type)) return true;
   const labels = [m?.category, ...(Array.isArray(m?.tags) ? m.tags : [])];
@@ -7436,18 +7458,15 @@ export default function App() {
     initialMovieCatalogRef.current = readCachedMovieCatalog();
   }
   const [movies, setMovies] = useState<Movie[]>(initialMovieCatalogRef.current);
-  // Single authoritative "films only" catalog. It is populated EXACTLY ONCE when
-  // the complete Firestore getDocs() query resolves — never streamed
-  // progressively and never unioned with a per-browser cache — so the
-  // "سەرجەم فیلمەکان" grid and header counter render all movies at once,
-  // identically on every device (no 48 → 83 climbing while chunks arrive).
-  const [nonDramaMovies, setNonDramaMovies] = useState<Movie[]>([]);
+  // Render the same catalog used by the rest of the page. Cached/API cards
+  // must not wait for a second, potentially slow Firestore download.
+  const nonDramaMovies = useMemo(() => movies.filter((movie) => !(movie as any).isDrama && !isDramaMovie(movie)), [movies]);
   // True only once the complete getDocs() query has resolved and populated the
   // catalog. Until then the "سەرجەم فیلمەکان" counter and grid render skeletons
   // instead of a partial seed that would otherwise jump once the full set lands.
   // render a skeleton instead of a partial seed count that would otherwise jump
   // (e.g. 48 → 93) once the rest of the collection streams in on slow devices.
-  const [catalogHydrated, setCatalogHydrated] = useState(false);
+  const [catalogHydrated, setCatalogHydrated] = useState(initialMovieCatalogRef.current.length > 0);
   // Definitive total locked from the server ONCE at launch (`/api/movies/count`)
   // — never derived from the progressively-streaming catalog array. Once set, it
   // stays static for the session, so the "سەرجەم فیلمەکان" counter renders the
@@ -13175,7 +13194,8 @@ const handleWebkitEndFullscreen = () => {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await fetchApi("/api/admin/logout", { method: "POST" }).catch(() => {});
     setCurrentUser(null);
     safeStorage.remove("cinemachat_admin");
     safeStorage.remove("cinemachat_local_admin_profile");
@@ -13302,6 +13322,7 @@ const handleWebkitEndFullscreen = () => {
   };
 
   const applyMovies = (list: any[]) => {
+    if (list.length) setCatalogHydrated(true);
     setMovies((previous) => {
       // Never let a cold/partial API response replace a fuller catalog already
       // painted from cache or Firestore. Incoming records win by id, while
@@ -13373,10 +13394,7 @@ const handleWebkitEndFullscreen = () => {
         : [];
       if (serverMovies.length > 0) {
         applyMovies(serverMovies);
-        // NOTE: this NEVER seeds `nonDramaMovies`. The authoritative films-only
-        // grid is set EXACTLY ONCE by the complete getDocs() query so it can
-        // never render a partial warm-up number; the server list here only feeds
-        // the `movies` state (Drama Rooms, admin lists, live card metrics).
+        // The grid immediately uses this response; Firestore refreshes it later.
         setErrorMsg(null);
       }
       releaseLoading();
@@ -13613,57 +13631,57 @@ const handleWebkitEndFullscreen = () => {
     );
   };
 
-  // Fetch the authoritative catalog with a SINGLE one-shot getDocs() — no live
-  // onSnapshot listener, no progressive streaming, no local-cache partials.
-  // getDocs resolves ATOMICALLY with the complete collection (or rejects), so
-  // the "سەرجەم فیلمەکان" grid can only ever render the FULL set at once — there
-  // is no chunked window in which a partial 48/51 count could display before the
-  // rest arrives. Films-only filtering happens HERE, during the fetch, and the
-  // result is stored in the single `nonDramaMovies` state. This is the ONLY
-  // writer of that state.
+  // Server-confirmed snapshots refresh the catalog in the background.
+  const applyAuthoritativeCatalogSnapshot = (snapshot: any) => {
+    const incoming: any[] = [];
+    snapshot.forEach((entry: any) => {
+      const data = entry.data() as any;
+      incoming.push({ ...data, id: String(data?.id || entry.id) });
+    });
+    const durable = incoming.filter(
+      (movie) =>
+        movie?.id &&
+        String(movie.title || "").trim() &&
+        movie.id !== "hero-promo" &&
+        !deletedMovieIdsRef.current.has(movie.id),
+    );
+    const catalog = buildAuthoritativeCatalog(durable);
+    // A complete server snapshot is authoritative, including remote deletions.
+    // A cold API refresh can merge, but must not resurrect removed cached cards.
+    setMovies(catalog);
+    cacheMovieCatalog(catalog);
+    setLockedMovieCount(catalog.filter((movie: any) => !movie.isDrama && !isDramaMovie(movie)).length);
+    setErrorMsg(null);
+    setCatalogHydrated(true);
+  };
+
   const fetchAuthoritativeCatalog = async () => {
     try {
-      // No orderBy() on purpose — Firestore silently DROPS documents that are
-      // missing the ordered field (legacy movies without `createdAt`), which is
-      // exactly what made the total count differ across browsers. The list is
-      // sorted client-side after the full query resolves.
-      const q = query(collection(realDb, "movies"));
-      const snapshot = await getDocs(q);
-      const incoming: any[] = [];
-      snapshot.forEach((entry) => {
-        const data = entry.data() as any;
-        // Older movie documents sometimes use an auto-generated Firestore
-        // document id while keeping the public `manual-*` id in the data.
-        // Preserve that canonical id so cards are keyed consistently.
-        incoming.push({ ...data, id: String(data?.id || entry.id) });
-      });
-      const durable = incoming.filter(
-        (movie) =>
-          movie?.id &&
-          String(movie.title || "").trim() &&
-          movie.id !== "hero-promo" &&
-          !deletedMovieIdsRef.current.has(movie.id),
-      );
-      // Strip to films only right here (drama flag + the shared multi-field
-      // heuristic). Room-assigned ids are drama entries and are already
-      // excluded by that same heuristic, so none can leak into the film count.
-      const filmsOnly = buildAuthoritativeCatalog(durable).filter(
-        (m: any) => !m?.isDrama && !isDramaMovie(m),
-      );
-      setNonDramaMovies(filmsOnly);
-      setErrorMsg(null);
-      setCatalogHydrated(true);
+      const snapshot = await getDocs(query(collection(realDb, "movies")));
+      applyAuthoritativeCatalogSnapshot(snapshot);
     } catch (err) {
       console.warn("[Movies] getDocs catalog fetch failed:", err);
-      // Firestore outage -> keep the loading skeleton active (the deadline below
-      // releases it); the server count endpoint still feeds the header number.
     }
   };
 
-  // One-shot authoritative fetch on mount, in parallel with the API request.
-  // The skeleton stays visible until THIS complete query resolves.
+  // Keep new and edited Firestore movies visible immediately on every client.
+  // Cache snapshots may be stale, so only a complete server snapshot hydrates
+  // or replaces the catalog.
   useEffect(() => {
-    void fetchAuthoritativeCatalog();
+    let cancelled = false;
+    const unsubscribe = onSnapshot(
+      query(collection(realDb, "movies")),
+      { includeMetadataChanges: true },
+      (snapshot) => {
+        if (cancelled || snapshot.metadata.fromCache) return;
+        applyAuthoritativeCatalogSnapshot(snapshot);
+      },
+      (error) => console.warn("[Movies] Firestore live update failed:", error),
+    );
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, []);
 
   // Admin mutations (post/edit/delete) re-run BOTH refreshes so the change is
@@ -17965,10 +17983,15 @@ const trailerId = movie.trailerUrl
                                 if (res.ok) {
                                   const data = await res.json();
                                   const postedMovie = data.movie;
-                                  alert("فیلمەکە بە سەرکەوتوویی پۆست کرا!");
+                                  alert(
+                                    movie.postType === "YouTube"
+                                      ? "ڤیدیۆی YouTube بە سەرکەوتوویی پۆست کرا!"
+                                      : "فیلمەکە بە سەرکەوتوویی پۆست کرا!",
+                                  );
                                   // Insert into local state immediately (avoids
                                   // cross-instance staleness on Render's ephemeral fs).
                                   // The 60s interval already handles eventual sync.
+                                  setCatalogHydrated(true);
                                   setMovies(prev => {
                                     const updated = [postedMovie, ...prev];
                                     return updated.sort((a: any, b: any) => {
@@ -17991,9 +18014,7 @@ const trailerId = movie.trailerUrl
                                   } catch (fsErr) {
                                     console.warn("[Firestore] Failed to save movie to Firestore (non-fatal):", fsErr);
                                   }
-                                  // Re-run the complete getDocs query so the
-                                  // single `nonDramaMovies` state includes the
-                                  // new film immediately (never a partial read).
+                                  // Confirm the background catalog after durable save.
                                   void fetchAuthoritativeCatalog();
                                 } else {
                                   const errData = await res.json();
@@ -18004,10 +18025,7 @@ const trailerId = movie.trailerUrl
                                 }
                               } catch (e: any) {
                                 console.error("Self-Healing Admin Guard:", e);
-                                alert(
-                                  "هەڵەیەک ڕوویدا لە کاتی ناردن: " +
-                                    (e.message || "Unknown Error"),
-                                );
+                                throw e;
                               }
                             }}
                           />

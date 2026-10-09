@@ -17,6 +17,7 @@ import net from 'node:net';
 import { rateLimiter, sanitizationMiddleware, createAdminGuard, logFailedAttempt } from './security';
 import { generateSubtitle, translateSrtViaGemini } from './features/subtitles/subtitleGenerator.js';
 import { GeminiKeyVault } from './geminiKeyVault';
+import { createStudioAdminSessions } from './studioAdminSession';
 import { stripSubtitleHtmlTags } from './src/lib/subtitleText.js';
 import { hasNonSoraniLetters } from './src/lib/studioUntranslatedCues.js';
 import { legacySubtitleFileUrl, parseLegacySubtitleListing } from './kurdSubLegacy';
@@ -10862,6 +10863,7 @@ async function startServer() {
       const isSuperAdmin = responseRole === "ROLE_SUPER_ADMIN" || responseRole === "super_admin" || responseRole === "owner";
       const isOwner = OWNER_USERNAMES.includes(ownerName) || responseRole === "owner";
 
+      setStudioLoginCookie(req, res, ownerName, String(admin.password || process.env.ADMIN_SECRET_KEY || ''));
       res.json({
         success: true,
         user: {
@@ -12372,9 +12374,8 @@ async function startServer() {
       year: year || "",
       duration: typeof duration === 'string' ? duration.trim() : "",
       type: type || "movie",
-      // Explicit Film/Drama post type ("جۆری پۆست"). Primary way to tell
-      // dramas from films for Drama Rooms. Missing/non-drama → "فیلم".
-      postType: postType === "دراما" ? "دراما" : "فیلم",
+      // Explicit post type keeps YouTube-only videos separate from Film/Drama.
+      postType: postType === "دراما" ? "دراما" : postType === "YouTube" ? "YouTube" : "فیلم",
       // Raw pasted .srt/.vtt subtitle content from the admin movie form
       subtitleText: normalizedSubtitleText,
       // IMDb metadata (import-only — NEVER used as playback source)
@@ -14117,7 +14118,29 @@ async function startServer() {
   });
   const geminiVaultSessions = new Map<string, { username: string; passwordHash: string; expiresAt: number }>();
   const geminiVaultFailures = new Map<string, { count: number; until: number }>();
+  const studioSessions = createStudioAdminSessions(process.env.GEMINI_KEY_VAULT_SECRET || process.env.ADMIN_SECRET_KEY || crypto.randomBytes(32).toString('hex'));
+  const studioCookieName = 'cinemachat_studio_admin';
+  const studioCookieOptions = (req: express.Request) => ({
+    httpOnly: true, sameSite: 'strict' as const, path: '/api',
+    secure: req.secure || req.headers['x-forwarded-proto'] === 'https',
+  });
+  const setStudioLoginCookie = (req: express.Request, res: express.Response, username: string, credential: string) => {
+    if (credential) res.cookie(studioCookieName, studioSessions.issue(username, credential), { ...studioCookieOptions(req), maxAge: 12 * 60 * 60_000 });
+  };
+  const studioLoginIdentity = (req: express.Request) => {
+    const token = String(req.headers.cookie || '').split(';').map(value => value.trim()).find(value => value.startsWith(`${studioCookieName}=`))?.slice(studioCookieName.length + 1) || '';
+    return studioSessions.verify(token, username => {
+      const account = db.admins.find((item: any) => String(item.username || '').trim().toLowerCase() === username);
+      return account ? String(account.password || '') : OWNER_USERNAMES.includes(username) ? process.env.ADMIN_SECRET_KEY || null : null;
+    });
+  };
+  app.post('/api/admin/logout', (req, res) => {
+    res.clearCookie(studioCookieName, studioCookieOptions(req));
+    res.json({ success: true });
+  });
   const geminiVaultIdentity = (req: express.Request) => {
+    const loggedInAdmin = studioLoginIdentity(req);
+    if (loggedInAdmin) return loggedInAdmin;
     const token = String(req.body?.geminiKeySession || '');
     if (!/^[A-Za-z0-9_-]{40,100}$/.test(token)) return null;
     const id = crypto.createHash('sha256').update(token).digest('hex');
@@ -14127,6 +14150,14 @@ async function startServer() {
     if (!account || account.password !== session.passwordHash) return null;
     return session.username;
   };
+  app.post('/api/kurdsub/keys/session', (req, res) => {
+    const username = geminiVaultIdentity(req);
+    if (!username || username !== String(req.body?.adminName || '').trim().toLowerCase() || !isKurdSubStudioRequester(req)) {
+      return res.status(403).json({ error: 'دانیشتنی ئەدمین کۆتایی هاتووە؛ تکایە جارێک لە بەشی ئەدمین بچۆوە ژوورەوە.' });
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ geminiKeySession: 'admin-session' });
+  });
   app.post('/api/kurdsub/keys/unlock', async (req, res) => {
     if (!(await ensureAdminStoreReady())) return res.status(503).json({ error: 'Admin account storage unavailable' });
     const client = getClientIdentity(req);
@@ -14148,6 +14179,7 @@ async function startServer() {
     try { await geminiVault.load(); }
     catch { return res.status(503).json({ error: 'Gemini key storage is unavailable' }); }
     geminiVaultFailures.delete(client.key);
+    setStudioLoginCookie(req, res, username, stored);
     const token = crypto.randomBytes(32).toString('base64url');
     geminiVaultSessions.set(crypto.createHash('sha256').update(token).digest('hex'), {
       username, passwordHash: account.password, expiresAt: Date.now() + 60 * 60_000,
