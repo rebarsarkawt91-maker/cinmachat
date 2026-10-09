@@ -7456,7 +7456,13 @@ export default function App() {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const initialMovieCatalogRef = useRef<Movie[] | null>(null);
   if (initialMovieCatalogRef.current === null) {
-    initialMovieCatalogRef.current = readCachedMovieCatalog();
+    const startupSeed = (window as any).__cinemaCatalogSeed;
+    const cachedCatalog = readCachedMovieCatalog();
+    initialMovieCatalogRef.current = cachedCatalog.length && !(window as any).__cinemaCatalogSeedFresh
+      ? cachedCatalog
+      : Array.isArray(startupSeed) && startupSeed.length
+      ? startupSeed.filter(movie => movie?.id && movie.id !== 'hero-promo' && String(movie.title || '').trim())
+      : cachedCatalog;
   }
   const [movies, setMovies] = useState<Movie[]>(initialMovieCatalogRef.current);
   // Render the same catalog used by the rest of the page. Cached/API cards
@@ -13389,7 +13395,7 @@ const handleWebkitEndFullscreen = () => {
       // lightweight response. Rendering that single authoritative list avoids
       // a second multi-megabyte browser read that used to reorder cards a few
       // seconds after first paint.
-      const results = await api.getMovies();
+      const results = await api.getMovies(applyMovies);
       const serverMovies = Array.isArray(results)
         ? results.filter((m: any) => m && m.id !== "hero-promo")
         : [];

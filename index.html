@@ -7,10 +7,31 @@
       (function () {
         var controller = new AbortController();
         var timer = setTimeout(function () { controller.abort(); }, 20000);
+        // A slow or quota-limited API must not delay the first catalog paint.
+        window.__cinemaCatalogFallbackRequest = new Promise(function (resolve) {
+          setTimeout(function () {
+            if (window.__cinemaCatalogSeed) { resolve(window.__cinemaCatalogSeed); return; }
+            var snapshotController = new AbortController();
+            var snapshotTimer = setTimeout(function () { snapshotController.abort(); }, 10000);
+            fetch('/catalog-fallback.json', { cache: 'no-store', signal: snapshotController.signal }).then(function (response) {
+              return response.ok ? response.json() : null;
+            }).then(function (data) {
+              var movies = data && Array.isArray(data.results) ? data.results : [];
+              if (!window.__cinemaCatalogSeed && movies.length) window.__cinemaCatalogSeed = movies;
+              resolve(movies);
+            }).catch(function () { resolve([]); }).finally(function () { clearTimeout(snapshotTimer); });
+          }, 1000);
+        });
         window.__cinemaCatalogRequest = fetch('/api/movies', {
           headers: { Accept: 'application/json' }, cache: 'no-store', signal: controller.signal
         }).then(function (response) {
           return response.ok ? response.json() : null;
+        }).then(function (data) {
+          if (data && Array.isArray(data.results) && data.results.some(function (m) { return m && m.id && m.id !== 'hero-promo'; })) {
+            window.__cinemaCatalogSeed = data.results;
+            window.__cinemaCatalogSeedFresh = true;
+          }
+          return data;
         }).catch(function () { return null; }).finally(function () { clearTimeout(timer); });
       })();
     </script>

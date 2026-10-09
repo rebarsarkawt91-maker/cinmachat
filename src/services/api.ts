@@ -3,6 +3,7 @@
  */
 
 import { resolveApiUrl } from "./backendConfig";
+import { firstCatalog } from "../lib/catalogStartup";
 
 export { resolveApiUrl };
 
@@ -209,10 +210,19 @@ export const api = {
     }
   },
 
-  async getMovies() {
+  async getMovies(onFresh?: (movies: any[]) => void) {
     const startup = (window as any).__cinemaCatalogRequest;
     if (startup) {
       delete (window as any).__cinemaCatalogRequest;
+      if (onFresh) {
+        return firstCatalog(
+          Promise.resolve(startup).then(data => Array.isArray(data?.results) ? data.results : []),
+          (window as any).__cinemaCatalogFallbackRequest || loadPublicCatalogFallback(),
+          // Deliver after the caller paints its first result; a just-arriving
+          // live response must not be overwritten by that older snapshot.
+          movies => window.setTimeout(() => onFresh(movies.filter(movie => movie?.id && movie.id !== 'hero-promo')), 0),
+        );
+      }
       const initial = await startup;
       if (Array.isArray(initial?.results) && initial.results.some((m: any) => m?.id && m.id !== 'hero-promo')) return initial.results;
       return loadPublicCatalogFallback();
