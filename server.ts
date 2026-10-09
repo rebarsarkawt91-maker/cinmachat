@@ -17,6 +17,7 @@ import net from 'node:net';
 import { rateLimiter, sanitizationMiddleware, createAdminGuard, logFailedAttempt } from './security';
 import { generateSubtitle, translateSrtViaGemini } from './features/subtitles/subtitleGenerator.js';
 import { GeminiKeyVault } from './geminiKeyVault';
+import { classifyGeminiFailure } from './geminiFailure';
 import { createStudioAdminSessions } from './studioAdminSession';
 import { stripSubtitleHtmlTags } from './src/lib/subtitleText.js';
 import { hasNonSoraniLetters } from './src/lib/studioUntranslatedCues.js';
@@ -12388,9 +12389,13 @@ async function startServer() {
     };
 
     try {
-      // Admin save: local only
+      const firebaseApp = initializeFirebaseAdmin();
+      if (!firebaseApp) throw new Error('Durable movie storage unavailable');
+      await admin.firestore(firebaseApp).collection('movies').doc(newMovie.id).set(JSON.parse(JSON.stringify(newMovie)));
+      firestoreMoviesCache[newMovie.id] = newMovie;
     } catch (e: any) {
-      console.error('CRITICAL: Local save failed:', e.message || e);
+      console.error('[Post movie] Durable save failed');
+      return res.status(503).json({ success: false, error: 'پۆستەکە پاشەکەوت نەکرا؛ هەڵگرتنی هەمیشەیی بەردەست نییە. دووبارە هەوڵ بدە.' });
     }
 
     const adminName = req.body.adminName || "Admin";
@@ -15251,9 +15256,9 @@ async function startServer() {
       return res.status(400).json({ error: 'Invalid subtitle cue batch' });
     }
     try {
-      const activeAdmins = new Set(db.admins.map((item: any) => String(item.username || '').trim().toLowerCase()));
+      const activeAdmins = new Set<string>(db.admins.map((item: any) => String(item.username || '').trim().toLowerCase()));
       const candidates = await geminiVault.candidates(true, activeAdmins);
-      if (!candidates.length) return res.status(429).json({ error: 'All Gemini keys are unavailable or cooling down' });
+      if (!candidates.length) return res.status(409).json({ code: 'GEMINI_NO_AVAILABLE_KEY', retryable: false, error: 'هیچ کلیلی Gemini ئێستا بەردەست نییە؛ ڕێکخستنی کلیلەکان و کاتی چاوەڕوانی بپشکنە.' });
       const source = cues.map((cue) =>
         `${cue.index}\n${kurdSubBatchTimestamp(cue.start)} --> ${kurdSubBatchTimestamp(cue.end)}\n${cue.text}`,
       ).join('\n\n');
@@ -15274,9 +15279,13 @@ async function startServer() {
         } catch (error: any) {
           if (tokensUsed > 0) geminiVault.recordUse(candidate, tokensUsed);
           lastError = error;
-          const message = String(error?.message || '');
-          if (/Gemini API error (?:400|401|403|429)\b|RESOURCE_EXHAUSTED|quota_exceeded/i.test(message)) {
-            geminiVault.recordQuota(candidate, /Gemini API error (?:400|401|403)\b|requests.?per.?day|RPD|daily quota/i.test(message));
+          const failure = classifyGeminiFailure(error);
+          console.warn('[KurdSub translation]', JSON.stringify({ code: failure.code, status: failure.status }));
+          if (failure.code === 'GEMINI_RATE_LIMIT') {
+            geminiVault.recordQuota(candidate, false, failure.retryAfter);
+            continue;
+          }
+          if (failure.code === 'GEMINI_KEY_REJECTED') {
             continue;
           }
           throw error;
@@ -15305,12 +15314,9 @@ async function startServer() {
     } catch (error: any) {
       // Cloudflare replaces upstream 502 bodies with a generic page. 424 keeps
       // the actionable provider error available to the Studio retry UI.
-      const providerError = String(error?.message || 'Gemini translation failed');
-      const exhausted = /429|quota|RESOURCE_EXHAUSTED/i.test(providerError);
-      const safeError = /^(?:Gemini returned|Gemini changed|Gemini API timed out)/.test(providerError)
-        ? providerError : 'Gemini translation failed; check the key and retry';
-      return res.status(exhausted ? 429 : 424)
-        .json({ error: exhausted ? 'Gemini key quota reached; retry later or add a key from another project' : safeError });
+      const failure = classifyGeminiFailure(error);
+      if (failure.retryAfter) res.setHeader('Retry-After', String(failure.retryAfter));
+      return res.status(failure.status).json({ error: failure.message, code: failure.code, retryable: failure.retryable, retryAfter: failure.retryAfter });
     }
   });
 

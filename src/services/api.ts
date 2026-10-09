@@ -210,6 +210,13 @@ export const api = {
   },
 
   async getMovies() {
+    const startup = (window as any).__cinemaCatalogRequest;
+    if (startup) {
+      delete (window as any).__cinemaCatalogRequest;
+      const initial = await startup;
+      if (Array.isArray(initial?.results) && initial.results.some((m: any) => m?.id && m.id !== 'hero-promo')) return initial.results;
+      return loadPublicCatalogFallback();
+    }
     // Fetch the COMPLETE, unpaginated catalog in a single request. A generous
     // safety abort is kept only so a genuinely dead server cannot hang first
     // paint forever; it must be long enough that a slow (mobile Safari /

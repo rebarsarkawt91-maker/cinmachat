@@ -35,7 +35,7 @@ import {
  */
 
 // YouTube IFrame API error codes that mean the video cannot play in an embed.
-const YT_BLOCK_CODES = new Set([2, 5, 100, 101, 150]);
+const YT_BLOCK_CODES = new Set([2, 5, 100, 101, 150, 153]);
 
 // If the embed neither errors nor starts playing within this window, assume it
 // is stuck on YouTube's silent "Playback ID" error screen and escalate.
@@ -156,19 +156,28 @@ export default function YouTubeResilientPlayer({
     if (blockedRef.current || streamUrl) return;
     const onMessage = (event: MessageEvent) => {
       // www.youtube.com / youtube-nocookie.com embeds report from youtube.com origins.
-      if (!/youtube(-nocookie)?\.com|youtu\.be/i.test(event.origin)) return;
+      if (!/^https:\/\/(www\.)?youtube(-nocookie)?\.com$/.test(event.origin)) return;
       const frame = iframeRef.current;
       if (!frame?.contentWindow || event.source !== frame.contentWindow) return;
       let data: any;
       try {
-        data = JSON.parse(event.data);
+        data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
       } catch {
         return;
       }
       if (!data || typeof data !== "object") return;
       if (data.event === "onError") {
         const code = Number(data.info ?? data.data);
-        if (YT_BLOCK_CODES.has(code)) handleBlocked();
+        if (YT_BLOCK_CODES.has(code)) {
+          // Definitive provider errors cannot be repaired by reloading the same
+          // embed four times. Surface the cause and keep the movie mounted.
+          if ([100, 101, 150, 153].includes(code)) {
+            playedRef.current = true;
+            blockedRef.current = true;
+            setBlocked(true);
+            setDirectErrorMessage(code === 153 ? 'YouTube could not verify this player. Try opening the video on YouTube.' : 'YouTube does not allow this video to play here. Open it on YouTube.');
+          } else handleBlocked();
+        }
       } else if (data.event === "onStateChange") {
         // info === 1 means PLAYING.
         if (data.info === 1 || data.data === 1) playedRef.current = true;
@@ -178,7 +187,7 @@ export default function YouTubeResilientPlayer({
         // onInfoDelivery (never onStateChange), so without this the stall guard
         // would remount a perfectly healthy embed every 15s and reset playback
         // to 00:00.
-        playedRef.current = true;
+        if (data.info.currentTime > 0 || [1, 2, 5].includes(data.info.playerState)) playedRef.current = true;
       }
     };
     window.addEventListener("message", onMessage);
@@ -349,6 +358,15 @@ export default function YouTubeResilientPlayer({
           id={iframeId}
           src={videoId ? embedSrc(videoId) : url}
           title={title || "CinemaChat YouTube Player"}
+          referrerPolicy="strict-origin-when-cross-origin"
+          onLoad={() => {
+            const frame = iframeRef.current?.contentWindow;
+            const origin = 'https://www.youtube.com';
+            frame?.postMessage(JSON.stringify({ event: 'listening', id: iframeId }), origin);
+            for (const event of ['onReady', 'onStateChange', 'onError']) {
+              frame?.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: [event] }), origin);
+            }
+          }}
           className="w-full h-[120%] -translate-y-[8.3%] border-none shadow-[0_0_200px_rgba(229,9,20,0.4)] pointer-events-none"
           frameBorder="0"
           scrolling="no"
@@ -433,6 +451,7 @@ export default function YouTubeResilientPlayer({
             >
               Retry
             </button>
+            {videoId && <a href={`https://www.youtube.com/watch?v=${videoId}`} target="_blank" rel="noopener noreferrer" className="text-white underline text-sm">کردنەوە لە YouTube</a>}
           </div>
         </div>
       ) : null}

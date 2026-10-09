@@ -2,6 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { GeminiKeyVault } from './geminiKeyVault';
 
+test('server key works when optional shared-key storage is unavailable', async () => {
+  const previous = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'test-server-key';
+  try {
+    assert.equal((await new GeminiKeyVault(() => null).candidates(true))[0].id, 'server');
+  } finally {
+    if (previous === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previous;
+  }
+});
+
 test('Gemini keys are encrypted, private, persistent, and shareable without disclosure', async () => {
   const previousSecret = process.env.GEMINI_KEY_VAULT_SECRET;
   const previousServerKey = process.env.GEMINI_API_KEY;

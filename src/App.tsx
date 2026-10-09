@@ -13351,7 +13351,7 @@ const handleWebkitEndFullscreen = () => {
         });
       // Warm the visible catalog row before React paints it. The module-level
       // URL set prevents repeat requests during API polling/Firestore patches.
-      normalized.slice(0, 30).forEach((movie: any) => {
+      normalized.slice(0, 6).forEach((movie: any) => {
         const poster = getMoviePosterCandidates(movie)[0];
         if (!poster || preloadedMoviePosterUrls.has(poster)) return;
         preloadedMoviePosterUrls.add(poster);
@@ -13646,10 +13646,12 @@ const handleWebkitEndFullscreen = () => {
         !deletedMovieIdsRef.current.has(movie.id),
     );
     const catalog = buildAuthoritativeCatalog(durable);
-    // A complete server snapshot is authoritative, including remote deletions.
-    // A cold API refresh can merge, but must not resurrect removed cached cards.
-    setMovies(catalog);
-    cacheMovieCatalog(catalog);
+    // Preserve API-confirmed posts across a lagging Firestore snapshot.
+    // Explicit deletion events, unlike absence, remain authoritative.
+    for (const change of snapshot.docChanges?.() || []) {
+      if (change.type === "removed") deletedMovieIdsRef.current.add(String(change.doc.id));
+    }
+    applyMovies(catalog);
     setLockedMovieCount(catalog.filter((movie: any) => !movie.isDrama && !isDramaMovie(movie)).length);
     setErrorMsg(null);
     setCatalogHydrated(true);
@@ -18002,18 +18004,7 @@ const trailerId = movie.trailerUrl
                                     });
                                   });
                                   setLastAddedMovie(postedMovie);
-                                  // Persist to Firestore so movies survive Render's ephemeral fs
-                                  try {
-                                    const moviesRef = collection(realDb, "movies");
-                                    await setDoc(doc(moviesRef, postedMovie.id), {
-                                      ...postedMovie,
-                                      createdAt: serverTimestamp(),
-                                      updatedAt: serverTimestamp(),
-                                    });
-                                    console.log("[Firestore] Movie saved to Firestore:", postedMovie.id);
-                                  } catch (fsErr) {
-                                    console.warn("[Firestore] Failed to save movie to Firestore (non-fatal):", fsErr);
-                                  }
+                                  // Backend success already confirms durable storage.
                                   // Confirm the background catalog after durable save.
                                   void fetchAuthoritativeCatalog();
                                 } else {

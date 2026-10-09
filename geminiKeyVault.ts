@@ -10,6 +10,7 @@ type StoredKey = {
   fingerprint: string;
   createdAt: string;
   cooldownUntil?: number;
+  cooldownKind?: 'capacity';
   usage?: Usage;
 };
 
@@ -103,10 +104,19 @@ export class GeminiKeyVault {
     const serverKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
     if (serverKey && this.serverCooldown.until <= Date.now()) candidates.push({ id: 'server', key: serverKey, owner: 'server' });
     if (includeShared) {
-      await this.load();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([this.load(), new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('Gemini key storage unavailable')), 5000);
+        })]);
+      }
+      catch (error) { if (candidates.length) return candidates; throw error; }
+      finally { if (timer) clearTimeout(timer); }
       for (const [owner, record] of this.records) {
         if (activeAdmins && !activeAdmins.has(owner)) continue;
-        if ((record.cooldownUntil || 0) > Date.now()) continue;
+        // Old versions also cooled down invalid keys for 24h. Revalidate those
+        // once instead of presenting an unverified quota warning forever.
+        if (record.cooldownKind === 'capacity' && (record.cooldownUntil || 0) > Date.now()) continue;
         try { candidates.push({ id: owner, key: this.decrypt(record), owner }); }
         catch { /* A corrupt or rotated-secret record is never used. */ }
       }
@@ -137,9 +147,9 @@ export class GeminiKeyVault {
     }
   }
 
-  recordQuota(candidate: GeminiKeyCandidate, daily: boolean): void {
+  recordQuota(candidate: GeminiKeyCandidate, daily: boolean, retryAfterSeconds?: number): void {
     this.lastUsed.set(candidate.id, Date.now());
-    const cooldownUntil = Date.now() + (daily ? 24 * 60 * 60_000 : 5 * 60_000);
+    const cooldownUntil = Date.now() + (retryAfterSeconds !== undefined ? retryAfterSeconds * 1000 : daily ? 24 * 60 * 60_000 : 5 * 60_000);
     if (candidate.id === 'server') this.serverCooldown.until = cooldownUntil;
     const usage = this.sessionUsage.get(candidate.id) || { tokens: 0, requests: 0, quotaHits: 0 };
     usage.quotaHits += 1;
@@ -148,6 +158,7 @@ export class GeminiKeyVault {
       const record = this.records.get(candidate.id);
       if (record) {
         record.cooldownUntil = cooldownUntil;
+        record.cooldownKind = 'capacity';
         const next = record.usage || { tokens: 0, requests: 0, quotaHits: 0 };
         next.quotaHits += 1;
         record.usage = next;
@@ -155,6 +166,7 @@ export class GeminiKeyVault {
       try {
         void this.store().doc(candidate.id).update({
           cooldownUntil,
+          cooldownKind: 'capacity',
           'usage.quotaHits': admin.firestore.FieldValue.increment(1),
         }).catch(() => {});
       } catch { /* Keep the in-memory cooldown if Firestore is unavailable. */ }

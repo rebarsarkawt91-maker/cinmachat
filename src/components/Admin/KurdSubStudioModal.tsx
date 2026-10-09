@@ -634,8 +634,9 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
       setGeminiVaultStatus(null);
     }
     if (!response.ok || !Array.isArray(result?.cues) || result.cues.length !== batch.length) {
-      const error = new Error(result?.error || "Gemini translation failed") as Error & { status?: number };
+      const error = new Error(result?.error || "Gemini translation failed") as Error & { status?: number; retryable?: boolean };
       error.status = response.status;
+      error.retryable = result.retryable;
       throw error;
     }
     const translated = (result.cues as Array<{ index: number; text: string }>).map((cue) => ({
@@ -678,6 +679,7 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
         },
         onRetry: (batch, attempt) => setMessage(`دووبارە هەوڵدانەوەی ${batch.length} ڕستە (${attempt}/3)…`),
         shouldRetry: (error) => {
+          if ((error as { retryable?: boolean })?.retryable === false) return false;
           const status = (error as { status?: number })?.status;
           return !/Configure GEMINI_API_KEY|not configured/i.test(String((error as Error)?.message || "")) &&
             (status === undefined || status === 424 || status === 429 || status >= 500);
