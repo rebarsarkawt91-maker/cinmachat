@@ -20,6 +20,7 @@ import { GeminiKeyVault } from './geminiKeyVault';
 import { classifyGeminiFailure } from './geminiFailure';
 import { compressedAssets } from './staticAssetCompression';
 import { compactCatalogMovie } from './catalogDelivery';
+import { loadCatalogBackup } from './catalogBackup';
 import { createStudioAdminSessions } from './studioAdminSession';
 import { stripSubtitleHtmlTags } from './src/lib/subtitleText.js';
 import { hasNonSoraniLetters } from './src/lib/studioUntranslatedCues.js';
@@ -3115,6 +3116,9 @@ const syncFirestoreMovies = async (deletedIds: string[] = []): Promise<void> => 
 const CATALOG_READY_TIMEOUT_MS = 8000;
 let catalogReadyPromise: Promise<void> | null = null;
 const waitForCatalogIfWarming = async (): Promise<void> => {
+  // A packaged recovery catalog is immediately usable; don't hold first paint
+  // behind a remote quota error. The asynchronous mirror still refreshes it.
+  if (packagedCatalogBackup.length) return;
   if (!catalogReadyPromise) return;
   const pending = catalogReadyPromise;
   catalogReadyPromise = null;
@@ -3277,6 +3281,7 @@ const materializePosterAsset = (value: any): any => {
 // admin-controlled source of truth.
 // Hard-exclude movies that an admin deleted so no stale copy (manual list,
 // in-memory mirror, or a leftover Firestore doc) can resurface in /api/movies.
+const packagedCatalogBackup = loadCatalogBackup();
 const mergeCatalogWithFirestore = (local: any[], deletedIds: string[] = []): any[] => {
   const merged = new Map<string, any>();
   const deleted = new Set<string>(Array.isArray(deletedIds) ? deletedIds : []);
@@ -3301,6 +3306,9 @@ const mergeCatalogWithFirestore = (local: any[], deletedIds: string[] = []): any
     };
     merged.set(movie.id, movie);
   };
+  // Lowest priority durable recovery seed for cold starts during provider outages.
+  // Local/admin changes and Firestore always override it; deletions still win.
+  for (const movie of packagedCatalogBackup) store(movie);
   for (const movie of local) store(movie);
   for (const movie of Object.values(firestoreMoviesCache)) store(movie);
 
@@ -3309,6 +3317,7 @@ const mergeCatalogWithFirestore = (local: any[], deletedIds: string[] = []): any
   // duplicate; never the other way around.
   const combined = Array.from(merged.values());
   const firestoreIds = new Set(Object.keys(firestoreMoviesCache));
+  const localIds = new Set(local.map(movie => movie?.id));
   const imdbOwner = new Map<string, string>();
   const dropIds = new Set<string>();
   for (const movie of combined) {
@@ -3326,6 +3335,9 @@ const mergeCatalogWithFirestore = (local: any[], deletedIds: string[] = []): any
       imdbOwner.set(imdb, movie.id);
     } else if (ownerIsFirestore && !movieIsFirestore) {
       dropIds.add(movie.id);
+    } else if (!movieIsFirestore && localIds.has(movie.id) && !localIds.has(owner)) {
+      dropIds.add(owner);
+      imdbOwner.set(imdb, movie.id);
     } else {
       dropIds.add(movie.id);
     }
