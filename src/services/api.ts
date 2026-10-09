@@ -3,7 +3,7 @@
  */
 
 import { resolveApiUrl } from "./backendConfig";
-import { firstCatalog } from "../lib/catalogStartup";
+import { firstCatalog, retryCatalog } from "../lib/catalogStartup";
 
 export { resolveApiUrl };
 
@@ -216,7 +216,19 @@ export const api = {
       delete (window as any).__cinemaCatalogRequest;
       if (onFresh) {
         return firstCatalog(
-          Promise.resolve(startup).then(data => Array.isArray(data?.results) ? data.results : []),
+          Promise.resolve(startup).then(async data => {
+            if (Array.isArray(data?.results) && data.results.some((movie: any) => movie?.id && movie.id !== 'hero-promo')) return data.results;
+            return retryCatalog(async () => {
+              const controller = new AbortController();
+              const timer = setTimeout(() => controller.abort(), 60000);
+              try {
+                const response = await fetch(api.resolveApiUrl('/api/movies?view=catalog'), { cache: 'no-store', signal: controller.signal });
+                if (!response.ok) throw new Error(`Catalog HTTP ${response.status}`);
+                const payload = await response.json();
+                return Array.isArray(payload?.results) ? payload.results : [];
+              } finally { clearTimeout(timer); }
+            });
+          }),
           (window as any).__cinemaCatalogFallbackRequest || loadPublicCatalogFallback(),
           // Deliver after the caller paints its first result; a just-arriving
           // live response must not be overwritten by that older snapshot.
