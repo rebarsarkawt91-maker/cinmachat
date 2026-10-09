@@ -4,6 +4,10 @@
 
 import { resolveApiUrl } from "./backendConfig";
 import { firstCatalog, retryCatalog } from "../lib/catalogStartup";
+import { API_CATALOG_SESSION_KEY, FIRESTORE_CATALOG_SESSION_KEY, createSessionCatalog } from "../lib/sessionCatalog";
+
+const movieCatalogSession = createSessionCatalog(API_CATALOG_SESSION_KEY);
+const firestoreCatalogSession = createSessionCatalog(FIRESTORE_CATALOG_SESSION_KEY);
 
 export { resolveApiUrl };
 
@@ -12,11 +16,8 @@ export { resolveApiUrl };
 // admin catalog at release time and is only used when the API has no real
 // movies (the hero placeholder does not count as a movie).
 //
-// IMPORTANT: this module never reads or writes localStorage — the movie catalog
-// is derived from the live server/Firestore response, never from a per-browser
-// cache (which is what made the total count differ between browsers). The
-// fallback is fetched with an explicit revalidation so a stale copy can never be
-// served from the browser/SW caches either.
+// The complete response is shared in memory/sessionStorage. Persistent offline
+// recovery remains separate, and explicit admin refresh bypasses this cache.
 let publicCatalogFallback: any[] | null = null;
 
 const loadPublicCatalogFallback = async (): Promise<any[]> => {
@@ -210,7 +211,23 @@ export const api = {
     }
   },
 
-  async getMovies(onFresh?: (movies: any[]) => void) {
+  async getMovies(onFresh?: (movies: any[]) => void, force = false) {
+    // Bootstrap may contain a session seed; an explicit refresh must not reuse it.
+    if (force) delete (window as any).__cinemaCatalogRequest;
+    const movies = await movieCatalogSession.load(() => api.loadMovies(fresh => {
+      movieCatalogSession.remember(fresh);
+      onFresh?.(fresh);
+    }), force);
+    onFresh?.(movies);
+    return movies;
+  },
+
+  // All catalog consumers share the same one-shot Firestore read per session.
+  async getFirestoreMovies(loader: () => Promise<any[]>, force = false) {
+    return firestoreCatalogSession.load(loader, force);
+  },
+
+  async loadMovies(onFresh?: (movies: any[]) => void) {
     const startup = (window as any).__cinemaCatalogRequest;
     if (startup) {
       delete (window as any).__cinemaCatalogRequest;
@@ -280,16 +297,8 @@ export const api = {
   // Lightweight live-metrics poll (liveViewers + likes). Uses a plain GET so the
   // 30s card-refresh cycle never gets stuck in baseFetch's retry/backoff loop.
   async getMoviesLive() {
-    try {
-      const res = await fetch(api.resolveApiUrl('/api/movies?view=catalog'), {
-        headers: { 'Accept': 'application/json' }
-      });
-      if (!res.ok) return [];
-      const data = await res.json();
-      return data.results || [];
-    } catch (error) {
-      return [];
-    }
+    // Viewer/like polling uses getLiveStats; it must not reload all movie docs.
+    return api.getMovies();
   },
 
   // Bulk live metrics for arbitrary movie ids (Firestore movies included). The

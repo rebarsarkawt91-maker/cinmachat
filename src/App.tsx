@@ -5257,8 +5257,11 @@ const BroadcastControlModule = () => {
   // Movie catalogue straight from the durable Firestore movies collection.
   const fetchCatalogMovies = async () => {
     try {
-      const snap = await getDocs(collection(db, "movies"));
-      setLocalMovies(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      const catalog = await api.getFirestoreMovies(async () => {
+        const snap = await getDocs(collection(db, "movies"));
+        return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      });
+      setLocalMovies(catalog);
     } catch (err) {
       console.warn("Could not load catalog movies from Firestore:", err);
     }
@@ -13404,7 +13407,7 @@ const handleWebkitEndFullscreen = () => {
   // admin post) and serves materialized /uploads poster URLs instead of inline
   // base64. The browser therefore avoids downloading the same heavy Firestore
   // documents a second time during page startup.
-  const fetchMovies = async () => {
+  const fetchMovies = async (force = false) => {
     if (moviesFetchInFlightRef.current) return;
     moviesFetchInFlightRef.current = true;
     let loadingReleased = false;
@@ -13419,7 +13422,7 @@ const handleWebkitEndFullscreen = () => {
       // lightweight response. Rendering that single authoritative list avoids
       // a second multi-megabyte browser read that used to reorder cards a few
       // seconds after first paint.
-      const results = await api.getMovies(applyMovies);
+      const results = await api.getMovies(applyMovies, force);
       const serverMovies = Array.isArray(results)
         ? results.filter((m: any) => m && m.id !== "hero-promo")
         : [];
@@ -13688,50 +13691,40 @@ const handleWebkitEndFullscreen = () => {
     setCatalogHydrated(true);
   };
 
-  const fetchAuthoritativeCatalog = async () => {
+  const fetchAuthoritativeCatalog = async (force = false) => {
     try {
-      const snapshot = await getDocs(query(collection(realDb, "movies")));
-      applyAuthoritativeCatalogSnapshot(snapshot);
+      const catalog = await api.getFirestoreMovies(async () => {
+        const snapshot = await getDocs(query(collection(realDb, "movies")));
+        return snapshot.docs.map(entry => {
+          const movie = entry.data();
+          return { ...movie, id: String(movie.id || entry.id) };
+        });
+      }, force);
+      applyAuthoritativeCatalogSnapshot({
+        forEach: (visit: (entry: any) => void) => catalog.forEach(movie => visit({ id: movie.id, data: () => movie })),
+      });
     } catch (err) {
       console.warn("[Movies] getDocs catalog fetch failed:", err);
     }
   };
 
-  // Keep new and edited Firestore movies visible immediately on every client.
-  // Cache snapshots may be stale, so only a complete server snapshot hydrates
-  // or replaces the catalog.
+  // One shared getDocs request per browser session, not a realtime listener.
+  // Navigation/remount/reload reuse the session cache, including quota errors.
   useEffect(() => {
-    let cancelled = false;
-    const unsubscribe = onSnapshot(
-      query(collection(realDb, "movies")),
-      { includeMetadataChanges: true },
-      (snapshot) => {
-        if (cancelled || snapshot.metadata.fromCache) return;
-        applyAuthoritativeCatalogSnapshot(snapshot);
-      },
-      (error) => console.warn("[Movies] Firestore live update failed:", error),
-    );
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
+    void fetchAuthoritativeCatalog();
   }, []);
 
   // Admin mutations (post/edit/delete) re-run BOTH refreshes so the change is
   // durable: the server mirror merges it into /api/movies and this one-shot
   // getDocs re-populates `nonDramaMovies` from the now-current Firestore.
   const refreshCatalog = () => {
-    void fetchMovies();
-    void fetchAuthoritativeCatalog();
+    void fetchMovies(true);
+    void fetchAuthoritativeCatalog(true);
   };
 
   useEffect(() => {
     fetchMovies();
-    // Firestore onSnapshot already streams real-time movie updates, so this
-    // refresh only exists as a slow periodic resync + server merge. 2 minutes
-    // keeps the grid light instead of forcing a full re-render every minute.
-    const interval = setInterval(fetchMovies, 120000);
-    return () => clearInterval(interval);
+    // No periodic full-catalog reads. Admin refresh/mutations are explicit.
   }, []);
 
   const [trendingMovies, setTrendingMovies] = useState<Movie[]>([]);
@@ -17925,7 +17918,7 @@ const handleWebkitEndFullscreen = () => {
                         <SafeRender fallbackName="Admin Categories">
                           <CategoryModule
                             movies={movies}
-                            onRefresh={fetchMovies}
+                            onRefresh={() => fetchMovies(true)}
                           />
                         </SafeRender>
                       )}
@@ -17939,7 +17932,7 @@ const handleWebkitEndFullscreen = () => {
                             config={config}
                             onSyncNow={() => {
                               refreshCatalog();
-                              alert("سەرجەم ئامێرەکان دەستبەجێ ئەپدێت کرانەوە");
+                              alert("لیستی فیلمەکانی ئەم دانیشتنە نوێکرایەوە");
                             }} // Refresh all movies
                             onPost={async (movie: any) => {
                               try {
@@ -18042,7 +18035,7 @@ const trailerId = movie.trailerUrl
                                   setLastAddedMovie(postedMovie);
                                   // Backend success already confirms durable storage.
                                   // Confirm the background catalog after durable save.
-                                  void fetchAuthoritativeCatalog();
+                                  refreshCatalog();
                                 } else {
                                   const errData = await res.json();
                                   throw new Error(

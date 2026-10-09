@@ -5,6 +5,16 @@
     <script>
       // Start alongside the bundle, without a blocking script round trip.
       (function () {
+        // Match API_CATALOG_SESSION_KEY: reloads must not refetch the catalog.
+        try {
+          var cached = JSON.parse(sessionStorage.getItem('cinemachat:api-catalog-session:v1') || 'null');
+          if (cached && cached.version === 1 && Array.isArray(cached.results) && cached.results.length) {
+            window.__cinemaCatalogSeed = cached.results;
+            window.__cinemaCatalogRequest = Promise.resolve({ results: cached.results });
+            window.__cinemaCatalogFallbackRequest = Promise.resolve(cached.results);
+            return;
+          }
+        } catch (error) { /* Storage can be disabled. Keep the normal bootstrap. */ }
         var controller = new AbortController();
         var timer = setTimeout(function () { controller.abort(); }, 20000);
         // A slow or quota-limited API must not delay the first catalog paint.
