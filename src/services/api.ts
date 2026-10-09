@@ -182,6 +182,33 @@ export const api = {
     }
   },
 
+  // Definitive, non-streaming total for the "سەرجەم فیلمەکان" header counter.
+  // Returns the exact non-drama count computed server-side from the FULL merged
+  // catalog, so the header can render the final number ("83 فیلم") at second 0
+  // — independent of the progressive client Firestore streaming that made the
+  // count climb 48/51 → 83. Returns null when the endpoint is unreachable; the
+  // caller then falls back to the hydrated-list length while showing a skeleton.
+  async getMovieCount() {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    try {
+      const response = await fetch(api.resolveApiUrl('/api/movies/count'), {
+        headers: { 'Accept': 'application/json' },
+        cache: 'no-store',
+        signal: controller.signal
+      });
+      if (!response.ok) return null;
+      const data = await response.json();
+      const count = Number(data?.count);
+      return Number.isFinite(count) && count >= 0 ? count : null;
+    } catch (error) {
+      console.warn('Movie count fetch skipped:', error);
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  },
+
   async getMovies() {
     // Fetch the COMPLETE, unpaginated catalog in a single request. A generous
     // safety abort is kept only so a genuinely dead server cannot hang first

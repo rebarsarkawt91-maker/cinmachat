@@ -3057,6 +3057,11 @@ const loadFirestoreMovies = async (): Promise<any[]> => {
   return movies;
 };
 
+// True once a Firestore catalog sync pass has fully completed. The count
+// endpoint uses this to refuse to answer with a partial (still-warming) number:
+// it forces one complete re-read instead, so the total is always definitive.
+let catalogMirrorReady = false;
+
 // Mirror the Firestore catalog into the server cache. Purely additive: it can
 // never remove a locally-managed movie, and a sync failure is non-fatal.
 // Never re-seed a movie that an admin explicitly deleted (db.deletedIds is the
@@ -3072,6 +3077,7 @@ const syncFirestoreMovies = async (deletedIds: string[] = []): Promise<void> => 
         firestoreMoviesCache[movie.id] = movie;
       }
     }
+    catalogMirrorReady = true;
     console.log(
       `[Movies] Firestore catalog synced: ${remote.length} movie(s) in server cache.`
     );
@@ -3307,6 +3313,60 @@ const mergeCatalogWithFirestore = (local: any[], deletedIds: string[] = []): any
   return combined.filter(
     (m) => m && String(m.title || '').trim() && !dropIds.has(m.id)
   );
+};
+
+// Drama detection — MIRROR of the client's `isDramaMovie()` in src/App.tsx.
+// The two must stay identical: legacy movies predate postType, so admission to a
+// Drama Room is decided by postType/type/labels/title heuristics, not by a
+// single boolean field that older docs may be missing.
+const isDramaMovie = (m: any): boolean => {
+  const postType = String(m?.postType || '').trim().toLowerCase();
+  if (postType === 'دراما') return true;
+  if (postType === 'فیلم') return false;
+  const type = String(m?.type || '').trim().toLowerCase();
+  if (['drama', 'series', 'episode'].includes(type)) return true;
+  const labels = [m?.category, ...(Array.isArray(m?.tags) ? m.tags : [])];
+  if (
+    labels.some((label: any) => {
+      const value = String(label || '').trim().toLowerCase();
+      return value === 'دراما' || value === 'drama';
+    })
+  ) {
+    return true;
+  }
+  return /(?:دراما|ئەڵقە|ئه‌ڵقه|episode|\bep\.?\s*\d+)/iu.test(
+    String(m?.title || ''),
+  );
+};
+
+// Definitive non-drama movie total for the "سەرجەم فیلمەکان" header counter.
+// Mirrors the client's final filter (App.tsx `nonDramaMovies`) exactly:
+//   • hero-promo placeholder never counts,
+//   • dramas (isDrama flag OR isDramaMovie() heuristic) are excluded,
+//   • dramas already assigned to a Drama Room are excluded too.
+// This is what locks the header to the full total on every browser the moment
+// /api/movies/count responds — independent of the client's Firestore streaming.
+// `local` and `store` are the route-handler-scoped moviesCache and db object.
+const computeNonDramaMovieCount = (
+  local: any[],
+  store: { deletedIds: string[]; dramaRooms?: Record<string, any> },
+): number => {
+  const merged = mergeCatalogWithFirestore(local, store.deletedIds);
+  const assigned = new Set<string>();
+  for (const rawRoom of Object.values(store.dramaRooms || {})) {
+    const room = rawRoom as any;
+    if (!room || !Array.isArray(room.dramas)) continue;
+    for (const id of room.dramas) if (id) assigned.add(String(id));
+  }
+  let count = 0;
+  for (const movie of merged) {
+    if (!movie || !movie.id || movie.id === 'hero-promo') continue;
+    if (movie.isDrama) continue;
+    if (isDramaMovie(movie)) continue;
+    if (assigned.has(String(movie.id))) continue;
+    count++;
+  }
+  return count;
 };
 
 // ---------------------------------------------------------------------------
@@ -12745,6 +12805,39 @@ async function startServer() {
       });
     } catch (err) {
       console.error('CRITICAL ERROR in /api/movies:', err);
+      res.status(500).json({ status: 'error', error: 'Internal Server Error' });
+    }
+  });
+
+  // Definitive single-number movie total for the "سەرجەم فیلمەکان" header counter.
+  // Tiny, static, non-streaming: the client fetches this ONCE at launch and locks
+  // it, so every browser instantly renders the same full total (no 48 → 83
+  // progressive jump while the live list streams in). Must be registered before
+  // any /api/movies/:movieId GET routes so a fixed /count segment is not
+  // swallowed as a movie id.
+  app.get('/api/movies/count', async (req, res) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.setHeader('Surrogate-Control', 'no-store');
+      await waitForCatalogIfWarming();
+      // A cold boot can pass the bounded wait while the mirror is still warming,
+      // which would return a partial total. Force one complete re-read so the
+      // count is always the full, definitive number (the catalog is small enough
+      // for this to finish in one REST page; bounded so a dead Firestore never
+      // hangs the request — the client falls back to the hydrated-list count).
+      if (!catalogMirrorReady) {
+        await Promise.race([
+          syncFirestoreMovies(db.deletedIds),
+          new Promise<void>((resolve) => setTimeout(resolve, 15_000)),
+        ]);
+      }
+      const count = computeNonDramaMovieCount(moviesCache, db);
+      console.log(`[${new Date().toISOString()}] /api/movies/count => ${count}`);
+      res.json({ status: 'ok', count });
+    } catch (err) {
+      console.error('CRITICAL ERROR in /api/movies/count:', err);
       res.status(500).json({ status: 'error', error: 'Internal Server Error' });
     }
   });

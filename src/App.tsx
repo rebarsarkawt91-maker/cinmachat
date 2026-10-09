@@ -7452,6 +7452,13 @@ export default function App() {
   // render a skeleton instead of a partial seed count that would otherwise jump
   // (e.g. 48 → 93) once the rest of the collection streams in on slow devices.
   const [catalogHydrated, setCatalogHydrated] = useState(false);
+  // Definitive total locked from the server ONCE at launch (`/api/movies/count`)
+  // — never derived from the progressively-streaming catalog array. Once set, it
+  // stays static for the session, so the "سەرجەم فیلمەکان" counter renders the
+  // FINAL number ("83 فیلم") immediately and can never climb while Firestore
+  // hydrates. Null => no server count yet; the counter shows a skeleton and
+  // falls back to the hydrated-list length only when the snapshot is complete.
+  const [lockedMovieCount, setLockedMovieCount] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(initialMovieCatalogRef.current.length === 0);
 
   // Strict Welcome-screen deadline (Problem 6): the full-screen loader may only
@@ -7492,6 +7499,22 @@ export default function App() {
     const timer = window.setTimeout(() => setCatalogHydrated(true), CATALOG_HYDRATION_MAX_MS);
     return () => window.clearTimeout(timer);
   }, [catalogHydrated]);
+
+  // Lock the definitive total ONCE, in parallel with the catalog fetch, so the
+  // "سەرجەم فیلمەکان" header shows the final number from second 0 — before any
+  // streaming — and never re-derives it from the growing array.
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .getMovieCount()
+      .then((count) => {
+        if (!cancelled && count !== null) setLockedMovieCount(count);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     cacheMovieCatalog(movies);
@@ -13772,10 +13795,11 @@ const handleWebkitEndFullscreen = () => {
     return sortedMovies.slice(startIndex, startIndex + moviesPerPage);
   }, [sortedMovies, currentPage]);
 
-  // Authoritative counter for "سەرجەم فیلمەکان": counted AFTER the non-drama
-  // filter (the shared `nonDramaMovies` list defined above), so it can never
-  // include a drama row and matches the rendered grid on every browser.
-  const nonDramaMovieCount = nonDramaMovies.length;
+  // Authoritative counter for "سەرجەم فیلمەکان": LOCKED to the definitive total
+  // fetched once from the server, so it renders the FINAL number from second 0
+  // and can never climb as the live list streams in. Falls back to the hydrated
+  // non-drama count only when the server count is unavailable (endpoint down).
+  const nonDramaMovieCount = lockedMovieCount ?? nonDramaMovies.length;
 
   // Dedicated all-films page. This is display-only: it never mutates Drama
   // Rooms or their membership. Dramas stay in their dedicated Drama Rooms
@@ -15314,7 +15338,7 @@ const handleWebkitEndFullscreen = () => {
                           سەرجەم فیلمەکان
                         </h2>
                         <p className="mt-1 text-xs text-gray-500 kurdish-text">
-                          {catalogHydrated ? (
+                          {lockedMovieCount !== null || catalogHydrated ? (
                             `${nonDramaMovieCount} فیلم`
                           ) : (
                             <span
