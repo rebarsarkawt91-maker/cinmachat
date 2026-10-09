@@ -225,6 +225,23 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
   const [geminiVaultStatus, setGeminiVaultStatus] = useState<GeminiVaultStatus | null>(null);
   const [geminiVaultBusy, setGeminiVaultBusy] = useState(false);
   const [geminiVaultMessage, setGeminiVaultMessage] = useState("");
+  const [translationUnlockOpen, setTranslationUnlockOpen] = useState(false);
+  const translationUnlockResolve = useRef<((session: string) => void) | null>(null);
+  // Keep the translation action usable while preserving password verification
+  // for pooled keys. Resolve with the fresh token, not a stale React closure.
+  const requireTranslationSession = () => {
+    if (geminiKeySession) return Promise.resolve(geminiKeySession);
+    setGeminiVaultMessage("");
+    setTranslationUnlockOpen(true);
+    return new Promise<string>((resolve) => { translationUnlockResolve.current = resolve; });
+  };
+  const closeTranslationUnlock = () => {
+    translationUnlockResolve.current?.("");
+    translationUnlockResolve.current = null;
+    setTranslationUnlockOpen(false);
+    setGeminiAdminPassword("");
+  };
+  useEffect(() => () => { translationUnlockResolve.current?.(""); }, []);
   const [corruptCount, setCorruptCount] = useState(0);
   const [corruptBlocks, setCorruptBlocks] = useState<string[]>([]);
   const [restored, setRestored] = useState(false);
@@ -380,7 +397,13 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
       const result = await vaultRequest("unlock", { password: geminiAdminPassword });
       setGeminiAdminPassword("");
       setGeminiKeySession(result.geminiKeySession);
-      await refreshGeminiVault(result.geminiKeySession);
+      translationUnlockResolve.current?.(result.geminiKeySession);
+      translationUnlockResolve.current = null;
+      setTranslationUnlockOpen(false);
+      // Usage statistics must not block a successfully authenticated translation.
+      await refreshGeminiVault(result.geminiKeySession).catch(() => {
+        setGeminiVaultMessage("کردنەوە سەرکەوتوو بوو؛ ئامار ئێستا بەردەست نییە.");
+      });
     } catch (error: any) { setGeminiVaultMessage(error?.message || "ناتوانرێت کلیلی Gemini بکرێتەوە"); }
     finally { setGeminiVaultBusy(false); }
   };
@@ -581,7 +604,7 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
     }
   };
 
-  const translateBatch = async (batch: StudioCue[], signal: AbortSignal, retryUntranslated = false) => {
+  const translateBatch = async (batch: StudioCue[], signal: AbortSignal, retryUntranslated = false, session = geminiKeySession) => {
     const requestController = new AbortController();
     const abortFromParent = () => requestController.abort();
     if (signal.aborted) abortFromParent();
@@ -596,7 +619,7 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
         headers: { "Content-Type": "application/json", "X-Admin-Username": adminName },
         body: JSON.stringify({
           adminName,
-          geminiKeySession,
+          geminiKeySession: session,
           retryUntranslated,
           cues: batch.map((cue) => ({
             index: cue.index, start: cue.start, end: cue.end, text: stripSubtitleHtmlTags(cue.originalText),
@@ -632,6 +655,8 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
 
   const runStudioTranslation = async (pending: StudioCue[], retryUntranslated: boolean) => {
     if (!pending.length || translating || busy) return;
+    const session = await requireTranslationSession();
+    if (!session) return;
     pauseRequested.current = false;
     setTranslating(true);
     setTranslationStatus("running");
@@ -644,7 +669,7 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
       const outcome = await runResilientStudioBatches(pending, {
         signal: controller.signal,
         shouldPause: () => pauseRequested.current,
-        translate: (batch, signal) => translateBatch(batch, signal, retryUntranslated),
+        translate: (batch, signal) => translateBatch(batch, signal, retryUntranslated, session),
         onSuccess: (batch, result) => {
           const translatedByIndex = new Map(result.map((item) => [item.index, item.text]));
           const sourceByIndex = new Map(batch.map((cue) => [cue.index, cue.originalText]));
@@ -690,18 +715,16 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
   };
 
   const translateToSorani = async (singleCue?: StudioCue) => {
-    if (!geminiKeySession) {
-      setMessage("سەرەتا بە پاسۆردی ئەدمین بەشی کلیلی Gemini بکەرەوە.");
-      return;
-    }
     if (singleCue) {
       if (!singleCue.originalText.trim()) {
         setMessage("دەقی ئەم ڕستەیە بەتاڵە؛ سەرەتا دەقی سەرچاوە بنووسە.");
         return;
       }
+      const session = await requireTranslationSession();
+      if (!session) return;
       setSingleCueBusy(singleCue.id);
       try {
-        const result = await translateBatch([singleCue], new AbortController().signal, true);
+        const result = await translateBatch([singleCue], new AbortController().signal, true, session);
         setCues((current) => current.map((cue) =>
           cue.id === singleCue.id ? { ...cue, translatedText: result[0].text } : cue));
         setMessage("ئەم ڕستەیە دووبارە وەرگێڕدرا.");
@@ -870,7 +893,7 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
               ⚠️ {untranslatedCues.length} ڕستەی ئینگلیزی نەبووە بە کوردی
             </span>}
             {untranslatedCues.length > 0 && <button type="button" onClick={() => void retranslateUntranslated()}
-              disabled={busy || translating || !!singleCueBusy || !geminiKeySession}
+              disabled={busy || translating || !!singleCueBusy || translationUnlockOpen}
               className="rounded-lg border border-purple-400/50 bg-purple-600 px-3 py-1.5 text-xs font-black text-white hover:bg-purple-500 disabled:opacity-50 kurdish-text">
               ✨ وەرگێڕانی ڕستە وەرنەگێڕدراوەکان (Retranslate Untranslated Cues)
             </button>}
@@ -903,7 +926,7 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
                         rows={2} dir="rtl" placeholder="وەرگێڕانی سۆرانی…" className="mt-1 w-full resize-y rounded-lg border border-white/10 bg-black/25 p-2 text-sm text-white outline-none focus:border-amber-400 kurdish-text" />
                       {warning && <span className="mt-1 inline-flex items-center gap-1 rounded bg-amber-400/10 px-2 py-0.5 text-[10px] text-amber-200"><AlertTriangle className="h-3 w-3" />{!cue.originalText.trim() ? "دەقی سەرچاوە بەتاڵە" : "وەرگێڕان نەکراوە"}</span>}
                     </label>
-                    <button type="button" onClick={() => void translateToSorani(cue)} disabled={busy || translating || !!singleCueBusy || !cue.originalText.trim() || !geminiKeySession}
+                    <button type="button" onClick={() => void translateToSorani(cue)} disabled={busy || translating || !!singleCueBusy || !cue.originalText.trim() || translationUnlockOpen}
                       className="h-fit rounded-lg border border-amber-400/30 px-2 py-2 text-amber-200 hover:bg-amber-400/10 disabled:opacity-50" title="وەرگێڕانی دووبارەی ئەم ڕستەیە" aria-label={"وەرگێڕانی دووبارەی ڕستە " + cue.index}>
                       {singleCueBusy === cue.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
                     </button>
@@ -954,7 +977,7 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
                 وەرگێڕدراوە: {translating ? progress.done : completedCount} / {cues.length} دێڕ
                 <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-amber-400 transition-all" style={{ width: String(cues.length ? Math.round(100 * (translating ? progress.done : completedCount) / cues.length) : 0) + "%" }} /></div>
               </div>
-              <button type="button" disabled={busy || translating || !cues.length || !untranslatedCues.length || !geminiKeySession}
+              <button type="button" disabled={busy || translating || !!singleCueBusy || !cues.length || !untranslatedCues.length || translationUnlockOpen}
                 onClick={() => void translateToSorani()} className="flex w-full items-center justify-center gap-2 rounded-xl bg-amber-400 px-3 py-3 text-sm font-black text-black disabled:opacity-50 kurdish-text">
                 {translationStatus === "paused" || translationStatus === "failed" ? <RotateCcw className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}
                 {translationStatus === "paused" ? "بەردەوامبوون" : translationStatus === "failed" ? "دووبارە هەوڵدانەوە" : "وەرگێڕانی سۆرانی"}
@@ -972,6 +995,23 @@ export default function KurdSubStudioModal({ movies, adminName, onClose, onApply
             </aside>
           </section>
           {message && <p role="alert" className="rounded-xl border border-amber-400/20 bg-amber-400/10 p-3 text-sm font-bold text-amber-100 kurdish-text">{message}</p>}
+          {translationUnlockOpen && <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/80 p-4">
+            <form role="dialog" aria-modal="true" aria-labelledby="translation-unlock-title"
+              onSubmit={(event) => { event.preventDefault(); if (!geminiVaultBusy) void unlockGeminiVault(); }}
+              onKeyDown={(event) => { if (event.key === "Escape" && !geminiVaultBusy) closeTranslationUnlock(); }}
+              className="w-full max-w-sm space-y-4 rounded-2xl border border-amber-400/30 bg-slate-950 p-5 text-white shadow-2xl kurdish-text">
+              <h3 id="translation-unlock-title" className="font-black text-amber-300">دەستپێکردنی وەرگێڕانی سۆرانی</h3>
+              <p className="text-sm text-slate-300">پاسۆردی ئەدمینەکەت بنووسە بۆ بەکارهێنانی کلیلە بەردەستەکان. پێویست بە زیادکردنی کلیلی نوێ نییە.</p>
+              <input autoFocus required type="password" autoComplete="current-password" aria-label="پاسۆردی ئەدمین بۆ وەرگێڕان"
+                value={geminiAdminPassword} onChange={(event) => setGeminiAdminPassword(event.target.value)}
+                className="w-full rounded-xl border border-white/20 bg-black/40 px-3 py-2 outline-none focus:border-amber-400" />
+              {geminiVaultMessage && <p role="alert" className="text-sm text-amber-200">{geminiVaultMessage}</p>}
+              <div className="flex gap-2">
+                <button type="submit" disabled={geminiVaultBusy || !geminiAdminPassword} className="flex-1 rounded-xl bg-amber-400 px-3 py-2 font-bold text-black disabled:opacity-50">{geminiVaultBusy ? "پشتڕاستکردنەوە…" : "دەستپێکردنی وەرگێڕان"}</button>
+                <button type="button" disabled={geminiVaultBusy} onClick={closeTranslationUnlock} className="rounded-xl border border-white/20 px-3 py-2">پاشگەزبوونەوە</button>
+              </div>
+            </form>
+          </div>}
           {successToast && <div role="status" aria-live="polite" className="fixed bottom-6 right-6 z-[100] max-w-sm rounded-xl border border-emerald-400/40 bg-emerald-950 px-4 py-3 text-sm font-bold text-emerald-100 shadow-2xl kurdish-text">{successToast}</div>}
         </div>
       </div>
