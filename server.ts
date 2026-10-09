@@ -19,6 +19,7 @@ import { generateSubtitle, translateSrtViaGemini } from './features/subtitles/su
 import { GeminiKeyVault } from './geminiKeyVault';
 import { classifyGeminiFailure } from './geminiFailure';
 import { compressedAssets } from './staticAssetCompression';
+import { compactCatalogMovie } from './catalogDelivery';
 import { createStudioAdminSessions } from './studioAdminSession';
 import { stripSubtitleHtmlTags } from './src/lib/subtitleText.js';
 import { hasNonSoraniLetters } from './src/lib/studioUntranslatedCues.js';
@@ -12823,7 +12824,9 @@ async function startServer() {
       console.log(`[${new Date().toISOString()}] SUCCESS: Returning ${uniqueResults.length} movies from local DB`);
       res.json({
         status: 'ok',
-        results: uniqueResults,
+        results: req.query.view === 'catalog'
+          ? uniqueResults.map(movie => compactCatalogMovie(movie, path.join(process.cwd(), 'uploads')))
+          : uniqueResults,
         topLiveId: getTopLiveMovieId(),
       });
     } catch (err) {
@@ -12863,6 +12866,15 @@ async function startServer() {
       console.error('CRITICAL ERROR in /api/movies/count:', err);
       res.status(500).json({ status: 'error', error: 'Internal Server Error' });
     }
+  });
+
+  // Load the original full record only when a movie is opened or edited.
+  app.get('/api/movies/:movieId/details', async (req, res) => {
+    await waitForCatalogIfWarming();
+    const movie = mergeCatalogWithFirestore(moviesCache, db.deletedIds).find(movie => movie.id === req.params.movieId);
+    res.setHeader('Cache-Control', 'no-store');
+    if (!movie) return res.status(404).json({ error: 'Movie not found' });
+    res.json({ movie: enrichMovie(movie) });
   });
 
   // Reels card metadata — served from the memory-cached mirror of the Firestore

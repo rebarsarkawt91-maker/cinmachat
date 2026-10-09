@@ -22,7 +22,7 @@
             }).catch(function () { resolve([]); }).finally(function () { clearTimeout(snapshotTimer); });
           }, 1000);
         });
-        window.__cinemaCatalogRequest = fetch('/api/movies', {
+        window.__cinemaCatalogRequest = fetch('/api/movies?view=catalog', {
           headers: { Accept: 'application/json' }, cache: 'no-store', signal: controller.signal
         }).then(function (response) {
           return response.ok ? response.json() : null;

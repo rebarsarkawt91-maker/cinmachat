@@ -105,7 +105,8 @@ import { ROOM_SUBTITLE_LANGUAGES, loadRoomSubtitleLanguage } from "./lib/roomSub
 import { api } from "./services/api";
 import { useI18n } from "./i18n";
 import { lazyWithRetry } from "./utils/lazyWithRetry";
-import { providerAction, setNativePlayerMuted, enterIOSVideoFullscreen } from "./utils/playerControls";
+import { providerAction, setNativePlayerMuted, enterIOSVideoFullscreen, enterPlayerElementFullscreen } from "./utils/playerControls";
+import { cacheableCatalogMovie } from "./lib/catalogCache";
 
 const MOVIE_URL_PARAM = "movieId";
 const SITE_ORIGIN = "https://www.cinamachat.com";
@@ -355,7 +356,7 @@ const cacheMovieCatalog = (movies: Movie[]) => {
   try {
     localStorage.setItem(
       MOVIE_CATALOG_CACHE_KEY,
-      JSON.stringify({ savedAt: Date.now(), movies }),
+      JSON.stringify({ savedAt: Date.now(), movies: movies.map(cacheableCatalogMovie) }),
     );
   } catch {
     // Storage can be unavailable in private mode; live loading still works.
@@ -7925,7 +7926,7 @@ export default function App() {
   useEffect(() => {
     const handleFsChange = () => {
       const nativeVideo = modalPlayerRef.current?.querySelector<HTMLVideoElement>("video") as (HTMLVideoElement & { webkitDisplayingFullscreen?: boolean }) | null;
-      const nativeFullscreen = !!document.fullscreenElement || !!nativeVideo?.webkitDisplayingFullscreen;
+      const nativeFullscreen = !!document.fullscreenElement || !!(document as any).webkitFullscreenElement || !!nativeVideo?.webkitDisplayingFullscreen;
       if (nativeFullscreen && iosFullscreenFallbackTimerRef.current) {
         clearTimeout(iosFullscreenFallbackTimerRef.current);
         iosFullscreenFallbackTimerRef.current = null;
@@ -8731,6 +8732,11 @@ const handleWebkitEndFullscreen = () => {
     const container = modalPlayerRef.current;
     if (!container) return;
     if (isIOSWebKitDevice()) {
+      if (document.fullscreenElement || (document as any).webkitFullscreenElement) {
+        if (document.exitFullscreen) void document.exitFullscreen().catch(() => {});
+        else (document as any).webkitExitFullscreen?.();
+        return;
+      }
       // Resolve the actual <video> element instance. Prefer the captured ref
       // (HLS / direct players register it), then fall back to the first live
       // <video> inside the player container so the call is never skipped.
@@ -8795,9 +8801,11 @@ const handleWebkitEndFullscreen = () => {
 
       // FALLBACK: webkitEnterFullscreen unavailable or blocked. Fill the
       // viewport with the container so our custom controls remain reachable.
-      container.classList.add("ios-fullscreen-fallback");
-      setIOSForcedFullscreen(true);
-      setIsIframeFullscreen(true);
+      enterPlayerElementFullscreen(movieModalRef.current || container, () => {
+        container.classList.add("ios-fullscreen-fallback");
+        setIOSForcedFullscreen(true);
+        setIsIframeFullscreen(true);
+      });
       return;
     }
 
@@ -12781,6 +12789,18 @@ const handleWebkitEndFullscreen = () => {
   const SYSTEM_ADMIN_PASS = "1223344";
   const [adminTab, setAdminTab] = useState<string>("overview");
   const [movieBeingEdited, setMovieBeingEdited] = useState<any | null>(null);
+  // Compact list responses defer full cue text until a movie is actually opened.
+  useEffect(() => {
+    const target = (movieBeingEdited || selectedMovie) as any;
+    if (!target?.__catalogDetailsRequired) return;
+    let cancelled = false;
+    void api.getMovieDetails(target.id).then(movie => {
+      if (cancelled || !movie) return;
+      setSelectedMovie(previous => previous?.id === movie.id ? movie : previous);
+      setMovieBeingEdited((previous: any) => previous?.id === movie.id ? movie : previous);
+    }).catch(error => console.warn('[Movies] Deferred details unavailable:', error));
+    return () => { cancelled = true; };
+  }, [selectedMovie?.id, movieBeingEdited?.id]);
   const [showKurdSubStudio, setShowKurdSubStudio] = useState(false);
 
   // Movie metadata editing is available to the owner plus the delegated
@@ -13788,7 +13808,8 @@ const handleWebkitEndFullscreen = () => {
   // fetched once from the server, so it renders the FINAL number from second 0
   // and can never climb as the live list streams in. Falls back to the hydrated
   // non-drama count only when the server count is unavailable (endpoint down).
-  const nonDramaMovieCount = lockedMovieCount ?? nonDramaMovies.length;
+  // Once hydrated, reflect the actual visible catalog rather than a stale count.
+  const nonDramaMovieCount = catalogHydrated ? nonDramaMovies.length : (lockedMovieCount ?? 0);
 
   // Dedicated all-films page. This is display-only: it never mutates Drama
   // Rooms or their membership. Dramas stay in their dedicated Drama Rooms

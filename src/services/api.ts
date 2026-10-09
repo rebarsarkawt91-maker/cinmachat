@@ -238,7 +238,7 @@ export const api = {
     try {
       // The public catalog also comes from Firestore. Do not make the first
       // paint wait through baseFetch's long cold-server retry sequence.
-      const response = await fetch(api.resolveApiUrl('/api/movies'), {
+      const response = await fetch(api.resolveApiUrl(onFresh ? '/api/movies?view=catalog' : '/api/movies'), {
         headers: { 'Accept': 'application/json' },
         // Never let a browser HTTP cache serve a stale/partial catalog: the
         // server already marks this endpoint no-store, this reinforces it.
@@ -258,11 +258,18 @@ export const api = {
     }
   },
 
+  // Deferred full movie data retains original subtitle content for editing.
+  async getMovieDetails(id: string) {
+    const response = await fetch(api.resolveApiUrl(`/api/movies/${encodeURIComponent(id)}/details`), { cache: 'no-store' });
+    if (!response.ok) throw new Error(`Movie details HTTP ${response.status}`);
+    return (await response.json()).movie;
+  },
+
   // Lightweight live-metrics poll (liveViewers + likes). Uses a plain GET so the
   // 30s card-refresh cycle never gets stuck in baseFetch's retry/backoff loop.
   async getMoviesLive() {
     try {
-      const res = await fetch(api.resolveApiUrl('/api/movies'), {
+      const res = await fetch(api.resolveApiUrl('/api/movies?view=catalog'), {
         headers: { 'Accept': 'application/json' }
       });
       if (!res.ok) return [];

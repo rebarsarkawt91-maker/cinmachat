@@ -18,10 +18,25 @@ type IOSVideo = HTMLVideoElement & {
 
 /** Must run synchronously inside the button's user gesture. */
 export function enterIOSVideoFullscreen(video: IOSVideo | null): boolean {
-  if (!video || !video.isConnected || video.webkitSupportsFullscreen === false) return false;
-  try {
-    if (video.webkitEnterFullscreen) { video.webkitEnterFullscreen(); return true; }
-    if (video.webkitSetPresentationMode) { video.webkitSetPresentationMode('fullscreen'); return true; }
-  } catch { /* Caller expands the whole player, including cross-origin embeds. */ }
+  if (!video || !video.isConnected) return false;
+  if (video.webkitSupportsFullscreen !== false && video.webkitEnterFullscreen) {
+    try { video.webkitEnterFullscreen(); return true; } catch { /* Try presentation mode next. */ }
+  }
+  if (video.webkitSetPresentationMode) {
+    try { video.webkitSetPresentationMode('fullscreen'); return true; } catch { /* Viewport fallback below. */ }
+  }
   return false;
+}
+
+/** Safari on iPad/newer WebKit may support element fullscreen for iframe players. */
+export function enterPlayerElementFullscreen(element: HTMLElement, fallback: () => void): void {
+  const webkit = element as HTMLElement & { webkitRequestFullscreen?: () => void };
+  try {
+    if (element.requestFullscreen) {
+      void element.requestFullscreen().catch(fallback);
+      return;
+    }
+    if (webkit.webkitRequestFullscreen) { webkit.webkitRequestFullscreen(); return; }
+  } catch { /* API present but rejected by this browser. */ }
+  fallback();
 }
