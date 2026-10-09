@@ -7447,6 +7447,11 @@ export default function App() {
   // and every session converges to the exact same set. This is the single source
   // of truth for the "سەرجەم فیلمەکان" counter and the main movie grid.
   const [firestoreCatalog, setFirestoreCatalog] = useState<Movie[]>([]);
+  // True only once the FIRST server-confirmed Firestore snapshot has populated
+  // the authoritative catalog. Until then the "سەرجەم فیلمەکان" counter and grid
+  // render a skeleton instead of a partial seed count that would otherwise jump
+  // (e.g. 48 → 93) once the rest of the collection streams in on slow devices.
+  const [catalogHydrated, setCatalogHydrated] = useState(false);
   const [isLoading, setIsLoading] = useState(initialMovieCatalogRef.current.length === 0);
 
   // Strict Welcome-screen deadline (Problem 6): the full-screen loader may only
@@ -7474,6 +7479,19 @@ export default function App() {
     }, WELCOME_MAX_MS);
     return () => window.clearTimeout(timer);
   }, [isLoading]);
+
+  // Firestore hydration deadline for the "سەرجەم فیلمەکان" counter. The counter
+  // must never render a partial seed count while the initial snapshot is still
+  // streaming in, so it stays on a skeleton until the first server-confirmed
+  // snapshot lands. This hard deadline unhooks the skeleton (revealing the
+  // shared server/API seed) if Firestore is genuinely unreachable, so the UI can
+  // never hang on a spinner.
+  const CATALOG_HYDRATION_MAX_MS = 6_000;
+  useEffect(() => {
+    if (catalogHydrated) return;
+    const timer = window.setTimeout(() => setCatalogHydrated(true), CATALOG_HYDRATION_MAX_MS);
+    return () => window.clearTimeout(timer);
+  }, [catalogHydrated]);
 
   useEffect(() => {
     cacheMovieCatalog(movies);
@@ -13245,10 +13263,6 @@ const handleWebkitEndFullscreen = () => {
     return Array.from(map.values());
   };
 
-  // Set once the first catalog list has painted, so the live Firestore listener
-  // can start right after real data lands instead of waiting on a fixed delay.
-  const catalogPaintedRef = useRef(false);
-
   // Apply a list to `movies`: dedupe, drop tombstones, sanitize stored URLs,
   // sort newest-first. This only ever sets state from real data — it never
   // clears the grid.
@@ -13321,10 +13335,6 @@ const handleWebkitEndFullscreen = () => {
       cacheMovieCatalog(normalized as Movie[]);
       return normalized;
     });
-    // First catalog paint complete: the live Firestore listener may connect now
-    // so genuinely-new (Firestore-only) movies mount right after this list lands
-    // instead of popping in seconds later.
-    catalogPaintedRef.current = true;
   };
 
   // Guard so the 60s refresh poll can never overlap with an in-flight fetch
@@ -13601,95 +13611,85 @@ const handleWebkitEndFullscreen = () => {
     );
   };
 
-  // Keep durable movie updates live without competing with the critical API
-  // request: connect once the first catalog list has painted (the API "wins"
-  // the initial grid), so Firestore-only movies mount right after that list
-  // lands — not seconds later. Fall back to a 10s cap so a genuinely dead API
-  // never blocks the live listener. Existing cards retain their order, so a
-  // snapshot cannot reshuffle the grid after the user has started browsing;
-  // genuinely new movies are prepended and changed fields are patched in place.
+  // Stream the durable movie catalog live and IMMEDIATELY — in parallel with the
+  // API fetch, never queued behind it — so the authoritative Firestore snapshot
+  // (and therefore the "سەرجەم فیلمەکان" counter) hydrates as fast as the
+  // network allows on slow devices. The API still paints the first grid; the
+  // snapshot then prepends genuinely-new movies and patches changed fields in
+  // place, so it can never reshuffle the grid after the user has started
+  // browsing. The catalog is only ever trusted once the SERVER confirms it.
   useEffect(() => {
     let cancelled = false;
-    let unsubscribe: (() => void) | null = null;
+    // Keep the live catalog unbounded: every movie document is streamed.
+    // Pagination is presentation-only and must never cap the stored catalog.
+    // No orderBy() here on purpose — Firestore silently DROPS documents that
+    // are missing the ordered field (legacy movies without `createdAt`),
+    // which is exactly what made the total count differ across browsers. The
+    // authoritative list is sorted client-side after the full snapshot.
+    const q = query(collection(realDb, "movies"));
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        if (cancelled) return;
+        const incoming: any[] = [];
+        snapshot.forEach((entry) => {
+          const data = entry.data() as any;
+          // Older movie documents sometimes use an auto-generated Firestore
+          // document id while keeping the public `manual-*` id in the data.
+          // Preserve that canonical id so cards are patched in place instead
+          // of briefly duplicating/reordering on every live snapshot.
+          incoming.push({ ...data, id: String(data?.id || entry.id) });
+        });
+        const durable = incoming.filter(
+          (movie) =>
+            movie?.id &&
+            String(movie.title || "").trim() &&
+            movie.id !== "hero-promo" &&
+            !deletedMovieIdsRef.current.has(movie.id),
+        );
 
-    const start = () => {
-      if (cancelled || unsubscribe) return;
-      // Keep the live catalog unbounded: every movie document is streamed.
-      // Pagination is presentation-only and must never cap the stored catalog.
-      // No orderBy() here on purpose — Firestore silently DROPS documents that
-      // are missing the ordered field (legacy movies without `createdAt`),
-      // which is exactly what made the total count differ across browsers. The
-      // authoritative list is sorted client-side after the full snapshot.
-      const q = query(collection(realDb, "movies"));
-      unsubscribe = onSnapshot(
-        q,
-        (snapshot) => {
-          if (cancelled) return;
-          const incoming: any[] = [];
-          snapshot.forEach((entry) => {
-            const data = entry.data() as any;
-            // Older movie documents sometimes use an auto-generated Firestore
-            // document id while keeping the public `manual-*` id in the data.
-            // Preserve that canonical id so cards are patched in place instead
-            // of briefly duplicating/reordering on every live snapshot.
-            incoming.push({ ...data, id: String(data?.id || entry.id) });
+        // A local-cache snapshot (metadata.fromCache === true) can be stale or
+        // partial. Only a SERVER snapshot proves the collection is fully
+        // hydrated, so the counter stays on its skeleton until that lands —
+        // it can never flash 48/85 before settling on the real total.
+        if (!snapshot.metadata?.fromCache) {
+          setCatalogHydrated(true);
+        }
+
+        if (durable.length === 0) return;
+
+        // Authoritative catalog: the live Firestore snapshot REPLACES the
+        // previous authoritative list, so the count and grid always reflect
+        // exactly what Firestore currently holds (identical on every browser).
+        setFirestoreCatalog(buildAuthoritativeCatalog(durable));
+
+        setMovies((previous) => {
+          const incomingById = new Map(durable.map((movie) => [movie.id, movie]));
+          const previousIds = new Set(previous.map((movie: any) => movie.id));
+          const newMovies = durable.filter((movie) => !previousIds.has(movie.id));
+          const patchedExisting = previous.map((known: any) => {
+            const fresh = incomingById.get(known.id);
+            if (!fresh) return known;
+            return {
+              ...known,
+              ...fresh,
+              image: isDataUrl(fresh.image) && !isDataUrl(known.image) ? known.image : fresh.image,
+              posterUrl:
+                isDataUrl(fresh.posterUrl) && !isDataUrl(known.posterUrl)
+                  ? known.posterUrl
+                  : fresh.posterUrl,
+            };
           });
-          const durable = incoming.filter(
-            (movie) =>
-              movie?.id &&
-              String(movie.title || "").trim() &&
-              movie.id !== "hero-promo" &&
-              !deletedMovieIdsRef.current.has(movie.id),
-          );
-          if (durable.length === 0) return;
-
-          // Authoritative catalog: the live Firestore snapshot REPLACES the
-          // previous authoritative list, so the count and grid always reflect
-          // exactly what Firestore currently holds (identical on every browser).
-          setFirestoreCatalog(buildAuthoritativeCatalog(durable));
-
-          setMovies((previous) => {
-            const incomingById = new Map(durable.map((movie) => [movie.id, movie]));
-            const previousIds = new Set(previous.map((movie: any) => movie.id));
-            const newMovies = durable.filter((movie) => !previousIds.has(movie.id));
-            const patchedExisting = previous.map((known: any) => {
-              const fresh = incomingById.get(known.id);
-              if (!fresh) return known;
-              return {
-                ...known,
-                ...fresh,
-                image: isDataUrl(fresh.image) && !isDataUrl(known.image) ? known.image : fresh.image,
-                posterUrl:
-                  isDataUrl(fresh.posterUrl) && !isDataUrl(known.posterUrl)
-                    ? known.posterUrl
-                    : fresh.posterUrl,
-              };
-            });
-            return [...newMovies, ...patchedExisting];
-          });
-          setErrorMsg(null);
-        },
-        (error) => console.warn("[Movies] Firestore live update failed:", error),
-      );
-    };
-
-    const safetyTimer = window.setTimeout(() => {
-      start();
-    }, 10_000);
-    const poll = window.setInterval(() => {
-      if (cancelled) return;
-      if (catalogPaintedRef.current) {
-        window.clearTimeout(safetyTimer);
-        window.clearInterval(poll);
-        start();
-      }
-    }, 300);
+          return [...newMovies, ...patchedExisting];
+        });
+        setErrorMsg(null);
+      },
+      (error) => console.warn("[Movies] Firestore live update failed:", error),
+    );
 
     return () => {
       cancelled = true;
-      window.clearTimeout(safetyTimer);
-      window.clearInterval(poll);
-      unsubscribe?.();
+      unsubscribe();
     };
   }, []);
 
@@ -15314,7 +15314,15 @@ const handleWebkitEndFullscreen = () => {
                           سەرجەم فیلمەکان
                         </h2>
                         <p className="mt-1 text-xs text-gray-500 kurdish-text">
-                          {nonDramaMovieCount} فیلم
+                          {catalogHydrated ? (
+                            `${nonDramaMovieCount} فیلم`
+                          ) : (
+                            <span
+                              className="inline-block h-3 w-20 rounded bg-white/10 align-middle animate-pulse"
+                              aria-label="چاوەڕوانبە لە بارکردنی فیلمەکان"
+                              title="چاوەڕوانبە"
+                            />
+                          )}
                         </p>
                       </div>
                       <button
@@ -15331,22 +15339,28 @@ const handleWebkitEndFullscreen = () => {
 
                   <div className="mx-auto max-w-7xl px-5 py-8 md:px-8">
                     <div className="grid grid-cols-2 items-start gap-6 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 md:gap-8">
-                      {allFilmsPageMovies.map((movie) => (
-                        <MovieCard
-                          key={movie.id}
-                          movie={resolvedMovies[movie.id] ?? movie}
-                          liveViewers={getMovieLiveViewers(movie)}
-                          isTopLive={topLiveId === movie.id}
-                          isFavorite={favoriteIds.has(movie.id)}
-                          isLiked={likedIds.has(movie.id)}
-                          likes={getMovieLikes(movie)}
-                          onOpen={openMovieDetails}
-                          onToggleFavorite={handleToggleFavorite}
-                          onToggleLike={handleToggleLike}
-                          onEdit={canEditMovies ? setMovieBeingEdited : undefined}
-                          onDelete={isPrimaryOwner ? handleDeleteMovie : undefined}
-                        />
-                      ))}
+                      {!catalogHydrated ? (
+                        Array.from({ length: 12 }).map((_, i) => (
+                          <MovieCardSkeleton key={`all-sk-${i}`} />
+                        ))
+                      ) : (
+                        allFilmsPageMovies.map((movie) => (
+                          <MovieCard
+                            key={movie.id}
+                            movie={resolvedMovies[movie.id] ?? movie}
+                            liveViewers={getMovieLiveViewers(movie)}
+                            isTopLive={topLiveId === movie.id}
+                            isFavorite={favoriteIds.has(movie.id)}
+                            isLiked={likedIds.has(movie.id)}
+                            likes={getMovieLikes(movie)}
+                            onOpen={openMovieDetails}
+                            onToggleFavorite={handleToggleFavorite}
+                            onToggleLike={handleToggleLike}
+                            onEdit={canEditMovies ? setMovieBeingEdited : undefined}
+                            onDelete={isPrimaryOwner ? handleDeleteMovie : undefined}
+                          />
+                        ))
+                      )}
                     </div>
                   </div>
                 </motion.div>
