@@ -1,4 +1,11 @@
 /** Provider transports use lower-case actions, unlike YouTube's API names. */
+export function usesProviderTouchControls(url: string | null | undefined): boolean {
+  try {
+    const source = new URL(url || '');
+    return source.protocol === 'https:' && source.hostname === 'proxy.garageband.rocks' && source.pathname.startsWith('/embed/');
+  } catch { return false; }
+}
+
 export function providerAction(command: string): string {
   return ({ playVideo: 'play', pauseVideo: 'pause', unMute: 'unmute' } as Record<string, string>)[command] || command;
 }
@@ -8,6 +15,14 @@ export function setNativePlayerMuted(video: HTMLVideoElement, muted: boolean, io
   video.defaultMuted = muted;
   // iOS owns hardware volume; other platforms may have persisted a zero level.
   if (!muted && !ios && video.volume === 0) video.volume = Math.max(1, volume) / 100;
+}
+
+/** Native HLS and MP4 share this transport; iOS keeps hardware volume ownership. */
+export function setNativePlayerVolume(video: HTMLVideoElement, volume: number, ios: boolean): void {
+  if (!Number.isFinite(volume)) return;
+  const level = Math.max(0, Math.min(100, volume));
+  if (!ios) video.volume = level / 100;
+  setNativePlayerMuted(video, level === 0, ios, level);
 }
 
 type IOSVideo = HTMLVideoElement & {

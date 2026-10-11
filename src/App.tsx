@@ -105,7 +105,7 @@ import { ROOM_SUBTITLE_LANGUAGES, loadRoomSubtitleLanguage } from "./lib/roomSub
 import { api } from "./services/api";
 import { useI18n } from "./i18n";
 import { lazyWithRetry } from "./utils/lazyWithRetry";
-import { providerAction, setNativePlayerMuted, enterIOSVideoFullscreen, enterPlayerElementFullscreen } from "./utils/playerControls";
+import { providerAction, usesProviderTouchControls, setNativePlayerMuted, setNativePlayerVolume, enterIOSVideoFullscreen, enterPlayerElementFullscreen } from "./utils/playerControls";
 import { cacheableCatalogMovie } from "./lib/catalogCache";
 
 const MOVIE_URL_PARAM = "movieId";
@@ -8041,6 +8041,15 @@ const handleWebkitEndFullscreen = () => {
       // VidSrc/garageband proxy relays the real nested player's clock through
       // the outer iframe. Use that authoritative clock for the progress bar,
       // subtitle cue matching and play/pause state.
+      if (data?.type === "PLAYER_UI") {
+        const frame = document.getElementById("streaming-player") as HTMLIFrameElement | null;
+        if (!frame?.contentWindow || event.source !== frame.contentWindow ||
+            !usesProviderTouchControls(frame.src) || event.origin !== new URL(frame.src).origin) return;
+        // Touches inside cross-origin frames do not bubble to React. Use the
+        // provider's UI relay to reveal our toolbar without intercepting them.
+        if (data.visible === true) revealPlayerControls();
+        return;
+      }
       if (data?.type === "PLAYER_EVENT" && data.data) {
         const frame = document.getElementById("streaming-player") as HTMLIFrameElement | null;
         if (!frame?.contentWindow || event.source !== frame.contentWindow) return;
@@ -8698,16 +8707,14 @@ const handleWebkitEndFullscreen = () => {
       toggleIframeMute();
     }
 
-    // 1. Direct-stream fallback <video> (YouTubeResilientPlayer "direct" mode).
-    const directVideo = document.getElementById("room-player-direct-video") as HTMLVideoElement | null;
-    if (directVideo) {
-      try {
-        directVideo.volume = volume / 100;
-      } catch { /* ignore */ }
-    }
+    // Include native HLS as well as MP4/YouTube direct fallback surfaces.
+    const ios = isIOSWebKitDevice();
+    modalPlayerRef.current?.querySelectorAll<HTMLVideoElement>("video").forEach((video) => {
+      try { setNativePlayerVolume(video, volume, ios); } catch { /* Media may be detaching. */ }
+    });
 
     // 2. Plyr (native video files).
-    if (plyrRef.current?.plyr) {
+    if (!ios && plyrRef.current?.plyr) {
       try {
         plyrRef.current.plyr.volume = volume / 100;
       } catch { /* ignore */ }
@@ -15844,12 +15851,12 @@ const handleWebkitEndFullscreen = () => {
                         );
                       })()}
 
-                      {/* Interaction glass keeps pointer/touch activity observable even
-                          over cross-origin iframes, whose events cannot bubble into
-                          React. The custom toolbar remains above this layer. */}
+                      {/* Providers with a UI relay need real touch events for their
+                          own idle timer. Our toolbar stays above the frame; other
+                          player types retain the existing interaction glass. */}
                       <div
                         data-testid="player-interaction-layer"
-                        className="absolute inset-0 z-[42] cursor-default"
+                        className={`absolute inset-0 z-[42] cursor-default ${usesProviderTouchControls(activeServerUrl) ? "pointer-events-none" : ""}`}
                         onPointerMove={revealPlayerControls}
                         onPointerDown={revealPlayerControls}
                         aria-hidden="true"

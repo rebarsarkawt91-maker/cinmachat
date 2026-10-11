@@ -1,6 +1,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { providerAction, setNativePlayerMuted, enterIOSVideoFullscreen, enterPlayerElementFullscreen } from './playerControls';
+import { providerAction, usesProviderTouchControls, setNativePlayerMuted, setNativePlayerVolume, enterIOSVideoFullscreen, enterPlayerElementFullscreen } from './playerControls';
+
+test('provider touch pass-through is restricted to the known HTTPS embed host', () => {
+  assert.equal(usesProviderTouchControls('https://proxy.garageband.rocks/embed/movie/tt27613895'), true);
+  for (const url of [null, '', 'https://youtube.com/embed/a', 'https://proxy.garageband.rocks.evil.test/embed/a', 'https://proxy.garageband.rocks/', 'http://proxy.garageband.rocks/embed/a']) {
+    assert.equal(usesProviderTouchControls(url), false);
+  }
+});
+
+test('native volume handles HLS, zero mute, recovery, clamping and iOS hardware ownership', () => {
+  const video = { muted: false, defaultMuted: false, volume: .5 } as HTMLVideoElement;
+  setNativePlayerVolume(video, 0, false);
+  assert.equal(video.volume, 0);
+  assert.equal(video.muted, true);
+  setNativePlayerVolume(video, 65, false);
+  assert.equal(video.volume, .65);
+  assert.equal(video.muted, false);
+  setNativePlayerVolume(video, 200, false);
+  assert.equal(video.volume, 1);
+  setNativePlayerVolume(video, 0, true);
+  assert.equal(video.volume, 1);
+  assert.equal(video.muted, true);
+  setNativePlayerVolume(video, 50, true);
+  assert.equal(video.volume, 1);
+  assert.equal(video.muted, false);
+  setNativePlayerVolume(video, NaN, false);
+  assert.equal(video.volume, 1);
+});
 
 test('provider unmute is lower-case without changing YouTube command names', () => {
   assert.equal(providerAction('unMute'), 'unmute');
