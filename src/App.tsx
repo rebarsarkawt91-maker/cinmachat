@@ -7886,12 +7886,14 @@ export default function App() {
   const revealPlayerControls = useCallback(() => {
     setPlayerControlsVisible(true);
     if (playerControlsTimerRef.current) clearTimeout(playerControlsTimerRef.current);
+    // Give viewers time to reach the provider's own CC menu before its
+    // controls disappear. Other players keep their existing idle timing.
     playerControlsTimerRef.current = setTimeout(() => {
       // Only auto-hide during active playback; while paused the controls remain
       // visible for the user to resume or seek.
       if (playerPlayingRef.current) setPlayerControlsVisible(false);
       playerControlsTimerRef.current = null;
-    }, 2500);
+    }, usesProviderTouchControls(activeServerUrlRef.current) ? 1000 : 2500);
   }, []);
 
   // Keep the playing-state ref in sync with the transport state.
