@@ -15809,7 +15809,6 @@ const handleWebkitEndFullscreen = () => {
                               iframeId="streaming-player"
                               title={`${selectedMovie?.title || "CinemaChat"} — Cinematic Player`}
                               scale={immersiveScale}
-                              subtitleOffset={Math.round((ccSettings.subtitleOffsetY / 100) * 15)}
                               hideNativeSubtitles={!ccSettings.showOriginal}
                             />
                           );
@@ -15868,7 +15867,9 @@ const handleWebkitEndFullscreen = () => {
                         <div
                           data-testid="main-movie-kurdish-subtitle"
                           className="pointer-events-none absolute inset-x-0 z-[55] flex justify-center px-4 sm:px-8"
-                          style={{ bottom: `max(104px, ${ccSubtitleBottomPercent(ccSettings.subtitleOffsetY)})` }}
+                          // Respect the viewer's position even on short landscape
+                          // screens; a pixel floor makes the down button ineffective.
+                          style={{ bottom: ccSubtitleBottomPercent(ccSettings.subtitleOffsetY) }}
                         >
                           <div
                             dir="rtl"
