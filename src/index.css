@@ -142,6 +142,11 @@ iframe#streaming-player {
   pointer-events: none !important;
 }
 
+/* This provider's idle controls require real pointer events inside its frame. */
+iframe#streaming-player[data-provider-touch-controls="true"] {
+  pointer-events: auto !important;
+}
+
 /* Block YouTube overlay click-through for all embedded player containers */
 #broadcast-yt-player iframe,
 #camehere-yt-player iframe {

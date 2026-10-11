@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { usesProviderTouchControls } from "../../utils/playerControls";
 
 /**
  * ImmersiveShieldedPlayer — Cinematic Shielded Player for embedded movie streams
@@ -178,6 +179,7 @@ export default function ImmersiveShieldedPlayer({
             iframeRef.current = el;
           }}
           id={iframeId}
+          data-provider-touch-controls={usesProviderTouchControls(url) ? "true" : undefined}
           src={url}
           title={title || "CinemaChat Cinematic Player"}
           loading="eager"

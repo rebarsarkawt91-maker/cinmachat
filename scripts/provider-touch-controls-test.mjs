@@ -11,6 +11,8 @@ for (const engine of [chromium, webkit]) {
     await page.route('https://provider.test/**', route => route.fulfill({ contentType: 'text/html', body: `<body style="margin:0;background:black;color:white"><div id="controls">Provider controls</div><script>let timer;document.addEventListener('pointerdown',()=>{document.querySelector('#controls').hidden=false;parent.postMessage('touched','*');clearTimeout(timer);timer=setTimeout(()=>document.querySelector('#controls').hidden=true,2800);});</script>` }));
     await page.route('https://app.test/**', route => route.fulfill({ contentType: 'text/html', body: `<meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style><div class="relative h-screen w-full"><iframe src="https://provider.test/" class="absolute inset-0 w-full h-full"></iframe><div id="glass" class="absolute inset-0 z-[42] cursor-default pointer-events-none"></div><button id="custom" class="absolute bottom-0 right-0 z-[60]" onclick="window.customClicks=(window.customClicks||0)+1">Play</button></div><script>window.touches=0;addEventListener('message',e=>{if(e.origin==='https://provider.test'&&e.data==='touched')window.touches++});</script>` }));
     await page.goto('https://app.test/');
+    await page.locator('iframe').evaluate(el => { el.id = 'streaming-player'; el.dataset.providerTouchControls = 'true'; });
+    assert.equal(await page.locator('iframe').evaluate(el => getComputedStyle(el).pointerEvents), 'auto', 'provider must override the generic iframe pointer lock');
     await page.frameLocator('iframe').locator('#controls').waitFor();
     await page.touchscreen.tap(180, 250);
     await page.waitForFunction(() => window.touches === 1);
