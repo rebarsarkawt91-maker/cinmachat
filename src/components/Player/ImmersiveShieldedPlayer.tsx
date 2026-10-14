@@ -143,9 +143,13 @@ export default function ImmersiveShieldedPlayer({
       configured.current.hideNativeSubtitles !== hideNativeSubtitles;
     const current = latestPlayback.current;
     const clock = lastClock.current;
+    const age = clock ? Math.max(0, performance.now() - clock.at) / 1000 : 0;
+    // Clock reports normally arrive every five seconds. A stale report can
+    // mean buffering: never turn that wait into a large forward seek on CC.
+    const advance = clock?.playing && age <= 6 ? age : 0;
     const snapshot = captionChanged && current ? {
       currentTime: clock
-        ? clock.time + (clock.playing ? Math.max(0, performance.now() - clock.at) / 1000 : 0)
+        ? clock.time + advance
         : current.currentTime,
       playing: current.playing,
     } : undefined;
