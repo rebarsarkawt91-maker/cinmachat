@@ -8347,6 +8347,10 @@ const handleWebkitEndFullscreen = () => {
 
   const broadcastSeekToFrame = (frame: HTMLIFrameElement, targetTime: number) => {
     const wholeSecond = Math.max(0, Math.floor(targetTime));
+    if (usesProviderTouchControls(frame.src)) {
+      frame.contentWindow?.postMessage(JSON.stringify({ player: true, action: `seek${wholeSecond}` }), new URL(frame.src).origin);
+      return;
+    }
     const payloads = [
       // VidSrc-compatible command used by proxy.garageband.rocks and relayed
       // through each of its nested iframe layers.
@@ -8521,6 +8525,10 @@ const handleWebkitEndFullscreen = () => {
     const frame = document.getElementById(id) as HTMLIFrameElement | null;
     if (!frame?.contentWindow) return;
     const action = providerAction(func);
+    if (usesProviderTouchControls(frame.src)) {
+      frame.contentWindow.postMessage(JSON.stringify({ player: true, action }), new URL(frame.src).origin);
+      return;
+    }
     const commands = [
       { event: "command", func, args: [] },
       // VidSrc/proxy.garageband transport (the same provider that emits the
@@ -15812,6 +15820,7 @@ const handleWebkitEndFullscreen = () => {
                               title={`${selectedMovie?.title || "CinemaChat"} — Cinematic Player`}
                               scale={immersiveScale}
                               hideNativeSubtitles={!ccSettings.showOriginal}
+                              playback={{ currentTime: playerCurrentTime, playing: isIframePlaying, muted: isIframeMuted }}
                             />
                           );
                         }
@@ -15852,12 +15861,11 @@ const handleWebkitEndFullscreen = () => {
                         );
                       })()}
 
-                      {/* Providers with a UI relay need real touch events for their
-                          own idle timer. Our toolbar stays above the frame; other
-                          player types retain the existing interaction glass. */}
+                      {/* The interaction glass catches source clicks before ad
+                          handlers; CinemaChat controls use the provider relay. */}
                       <div
                         data-testid="player-interaction-layer"
-                        className={`absolute inset-0 z-[42] cursor-default ${usesProviderTouchControls(activeServerUrl) ? "pointer-events-none" : ""}`}
+                        className="absolute inset-0 z-[42] cursor-default"
                         onPointerMove={revealPlayerControls}
                         onPointerDown={revealPlayerControls}
                         aria-hidden="true"
@@ -16349,7 +16357,19 @@ const handleWebkitEndFullscreen = () => {
                         )}
 
                         {isCatalogMoviePlayer && (
-                          <div className="relative z-[60]">
+                          <div className="relative z-[60] flex items-center">
+                            <button
+                              type="button"
+                              data-testid="original-cc-button"
+                              onClick={() => setCcSettings(settings => ({ ...settings, showOriginal: !settings.showOriginal }))}
+                              className={`mr-1 min-w-10 h-10 md:h-11 px-2 flex flex-col items-center justify-center rounded-full border-2 text-white transition-all active:scale-95 ${ccSettings.showOriginal ? "bg-blue-600 border-blue-300" : "bg-black/60 border-white/30"}`}
+                              aria-label="Toggle original English subtitles"
+                              aria-pressed={ccSettings.showOriginal}
+                              title="CC English — ژێرنووسی ڕەسەن"
+                            >
+                              <span className="text-[10px] font-black leading-none">CC</span>
+                              <span className="text-[8px] font-bold leading-tight">EN</span>
+                            </button>
                             <button
                               type="button"
                               data-testid="catalog-subtitle-settings-button"

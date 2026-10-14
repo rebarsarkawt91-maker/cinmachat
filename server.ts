@@ -5370,6 +5370,15 @@ async function startServer() {
     clientOrigins.push('*');
   }
 
+  // Public, content-free caption asset used by external players. It must be
+  // readable cross-origin; the API's existing origin policy stays unchanged.
+  app.get('/player-captions-off.vtt', (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.sendFile(path.join(process.cwd(), 'public', 'player-captions-off.vtt'));
+  });
+
   // Use the 'cors' package for robust CORS handling
   app.use(cors({
     origin: (origin, callback) => {

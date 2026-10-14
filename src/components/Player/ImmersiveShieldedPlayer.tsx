@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { usesProviderTouchControls } from "../../utils/playerControls";
+import { providerCaptionUrl, usesProviderTouchControls } from "../../utils/playerControls";
 
 /**
  * ImmersiveShieldedPlayer — Cinematic Shielded Player for embedded movie streams
@@ -10,9 +10,8 @@ import { usesProviderTouchControls } from "../../utils/playerControls";
  *     - A MutationObserver + injected stylesheet sweep inside the embedded document
  *       (works whenever the embed is same-origin / allow-same-origin-accessible) that
  *       continuously removes popups, share-boxes, banners and promotional overlays.
- *     - The sandbox token set is RELAXED (popups/forms allowed) so providers that
- *       require them can still initialize their player — blocks are now removed
- *       by the sweep instead of by refusing to let the provider run at all.
+ *     - The parent interaction layer owns clicks. Known relay providers are
+ *       controlled by CinemaChat buttons instead of exposing their click ads.
  *  2) Original-aspect playback:
  *     - The embedded player remains unscaled by default, preserving the provider's
  *       original frame and avoiding the blur/cropping caused by forced cover zoom.
@@ -34,6 +33,8 @@ interface ImmersiveShieldedPlayerProps {
   subtitleOffset?: number;
   /** Hide provider/native captions so CinemaChat subtitles never overlap them. */
   hideNativeSubtitles?: boolean;
+  /** Snapshot read only when the source/caption setting changes, not every tick. */
+  playback?: { currentTime: number; playing: boolean; muted: boolean };
   className?: string;
 }
 
@@ -110,8 +111,8 @@ function installShield(iframe: HTMLIFrameElement, hideNativeSubtitles = false): 
     (iframe as any).__cinemachatShieldObserver = obs;
     return true;
   } catch {
-    // Cross-origin embed: parent cannot script it. The strict sandbox token set
-    // (no allow-popups) plus the parent-side CSS crop still block the popups.
+    // Cross-origin embed: only the parent hit shield and supported provider
+    // commands apply. Internal timed ads cannot be removed from this document.
     return false;
   }
 }
@@ -123,11 +124,65 @@ export default function ImmersiveShieldedPlayer({
   scale = 1,
   subtitleOffset = 0,
   hideNativeSubtitles = false,
+  playback,
   className,
 }: ImmersiveShieldedPlayerProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const retries = useRef(0);
+  const latestPlayback = useRef(playback);
+  latestPlayback.current = playback;
+  const lastClock = useRef<{ time: number; at: number; playing: boolean } | null>(null);
+  const pendingMute = useRef<boolean | null>(playback?.muted ?? null);
+  const configured = useRef({ url, hideNativeSubtitles });
+  const emptyCaptionUrl = new URL('/player-captions-off.vtt', window.location.origin).href;
+  const [frameUrl, setFrameUrl] = useState(() => providerCaptionUrl(url, !hideNativeSubtitles, emptyCaptionUrl));
+
+  useEffect(() => {
+    const captionChanged = configured.current.url === url &&
+      configured.current.hideNativeSubtitles !== hideNativeSubtitles;
+    const current = latestPlayback.current;
+    const clock = lastClock.current;
+    const snapshot = captionChanged && current ? {
+      currentTime: clock
+        ? clock.time + (clock.playing ? Math.max(0, performance.now() - clock.at) / 1000 : 0)
+        : current.currentTime,
+      playing: current.playing,
+    } : undefined;
+    setFrameUrl(providerCaptionUrl(url, !hideNativeSubtitles, emptyCaptionUrl, snapshot));
+    pendingMute.current = current?.muted ?? null;
+    lastClock.current = null;
+    configured.current = { url, hideNativeSubtitles };
+  }, [url, hideNativeSubtitles, emptyCaptionUrl]);
+
+  useEffect(() => {
+    if (!usesProviderTouchControls(frameUrl)) return;
+    const receive = (event: MessageEvent) => {
+      const frame = iframeRef.current;
+      if (!frame?.contentWindow || event.source !== frame.contentWindow ||
+          event.origin !== new URL(frameUrl).origin) return;
+      let data = event.data;
+      try { if (typeof data === 'string') data = JSON.parse(data); } catch { return; }
+      if (data?.type === 'PLAYER_EVENT') {
+        const time = Number(data.data?.player_progress);
+        if (Number.isFinite(time) && time >= 0) {
+          const status = data.data?.player_status;
+          const playing = status === 'playing' ? true : status === 'paused' ? false :
+            lastClock.current?.playing ?? latestPlayback.current?.playing ?? true;
+          lastClock.current = { time, at: performance.now(), playing };
+        }
+      }
+      // A caption change reloads the source at startAt. Reapply the viewer's
+      // mute choice once that source is ready to receive transport commands.
+      if (pendingMute.current !== null && (data?.type === 'PLAYER_TITLE' || data?.type === 'PLAYER_EVENT')) {
+        frame.contentWindow.postMessage(JSON.stringify({ player: true,
+          action: pendingMute.current ? 'mute' : 'unmute' }), event.origin);
+        pendingMute.current = null;
+      }
+    };
+    window.addEventListener('message', receive);
+    return () => window.removeEventListener('message', receive);
+  }, [frameUrl]);
 
   // Install the anti-popup / overlay shield once the document is ready.
   useEffect(() => {
@@ -179,8 +234,8 @@ export default function ImmersiveShieldedPlayer({
             iframeRef.current = el;
           }}
           id={iframeId}
-          data-provider-touch-controls={usesProviderTouchControls(url) ? "true" : undefined}
-          src={url}
+          src={frameUrl}
+          tabIndex={-1}
           title={title || "CinemaChat Cinematic Player"}
           loading="eager"
           className="w-full h-full border-0"

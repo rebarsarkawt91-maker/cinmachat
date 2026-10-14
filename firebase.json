@@ -21,6 +21,13 @@
     ],
     "headers": [
       {
+        "source": "/player-captions-off.vtt",
+        "headers": [
+          { "key": "Access-Control-Allow-Origin", "value": "*" },
+          { "key": "Content-Type", "value": "text/vtt; charset=utf-8" }
+        ]
+      },
+      {
         "source": "/",
         "headers": [
           {

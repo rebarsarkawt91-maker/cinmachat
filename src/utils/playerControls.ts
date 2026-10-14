@@ -10,6 +10,26 @@ export function providerAction(command: string): string {
   return ({ playVideo: 'play', pauseVideo: 'pause', unMute: 'unmute' } as Record<string, string>)[command] || command;
 }
 
+/** Use the provider's supported custom-caption URL rather than ignored CC messages. */
+export function providerCaptionUrl(source: string, showOriginal: boolean, emptyTrackUrl: string,
+  playback?: { currentTime: number; playing: boolean }): string {
+  if (!usesProviderTouchControls(source)) return source;
+  const url = new URL(source);
+  if (showOriginal) {
+    // An explicit language overrides a previously saved empty custom track.
+    if (!url.searchParams.has('ds_lang')) url.searchParams.set('ds_lang', 'en');
+  } else {
+    url.searchParams.set('sub_url', emptyTrackUrl);
+    url.searchParams.set('sub_lang', 'en');
+    url.searchParams.set('sub_label', 'Subtitles off');
+  }
+  if (playback) {
+    url.searchParams.set('startAt', String(Math.max(0, Math.floor(Number.isFinite(playback.currentTime) ? playback.currentTime : 0))));
+    url.searchParams.set('autoplay', playback.playing ? '1' : '0');
+  }
+  return url.href;
+}
+
 export function setNativePlayerMuted(video: HTMLVideoElement, muted: boolean, ios: boolean, volume: number): void {
   video.muted = muted;
   video.defaultMuted = muted;

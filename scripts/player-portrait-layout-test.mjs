@@ -8,7 +8,10 @@ const browser = await chromium.launch();
 try {
   for (const width of [320, 390, 430]) {
     const page = await browser.newPage({ viewport: { width, height: 844 }, isMobile: true, hasTouch: true });
-    await page.setContent(`<meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style><div class="relative h-screen w-full"><div data-testid="player-control-bar" class="absolute bottom-0 right-0 h-16 flex items-center gap-1.5 px-4">${'<button class="w-11 h-11">CC</button>'.repeat(11)}<div data-testid="player-subtitle-settings" class="absolute bottom-full right-0 mb-3 w-64 p-3">${'<p>Subtitle settings</p>'.repeat(100)}</div></div></div>`);
+    // Font URLs in the production CSS must not make this isolated layout test
+    // wait on an external network request.
+    await page.route('**/*', route => route.abort());
+    await page.setContent(`<meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style><div class="relative h-screen w-full"><div data-testid="player-control-bar" class="absolute bottom-0 right-0 h-16 flex items-center gap-1.5 px-4">${'<button class="w-11 h-11">Play</button>'.repeat(9)}<div class="flex items-center">${'<button class="w-11 h-11">CC</button>'.repeat(3)}</div><div data-testid="player-subtitle-settings" class="absolute bottom-full right-0 mb-3 w-64 p-3">${'<p>Subtitle settings</p>'.repeat(100)}</div></div></div>`);
     const result = await page.evaluate(() => {
       const bar = document.querySelector('[data-testid="player-control-bar"]');
       const settings = document.querySelector('[data-testid="player-subtitle-settings"]');
