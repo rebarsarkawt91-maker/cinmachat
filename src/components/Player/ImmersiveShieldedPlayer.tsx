@@ -133,7 +133,7 @@ export default function ImmersiveShieldedPlayer({
   const latestPlayback = useRef(playback);
   latestPlayback.current = playback;
   const lastClock = useRef<{ time: number; at: number; playing: boolean } | null>(null);
-  const pendingMute = useRef<boolean | null>(playback?.muted ?? null);
+  const pendingRestore = useRef(!!playback);
   const configured = useRef({ url, hideNativeSubtitles });
   const emptyCaptionUrl = new URL('/player-captions-off.vtt', window.location.origin).href;
   const [frameUrl, setFrameUrl] = useState(() => providerCaptionUrl(url, !hideNativeSubtitles, emptyCaptionUrl));
@@ -154,7 +154,7 @@ export default function ImmersiveShieldedPlayer({
       playing: current.playing,
     } : undefined;
     setFrameUrl(providerCaptionUrl(url, !hideNativeSubtitles, emptyCaptionUrl, snapshot));
-    pendingMute.current = current?.muted ?? null;
+    pendingRestore.current = !!current;
     lastClock.current = null;
     configured.current = { url, hideNativeSubtitles };
   }, [url, hideNativeSubtitles, emptyCaptionUrl]);
@@ -176,12 +176,18 @@ export default function ImmersiveShieldedPlayer({
           lastClock.current = { time, at: performance.now(), playing };
         }
       }
-      // A caption change reloads the source at startAt. Reapply the viewer's
-      // mute choice once that source is ready to receive transport commands.
-      if (pendingMute.current !== null && (data?.type === 'PLAYER_TITLE' || data?.type === 'PLAYER_EVENT')) {
+      // A caption change reloads the source at startAt. Commands clicked during
+      // loading can arrive before its listener exists; restore the latest user
+      // choices once metadata is ready, including a newly requested pause/play.
+      const ready = data?.type === 'PLAYER_TITLE' ||
+        (data?.type === 'PLAYER_EVENT' && Number(data.data?.player_duration) > 0);
+      const target = latestPlayback.current;
+      if (pendingRestore.current && ready && target) {
         frame.contentWindow.postMessage(JSON.stringify({ player: true,
-          action: pendingMute.current ? 'mute' : 'unmute' }), event.origin);
-        pendingMute.current = null;
+          action: target.muted ? 'mute' : 'unmute' }), event.origin);
+        frame.contentWindow.postMessage(JSON.stringify({ player: true,
+          action: target.playing ? 'play' : 'pause' }), event.origin);
+        pendingRestore.current = false;
       }
     };
     window.addEventListener('message', receive);

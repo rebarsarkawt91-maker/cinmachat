@@ -42,23 +42,24 @@ for (const engine of [chromium, webkit]) {
   await page.route('https://proxy.garageband.rocks/**', route => route.fulfill({ contentType: 'text/html', body: `
    <body style="margin:0;background:black;color:white"><div id="caption"></div><script>
    const params=new URLSearchParams(location.search);
-   window.current=Number(params.get('startAt')||5);window.playing=params.get('autoplay')!=='0';window.muted=false;window.adClicks=0;
-   function emit(){parent.postMessage({type:'PLAYER_EVENT',data:{player_progress:current,player_duration:600,player_status:playing?'playing':'paused'}},'*')}
+   window.current=Number(params.get('startAt')||5);window.playing=params.get('autoplay')!=='0';window.muted=false;window.adClicks=0;window.providerReady=false;
+   function emit(){parent.postMessage({type:'PLAYER_EVENT',data:{player_progress:current,player_duration:providerReady?600:0,player_status:playing?'playing':'paused'}},'*')}
    document.addEventListener('pointerdown',()=>{adClicks++;window.open('https://ad.test/')});
-   addEventListener('message',e=>{let m=e.data;try{if(typeof m==='string')m=JSON.parse(m)}catch{return}if(!m.player)return;
+   addEventListener('message',e=>{let m=e.data;try{if(typeof m==='string')m=JSON.parse(m)}catch{return}if(!m.player||!providerReady)return;
     if(m.action==='play')playing=true;if(m.action==='pause')playing=false;
     if(m.action==='mute')muted=true;if(m.action==='unmute')muted=false;
     if(/^seek\\d+$/.test(m.action))current=Number(m.action.slice(4));emit();});
    if(params.has('sub_url'))fetch(params.get('sub_url')).then(r=>r.text()).then(t=>{document.querySelector('#caption').textContent=t.includes('WEBVTT')?'':'fetch failed';window.captionsReady=true});
    else{document.querySelector('#caption').textContent='Original English';window.captionsReady=true}
-   parent.postMessage({type:'PLAYER_TITLE',title:'Fixture'},'*');emit();
-   setInterval(()=>{if(playing)current++;emit()},1000);
+   window.finishReady=()=>{providerReady=true;parent.postMessage({type:'PLAYER_TITLE',title:'Fixture'},'*');emit()};
+   if(params.get('autoplay')!=='0')setTimeout(finishReady,20);
+   setInterval(()=>{if(playing&&providerReady)current++;if(providerReady)emit()},1000);
    </script>` }));
   await page.goto('https://app.test/');
   await page.locator('#streaming-player').waitFor();
   const provider = () => page.frames().find(f => f.url().startsWith('https://proxy.garageband.rocks/embed/'));
   await page.waitForFunction(() => !!document.querySelector('#streaming-player')?.contentWindow);
-  await provider().waitForFunction(() => window.captionsReady);
+  await provider().waitForFunction(() => window.captionsReady && window.providerReady);
   assert.equal(await provider().locator('#caption').innerText(), '', 'English off must not show a caption');
   await page.touchscreen.tap(180,250);
   assert.equal(await provider().evaluate(() => window.adClicks), 0, 'Protected surface must not activate source click ads');
@@ -74,9 +75,20 @@ for (const engine of [chromium, webkit]) {
   assert.equal(await provider().locator('#caption').innerText(),'Original English');
   assert.equal(await provider().evaluate(()=>playing),false,'Caption reload must preserve pause');
   assert.ok(await provider().evaluate(()=>current)>=30,'Caption reload must not return to the beginning');
+  // A user can change their mind while the replacement frame is loading.
+  // Its handler deliberately ignores these early commands; the real component
+  // must replay the latest choices after metadata arrives.
+  await page.locator('#play').tap();
+  await page.locator('#unmute').tap();
+  assert.equal(await provider().evaluate(()=>playing),false,'Fixture must still be waiting for metadata');
+  await provider().evaluate(()=>window.finishReady());
+  await provider().waitForFunction(()=>playing && !muted);
+  await page.locator('#pause').tap();
+  await provider().waitForFunction(()=>!playing);
   await page.locator('#cc').tap();
   await page.waitForFunction(()=>new URL(document.querySelector('#streaming-player').src).searchParams.has('sub_url'));
   await provider().waitForFunction(()=>window.captionsReady);
+  await provider().evaluate(()=>window.finishReady());
   assert.equal(await provider().locator('#caption').innerText(),'');
   assert.equal(page.context().pages().length,1);
   console.log('PASS '+engine.name()+': real protected player blocks source touches; relay controls and caption off/on preserve playback');
