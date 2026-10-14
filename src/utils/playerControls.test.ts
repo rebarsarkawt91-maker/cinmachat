@@ -12,6 +12,7 @@ test('provider touch pass-through is restricted to the known HTTPS embed host', 
 test('provider captions off/on preserves the movie and resumes its time and pause state', () => {
   const source = 'https://proxy.garageband.rocks/embed/movie/tt27613895?quality=1080';
   const blank = 'https://www.cinamachat.com/player-captions-off.vtt';
+  assert.equal(new URL(providerCaptionUrl(source, false, blank)).searchParams.get('autoplay'), '1');
   const off = new URL(providerCaptionUrl(source, false, blank, { currentTime: 123.8, playing: false }));
   assert.equal(off.pathname, '/embed/movie/tt27613895');
   assert.equal(off.searchParams.get('sub_url'), blank);

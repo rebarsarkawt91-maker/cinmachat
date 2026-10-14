@@ -15,6 +15,9 @@ export function providerCaptionUrl(source: string, showOriginal: boolean, emptyT
   playback?: { currentTime: number; playing: boolean }): string {
   if (!usesProviderTouchControls(source)) return source;
   const url = new URL(source);
+  // The protected frame cannot receive a click on its landing/play overlay.
+  // Request the provider's player mode when CinemaChat's Play opens the frame.
+  if (!url.searchParams.has('autoplay')) url.searchParams.set('autoplay', '1');
   if (showOriginal) {
     // An explicit language overrides a previously saved empty custom track.
     if (!url.searchParams.has('ds_lang')) url.searchParams.set('ds_lang', 'en');
