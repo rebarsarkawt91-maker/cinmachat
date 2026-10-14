@@ -34,7 +34,7 @@ interface ImmersiveShieldedPlayerProps {
   /** Hide provider/native captions so CinemaChat subtitles never overlap them. */
   hideNativeSubtitles?: boolean;
   /** Snapshot read only when the source/caption setting changes, not every tick. */
-  playback?: { currentTime: number; playing: boolean; muted: boolean };
+  playback?: { currentTime: number; playing: boolean; muted: boolean; requestedPlaying?: boolean };
   className?: string;
 }
 
@@ -133,6 +133,7 @@ export default function ImmersiveShieldedPlayer({
   const latestPlayback = useRef(playback);
   latestPlayback.current = playback;
   const lastClock = useRef<{ time: number; at: number; playing: boolean } | null>(null);
+  const pendingResumeTime = useRef<number | null>(null);
   const pendingRestore = useRef(!!playback);
   const configured = useRef({ url, hideNativeSubtitles });
   const emptyCaptionUrl = new URL('/player-captions-off.vtt', window.location.origin).href;
@@ -150,9 +151,10 @@ export default function ImmersiveShieldedPlayer({
     const snapshot = captionChanged && current ? {
       currentTime: clock
         ? clock.time + advance
-        : current.currentTime,
-      playing: current.playing,
+        : pendingResumeTime.current ?? current.currentTime,
+      playing: current.requestedPlaying ?? current.playing,
     } : undefined;
+    pendingResumeTime.current = snapshot?.currentTime ?? null;
     setFrameUrl(providerCaptionUrl(url, !hideNativeSubtitles, emptyCaptionUrl, snapshot));
     pendingRestore.current = !!current;
     lastClock.current = null;
@@ -169,11 +171,12 @@ export default function ImmersiveShieldedPlayer({
       try { if (typeof data === 'string') data = JSON.parse(data); } catch { return; }
       if (data?.type === 'PLAYER_EVENT') {
         const time = Number(data.data?.player_progress);
-        if (Number.isFinite(time) && time >= 0) {
+        if (Number.isFinite(time) && time >= 0 && Number(data.data?.player_duration) > 0) {
           const status = data.data?.player_status;
           const playing = status === 'playing' ? true : status === 'paused' ? false :
             lastClock.current?.playing ?? latestPlayback.current?.playing ?? true;
           lastClock.current = { time, at: performance.now(), playing };
+          pendingResumeTime.current = null;
         }
       }
       // A caption change reloads the source at startAt. Commands clicked during
@@ -186,7 +189,7 @@ export default function ImmersiveShieldedPlayer({
         frame.contentWindow.postMessage(JSON.stringify({ player: true,
           action: target.muted ? 'mute' : 'unmute' }), event.origin);
         frame.contentWindow.postMessage(JSON.stringify({ player: true,
-          action: target.playing ? 'play' : 'pause' }), event.origin);
+          action: (target.requestedPlaying ?? target.playing) ? 'play' : 'pause' }), event.origin);
         pendingRestore.current = false;
       }
     };

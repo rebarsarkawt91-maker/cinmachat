@@ -7863,6 +7863,12 @@ export default function App() {
 
   // Main Modal Player customized states
   const [isIframePlaying, setIsIframePlaying] = useState(true);
+  // A replacement caption frame may report autoplay before it receives a
+  // queued user pause. Keep that request separate from observed player state.
+  const providerPlayingIntentRef = useRef<{ source: string; playing: boolean } | null>(null);
+  useEffect(() => {
+    if (!showPlayer) providerPlayingIntentRef.current = null;
+  }, [showPlayer]);
   const [isIframeMuted, setIsIframeMuted] = useState(false);
   // Volume level (0-100) for players we can control natively (direct <video>,
   // Plyr, YouTube iframe API). Cross-origin embeds ignore it gracefully.
@@ -8554,6 +8560,7 @@ const handleWebkitEndFullscreen = () => {
     );
     const nativeIsPlaying = nativeVideos.some((video) => !video.paused && !video.ended);
     const isPlaying = nativeVideos.length > 0 ? !nativeIsPlaying : !isIframePlaying;
+    providerPlayingIntentRef.current = { source: activeServerUrlRef.current || '', playing: isPlaying };
     setIsIframePlaying(isPlaying);
 
     nativeVideos.forEach((video) => {
@@ -15820,7 +15827,9 @@ const handleWebkitEndFullscreen = () => {
                               title={`${selectedMovie?.title || "CinemaChat"} — Cinematic Player`}
                               scale={immersiveScale}
                               hideNativeSubtitles={!ccSettings.showOriginal}
-                              playback={{ currentTime: playerCurrentTime, playing: isIframePlaying, muted: isIframeMuted }}
+                              playback={{ currentTime: playerCurrentTime, playing: isIframePlaying, muted: isIframeMuted,
+                                requestedPlaying: providerPlayingIntentRef.current?.source === activeServerUrl
+                                  ? providerPlayingIntentRef.current.playing : undefined }}
                             />
                           );
                         }

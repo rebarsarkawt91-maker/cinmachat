@@ -4,18 +4,19 @@ import { readFile, readdir } from 'node:fs/promises';
 import { build } from 'esbuild';
 import { chromium, webkit } from 'playwright';
 
-const entry = `import React,{useState} from 'react';
+const entry = `import React,{useState,useEffect} from 'react';
 import {createRoot} from 'react-dom/client';
 import Player from './src/components/Player/ImmersiveShieldedPlayer';
 import {providerAction} from './src/utils/playerControls';
 function Fixture(){
- const [off,setOff]=useState(true),[playing,setPlaying]=useState(true),[muted,setMuted]=useState(false);
+ const [off,setOff]=useState(true),[playing,setPlaying]=useState(true),[muted,setMuted]=useState(false),[requestedPlaying,setRequested]=useState(undefined);
+ useEffect(()=>{const receive=e=>{if(e.source!==document.querySelector('#streaming-player')?.contentWindow||e.data?.type!=='PLAYER_EVENT')return;const s=e.data.data.player_status;if(s==='playing')setPlaying(true);if(s==='paused')setPlaying(false)};addEventListener('message',receive);return()=>removeEventListener('message',receive)},[]);
  const send=command=>document.querySelector('#streaming-player').contentWindow.postMessage(JSON.stringify({player:true,action:providerAction(command)}),'https://proxy.garageband.rocks');
- return <div className="relative h-screen w-full"><Player url="https://proxy.garageband.rocks/embed/movie/tt27613895" iframeId="streaming-player" hideNativeSubtitles={off} playback={{currentTime:5,playing,muted}}/>
+ return <div className="relative h-screen w-full"><Player url="https://proxy.garageband.rocks/embed/movie/tt27613895" iframeId="streaming-player" hideNativeSubtitles={off} playback={{currentTime:5,playing,muted,requestedPlaying}}/>
  <div id="glass" className="absolute inset-0 z-[42]"/>
  <div style={{position:'absolute',bottom:0,zIndex:60}}>
- <button id="pause" onClick={()=>{setPlaying(false);send('pauseVideo')}}>Pause</button>
- <button id="play" onClick={()=>{setPlaying(true);send('playVideo')}}>Play</button>
+ <button id="pause" onClick={()=>{setRequested(false);setPlaying(false);send('pauseVideo')}}>Pause</button>
+ <button id="play" onClick={()=>{setRequested(true);setPlaying(true);send('playVideo')}}>Play</button>
  <button id="mute" onClick={()=>{setMuted(true);send('mute')}}>Mute</button>
  <button id="unmute" onClick={()=>{setMuted(false);send('unMute')}}>Unmute</button>
  <button id="seek" onClick={()=>send('seek30')}>Seek</button>
@@ -75,6 +76,12 @@ for (const engine of [chromium, webkit]) {
   assert.equal(await provider().locator('#caption').innerText(),'Original English');
   assert.equal(await provider().evaluate(()=>playing),false,'Caption reload must preserve pause');
   assert.ok(await provider().evaluate(()=>current)>=30,'Caption reload must not return to the beginning');
+  for (const enabled of [false, true]) {
+   await page.locator('#cc').tap();
+   await page.waitForFunction(enabled=>new URL(document.querySelector('#streaming-player').src).searchParams.has('ds_lang')===enabled,enabled);
+   await provider().waitForFunction(()=>window.captionsReady);
+   assert.ok(await provider().evaluate(()=>current)>=30,'Rapid caption toggles during loading must retain the pending resume time');
+  }
   // A user can change their mind while the replacement frame is loading.
   // Its handler deliberately ignores these early commands; the real component
   // must replay the latest choices after metadata arrives.
@@ -88,7 +95,10 @@ for (const engine of [chromium, webkit]) {
   await page.locator('#cc').tap();
   await page.waitForFunction(()=>new URL(document.querySelector('#streaming-player').src).searchParams.has('sub_url'));
   await provider().waitForFunction(()=>window.captionsReady);
+  // An early autoplay report must not override the user's queued pause.
+  await provider().evaluate(()=>{playing=true;parent.postMessage({type:'PLAYER_EVENT',data:{player_progress:current,player_duration:0,player_status:'playing'}},'*')});
   await provider().evaluate(()=>window.finishReady());
+  await provider().waitForFunction(()=>!playing);
   assert.equal(await provider().locator('#caption').innerText(),'');
   assert.equal(page.context().pages().length,1);
   console.log('PASS '+engine.name()+': real protected player blocks source touches; relay controls and caption off/on preserve playback');
