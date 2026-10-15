@@ -134,14 +134,12 @@ const HeroVideoPlayer: React.FC<{
   isMutedRef.current = isHeroMuted;
 
   // ── HERO VOLUME LEVEL ────────────────────────────────────────────────
-  // Slider level (0-100) for the header volume popup. Defaults to 100 so
-  // every autoplay/unmute path behaves EXACTLY as before until the user
-  // actually drags the slider.
-  const [heroVolume, setHeroVolume] = useState(100);
-  const heroVolumeRef = useRef(100);
+  // Start quietly; all autoplay/unmute paths share the user's slider level.
+  const [heroVolume, setHeroVolume] = useState(15);
+  const heroVolumeRef = useRef(15);
   heroVolumeRef.current = heroVolume;
   // Last non-zero level — used when unmuting after a drag to zero.
-  const lastAudibleVolumeRef = useRef(100);
+  const lastAudibleVolumeRef = useRef(15);
   const [volumePopupOpen, setVolumePopupOpen] = useState(false);
   const volumeMenuRef = useRef<HTMLDivElement | null>(null);
   const volumeTrackRef = useRef<HTMLDivElement | null>(null);
@@ -345,7 +343,7 @@ const HeroVideoPlayer: React.FC<{
   // ── AGGRESSIVE UNMUTE RETRY ──────────────────────────────────────────
   // Browsers block programmatic unMute() on fresh page loads without a
   // trusted user gesture.  This handler hammers the YT API with
-  // unMute() + setVolume(100) + playVideo() every 100ms for up to one
+  // unMute() + the current slider volume + playVideo() every 100ms for up to one
   // second (10 attempts), stopping the instant the browser accepts the
   // audio stream (isMuted() === false).
   const aggressiveUnmute = (attempts = 10) => {
@@ -759,7 +757,7 @@ const HeroVideoPlayer: React.FC<{
       }, 500);
 
       // Belt-and-suspenders: explicitly tell the fresh player to start
-      // unmuted at full volume BEFORE playback begins (re-enforced in
+      // unmuted at the current slider volume BEFORE playback begins (re-enforced in
       // onReady the moment the API reports the player ready).
       safePlayerCall(playerRef.current, "unMute");
       safePlayerCall(playerRef.current, "setVolume", restoreHeroVolume());

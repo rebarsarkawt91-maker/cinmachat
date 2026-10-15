@@ -12853,6 +12853,8 @@ const handleWebkitEndFullscreen = () => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [showAllFilms, setShowAllFilms] = useState(false);
+  // This filter belongs only to the all-films overlay, not the homepage.
+  const [allFilmsCategory, setAllFilmsCategory] = useState(ALL_CATEGORY_KEY);
   const moviesPerPage = 12;
   const [trackerConfig, setTrackerConfig] = useState({
     text: "بەخێربێن بۆ CinamaChat - نوێترین فیلم و زنجیرەکان لێرە ببینە",
@@ -13832,7 +13834,14 @@ const handleWebkitEndFullscreen = () => {
   // Rooms or their membership. Dramas stay in their dedicated Drama Rooms
   // section; only films are rendered here.
   const allFilmsPageMovies = useMemo(() => {
-    const list = [...nonDramaMovies];
+    // Only explicit family labels qualify; animation alone is not a safety rating.
+    const familyLabels = new Set(["family", "family-friendly", "خێزانی", "خێزان", "فیلمی خێزانی", "فیلمە خێزانییەکان"]);
+    const familyTags = [...familyLabels, ...dynamicGenres
+      .filter((genre) => familyLabels.has(normalizeCategoryKey(genre.tag)) || familyLabels.has(normalizeCategoryKey(genre.name)))
+      .map((genre) => genre.tag)];
+    const list = nonDramaMovies.filter((movie) => allFilmsCategory === "__family__"
+      ? familyTags.some((tag) => movieMatchesCategory(movie, tag))
+      : movieMatchesCategory(movie, allFilmsCategory));
     if (sortBy === "trending") {
       return list.sort(
         (a, b) => getMovieTrendingScore(b) - getMovieTrendingScore(a),
@@ -13844,7 +13853,7 @@ const handleWebkitEndFullscreen = () => {
       );
     }
     return list;
-  }, [nonDramaMovies, sortBy, getMovieTrendingScore, getMovieLiveViewers]);
+  }, [nonDramaMovies, sortBy, getMovieTrendingScore, getMovieLiveViewers, allFilmsCategory, dynamicGenres]);
 
   // Clamp the page when the list shrinks (search/filter changes) so the user is
   // never left on an out-of-range page showing "no movies".
@@ -13992,6 +14001,17 @@ const handleWebkitEndFullscreen = () => {
     ],
     [navGenres, movieExtraCategories],
   );
+
+  const allFilmsCategoryOptions = useMemo(() => {
+    const seen = new Set([ALL_CATEGORY_KEY]);
+    const source = genresReady ? homepageCategoryChips : [...DEFAULT_GENRES, ...movieExtraCategories];
+    return source.filter((category) => {
+      const key = normalizeCategoryKey(category.tag);
+      if (!key || seen.has(key) || deletedGenreTags.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [genresReady, homepageCategoryChips, movieExtraCategories, deletedGenreTags]);
 
   // Options for the Admin Edit-Movie modal: live Firestore genres + built-in
   // defaults + the edited movie's own category (an old record's unknown
@@ -15360,14 +15380,14 @@ const handleWebkitEndFullscreen = () => {
                   aria-label="سەرجەم فیلمەکان"
                 >
                   <div className="sticky top-0 z-20 border-b border-white/10 bg-black/90 backdrop-blur-xl">
-                    <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-4 md:px-8">
+                    <div className="mx-auto grid max-w-7xl grid-cols-2 items-center gap-x-3 gap-y-2 px-5 py-3 sm:flex sm:flex-wrap md:px-8">
                       <div className="text-right">
                         <h2 className="text-xl font-black text-white kurdish-text md:text-2xl">
                           سەرجەم فیلمەکان
                         </h2>
                         <p className="mt-1 text-xs text-gray-500 kurdish-text">
                           {lockedMovieCount !== null || catalogHydrated ? (
-                            `${nonDramaMovieCount} فیلم`
+                            `${allFilmsCategory === ALL_CATEGORY_KEY ? nonDramaMovieCount : allFilmsPageMovies.length} فیلم`
                           ) : (
                             <span
                               className="inline-block h-3 w-20 rounded bg-white/10 align-middle animate-pulse"
@@ -15377,10 +15397,40 @@ const handleWebkitEndFullscreen = () => {
                           )}
                         </p>
                       </div>
+                      <label className="order-2 min-w-0 text-[10px] font-black text-yellow-300 sm:order-none sm:min-w-[150px] kurdish-text">
+                        <span className="sr-only sm:not-sr-only">جۆری فیلم</span>
+                        <select
+                          aria-label="جۆری فیلم لە سەرجەم فیلمەکان"
+                          value={allFilmsCategory}
+                          onChange={(event) => setAllFilmsCategory(event.target.value)}
+                          className="mt-1 block w-full max-w-[220px] rounded-lg border border-yellow-400/40 bg-[#16140b] px-3 py-2 text-xs font-black text-yellow-300 outline-none focus-visible:ring-2 focus-visible:ring-yellow-400"
+                        >
+                          <option value={ALL_CATEGORY_KEY}>هەموو جۆرەکان</option>
+                          <option value="__family__">خێزانی — فیلمە پۆلێنکراوەکان</option>
+                          {allFilmsCategoryOptions.map((category) => (
+                            <option key={normalizeCategoryKey(category.tag)} value={category.tag}>{category.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => { setShowAllFilms(false); setShowDramaHubModal(true); }}
+                        className="order-3 inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-emerald-400/40 bg-emerald-500/10 px-3 py-2 text-xs font-black text-emerald-300 transition-colors hover:bg-emerald-500/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400 sm:order-none kurdish-text"
+                      >
+                        <Tv className="h-4 w-4" />
+                        ژووری دراماکان
+                      </button>
+                      <p
+                        className="order-4 col-span-2 max-h-12 min-w-0 flex-1 overflow-y-auto text-[10px] font-black leading-4 text-yellow-300 sm:order-none sm:max-h-16 sm:min-w-[220px] kurdish-text"
+                        tabIndex={0}
+                        aria-label="ئاگادارکردنەوەی ناوەڕۆکی فیلمەکان"
+                      >
+                        تکایە بەکارهێنەری ئازیز، ئێمە لەبەر زۆری فیلمەکان ناتوانین هەموویان ببینین. تکایە هەر ناوەڕۆکێکی نەشیاو لە فیلمەکان هەبوو ئاگادارمان بکەنەوە، تاکو بتوانین بیسڕینەوە یان هێمای ئاگادارکردنەوەی لەسەر دابنێین. لە لیستی هەڵبژاردندا بەشی خێزانی بۆ فیلمە پۆلێنکراوەکانی ئەو بەشە جیا کراوەتەوە؛ ئەمە گەرەنتی پشکنینی هەموو فیلمەکان نییە.
+                      </p>
                       <button
                         type="button"
                         onClick={() => setShowAllFilms(false)}
-                        className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-black text-white transition-colors hover:bg-white/10 kurdish-text"
+                        className="order-1 inline-flex items-center justify-self-end gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-black text-white transition-colors hover:bg-white/10 sm:order-none kurdish-text"
                         aria-label="گەڕانەوە"
                       >
                         <X className="h-5 w-5" />
@@ -15414,6 +15464,11 @@ const handleWebkitEndFullscreen = () => {
                         ))
                       )}
                     </div>
+                    {catalogHydrated && allFilmsPageMovies.length === 0 && (
+                      <p role="status" className="py-12 text-center text-sm font-bold text-gray-400 kurdish-text">
+                        لەم پۆلێنەدا هێشتا فیلمێک نییە. جۆرێکی تر یان هەموو جۆرەکان هەڵبژێرە.
+                      </p>
+                    )}
                   </div>
                 </motion.div>
               )}
