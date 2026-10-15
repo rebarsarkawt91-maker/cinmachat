@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import { createDescriptionSearch } from './server/descriptionSearchService';
+import { descriptionText } from './src/utils/descriptionSearch';
 import express from 'express';
 import cors from 'cors';
 import http from 'node:http';
@@ -13156,132 +13158,30 @@ async function startServer() {
     }
   });
 
-  // --- AI SEMANTIC SEARCH ---
-  // Turns a natural-language description (English, Kurdish, Arabic, ...) into a
-  // ranked list of movies. Gemini understands the MEANING of the query, extracts
-  // topics/genres + likely movie titles, and the local fuzzy engine then ranks
-  // the catalog. Falls back to keyword search when the API is unavailable.
-  const aiSearchCache = new Map<string, { at: number; results: any[] }>();
+  // Description mode shares relevance rules with the browser/offline fallback.
+  const searchDescriptions = createDescriptionSearch({ apiKey: process.env.GEMINI_API_KEY, model: process.env.GEMINI_SEARCH_MODEL });
+  const aiSearchCache = new Map<string, { at: number; payload: any }>();
   const AI_SEARCH_CACHE_TTL_MS = 10 * 60 * 1000;
-
-  const callAiSearch = async (query: string): Promise<{ keywords: string[]; genres: string[]; titles: string[] }> => {
-    const apiKey = process.env.GEMINI_API_KEY;
-    const fallback: { keywords: string[]; genres: string[]; titles: string[] } = { keywords: [], genres: [], titles: [] };
-    if (!apiKey) return fallback;
-
-    const prompt =
-      `You are a movie search engine for a Kurdish streaming platform. Given the user's ` +
-      `natural-language description below, extract:\n` +
-      `1. "keywords": up to 8 topical keywords that describe the film (e.g. space survival, zombies, time travel).\n` +
-      `2. "genres": up to 4 matching genres (use standard genre names like Action, Drama, Comedy, Animation, Sci-Fi, Romance, Adventure, Crime, Fantasy, Thriller, Horror, Documentary, Family, Mystery, War).\n` +
-      `3. "titles": up to 4 real movie/tv titles this description most likely refers to (their exact common English names).\n` +
-      `Respond with STRICT JSON only — no markdown, no commentary — in this exact shape:\n` +
-      `{"keywords":[],"genres":[],"titles":[]}\n` +
-      `User description: ${query.slice(0, 500)}`;
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000);
-    try {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { temperature: 0.2, responseMimeType: 'application/json' },
-          }),
-          signal: controller.signal,
-        },
-      );
-      if (!response.ok) return fallback;
-      const data = await response.json();
-      const text = data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join('') || '';
-      const parsed = JSON.parse(text);
-      return {
-        keywords: Array.isArray(parsed.keywords) ? parsed.keywords.map(String).slice(0, 8) : [],
-        genres: Array.isArray(parsed.genres) ? parsed.genres.map(String).slice(0, 4) : [],
-        titles: Array.isArray(parsed.titles) ? parsed.titles.map(String).slice(0, 4) : [],
-      };
-    } catch (e: any) {
-      if (controller.signal.aborted) console.warn('[ai-search] Gemini timed out; falling back to keyword search');
-      return fallback;
-    } finally {
-      clearTimeout(timer);
-    }
-  };
-
-  const semanticScoreMovie = (movie: any, parsed: { keywords: string[]; genres: string[]; titles: string[] }): number => {
-    const title = normalizeSearch(String(movie?.title || ''));
-    const description = normalizeSearch(String(movie?.description || ''));
-    const tags = (Array.isArray(movie?.tags) ? movie.tags : [])
-      .concat(movie?.category ? [movie.category] : [])
-      .map((t: any) => normalizeSearch(String(t)));
-
-    let score = 0;
-    for (const t of parsed.titles) {
-      const nt = normalizeSearch(t);
-      if (nt && title.includes(nt)) score += 60;
-    }
-    for (const g of parsed.genres) {
-      const ng = normalizeSearch(g);
-      if (ng && tags.some((tag) => tag.includes(ng) || ng.includes(tag))) score += 25;
-    }
-    for (const k of parsed.keywords) {
-      const nk = normalizeSearch(k);
-      if (!nk || nk.length < 2) continue;
-      if (title.includes(nk)) score += 20;
-      if (description.includes(nk)) score += 12;
-      if (tags.some((tag) => tag.includes(nk))) score += 10;
-    }
-    return score;
-  };
-
   app.post('/api/search/ai', async (req, res) => {
     try {
-      const query = String((req.body as any)?.query || '').trim();
-      if (!query || query.length > 500) {
-        return res.status(400).json({ status: 'error', error: 'Query must be 1-500 characters' });
-      }
-      const cacheKey = normalizeSearch(query);
-      const cached = aiSearchCache.get(cacheKey);
-      if (cached && Date.now() - cached.at < AI_SEARCH_CACHE_TTL_MS) {
-        return res.json({ status: 'ok', query, ai: true, cached: true, results: cached.results });
-      }
-
-      const parsed = await callAiSearch(query);
-      let results: any[] = [];
-      if (parsed.keywords.length || parsed.genres.length || parsed.titles.length) {
-        const scored = moviesCache
-          .map((m: any) => ({ movie: enrichMovie(m), score: semanticScoreMovie(m, parsed) }))
-          .filter((x: any) => x.score > 0)
-          .sort((a: any, b: any) => b.score - a.score || b.movie.trendingScore - a.movie.trendingScore)
-          .slice(0, 24)
-          .map((x: any) => x.movie);
-        results = scored;
-      }
-
-      // Fallback: even when Gemini succeeds but ranks nothing (very new movie),
-      // a plain keyword fuzzy search over the query still returns candidates.
-      if (results.length === 0) {
-        results = searchMovies(query, [], 12);
-      }
-
-      aiSearchCache.set(cacheKey, { at: Date.now(), results });
+      const query = String(req.body?.query || '').trim();
+      if (!query || query.length > 500) return res.status(400).json({ status: 'error', error: 'Query must be 1-500 characters' });
+      // Search the same merged public catalog that supplies the movie cards.
+      const catalog = mergeCatalogWithFirestore(moviesCache, db.deletedIds).filter((film: any) => film.id !== 'hero-promo');
+      // New/edited films invalidate cached search results without database changes.
+      const fingerprint = crypto.createHash('sha256').update(JSON.stringify(catalog.map((m: any) =>
+        [m.id, m.title, m.description, m.year, m.tags, m.category, m.language]))).digest('hex');
+      const key = descriptionText(query) + ':' + fingerprint;
+      const cached = aiSearchCache.get(key);
+      if (cached && Date.now() - cached.at < AI_SEARCH_CACHE_TTL_MS) return res.json({ ...cached.payload, cached: true });
+      const ranked = await searchDescriptions(catalog, query);
+      const payload = { status: 'ok', query, ...ranked, results: ranked.results.map((film: any) => enrichMovie(film)) };
+      aiSearchCache.set(key, { at: Date.now(), payload });
       if (aiSearchCache.size > 200) aiSearchCache.delete(aiSearchCache.keys().next().value);
-
-      res.json({
-        status: 'ok',
-        query,
-        ai: parsed.keywords.length > 0,
-        keywords: parsed.keywords,
-        genres: parsed.genres,
-        titles: parsed.titles,
-        results,
-      });
-    } catch (err: any) {
-      console.error('[search/ai]', err?.message || err);
-      res.status(500).json({ status: 'error', error: 'Internal server error' });
+      return res.json(payload);
+    } catch {
+      console.error('[description-search] Search request failed');
+      return res.status(500).json({ status: 'error', error: 'Internal server error' });
     }
   });
 

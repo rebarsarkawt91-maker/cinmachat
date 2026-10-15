@@ -433,12 +433,10 @@ import { MovieCard, MovieCardSkeleton, getMoviePosterCandidates } from "./compon
 import {
   fuzzyMatchMovie,
   movieMatchesGenres,
-  semanticScoreMovie,
-  directDescriptionScore,
   computeTrendingScore,
   normalizeSearch,
 } from "./utils/search";
-import type { SemanticSignals } from "./utils/search";
+import { descriptionNamedTitle, matchesDescriptionConstraints, parseDescriptionQuery, rankDescriptionMovies } from "./utils/descriptionSearch";
 import UserActivityMonitor from "./components/Admin/UserActivityMonitor";
 import MovieEditModal from "./components/Admin/MovieEditModal";
 import KurdSubStudioModal from "./components/Admin/KurdSubStudioModal";
@@ -10894,128 +10892,41 @@ const handleWebkitEndFullscreen = () => {
   const runAiSearch = useCallback(async () => {
     const q = aiQuery.trim();
     if (!q || aiLoading) return;
-    const querySignals = (): SemanticSignals => ({
-      keywords: q
-        .split(/\s+/)
-        .map((w) => w.toLowerCase())
-        .filter((w) => w.length >= 2)
-        .slice(0, 8),
-      genres: [],
-      titles: [],
-    });
+    const parsed = parseDescriptionQuery(q);
+    const requestedTitle = descriptionNamedTitle(q);
+    const local = rankDescriptionMovies(movies, q, 12);
     setAiLoading(true);
-    setAiResults(null);
     setAiNotFoundTitle(null);
-    // Direct description/title match: when the pasted text is (or contains) an
-    // existing movie's description/title, its card shows immediately — before
-    // the AI round-trip — and stays at the top of the merged results.
-    const directMatches = movies
-      .map((m) => ({ m, s: directDescriptionScore(m, q) }))
-      .filter((x) => x.s > 0)
-      .sort((a, b) => b.s - a.s)
-      .map((x) => x.m);
-    if (directMatches.length > 0) {
-      setAiResults(directMatches.slice(0, 12));
-      setAiMeta({ keywords: [], genres: [], titles: [] });
-    }
-    // Named-movie requests ("فیلمی fall2 دەوێت"): when the user asks for a
-    // SPECIFIC title, the result must be THAT movie or the apology — never
-    // unrelated fuzzy suggestions. Genre words (ترسناکم...) are excluded so
-    // genre wishes keep their normal suggestion behavior.
-    const namedPattern = q.match(
-      /(?:فیلمی|فیلمێکی|درامای|زنجیرەی)\s+([^\s].*?)(?:\s+(?:دەوێت|دەوێ|پێویستمە|پێویستە|هەیە|بێت))?\s*$/i,
-    );
-    const genreWords = new Set<string>(
-      DEFAULT_GENRES.flatMap((g) => [normalizeSearch(g.tag), normalizeSearch(g.name)]),
-    );
-    const isGenreWord = (t: string) => {
-      const nt = normalizeSearch(t);
-      if (!nt) return false;
-      for (const gw of genreWords) {
-        if (nt.startsWith(gw) || gw.startsWith(nt)) return true;
-      }
-      return false;
-    };
-    const requestedTitle = namedPattern ? namedPattern[1].trim() : "";
-    const namedRequest =
-      requestedTitle.length >= 2 &&
-      !isGenreWord(requestedTitle) &&
-      !/^(نموونە|بۆ نموونە)/i.test(requestedTitle);
-    const namedFound =
-      namedRequest &&
-      movies.some(
-        (m) =>
-          directDescriptionScore(m, requestedTitle) > 0 ||
-          fuzzyMatchMovie(m, requestedTitle) >= 50,
-      );
+    setAiResults(local);
+    setAiMeta({ keywords: [...parsed.topics.map(topic => topic.key), ...parsed.tokens].slice(0, 12), genres: parsed.genres.map(genre => genre.key), titles: requestedTitle ? [requestedTitle] : [] });
     try {
       const res = await api.aiSearch(q);
-      setAiMeta({
-        keywords: res?.keywords || [],
-        genres: res?.genres || [],
-        titles: res?.titles || [],
-      });
-      const serverResults = Array.isArray(res?.results) ? res.results : [];
-      const directIds = new Set(directMatches.map((m) => m.id));
-      const merged = [
-        ...directMatches,
-        ...serverResults.filter((m: any) => m?.id && !directIds.has(m.id)),
-      ];
-      // Named request that the catalog does not have → apology, no suggestions.
-      if (
-        namedRequest &&
-        !namedFound &&
-        !merged.some((m: any) =>
-          normalizeSearch(String(m?.title || "")).includes(
-            normalizeSearch(requestedTitle),
-          ),
-        )
-      ) {
-        setAiResults([]);
-        setAiNotFoundTitle(requestedTitle);
-        setAiMeta({ keywords: [], genres: [], titles: [] });
+      const byId = new Map(movies.map(movie => [movie.id, movie]));
+      const seen = new Set<string>();
+      // Reuse actual catalog records and the same constraints as the API.
+      const serverResults: Movie[] = (Array.isArray(res?.results) ? res.results : [])
+        .map((film: Movie) => byId.get(film?.id) || film)
+        .filter((film: Movie) => (res?.engine === "catalog" || res?.engine === "gemini") && film?.id && matchesDescriptionConstraints(film, q));
+      const results = [...serverResults, ...local].filter(film => {
+        if (seen.has(film.id)) return false;
+        seen.add(film.id); return true;
+      }).slice(0, 12);
+      setAiResults(results);
+      if (res?.keywords || res?.genres || res?.titles) setAiMeta({ keywords: res.keywords || [], genres: res.genres || [], titles: res.titles || [] });
+      if (!results.length) {
+        if (requestedTitle) setAiNotFoundTitle(requestedTitle);
         notifyMovieRequest(q);
-        submitSearchTerm(q);
-        return;
-      }
-      if (merged.length > 0) {
-        setAiResults(merged.slice(0, 12));
-      } else {
-        const signals = querySignals();
-        const scored = movies
-          .map((m) => ({ m, s: semanticScoreMovie(m, signals) }))
-          .filter((x) => x.s > 0)
-          .sort((a, b) => b.s - a.s);
-        const fallback = scored.slice(0, 12).map((x) => x.m);
-        setAiResults(fallback);
-        if (fallback.length === 0) notifyMovieRequest(q);
       }
       submitSearchTerm(q);
-    } catch (e) {
-      const signals = querySignals();
-      const directIds = new Set(directMatches.map((m) => m.id));
-      const scored = movies
-        .map((m) => ({ m, s: semanticScoreMovie(m, signals) }))
-        .filter((x) => x.s > 0 && !directIds.has(x.m.id))
-        .sort((a, b) => b.s - a.s);
-      const fallback = [...directMatches, ...scored.map((x) => x.m)].slice(0, 12);
-      // Named request offline: same apology rule as the online path.
-      if (namedRequest && !namedFound) {
-        setAiResults([]);
-        setAiNotFoundTitle(requestedTitle);
-        setAiMeta({ keywords: [], genres: [], titles: [] });
+    } catch {
+      setAiResults(local);
+      if (!local.length) {
+        if (requestedTitle) setAiNotFoundTitle(requestedTitle);
         notifyMovieRequest(q);
-        submitSearchTerm(q);
-        return;
       }
-      setAiResults(fallback);
-      setAiMeta({ keywords: [], genres: [], titles: [] });
-      if (fallback.length === 0) notifyMovieRequest(q);
       submitSearchTerm(q);
-    } finally {
-      setAiLoading(false);
-    }
-  }, [aiQuery, aiLoading, movies, submitSearchTerm]);
+    } finally { setAiLoading(false); }
+  }, [aiQuery, aiLoading, movies, submitSearchTerm, notifyMovieRequest]);
 
   // While a movie is playing, periodically persist playback progress so the
   // "Continue Watching" row reflects real resume points.
