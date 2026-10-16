@@ -440,6 +440,7 @@ import { matchesDescriptionConstraints, rankDescriptionMovies } from "./utils/de
 import { catalogHasNamedTitle, namedSearchTitle } from './utils/externalTitle';
 import { MissingMovieCards } from './components/MissingMovieCards';
 import { BoxOfficeBanner } from './components/Movie/BoxOfficeBanner';
+import { LiveMoviePreview } from './components/Movie/LiveMoviePreview';
 import UserActivityMonitor from "./components/Admin/UserActivityMonitor";
 import MovieEditModal from "./components/Admin/MovieEditModal";
 import KurdSubStudioModal from "./components/Admin/KurdSubStudioModal";
@@ -13748,6 +13749,17 @@ const handleWebkitEndFullscreen = () => {
     return sortedMovies.slice(startIndex, startIndex + moviesPerPage);
   }, [sortedMovies, currentPage]);
 
+  // Share the exact existing card actions between the moving preview and grid.
+  const renderHomeMovieCard = (movie: Movie, priority = false) => (
+    <MovieCard key={movie.id} priority={priority}
+      movie={resolvedMovies[movie.id] ?? movie}
+      liveViewers={getMovieLiveViewers(movie)} isTopLive={topLiveId === movie.id}
+      isFavorite={favoriteIds.has(movie.id)} isLiked={likedIds.has(movie.id)} likes={getMovieLikes(movie)}
+      onOpen={openMovieDetails} onToggleFavorite={handleToggleFavorite} onToggleLike={handleToggleLike}
+      onEdit={canEditMovies ? setMovieBeingEdited : undefined}
+      onDelete={isPrimaryOwner ? handleDeleteMovie : undefined} />
+  );
+
   // Authoritative counter for "سەرجەم فیلمەکان": LOCKED to the definitive total
   // fetched once from the server, so it renders the FINAL number from second 0
   // and can never climb as the live list streams in. Falls back to the hydrated
@@ -15075,26 +15087,15 @@ const handleWebkitEndFullscreen = () => {
             <div className="max-w-7xl mx-auto px-8 pb-32">
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-6 md:gap-8 items-start content-start">
                 {paginatedMovies.flatMap((movie, idx) => {
-                  const movieCard = (
-                    <MovieCard
-                      key={movie.id}
-                      priority={idx < 6}
-                      movie={resolvedMovies[movie.id] ?? movie}
-                      liveViewers={getMovieLiveViewers(movie)}
-                      isTopLive={topLiveId === movie.id}
-                      isFavorite={favoriteIds.has(movie.id)}
-                      isLiked={likedIds.has(movie.id)}
-                      likes={getMovieLikes(movie)}
-                      onOpen={openMovieDetails}
-                      onToggleFavorite={handleToggleFavorite}
-                      onToggleLike={handleToggleLike}
-                      onEdit={canEditMovies ? setMovieBeingEdited : undefined}
-                      onDelete={isPrimaryOwner ? handleDeleteMovie : undefined}
-                    />
-                  );
+                  const items: React.ReactNode[] = idx === 0 ? [
+                    <div key="live-movie-preview" className="col-span-full">
+                      <LiveMoviePreview movies={sortedMovies} startId={paginatedMovies[0]?.id}
+                        getLiveViewers={getMovieLiveViewers} renderMovie={renderHomeMovieCard}
+                        suspended={!!selectedMovie || showAllFilms} />
+                    </div>,
+                  ] : idx >= 6 ? [renderHomeMovieCard(movie)] : [];
 
                     if (idx === 5) {
-                      const items = [movieCard];
                       items.push(
                         <div
                           key="all-films-toggle"
@@ -15141,7 +15142,7 @@ const handleWebkitEndFullscreen = () => {
                       );
                       return items;
                     }
-                    return [movieCard];
+                    return items;
                   })}
               </div>
 

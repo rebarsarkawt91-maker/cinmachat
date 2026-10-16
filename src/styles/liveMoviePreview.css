@@ -1,0 +1,12 @@
+/* Scoped to the home preview; MovieCard, full catalog and other carousels stay unchanged. */
+.live-movie-preview { display: flex; align-items: flex-start; gap: var(--live-preview-gap); width: 100%; min-width: 0; }
+.live-movie-preview__viewport { flex: 1 1 0; min-width: 0; overflow-x: auto; overflow-y: hidden; padding: 8px 0; scrollbar-width: none; scroll-behavior: auto !important; overflow-anchor: none; }
+.live-movie-preview__viewport::-webkit-scrollbar { display: none; }
+.live-movie-preview__track { display: flex; align-items: flex-start; gap: var(--live-preview-gap); width: max-content; }
+.live-movie-preview__card { flex: 0 0 var(--live-preview-card); width: var(--live-preview-card); min-width: 0; }
+.live-movie-preview__pins { display: flex; flex: none; gap: var(--live-preview-gap); margin-left: auto; padding: 8px 0; }
+@media (max-width: 767px) {
+  .live-movie-preview { flex-direction: column-reverse; gap: 8px; }
+  .live-movie-preview__viewport { flex: none; width: 100%; }
+  .live-movie-preview__pins { align-self: flex-end; }
+}
