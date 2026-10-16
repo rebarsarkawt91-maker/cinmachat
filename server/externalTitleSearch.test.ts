@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createExternalTitleSearch, parseImdbTitles } from './externalTitleSearch';
-import { catalogHasNamedTitle, discoverTitleMatches, movieRequestLink, namedSearchTitle, titleIdentity } from '../src/utils/externalTitle';
+import { catalogHasNamedTitle, discoverTitleMatches, movieRequestLink, namedSearchTitle, resolveCatalogTitle, titleIdentity } from '../src/utils/externalTitle';
 
 const fall = { id: 'tt15325794', l: 'Fall', y: 2022, qid: 'movie', i: { imageUrl: 'https://m.media-amazon.com/images/M/poster.jpg' } };
 test('external results are real title metadata, exact names first, never actors or invented playback', () => {
@@ -39,6 +39,66 @@ test('the exact screenshot request and Sorani/Arabic wish variants extract the r
   }
   assert.equal(namedSearchTitle('فیلمێکم ئەمەوێ باسی ڕاپەڕین بکات'), null);
   assert.equal(namedSearchTitle('rebels fighting a king'), null);
+});
+
+test('Kurdish title meanings and spellings find actual English-only cards', () => {
+  const catalog = [
+    { id: 'soul', title: 'Soul', year: '2020' }, { id: 'luca', title: '🎬 Luca kurdsh subtitle', year: '2021' },
+    { id: 'fish', title: 'The Pout-Pout Fish', year: '2026' }, { id: 'brave', title: 'Brave', year: '2012' },
+  ];
+  for (const [id, aliases] of [
+    ['soul', ['ڕۆح', 'رۆح', 'روح', 'سۆڵ', 'Soul']], ['luca', ['لوکا', 'لوکە', 'Luca']],
+    ['fish', ['ماسییە بێزارەکە', 'ماسیە بێزارەکە', 'The Pout-Pout Fish']], ['brave', ['بوێر', 'Brave']],
+  ] as const) for (const alias of aliases) {
+    for (const query of [alias, `فیلمی ${alias} دەوێت`, `تکایە فيلمى ${alias} ئەمەوێ`]) {
+      const named = namedSearchTitle(query, catalog);
+      assert.ok(named, query);
+      assert.deepEqual(catalog.filter(f => catalogHasNamedTitle([f], named!)).map(f => f.id), [id], query);
+    }
+  }
+  assert.equal(catalogHasNamedTitle(catalog, 'بوێر ٢٠١٢'), true);
+  assert.equal(catalogHasNamedTitle(catalog, 'بوێر ٢٠٢٦'), false);
+  assert.equal(catalogHasNamedTitle(catalog, 'بوێر ٢'), false);
+  assert.equal(namedSearchTitle('فیلمێک باسی ڕۆح بکات', catalog), null);
+  assert.equal(namedSearchTitle('فیلمێکی ترسناک دەوێت', catalog), null);
+  assert.equal(catalogHasNamedTitle([], 'رۆح'), false, 'aliases never invent an available movie');
+});
+
+test('bilingual aliases are learned from arbitrary catalog titles and retain year/part constraints', () => {
+  const catalog = [{ id: 'new', title: 'Silver Harbor | بەندەری زیوین', year: '2024' }];
+  assert.equal(namedSearchTitle('فیلمی بەندەری زیوین دەوێت', catalog), 'silver harbor');
+  assert.equal(resolveCatalogTitle('بەندەری زیوین بەشی دووەم ٢٠٢٦', catalog), 'silver harbor 2 2026');
+  assert.equal(catalogHasNamedTitle(catalog, 'بەندەری زیوین 2024'), true);
+  assert.equal(catalogHasNamedTitle(catalog, 'بەندەری زیوین 2026'), false);
+  assert.equal(resolveCatalogTitle('بەندەری زیوین', [...catalog,
+    { id: 'other', title: 'Other Name | بەندەری زیوین' }]), 'بەندەری زیوین', 'ambiguous aliases must not guess an English title');
+  assert.equal(catalogHasNamedTitle([{ id: 'b', title: 'Brave | بوێر', year: '2012' }], 'Brave 2012'), true);
+  assert.equal(catalogHasNamedTitle([{ id: 's', title: 'ڕۆح', year: '2020' }], 'Soul 2020'), true);
+  // Actual catalog formatting, including emoji, Unicode year and legacy suffix.
+  const live = [{ id: 'l', title: '🎬 Luca kurdsh subtitle  | لوکا (٢٠٢١)', year: '2021' },
+    { id: 's', title: 'Soul | ڕۆح (٢٠٢٠)', year: '2020' },
+    { id: 'b', title: '🎬 Brave | بوێر', year: '2012' },
+    { id: 'f', title: 'The Pout-Pout Fish | ماسییە بێزارەکە', year: '2026' }];
+  for (const [query, id] of [['لوکا', 'l'], ['رۆح', 's'], ['بوێر', 'b'], ['ماسییە بێزارەکە', 'f']]) {
+    assert.deepEqual(live.filter(f => catalogHasNamedTitle([f], namedSearchTitle(query, live)!)).map(f => f.id), [id]);
+  }
+  assert.equal(namedSearchTitle('فیلمێک باسی بەندەر بکات', catalog), null);
+});
+
+test('Kurdish aliases use canonical IMDb names without losing local availability or numbered variants', async () => {
+  const queries: string[] = [];
+  const lookup = createExternalTitleSearch((async url => {
+    queries.push(decodeURIComponent(new URL(String(url)).pathname));
+    return Response.json({ d: [{ ...fall, id: 'tt2948356', l: 'Soul', y: 2020 }] });
+  }) as typeof fetch);
+  const catalog = [{ id: 'soul', title: 'Soul | ڕۆح', year: '2020' }];
+  const query = namedSearchTitle('فیلمی رۆح دەوێت', catalog)!;
+  const result = discoverTitleMatches(catalog, query, await lookup(query));
+  assert.equal(queries.length, 1);
+  assert.ok(queries[0].endsWith('/soul.json'));
+  assert.equal(result.alreadyAvailable, true);
+  assert.equal(result.results[0]?.availableId, 'soul');
+  assert.equal(titleIdentity('ماسییە بێزارەکە بەشی دووەم ٢٠٢٦').part, 2);
 });
 
 test('numbered parts, glued numbers, Roman numerals and Unicode years are separate constraints', () => {

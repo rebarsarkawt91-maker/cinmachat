@@ -1,4 +1,5 @@
-import { descriptionNamedTitle, matchesDescriptionConstraints, parseDescriptionQuery, rankDescriptionMovies, type SearchableFilm } from '../src/utils/descriptionSearch';
+import { matchesDescriptionConstraints, parseDescriptionQuery, rankDescriptionMovies, type SearchableFilm } from '../src/utils/descriptionSearch';
+import { catalogHasNamedTitle, namedSearchTitle } from '../src/utils/externalTitle';
 
 export interface DescriptionSearchResult<T> {
   results: T[]; ai: boolean; engine: 'catalog' | 'gemini';
@@ -10,8 +11,9 @@ export function createDescriptionSearch(options: { apiKey?: string; model?: stri
   let unavailableUntil = 0;
   return async <T extends SearchableFilm>(catalog: T[], query: string): Promise<DescriptionSearchResult<T>> => {
     const parsed = parseDescriptionQuery(query);
-    const named = descriptionNamedTitle(query);
-    const local = rankDescriptionMovies(catalog, query);
+    const named = namedSearchTitle(query, catalog);
+    const local = named ? catalog.filter(film => catalogHasNamedTitle([film], named)).slice(0, 12)
+      : rankDescriptionMovies(catalog, query);
     const fallback: DescriptionSearchResult<T> = { results: local, ai: false, engine: 'catalog',
       keywords: [...parsed.topics.map(topic => topic.key), ...parsed.tokens].slice(0, 12),
       genres: parsed.genres.map(genre => genre.key), titles: named ? [named] : [] };

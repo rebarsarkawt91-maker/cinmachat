@@ -65,6 +65,18 @@ test('named requests keep exact-title/no-match behavior; source order is unchang
   assert.deepEqual(rankDescriptionMovies(films, 'فیلمی Fall2 دەوێت'), []);
   assert.deepEqual(films.map(film => film.id), before);
 });
+
+test('API and browser title aliases agree without consuming Gemini quota', async () => {
+  let calls = 0;
+  const catalog = [...films, { id: 'soul', title: 'Soul', year: '2020' }, { id: 'brave', title: 'Brave', year: '2012' }];
+  const search = createDescriptionSearch({ apiKey: 'test', fetch: (async () => {
+    calls++; throw new Error('A known bilingual title must not need an AI call');
+  }) as typeof fetch });
+  assert.deepEqual((await search(catalog, 'فیلمی رۆح دەوێت')).results.map(f => f.id), ['soul']);
+  assert.deepEqual((await search(catalog, 'بوێر ٢٠١٢')).results.map(f => f.id), ['brave']);
+  assert.deepEqual((await search(catalog, 'بوێر ٢٠٢٦')).results, []);
+  assert.equal(calls, 0);
+});
 test('no-key and provider outage return useful local results without guessed AI output', async () => {
   const local = await createDescriptionSearch({})(films, 'ترسناکم دەوێت');
   assert.equal(local.ai, false);

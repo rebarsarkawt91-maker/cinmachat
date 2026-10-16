@@ -10888,7 +10888,7 @@ const handleWebkitEndFullscreen = () => {
   const runAiSearch = useCallback(async () => {
     const q = aiQuery.trim();
     if (!q || aiLoading) return;
-    const requestedTitle = namedSearchTitle(q);
+    const requestedTitle = namedSearchTitle(q, movies);
     const relevanceQuery = requestedTitle ? `فیلمی ${requestedTitle} دەوێت` : q;
     const local = requestedTitle ? movies.filter(film => catalogHasNamedTitle([film], requestedTitle)).slice(0, 12)
       : rankDescriptionMovies(movies, relevanceQuery, 12);
@@ -13717,8 +13717,9 @@ const handleWebkitEndFullscreen = () => {
     } else {
       const q = searchQuery.trim().toLowerCase();
       if (q) {
+        const named = namedSearchTitle(q, list);
         const scored = list
-          .map((m) => ({ m, s: fuzzyMatchMovie(m, q) }))
+          .map((m) => ({ m, s: named && catalogHasNamedTitle([m], named) ? 1000 : fuzzyMatchMovie(m, q) }))
           .filter((x) => x.s > 0)
           .sort((a, b) => b.s - a.s);
         list = scored.map((x) => x.m);
@@ -15046,7 +15047,7 @@ const handleWebkitEndFullscreen = () => {
                 </div>
               )}
               {searchMode === 'title' && catalogHydrated && searchQuery.trim().length >= 2 && searchQuery.trim().length <= 150 && (
-                <MissingMovieCards title={namedSearchTitle(searchQuery) || searchQuery.trim()} whatsappHref={whatsappRequestHref} onOpenLocal={openSearchLocalFilm} />
+                <MissingMovieCards title={namedSearchTitle(searchQuery, movies) || searchQuery.trim()} whatsappHref={whatsappRequestHref} onOpenLocal={openSearchLocalFilm} />
               )}
             </div>
 

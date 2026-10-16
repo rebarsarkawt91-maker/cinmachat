@@ -13168,7 +13168,7 @@ async function startServer() {
     res.set('Cache-Control', 'no-store'); // Recheck local availability; provider metadata is cached in memory.
     const catalog = mergeCatalogWithFirestore(moviesCache, db.deletedIds).filter((film: any) => film.id !== 'hero-promo');
     // Look for other numbered/year variants even when the requested film is local.
-    const requested = namedSearchTitle(title) || title;
+    const requested = namedSearchTitle(title, catalog) || title;
     const result = await lookupExternalTitle(requested);
     return res.json(discoverTitleMatches(catalog, requested, result));
   });
