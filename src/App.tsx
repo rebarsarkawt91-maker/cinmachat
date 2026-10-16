@@ -439,6 +439,7 @@ import {
 import { matchesDescriptionConstraints, rankDescriptionMovies } from "./utils/descriptionSearch";
 import { catalogHasNamedTitle, namedSearchTitle } from './utils/externalTitle';
 import { MissingMovieCards } from './components/MissingMovieCards';
+import { BoxOfficeBanner } from './components/Movie/BoxOfficeBanner';
 import UserActivityMonitor from "./components/Admin/UserActivityMonitor";
 import MovieEditModal from "./components/Admin/MovieEditModal";
 import KurdSubStudioModal from "./components/Admin/KurdSubStudioModal";
@@ -15116,21 +15117,7 @@ const handleWebkitEndFullscreen = () => {
                             key="ad-banner"
                             className="col-span-full my-12"
                           >
-                            <a
-                              href={config.ads.banner.link}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              <div className="w-full aspect-[728/90] md:h-[120px] bg-white/5 rounded-2xl overflow-hidden border border-white/10 group cursor-pointer relative">
-                                <img
-                                  src={config.ads.banner.image || undefined}
-                                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                                />
-                                <div className="absolute top-2 right-2 px-2 py-1 bg-black/40 text-[8px] font-black text-white/50 uppercase tracking-widest rounded border border-white/5">
-                                  ADVERTISEMENT
-                                </div>
-                              </div>
-                            </a>
+                            <BoxOfficeBanner image={config.ads.banner.image} />
                           </div>
                         );
                       }

@@ -1,0 +1,42 @@
+.box-office-banner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  cursor: default;
+}
+.box-office-ad, .box-office-panel {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 10%);
+  border-radius: 16px;
+  background: #111119;
+}
+.box-office-ad { position: relative; }
+.box-office-ad > img { display: block; width: 100%; height: 100%; position: absolute; inset: 0; object-fit: cover; }
+.box-office-ad > span { position: absolute; top: 8px; left: 8px; padding: 3px 6px; color: #b8b8c4; background: #0009; border-radius: 4px; font: 800 8px sans-serif; letter-spacing: 1px; }
+.box-office-panel { padding: 10px 10px 7px; }
+.box-office-panel > h2 { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 0 0 8px; color: #fcd34d; font-size: 13px; font-weight: 900; line-height: 1.5; }
+.box-office-panel > h2 > span { direction: ltr; color: #9999aa; font: 700 9px sans-serif; white-space: nowrap; }
+.box-office-window { overflow: hidden; min-width: 0; }
+.box-office-track { display: flex; width: max-content; animation: cinemachat-box-office-marquee 45s linear infinite; }
+.box-office-group { display: flex; flex: none; gap: 10px; padding: 0 10px 0 0; margin: 0; list-style: none; }
+.box-office-group > li { flex: none; width: 80px; }
+.box-office-card { display: flex; flex-direction: column; gap: 4px; }
+.box-office-poster { position: relative; width: 80px; height: 120px; border-radius: 8px; overflow: hidden; background: #24232d; }
+.box-office-placeholder { display: grid; width: 100%; height: 100%; place-items: center; color: #888; font-size: 24px; }
+.box-office-poster img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.box-office-rank { position: absolute; left: 4px; bottom: 4px; display: grid; place-items: center; width: 23px; height: 23px; border-radius: 50%; background: #fbbf24; color: #111; border: 2px solid #17171c; font: 900 12px sans-serif; }
+.box-office-title { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #eee; font: 700 10px/1.3 sans-serif; }
+.box-office-gross { color: #c4c4ce; font: 600 9px/1.3 sans-serif; }
+.box-office-source { display: flex; flex-wrap: wrap; gap: 4px 8px; margin: 7px 0 0; color: #a8a8b4; font: 500 9px/1.5 sans-serif; }
+@keyframes cinemachat-box-office-marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+@media (max-width: 540px) {
+  .box-office-banner { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .box-office-ad { height: 90px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .box-office-track { animation: none; }
+  .box-office-window { overflow-x: auto; }
+}

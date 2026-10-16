@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { createDescriptionSearch } from './server/descriptionSearchService';
 import { createExternalTitleSearch } from './server/externalTitleSearch';
+import { createBoxOfficeService } from './server/boxOfficeService';
 import { discoverTitleMatches, namedSearchTitle } from './src/utils/externalTitle';
 import { descriptionText } from './src/utils/descriptionSearch';
 import express from 'express';
@@ -13162,6 +13163,12 @@ async function startServer() {
 
   // Description mode shares relevance rules with the browser/offline fallback.
   const lookupExternalTitle = createExternalTitleSearch();
+  const getBoxOffice = createBoxOfficeService();
+  app.get('/api/box-office', async (_req, res) => {
+    const chart = await getBoxOffice();
+    res.set('Cache-Control', 'public, max-age=900, stale-while-revalidate=3600');
+    res.json(chart);
+  });
   app.get('/api/search/external-title', async (req, res) => {
     const title = typeof req.query.q === 'string' ? req.query.q.trim() : '';
     if (title.length < 2 || title.length > 150) return res.status(400).json({ results: [], error: 'Title must be 2-150 characters' });
