@@ -436,7 +436,9 @@ import {
   computeTrendingScore,
   normalizeSearch,
 } from "./utils/search";
-import { descriptionNamedTitle, matchesDescriptionConstraints, parseDescriptionQuery, rankDescriptionMovies } from "./utils/descriptionSearch";
+import { matchesDescriptionConstraints, rankDescriptionMovies } from "./utils/descriptionSearch";
+import { catalogHasNamedTitle, namedSearchTitle } from './utils/externalTitle';
+import { MissingMovieCards } from './components/MissingMovieCards';
 import UserActivityMonitor from "./components/Admin/UserActivityMonitor";
 import MovieEditModal from "./components/Admin/MovieEditModal";
 import KurdSubStudioModal from "./components/Admin/KurdSubStudioModal";
@@ -7663,11 +7665,6 @@ export default function App() {
   // ("فیلمی fall2 دەوێت"), this holds its name so the apology shows it.
   const [aiNotFoundTitle, setAiNotFoundTitle] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
-  const [aiMeta, setAiMeta] = useState<{
-    keywords: string[];
-    genres: string[];
-    titles: string[];
-  }>({ keywords: [], genres: [], titles: [] });
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [trendingSearches, setTrendingSearches] = useState<{ term: string; count: number }[]>([]);
   const [sortBy, setSortBy] = useState<"recent" | "trending" | "live">("recent");
@@ -10892,27 +10889,27 @@ const handleWebkitEndFullscreen = () => {
   const runAiSearch = useCallback(async () => {
     const q = aiQuery.trim();
     if (!q || aiLoading) return;
-    const parsed = parseDescriptionQuery(q);
-    const requestedTitle = descriptionNamedTitle(q);
-    const local = rankDescriptionMovies(movies, q, 12);
+    const requestedTitle = namedSearchTitle(q);
+    const relevanceQuery = requestedTitle ? `فیلمی ${requestedTitle} دەوێت` : q;
+    const local = rankDescriptionMovies(movies, relevanceQuery, 12)
+      .filter(film => !requestedTitle || catalogHasNamedTitle([film], requestedTitle));
     setAiLoading(true);
     setAiNotFoundTitle(null);
     setAiResults(local);
-    setAiMeta({ keywords: [...parsed.topics.map(topic => topic.key), ...parsed.tokens].slice(0, 12), genres: parsed.genres.map(genre => genre.key), titles: requestedTitle ? [requestedTitle] : [] });
     try {
-      const res = await api.aiSearch(q);
+      const res = await api.aiSearch(relevanceQuery);
       const byId = new Map(movies.map(movie => [movie.id, movie]));
       const seen = new Set<string>();
       // Reuse actual catalog records and the same constraints as the API.
       const serverResults: Movie[] = (Array.isArray(res?.results) ? res.results : [])
         .map((film: Movie) => byId.get(film?.id) || film)
-        .filter((film: Movie) => (res?.engine === "catalog" || res?.engine === "gemini") && film?.id && matchesDescriptionConstraints(film, q));
+        .filter((film: Movie) => (res?.engine === "catalog" || res?.engine === "gemini") && film?.id && matchesDescriptionConstraints(film, relevanceQuery)
+          && (!requestedTitle || catalogHasNamedTitle([film], requestedTitle)));
       const results = [...serverResults, ...local].filter(film => {
         if (seen.has(film.id)) return false;
         seen.add(film.id); return true;
       }).slice(0, 12);
       setAiResults(results);
-      if (res?.keywords || res?.genres || res?.titles) setAiMeta({ keywords: res.keywords || [], genres: res.genres || [], titles: res.titles || [] });
       if (!results.length) {
         if (requestedTitle) setAiNotFoundTitle(requestedTitle);
         notifyMovieRequest(q);
@@ -14916,44 +14913,6 @@ const handleWebkitEndFullscreen = () => {
                 </div>
               </div>
 
-              {searchMode === "title" && (
-                <div className="max-w-2xl mx-auto">
-                  {/* Recent + trending search chips */}
-                  {(recentSearches.length > 0 || trendingSearches.length > 0) && (
-                    <div className="mt-4 flex flex-wrap justify-center gap-2">
-                      {recentSearches.map((term) => (
-                        <button
-                          key={`r-${term}`}
-                          onClick={() => {
-                            setSearchQuery(term);
-                            submitSearchTerm(term);
-                          }}
-                          className="px-3 py-1.5 rounded-full bg-white/5 border border-white/10 text-xs font-bold text-gray-300 hover:text-brand-primary hover:border-brand-primary/40 transition-all"
-                        >
-                          {term}
-                        </button>
-                      ))}
-                      {trendingSearches.map((t) => (
-                        <button
-                          key={`t-${t.term}`}
-                          onClick={() => {
-                            setSearchQuery(t.term);
-                            submitSearchTerm(t.term);
-                          }}
-                          className="px-3 py-1.5 rounded-full bg-orange-500/10 border border-orange-500/30 text-xs font-bold text-orange-400 hover:bg-orange-500/20 transition-all flex items-center gap-1"
-                        >
-                          <Flame className="w-3 h-3" />
-                          {t.term}
-                          {t.count > 0 && (
-                            <span className="text-[9px] opacity-60">{t.count}</span>
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-
               {searchMode === "genre" && (
                 <div className="max-w-3xl mx-auto">
                   <div className="flex flex-wrap justify-center gap-2">
@@ -14994,41 +14953,8 @@ const handleWebkitEndFullscreen = () => {
                 </div>
               )}
 
-              {searchMode === "ai" &&
-                (aiResults !== null ||
-                  aiMeta.keywords.length > 0 ||
-                  aiMeta.genres.length > 0 ||
-                  aiMeta.titles.length > 0) && (
+              {searchMode === "ai" && aiResults !== null && !aiLoading && (
                 <div className="mx-auto max-w-4xl rounded-[1.75rem] border border-brand-primary/35 bg-[#0d0f13]/95 p-3 shadow-2xl shadow-red-950/15 md:p-4">
-                  {(aiMeta.keywords.length > 0 ||
-                    aiMeta.genres.length > 0 ||
-                    aiMeta.titles.length > 0) && (                    <div className="mt-4 flex flex-wrap justify-center gap-2">
-                      {aiMeta.titles.map((t) => (
-                        <span
-                          key={`t-${t}`}
-                          className="px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-[11px] font-bold text-indigo-300"
-                        >
-                          فیلم: {t}
-                        </span>
-                      ))}
-                      {aiMeta.genres.map((g) => (
-                        <span
-                          key={`g-${g}`}
-                          className="px-3 py-1 rounded-full bg-purple-500/10 border border-purple-500/30 text-[11px] font-bold text-purple-300"
-                        >
-                          پۆلێن: {g}
-                        </span>
-                      ))}
-                      {aiMeta.keywords.map((k) => (
-                        <span
-                          key={`k-${k}`}
-                          className="px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[11px] font-bold text-gray-400"
-                        >
-                          {k}
-                        </span>
-                      ))}
-                    </div>
-                  )}
                   {aiResults !== null && !aiLoading && (
                     <div
                       role="status"
@@ -15075,6 +15001,7 @@ const handleWebkitEndFullscreen = () => {
                               ? `داوای لێبوردن ئەکەین 🙏 فیلمی «${aiNotFoundTitle}» ئێستا لە سایتەکە نیە`
                               : "ببوورە، ئەم فیلمە لە سایتەکە نەدۆزرایەوە 😔"}
                           </p>
+                          {aiNotFoundTitle && catalogHydrated && <MissingMovieCards title={aiNotFoundTitle} whatsappHref={whatsappRequestHref} />}
                           <p className="mt-1 text-xs leading-6 text-gray-400 kurdish-text">
                             تکایە بە دوگمەی واتسئەپ لە لای ڕاستی وێبسایتەکەوە
                             ئاگادارمان بکەرەوە — تا هەڵبدەین بۆ زیادکردنی
@@ -15102,6 +15029,9 @@ const handleWebkitEndFullscreen = () => {
                     </button>
                   )}
                 </div>
+              )}
+              {searchMode === 'title' && catalogHydrated && searchQuery.trim().length >= 2 && searchQuery.trim().length <= 150 && filteredMovies.length === 0 && !catalogHasNamedTitle(movies, searchQuery) && (
+                <MissingMovieCards title={searchQuery.trim()} whatsappHref={whatsappRequestHref} />
               )}
             </div>
 

@@ -5,6 +5,7 @@
 import { resolveApiUrl } from "./backendConfig";
 import { firstCatalog, retryCatalog } from "../lib/catalogStartup";
 import { API_CATALOG_SESSION_KEY, FIRESTORE_CATALOG_SESSION_KEY, createSessionCatalog } from "../lib/sessionCatalog";
+import type { ExternalTitleResponse } from '../utils/externalTitle';
 
 const movieCatalogSession = createSessionCatalog(API_CATALOG_SESSION_KEY);
 const firestoreCatalogSession = createSessionCatalog(FIRESTORE_CATALOG_SESSION_KEY);
@@ -430,6 +431,21 @@ export const api = {
   },
 
   // --- Smart search ---
+  async lookupMissingTitle(title: string, signal?: AbortSignal): Promise<ExternalTitleResponse> {
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    const timeout = setTimeout(cancel, 10000);
+    if (signal?.aborted) cancel();
+    signal?.addEventListener('abort', cancel, { once: true });
+    try {
+      const res = await fetch(api.resolveApiUrl(`/api/search/external-title?q=${encodeURIComponent(title)}`), { signal: controller.signal });
+      if (!res.ok) return { results: [], unavailable: true };
+      const data = await res.json();
+      return { results: Array.isArray(data.results) ? data.results : [], unavailable: data.unavailable === true, alreadyAvailable: data.alreadyAvailable === true };
+    } catch { return { results: [], unavailable: true }; }
+    finally { clearTimeout(timeout); signal?.removeEventListener('abort', cancel); }
+  },
+
   // Fuzzy title + multi-genre search with live suggestions.
   async searchMovies(q: string, genres: string[] = [], limit = 50) {
     try {

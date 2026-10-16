@@ -1,5 +1,7 @@
 import 'dotenv/config';
 import { createDescriptionSearch } from './server/descriptionSearchService';
+import { createExternalTitleSearch } from './server/externalTitleSearch';
+import { catalogHasNamedTitle } from './src/utils/externalTitle';
 import { descriptionText } from './src/utils/descriptionSearch';
 import express from 'express';
 import cors from 'cors';
@@ -13159,6 +13161,18 @@ async function startServer() {
   });
 
   // Description mode shares relevance rules with the browser/offline fallback.
+  const lookupExternalTitle = createExternalTitleSearch();
+  app.get('/api/search/external-title', async (req, res) => {
+    const title = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (title.length < 2 || title.length > 150) return res.status(400).json({ results: [], error: 'Title must be 2-150 characters' });
+    res.set('Cache-Control', 'no-store'); // Recheck local availability; provider metadata is cached in memory.
+    const catalog = mergeCatalogWithFirestore(moviesCache, db.deletedIds).filter((film: any) => film.id !== 'hero-promo');
+    // Existing local movies always win; external cards never mutate the catalog.
+    if (catalogHasNamedTitle(catalog, title)) return res.json({ results: [], alreadyAvailable: true });
+    const result = await lookupExternalTitle(title);
+    return res.json({ ...result, results: result.results.filter(film => !catalogHasNamedTitle(catalog, `${film.title}${film.year ? ` ${film.year}` : ''}`)) });
+  });
+
   const searchDescriptions = createDescriptionSearch({ apiKey: process.env.GEMINI_API_KEY, model: process.env.GEMINI_SEARCH_MODEL });
   const aiSearchCache = new Map<string, { at: number; payload: any }>();
   const AI_SEARCH_CACHE_TTL_MS = 10 * 60 * 1000;
