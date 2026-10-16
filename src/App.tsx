@@ -10895,6 +10895,14 @@ const handleWebkitEndFullscreen = () => {
     setAiLoading(true);
     setAiRequestedTitle(requestedTitle);
     setAiResults(local);
+    if (requestedTitle) {
+      // The discovery endpoint already checks the authoritative catalog and IMDb.
+      // Do not serialize a redundant AI HTTP call before showing named results.
+      setAiLoading(false);
+      if (!local.length) notifyMovieRequest(q);
+      submitSearchTerm(q);
+      return;
+    }
     try {
       const res = await api.aiSearch(relevanceQuery);
       const byId = new Map(movies.map(movie => [movie.id, movie]));
