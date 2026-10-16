@@ -7661,9 +7661,8 @@ export default function App() {
   const [selectedGenres, setSelectedGenres] = useState<string[]>([]);
   const [aiQuery, setAiQuery] = useState("");
   const [aiResults, setAiResults] = useState<Movie[] | null>(null);
-  // When the query names a SPECIFIC movie that is not in the catalog
-  // ("فیلمی fall2 دەوێت"), this holds its name so the apology shows it.
-  const [aiNotFoundTitle, setAiNotFoundTitle] = useState<string | null>(null);
+  // Named requests also discover other IMDb parts/years when already local.
+  const [aiRequestedTitle, setAiRequestedTitle] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [trendingSearches, setTrendingSearches] = useState<{ term: string; count: number }[]>([]);
@@ -10891,10 +10890,10 @@ const handleWebkitEndFullscreen = () => {
     if (!q || aiLoading) return;
     const requestedTitle = namedSearchTitle(q);
     const relevanceQuery = requestedTitle ? `فیلمی ${requestedTitle} دەوێت` : q;
-    const local = rankDescriptionMovies(movies, relevanceQuery, 12)
-      .filter(film => !requestedTitle || catalogHasNamedTitle([film], requestedTitle));
+    const local = requestedTitle ? movies.filter(film => catalogHasNamedTitle([film], requestedTitle)).slice(0, 12)
+      : rankDescriptionMovies(movies, relevanceQuery, 12);
     setAiLoading(true);
-    setAiNotFoundTitle(null);
+    setAiRequestedTitle(requestedTitle);
     setAiResults(local);
     try {
       const res = await api.aiSearch(relevanceQuery);
@@ -10911,19 +10910,27 @@ const handleWebkitEndFullscreen = () => {
       }).slice(0, 12);
       setAiResults(results);
       if (!results.length) {
-        if (requestedTitle) setAiNotFoundTitle(requestedTitle);
         notifyMovieRequest(q);
       }
       submitSearchTerm(q);
     } catch {
       setAiResults(local);
       if (!local.length) {
-        if (requestedTitle) setAiNotFoundTitle(requestedTitle);
         notifyMovieRequest(q);
       }
       submitSearchTerm(q);
     } finally { setAiLoading(false); }
   }, [aiQuery, aiLoading, movies, submitSearchTerm, notifyMovieRequest]);
+
+  // Discovery returns safe local IDs, never an external metadata card as playback.
+  const openSearchLocalFilm = (id: string) => {
+    const film = movies.find(movie => movie.id === id) || aiResults?.find(movie => movie.id === id);
+    if (film) { openMovieDetails(film); return; }
+    void api.getMovieDetails(id).then(movie => {
+      if (movie) openMovieDetails(movie);
+      else setErrorMsg('نەتوانرا زانیاریی ئەم فیلمە بهێنرێت. تکایە دووبارە هەوڵبدەرەوە.');
+    }).catch(() => setErrorMsg('نەتوانرا زانیاریی ئەم فیلمە بهێنرێت.'));
+  };
 
   // While a movie is playing, periodically persist playback progress so the
   // "Continue Watching" row reflects real resume points.
@@ -14997,11 +15004,10 @@ const handleWebkitEndFullscreen = () => {
                       ) : (
                         <div className="text-center">
                           <p className="text-sm font-black text-white kurdish-text">
-                            {aiNotFoundTitle
-                              ? `داوای لێبوردن ئەکەین 🙏 فیلمی «${aiNotFoundTitle}» ئێستا لە سایتەکە نیە`
+                            {aiRequestedTitle
+                              ? `پشکنینی ناو، بەش و ساڵی «${aiRequestedTitle}» لە خوارەوە ببینە`
                               : "ببوورە، ئەم فیلمە لە سایتەکە نەدۆزرایەوە 😔"}
                           </p>
-                          {aiNotFoundTitle && catalogHydrated && <MissingMovieCards title={aiNotFoundTitle} whatsappHref={whatsappRequestHref} />}
                           <p className="mt-1 text-xs leading-6 text-gray-400 kurdish-text">
                             تکایە بە دوگمەی واتسئەپ لە لای ڕاستی وێبسایتەکەوە
                             ئاگادارمان بکەرەوە — تا هەڵبدەین بۆ زیادکردنی
@@ -15020,6 +15026,7 @@ const handleWebkitEndFullscreen = () => {
                       )}
                     </div>
                   )}
+                  {aiRequestedTitle && catalogHydrated && <MissingMovieCards title={aiRequestedTitle} whatsappHref={whatsappRequestHref} onOpenLocal={openSearchLocalFilm} />}
                   {aiResults !== null && !aiLoading && (
                     <button
                       onClick={() => setAiResults(null)}
@@ -15030,8 +15037,8 @@ const handleWebkitEndFullscreen = () => {
                   )}
                 </div>
               )}
-              {searchMode === 'title' && catalogHydrated && searchQuery.trim().length >= 2 && searchQuery.trim().length <= 150 && filteredMovies.length === 0 && !catalogHasNamedTitle(movies, searchQuery) && (
-                <MissingMovieCards title={searchQuery.trim()} whatsappHref={whatsappRequestHref} />
+              {searchMode === 'title' && catalogHydrated && searchQuery.trim().length >= 2 && searchQuery.trim().length <= 150 && (
+                <MissingMovieCards title={namedSearchTitle(searchQuery) || searchQuery.trim()} whatsappHref={whatsappRequestHref} onOpenLocal={openSearchLocalFilm} />
               )}
             </div>
 

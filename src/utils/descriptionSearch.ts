@@ -19,6 +19,7 @@ const concept = (key: string, words: string): Concept => ({ key, aliases: words.
 ['no', 'نەبێت', 'باش', 'جوان', 'خۆش', 'best', 'good'].forEach(word => stop.add(word));
 // Request grammar is not plot evidence, including personal/indefinite film forms.
 ['باس', 'باسی', 'باسێک', 'بکات', 'بکەن', 'دەکات', 'دەکەن', 'دەوێتم', 'دەمەوێ', 'تێدا', 'تێیدا'].forEach(word => stop.add(word));
+['ئەمەوێ', 'ئەمەوێت', 'ئەموێ', 'ئەموێت'].forEach(word => stop.add(word));
 const requestWord = (word: string) => stop.has(word) || /^(?:فیلم|فلیم|فلم)(?:ی|ێک|ێکی|ێکم|ێکمان|ەک|ەکە|ەکەم)?$/.test(word);
 const genres = [
   concept("horror", "horror|horrorr|scary|terrifying|ترسناک|تۆقێنەر|تۆقاندن|رعب|مخيف"),

@@ -441,7 +441,9 @@ export const api = {
       const res = await fetch(api.resolveApiUrl(`/api/search/external-title?q=${encodeURIComponent(title)}`), { signal: controller.signal });
       if (!res.ok) return { results: [], unavailable: true };
       const data = await res.json();
-      return { results: Array.isArray(data.results) ? data.results : [], unavailable: data.unavailable === true, alreadyAvailable: data.alreadyAvailable === true };
+      return { results: Array.isArray(data.results) ? data.results : [], local: Array.isArray(data.local) ? data.local : [],
+        requestedPart: data.requestedPart, requestedYear: data.requestedYear,
+        unavailable: data.unavailable === true, alreadyAvailable: data.alreadyAvailable === true };
     } catch { return { results: [], unavailable: true }; }
     finally { clearTimeout(timeout); signal?.removeEventListener('abort', cancel); }
   },

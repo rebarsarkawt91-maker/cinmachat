@@ -1,4 +1,5 @@
 import { descriptionText } from '../src/utils/descriptionSearch';
+import { titleIdentity } from '../src/utils/externalTitle';
 import type { ExternalTitle, ExternalTitleResponse } from '../src/utils/externalTitle';
 
 /** Validate public IMDb suggestion metadata; never accept actors, arbitrary URLs or HTML. */
@@ -31,7 +32,7 @@ export function parseImdbTitles(data: unknown, query: string): ExternalTitle[] {
 
 export function createExternalTitleSearch(request: typeof fetch = fetch) {
   const cache = new Map<string, { expires: number; value: Promise<ExternalTitleResponse> }>();
-  return (title: string): Promise<ExternalTitleResponse> => {
+  const suggestion = (title: string): Promise<ExternalTitleResponse> => {
     const query = descriptionText(title).slice(0, 150);
     if (query.length < 2) return Promise.resolve({ results: [] });
     const hit = cache.get(query);
@@ -55,7 +56,7 @@ export function createExternalTitleSearch(request: typeof fetch = fetch) {
             chunks.push(part.value);
           }
         } finally { reader.releaseLock(); }
-        const results = parseImdbTitles(JSON.parse(Buffer.concat(chunks).toString('utf8')), query);
+        const results = parseImdbTitles(JSON.parse(Buffer.concat(chunks).toString('utf8')), titleIdentity(query).base);
         entry.expires = Date.now() + (results.length ? 6 * 60 * 60 * 1000 : 5 * 60 * 1000);
         return { results };
       } catch { return { results: [], unavailable: true }; }
@@ -63,5 +64,20 @@ export function createExternalTitleSearch(request: typeof fetch = fetch) {
     cache.set(query, entry);
     if (cache.size > 200) cache.delete(cache.keys().next().value!);
     return entry.value;
+  };
+  return async (title: string): Promise<ExternalTitleResponse> => {
+    const identity = titleIdentity(title);
+    if (identity.base.length < 2) return { results: [] };
+    // Search the base name even when the user requested a particular year/part.
+    // Otherwise a year filter would hide the very alternatives we need to show.
+    const queries = [identity.base];
+    if (identity.part) queries.unshift(`${identity.base} ${identity.part}`);
+    const responses = await Promise.all([...new Set(queries)].map(suggestion));
+    const seen = new Set<string>();
+    const results = responses.flatMap(response => response.results).filter(film => {
+      if (seen.has(film.imdbId)) return false;
+      seen.add(film.imdbId); return true;
+    }).slice(0, 12);
+    return { results, unavailable: responses.every(response => response.unavailable) || undefined };
   };
 }
