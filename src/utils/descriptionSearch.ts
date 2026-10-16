@@ -7,7 +7,7 @@ export interface SearchableFilm {
 export function descriptionText(value: unknown): string {
   return String(value ?? "").toLowerCase()
     .replace(/[٠-٩۰-۹]/g, digit => String("٠١٢٣٤٥٦٧٨٩".includes(digit) ? "٠١٢٣٤٥٦٧٨٩".indexOf(digit) : "۰۱۲۳۴۵۶۷۸۹".indexOf(digit)))
-    .replace(/[يى]/g, "ی").replace(/ك/g, "ک")
+    .replace(/[يى]/g, "ی").replace(/ك/g, "ک").replace(/[\u200C\u200D]/g, "")
     .replace(/[\u064B-\u065F\u0670\u0640]/g, "")
     .replace(/<[^>]*>|&[a-z#0-9]+;/gi, " ")
     .replace(/[^\p{L}\p{N}]+/gu, " ").replace(/\s+/g, " ").trim();
@@ -17,6 +17,9 @@ const stop = new Set(descriptionText("a an the i me my want would like please mo
 type Concept = { key: string; aliases: string[] };
 const concept = (key: string, words: string): Concept => ({ key, aliases: words.split("|").map(descriptionText) });
 ['no', 'نەبێت', 'باش', 'جوان', 'خۆش', 'best', 'good'].forEach(word => stop.add(word));
+// Request grammar is not plot evidence, including personal/indefinite film forms.
+['باس', 'باسی', 'باسێک', 'بکات', 'بکەن', 'دەکات', 'دەکەن', 'دەوێتم', 'دەمەوێ', 'تێدا', 'تێیدا'].forEach(word => stop.add(word));
+const requestWord = (word: string) => stop.has(word) || /^(?:فیلم|فلیم|فلم)(?:ی|ێک|ێکی|ێکم|ێکمان|ەک|ەکە|ەکەم)?$/.test(word);
 const genres = [
   concept("horror", "horror|horrorr|scary|terrifying|ترسناک|تۆقێنەر|تۆقاندن|رعب|مخيف"),
   concept("comedy", "comedy|funny|کۆمیدی|پێکەنین|کوميدی|مضحک"),
@@ -70,7 +73,7 @@ export function parseDescriptionQuery(query: string) {
   const wantedTopics = topics.filter(item => matches(text, item));
   const wantedLanguages = languages.filter(item => matches(text, item));
   const recognized = [...wantedGenres, ...excluded, ...wantedTopics, ...wantedLanguages];
-  const tokens = [...new Set(words(text).map(stem).filter(word => word.length >= 2 && !stop.has(word) && !/^\d+$/.test(word)
+  const tokens = [...new Set(words(text).filter(word => !requestWord(word)).map(stem).filter(word => word.length >= 2 && !stop.has(word) && !/^\d+$/.test(word)
     && !recognized.some(item => item.aliases.some(alias => has(word, alias) || words(alias).includes(word)))))].slice(0, 32);
   const years: string[] = Array.from(text.match(/\b(?:19|20)\d{2}\b/g) || []);
   return { text, tokens, genres: wantedGenres, topics: wantedTopics, languages: wantedLanguages, excluded,
@@ -92,6 +95,31 @@ function filmText(film: SearchableFilm) {
   const description = descriptionText(film.description).slice(0, 16000);
   const tags = descriptionText([...(Array.isArray(film.tags) ? film.tags : []), film.category || ""].join(" "));
   return { title, description, tags, all: `${title} ${description} ${tags}`, language: descriptionText(film.language) };
+}
+
+/** One insertion/deletion/substitution or adjacent transposition; bounded linear work. */
+function oneTypo(a: string, b: string): boolean {
+  if (Math.abs(a.length - b.length) > 1) return false;
+  let i = 0;
+  while (i < a.length && a[i] === b[i]) i++;
+  if (i === a.length || i === b.length) return true;
+  if (a.length > b.length) return a.slice(i + 1) === b.slice(i);
+  if (b.length > a.length) return a.slice(i) === b.slice(i + 1);
+  return a.slice(i + 1) === b.slice(i + 1) ||
+    (a[i] === b[i + 1] && a[i + 1] === b[i] && a.slice(i + 2) === b.slice(i + 2));
+}
+
+/** Correct only unmatched, long content words with ONE unambiguous catalog spelling.
+ * No movie-specific aliases; short words and explicit title requests stay exact.
+ */
+function catalogTokens(tokens: string[], docs: { all: string }[], named: string | null): string[] {
+  let vocabulary: string[] | undefined;
+  return tokens.map(token => {
+    if (named || token.length < 5 || docs.some(doc => has(doc.all, token))) return token;
+    vocabulary ??= [...new Set(docs.flatMap(doc => words(doc.all).map(stem)))].filter(word => word.length >= 4 && !requestWord(word));
+    const candidates = vocabulary.filter(word => /[a-z]/.test(word) === /[a-z]/.test(token) && oneTypo(token, word));
+    return candidates.length === 1 ? candidates[0] : token;
+  });
 }
 
 /** Hard constraints must also apply to optional model-ranked IDs. */
@@ -118,10 +146,11 @@ export function rankDescriptionMovies<T extends SearchableFilm>(catalog: T[], qu
   const q = parseDescriptionQuery(query);
   const named = descriptionNamedTitle(query);
   const docs = catalog.filter(film => film?.id && film.title).map(film => ({ film, ...filmText(film) }));
+  const tokens = catalogTokens(q.tokens, docs, named);
   const metadataMatches = (tags: string) => q.anyGenre ? q.genres.some(genre => matches(tags, genre)) : q.genres.every(genre => matches(tags, genre));
   const preferMetadataGenres = q.genres.length > 0 && !q.tokens.length && !q.topics.length &&
     docs.some(doc => metadataMatches(doc.tags));
-  const frequencies = new Map(q.tokens.map(token => [token, docs.filter(doc => has(doc.all, token)).length]));
+  const frequencies = new Map(tokens.map(token => [token, docs.filter(doc => has(doc.all, token)).length]));
   const ranked = docs.map(doc => {
     if (!matchesDescriptionConstraints(doc.film, query)) return { film: doc.film, score: 0 };
     if (preferMetadataGenres && !metadataMatches(doc.tags)) return { film: doc.film, score: 0 };
@@ -131,7 +160,7 @@ export function rankDescriptionMovies<T extends SearchableFilm>(catalog: T[], qu
     const topicHits = q.topics.filter(item => matches(doc.all, item)).length;
     if (q.topics.length && topicHits < Math.ceil(q.topics.length * 0.75)) return { film: doc.film, score: 0 };
     let hits = 0, tokenScore = 0;
-    for (const token of q.tokens) {
+    for (const token of tokens) {
       if (!has(doc.all, token)) continue;
       hits++;
       const rarity = Math.log(1 + docs.length / (1 + (frequencies.get(token) || 0)));

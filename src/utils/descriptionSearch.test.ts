@@ -35,6 +35,21 @@ test('unknown plot and filler-only queries cannot fabricate recommendations', ()
   assert.deepEqual(rankDescriptionMovies(films, 'horror movies about elephants'), []);
   assert.deepEqual(rankDescriptionMovies(films, 'underwater volcano expedition'), []);
 });
+
+test('Sorani description requests ignore request grammar and tolerate a single catalog-grounded typo', () => {
+  const catalog = [...films,
+    { id: 'uprising', title: 'The Uprising | ڕاپەڕین (٢٠٢٦)', description: 'جووتیارێک دەبێتە بەشێک لە ڕاپەڕینێکی گەورە دژی پاشا.', category: 'animation' },
+    { id: 'mine', title: 'Deep Below', description: 'کرێکاران لە کانگایەکی چۆڵدا ون دەبن.', category: 'drama' },
+  ];
+  for (const query of ['فیلمێکم دەوێت دەوێت باسی ڕاپەڕین بکات', 'فیلمێکم دەوێت باسی ڕاپىەڕین بکات']) {
+    assert.deepEqual(rankDescriptionMovies(catalog, query).map(film => film.id), ['uprising']);
+  }
+  // This must work for arbitrary catalog words, not a special-case movie mapping.
+  assert.deepEqual(rankDescriptionMovies(catalog, 'فیلمێکم دەوێت باسی کانگایەی بکات').map(film => film.id), ['mine']);
+  assert.deepEqual(rankDescriptionMovies(catalog, 'فیلمێکم دەوێت باسی بکات'), []);
+  assert.deepEqual(rankDescriptionMovies(catalog, 'فیلمێکم دەوێت باسی دایناسۆر بکات'), []);
+  assert.deepEqual(rankDescriptionMovies(catalog, 'فیلمی Fali دەوێت'), [], 'named titles must not silently fuzzy-match Fall');
+});
 test('OR genres, edited catalog and full pasted descriptions stay grounded', () => {
   const result = rankDescriptionMovies(films, 'horror or comedy');
   assert.ok(result.some(film => film.id === 'haunted'));
@@ -77,4 +92,19 @@ test('optional model sees actual metadata; invented, duplicate and wrong-genre I
   const result = await search(films, 'horror in a deserted house');
   assert.equal(result.engine, 'gemini');
   assert.deepEqual(result.results.map(film => film.id), ['haunted']);
+});
+
+test('transient Gemini capacity failure retries once; a persistent failure preserves plot matches', async () => {
+  let calls = 0;
+  const search = createDescriptionSearch({ apiKey: 'test', fetch: (async () => {
+    if (++calls === 1) return new Response('', { status: 503 });
+    return Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify({ matches: [{ id: 'fall', confidence: 0.95 }] }) }] } }] });
+  }) as typeof fetch });
+  assert.equal((await search(films, 'two women stranded on a tall structure')).engine, 'gemini');
+  assert.equal(calls, 2);
+  let failures = 0;
+  const offline = createDescriptionSearch({ apiKey: 'test', fetch: (async () => { failures++; return new Response('', { status: 503 }); }) as typeof fetch });
+  const catalog = [{ id: 'u', title: 'ڕاپەڕین', description: 'جووتیاران دژی پاشا هەڵدەستن.' }];
+  assert.equal((await offline(catalog, 'فیلمێکم دەوێت باسی ڕاپیەڕین بکات')).results[0]?.id, 'u');
+  assert.equal(failures, 2, 'retry is bounded, never an unbounded quota-consuming loop');
 });

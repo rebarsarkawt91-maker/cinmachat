@@ -13173,7 +13173,9 @@ async function startServer() {
         [m.id, m.title, m.description, m.year, m.tags, m.category, m.language]))).digest('hex');
       const key = descriptionText(query) + ':' + fingerprint;
       const cached = aiSearchCache.get(key);
-      if (cached && Date.now() - cached.at < AI_SEARCH_CACHE_TTL_MS) return res.json({ ...cached.payload, cached: true });
+      // A temporary provider outage must not pin an empty fallback for ten minutes.
+      const cacheTtl = cached?.payload.ai ? AI_SEARCH_CACHE_TTL_MS : 30000;
+      if (cached && Date.now() - cached.at < cacheTtl) return res.json({ ...cached.payload, cached: true });
       const ranked = await searchDescriptions(catalog, query);
       const payload = { status: 'ok', query, ...ranked, results: ranked.results.map((film: any) => enrichMovie(film)) };
       aiSearchCache.set(key, { at: Date.now(), payload });

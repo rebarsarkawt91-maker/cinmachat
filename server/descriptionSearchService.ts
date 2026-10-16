@@ -46,15 +46,23 @@ export function createDescriptionSearch(options: { apiKey?: string; model?: stri
     const timeout = setTimeout(() => controller.abort(), 12000);
     try {
       const model = options.model || 'gemini-flash-latest';
-      const response = await (options.fetch || fetch)(
+      const request = () => (options.fetch || fetch)(
         `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
           method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': options.apiKey },
           body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: {
             temperature: 0, responseMimeType: 'application/json', maxOutputTokens: 2048,
           } }), signal: controller.signal,
         });
+      let response = await request();
+      // Retry one transient capacity/server error within the SAME 12-second budget.
+      // Authentication and quota failures must not trigger another paid request.
+      if ([500, 502, 503, 504].includes(response.status) && !controller.signal.aborted) {
+        await response.body?.cancel();
+        await new Promise(resolve => setTimeout(resolve, 500));
+        if (!controller.signal.aborted) response = await request();
+      }
       if (!response.ok) {
-        unavailableUntil = Date.now() + 60000;
+        unavailableUntil = Date.now() + (response.status >= 500 ? 10000 : 60000);
         console.warn(`[description-search] Optional reranker unavailable (HTTP ${response.status}); using catalog ranking`);
         return fallback;
       }
