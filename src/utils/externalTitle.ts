@@ -6,7 +6,7 @@ export interface ExternalTitle {
   kind: 'movie' | 'series'; imdbUrl: string;
   relation?: TitleRelation; part?: number; availableId?: string;
 }
-export type TitleRelation = 'exact' | 'numbered' | 'different-year';
+export type TitleRelation = 'exact' | 'numbered' | 'different-year' | 'partial';
 export interface LocalTitleMatch { id: string; title: string; year: string; part?: number; relation: TitleRelation }
 export interface ExternalTitleResponse {
   results: ExternalTitle[]; unavailable?: boolean; alreadyAvailable?: boolean;
@@ -29,6 +29,7 @@ const titleAliases: ReadonlyArray<readonly [string, readonly string[]]> = [
   ['luca', ['لوکا', 'لوکە', 'لۆکا']],
   ['pout pout fish', ['ماسییە بێزارەکە', 'ماسیە بێزارەکە', 'ماسییە بێزارە', 'ماسیە بێزارە', 'the pout pout fish']],
   ['brave', ['بوێر']],
+  ['despicable me', ['منی نەفرەتلێکراو', 'منی نەفرەت لێکراو', 'من نەفرەتلێکراو', 'نەفرەتلێکراو', 'نەفرەت لێکراو', 'دیسپیکەبڵ می']],
 ];
 const aliasKey = (text: string) => descriptionText(text).replace(/ڕ/g, 'ر').replace(/^the\s+/, '');
 const aliasMap = new Map(titleAliases.flatMap(([english, aliases]) =>
@@ -48,6 +49,14 @@ export function namedSearchTitle(query: string, catalog: SearchableFilm[] = []):
       .replace(new RegExp(`\\s+${requestWish}[.!؟?]*$`, 'i'), '').trim();
   }
   if (!text || text.length > 150 || /باسی|باس بکات|دەربارە|سەبارەت|\b(?:about|looking for|want|please find|fighting|trapped|stranded|survive|trying)\b/i.test(text)) return null;
+  // A dropdown selection carries the complete display title (emoji + bilingual
+  // segments). Resolve that known card before treating it as a plot sentence.
+  const selected = catalog.find(film => descriptionText(film.title) === descriptionText(text));
+  if (selected && /\||[^\p{L}\p{N}\p{P}\p{Z}]/u.test(text)) {
+    const identities = catalogTitleIdentities({ ...selected, year: undefined });
+    const identity = identities.find(item => /^[a-z][a-z0-9\s]*$/.test(item.base)) || identities[0];
+    if (identity?.base) return `${identity.base}${identity.part ? ` ${identity.part}` : ''}${identity.year ? ` ${identity.year}` : ''}`;
+  }
   const identity = titleIdentity(text);
   // Exact catalog aliases take precedence over genre/topic words (e.g. ڕۆح).
   // Do not guess a title from a partial description or from the movie's plot.
@@ -94,6 +103,41 @@ export function compareTitle(wanted: ReturnType<typeof titleIdentity>, candidate
   return 'exact';
 }
 
+/** Partial names are discovery suggestions, never proof of exact availability.
+ * Match complete leading words; only the last word may be an unfinished prefix.
+ */
+export function titlePrefixMatch(query: string, candidate: string, unfinished = false): boolean {
+  if (!query || query.length < 2) return false;
+  if (candidate === query || candidate.startsWith(`${query} `)) return true;
+  const tokens = query.split(' '), last = tokens.pop()!;
+  return unfinished && last.length >= 3 && candidate.startsWith([...tokens, last].join(' '));
+}
+
+/** Catalog-only instant suggestions: bounded results, shared by both search modes. */
+export function rankNamedMovies<T extends SearchableFilm>(catalog: T[], query: string, limit = 12): T[] {
+  const named = namedSearchTitle(query, catalog);
+  if (!named) return [];
+  const wanted = titleIdentity(resolveCatalogTitle(named, catalog));
+  const seen = new Set<string>();
+  return catalog.flatMap(film => {
+    if (!film.id || film.id === 'hero-promo' || seen.has(film.id)) return [];
+    seen.add(film.id);
+    const scores = catalogTitleIdentities(film).map(candidate => {
+      if (!titlePrefixMatch(wanted.base, candidate.base, true)) return 0;
+      if (wanted.part && (candidate.part || 1) !== wanted.part) return 0;
+      if (wanted.year && candidate.year !== wanted.year) return 0;
+      return (candidate.base === wanted.base ? 100 : candidate.base.startsWith(`${wanted.base} `) ? 80 : 60)
+        + (wanted.part === candidate.part ? 5 : 0);
+    });
+    const score = Math.max(0, ...scores);
+    return score ? [{ film, score }] : [];
+  }).sort((a, b) => b.score - a.score).slice(0, Math.max(1, Math.min(24, limit))).map(item => item.film);
+}
+
+function discoveryRelation(wanted: ReturnType<typeof titleIdentity>, candidate: ReturnType<typeof titleIdentity>): TitleRelation | null {
+  return compareTitle(wanted, candidate) || (titlePrefixMatch(wanted.base, candidate.base) ? 'partial' : null);
+}
+
 export function catalogTitleIdentities(film: SearchableFilm) {
   const segments = String(film.title || '').split('|');
   // Legacy cards sometimes join English and Kurdish titles without a separator.
@@ -123,13 +167,13 @@ export function resolveCatalogTitle(title: string, catalog: SearchableFilm[]): s
 export function discoverTitleMatches(catalog: SearchableFilm[], query: string, external: ExternalTitleResponse): ExternalTitleResponse {
   const wanted = titleIdentity(resolveCatalogTitle(query, catalog));
   const local = catalog.flatMap(film => {
-    const match = catalogTitleIdentities(film).map(identity => ({ identity, relation: compareTitle(wanted, identity) }))
+    const match = catalogTitleIdentities(film).map(identity => ({ identity, relation: discoveryRelation(wanted, identity) }))
       .filter(item => item.relation).sort((a, b) => Number(b.relation === 'exact') - Number(a.relation === 'exact'))[0];
     return match ? [{ id: film.id, title: String(film.title || ''), year: String(film.year || match.identity.year || ''),
       part: match.identity.part, relation: match.relation! }] : [];
   }).slice(0, 12);
   const results = external.results.flatMap(film => {
-    const identity = titleIdentity(film.title, film.year), relation = compareTitle(wanted, identity);
+    const identity = titleIdentity(film.title, film.year), relation = discoveryRelation(wanted, identity);
     if (!relation) return [];
     const available = catalog.find(item => catalogHasNamedTitle([item], `${film.title}${film.year ? ` ${film.year}` : ''}`));
     return [{ ...film, part: identity.part, relation, availableId: available?.id }];

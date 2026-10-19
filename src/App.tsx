@@ -437,7 +437,8 @@ import {
   normalizeSearch,
 } from "./utils/search";
 import { matchesDescriptionConstraints, rankDescriptionMovies } from "./utils/descriptionSearch";
-import { catalogHasNamedTitle, namedSearchTitle } from './utils/externalTitle';
+import { catalogHasNamedTitle, namedSearchTitle, rankNamedMovies } from './utils/externalTitle';
+import { MovieTitleInput } from './components/MovieTitleInput';
 import { MissingMovieCards } from './components/MissingMovieCards';
 import { BoxOfficeBanner } from './components/Movie/BoxOfficeBanner';
 import { LiveMoviePreview } from './components/Movie/LiveMoviePreview';
@@ -7462,7 +7463,6 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
-  const [showSuggestions, setShowSuggestions] = useState(false);
   const initialMovieCatalogRef = useRef<Movie[] | null>(null);
   if (initialMovieCatalogRef.current === null) {
     const startupSeed = (window as any).__cinemaCatalogSeed;
@@ -10855,17 +10855,6 @@ const handleWebkitEndFullscreen = () => {
     api.recordSearch(t, getDeviceId()).catch(() => {});
   }, []);
 
-  // Local, instant title suggestions for the search box dropdown.
-  const localSuggestions = useMemo(() => {
-    if (searchMode !== "title") return [];
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return [];
-    return publicMovies
-      .filter((m) => String(m.title || "").toLowerCase().includes(q))
-      .slice(0, 6)
-      .map((m) => ({ id: m.id, title: m.title, year: m.year || "" }));
-  }, [publicMovies, searchQuery, searchMode]);
-
   // AI semantic search: prefers the server's Gemini-ranked results, falls back
   // to a client-side semantic ranking over the catalog when offline.
   // Fire a one-time-per-query server notification so the admin learns about
@@ -10887,12 +10876,12 @@ const handleWebkitEndFullscreen = () => {
     }).catch(() => {});
   }, []);
 
-  const runAiSearch = useCallback(async () => {
-    const q = aiQuery.trim();
+  const runAiSearch = useCallback(async (selectedTitle?: string) => {
+    const q = (selectedTitle ?? aiQuery).trim();
     if (!q || aiLoading) return;
     const requestedTitle = namedSearchTitle(q, movies);
     const relevanceQuery = requestedTitle ? `فیلمی ${requestedTitle} دەوێت` : q;
-    const local = requestedTitle ? movies.filter(film => catalogHasNamedTitle([film], requestedTitle)).slice(0, 12)
+    const local = requestedTitle ? rankNamedMovies(movies, requestedTitle, 12)
       : rankDescriptionMovies(movies, relevanceQuery, 12);
     setAiLoading(true);
     setAiRequestedTitle(requestedTitle);
@@ -13720,8 +13709,9 @@ const handleWebkitEndFullscreen = () => {
       const q = searchQuery.trim().toLowerCase();
       if (q) {
         const named = namedSearchTitle(q, list);
+        const titleRanks = new Map(rankNamedMovies(list, q, 24).map((movie, index) => [movie.id, 1000 - index]));
         const scored = list
-          .map((m) => ({ m, s: named && catalogHasNamedTitle([m], named) ? 1000 : fuzzyMatchMovie(m, q) }))
+          .map((m) => ({ m, s: titleRanks.get(m.id) || (named && catalogHasNamedTitle([m], named) ? 1000 : fuzzyMatchMovie(m, q)) }))
           .filter((x) => x.s > 0)
           .sort((a, b) => b.s - a.s);
         list = scored.map((x) => x.m);
@@ -14791,76 +14781,18 @@ const handleWebkitEndFullscreen = () => {
                 {/* Row 1 — main search bar (title or AI input + Go). */}
                 <div className="flex w-full flex-wrap items-center justify-center gap-2">
                   {searchMode === "title" && (
-                    <div className="relative group flex-1 min-w-[220px] max-w-md text-right">
-                      <Search className="absolute right-6 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500 group-focus-within:text-brand-primary" />
-                      <input
-                        type="text"
-                        placeholder={tr("searchPlaceholder")}
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        onFocus={() => {
-                          if (searchQuery.trim()) setShowSuggestions(true);
-                        }}
-                        onBlur={() => {
-                          setTimeout(() => setShowSuggestions(false), 150);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            submitSearchTerm(searchQuery);
-                            setShowSuggestions(false);
-                          }
-                        }}
-                        className="w-full bg-white/5 border border-white/10 rounded-xl py-3 pr-14 pl-5 kurdish-text focus:outline-none focus:border-brand-primary focus:bg-white/10 transition-all"
-                      />
-                      {/* Live suggestions dropdown */}
-                      {showSuggestions && localSuggestions.length > 0 && (
-                        <div className="absolute top-full left-0 right-0 mt-2 bg-[#151515] border border-white/10 rounded-xl overflow-hidden z-30 text-right shadow-2xl">
-                          {localSuggestions.map((s) => (
-                            <button
-                              key={s.id}
-                              type="button"
-                              onClick={() => {
-                                setSearchQuery(s.title);
-                                setShowSuggestions(false);
-                                submitSearchTerm(s.title);
-                              }}
-                              className="w-full flex items-center justify-between px-5 py-3 hover:bg-white/5 transition-colors"
-                            >
-                              <span className="kurdish-text font-bold text-sm text-white">
-                                {s.title}
-                              </span>
-                              {s.year && (
-                                <span className="text-[10px] text-gray-500 font-bold">
-                                  {s.year}
-                                </span>
-                              )}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
+                    <MovieTitleInput value={searchQuery} onChange={setSearchQuery} movies={publicMovies}
+                      placeholder={tr("searchPlaceholder")} onSubmit={() => submitSearchTerm(searchQuery)}
+                      onSelect={movie => { setSearchQuery(movie.title); submitSearchTerm(movie.title); }} />
                   )}
 
                   {searchMode === "ai" && (
                     <>
-                      <div className="relative flex-1 min-w-[220px] max-w-md text-right">
-                        <Sparkles className="absolute right-5 top-1/2 h-5 w-5 -translate-y-1/2 text-brand-primary" />
-                        <input
-                          type="text"
-                          value={aiQuery}
-                          onChange={(e) => setAiQuery(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" && !e.shiftKey) {
-                              e.preventDefault();
-                              runAiSearch();
-                            }
-                          }}
-                          placeholder="بۆ نموونە: فیلمێکی ترسناکم دەوێت"
-                          className="w-full rounded-xl border border-white/10 bg-white/5 py-3 pr-11 pl-5 kurdish-text transition-all focus:border-brand-primary focus:bg-white/10 focus:outline-none"
-                        />
-                      </div>
+                      <MovieTitleInput smart value={aiQuery} onChange={setAiQuery} movies={publicMovies}
+                        placeholder="بۆ نموونە: فیلمێکی ترسناکم دەوێت" onSubmit={() => { void runAiSearch(); }}
+                        onSelect={movie => { setAiQuery(movie.title); void runAiSearch(movie.title); }} />
                       <button
-                        onClick={runAiSearch}
+                        onClick={() => { void runAiSearch(); }}
                         disabled={aiLoading || !aiQuery.trim()}
                         className="flex shrink-0 items-center justify-center gap-2 rounded-xl bg-brand-primary px-6 py-3 text-sm font-black text-white transition-all hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-40 kurdish-text"
                       >

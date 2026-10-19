@@ -33,6 +33,7 @@ export function MissingMovieCards({ title, whatsappHref, onOpenLocal }: { title:
             <span dir="auto" className="font-bold">{film.title}</span>
             <span className="mt-1 block text-[11px] text-emerald-200">{film.part ? `ژمارەی بەش: ${film.part}` : 'ناوی بێ ژمارەی بەش'} · ساڵی سایت: {film.year || 'نەزانراو'}</span>
             {film.relation === 'numbered' && <span className="mt-1 block text-[11px] text-yellow-200">ژمارەی بەش لەگەڵ داواکارییەکەت جیاوازە</span>}
+            {film.relation === 'partial' && <span className="mt-1 block text-[11px] text-sky-200">پێشنیار بەپێی بەشێک لە ناوەکە</span>}
             {!!data.requestedYear && Number(film.year) > data.requestedYear && <span className="mt-1 block text-[11px] text-yellow-200">ساڵی ئەمە نوێترە لە ساڵی داواکارییەکەت</span>}
           </button>)}
         </div>}
@@ -51,7 +52,7 @@ export function MissingMovieCards({ title, whatsappHref, onOpenLocal }: { title:
             <div className="space-y-2 p-3">
               <h4 dir="auto" className="text-sm font-black text-white">{film.title}</h4>
               <p className="text-[11px] text-gray-400">{film.year || '—'} · {film.kind === 'series' ? 'زنجیرە' : 'فیلم'} · {film.imdbId}</p>
-              <p className="text-[10px] font-bold text-sky-200">{film.relation === 'numbered' ? (film.part ? `ناوی بە ژمارەی ${film.part} لە IMDb` : 'ناوی بنەڕەتی / بێ ژمارەی بەش') : film.relation === 'different-year' ? 'هاوناو بە ساڵێکی جیاواز' : 'گونجاو لەگەڵ ناو و بەش و ساڵی داواکراو'}</p>
+              <p className="text-[10px] font-bold text-sky-200">{film.relation === 'partial' ? 'پێشنیار بەپێی بەشێک لە ناوەکە' : film.relation === 'numbered' ? (film.part ? `ناوی بە ژمارەی ${film.part} لە IMDb` : 'ناوی بنەڕەتی / بێ ژمارەی بەش') : film.relation === 'different-year' ? 'هاوناو بە ساڵێکی جیاواز' : 'گونجاو لەگەڵ ناو و بەش و ساڵی داواکراو'}</p>
               {!!film.year && latestLocalYear > 0 && film.year > latestLocalYear && <p className="text-[10px] font-bold text-yellow-200">ساڵی IMDb نوێترە لە ئەوەی لە سایتەکەمانە</p>}
               <p className={`text-[10px] font-bold ${film.availableId ? 'text-emerald-300' : 'text-amber-300'}`}>{film.availableId ? 'لە سایتەکە بەردەستە' : 'لە سایتەکە بەردەست نییە'} · IMDb</p>
               {film.availableId ? <button type="button" onClick={() => onOpenLocal?.(film.availableId!)} disabled={!onOpenLocal} className="w-full rounded-lg bg-emerald-600 px-2 py-2 text-[11px] font-bold text-white">لە سایتەکەمان بیکەرەوە</button> : movieRequestLink(whatsappHref, film) && <a href={movieRequestLink(whatsappHref, film)} target="_blank" rel="noopener noreferrer" className="block rounded-lg bg-emerald-600 px-2 py-2 text-center text-[11px] font-bold text-white hover:bg-emerald-500">سکرینشۆتەکە بۆ واتسئەپ بنێرە</a>}
