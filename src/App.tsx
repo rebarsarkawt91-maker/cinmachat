@@ -446,6 +446,7 @@ import UserActivityMonitor from "./components/Admin/UserActivityMonitor";
 import MovieEditModal from "./components/Admin/MovieEditModal";
 import { BannerImageEditModal } from './components/Admin/BannerImageEditModal';
 import { DramaEpisodeCard } from './components/Movie/DramaEpisodeCard';
+import { usesCatalogSubtitles } from './utils/catalogSubtitleMode';
 import KurdSubStudioModal from "./components/Admin/KurdSubStudioModal";
 import FriendPresenceNotification from "./components/Social/FriendPresenceNotification";
 import RoomSubtitleOverlay from "./components/Player/RoomSubtitleOverlay";
@@ -11426,7 +11427,9 @@ const handleWebkitEndFullscreen = () => {
   // has its own native clock. CinemaChat owns a separate hook beside its own
   // playback clock.
   const isRoomModalActive = showPlayer && !!activeServerUrl;
-  const isCatalogMoviePlayer = isRoomModalActive && !selectedDramaRoom && !activeSyncGroup?.isVIP;
+  // Drama episodes use the same saved VTT, CC/CC EN and settings as films.
+  // Room membership must not send an uploaded episode subtitle to translation.
+  const isCatalogMoviePlayer = usesCatalogSubtitles(isRoomModalActive, activeSyncGroup?.isVIP);
 
   // Keep the chrome visible while the user is interacting with a popup/slider;
   // otherwise reveal it on activity and slide it away after 2.5 seconds of
