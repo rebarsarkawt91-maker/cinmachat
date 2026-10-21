@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Edit3 } from 'lucide-react';
 import { boxOfficeSeed, type BoxOfficeChart, type BoxOfficeMovie } from '../../data/boxOfficeSeed';
 import { resolveApiUrl } from '../../services/backendConfig';
 import '../../styles/boxOfficeBanner.css';
@@ -46,7 +47,7 @@ function Poster({ film }: { film: BoxOfficeMovie }) {
 }
 
 /** Informational only: neither the cards nor the retained image navigate/play. */
-export function BoxOfficeBanner({ image }: { image: string }) {
+export function BoxOfficeBanner({ image, onEditImage }: { image: string; onEditImage?: () => void }) {
   const [chart, setChart] = useState(cached);
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -79,6 +80,11 @@ export function BoxOfficeBanner({ image }: { image: string }) {
     <div className="box-office-ad">
       <img src={image} alt="ڕیکلام" loading="lazy" decoding="async" />
       <span>ADVERTISEMENT</span>
+      {onEditImage && <button type="button" onClick={onEditImage} aria-label="Edit banner image"
+        title="گۆڕینی وێنەی بانەر"
+        className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-md border border-red-500/70 bg-black/80 px-2 py-1 text-[10px] font-black text-white shadow-lg hover:bg-red-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white">
+        <Edit3 className="h-3 w-3" aria-hidden="true" /> EDIT
+      </button>}
     </div>
     <section className="box-office-panel" aria-label="فیلمەکانی بۆکس ئۆفیس" dir="rtl">
       <h2 className="kurdish-text">فیلمەکانی بۆکس ئۆفیس <span>TOP 5 · US</span></h2>

@@ -444,6 +444,8 @@ import { BoxOfficeBanner } from './components/Movie/BoxOfficeBanner';
 import { LiveMoviePreview } from './components/Movie/LiveMoviePreview';
 import UserActivityMonitor from "./components/Admin/UserActivityMonitor";
 import MovieEditModal from "./components/Admin/MovieEditModal";
+import { BannerImageEditModal } from './components/Admin/BannerImageEditModal';
+import { DramaEpisodeCard } from './components/Movie/DramaEpisodeCard';
 import KurdSubStudioModal from "./components/Admin/KurdSubStudioModal";
 import FriendPresenceNotification from "./components/Social/FriendPresenceNotification";
 import RoomSubtitleOverlay from "./components/Player/RoomSubtitleOverlay";
@@ -6977,7 +6979,7 @@ const VipGoldenLoungeCard = ({ onOpen }: any) => (
   </div>
 );
 
-const DramaRoomDetailModal = ({ room, resolvedMovies, openMovie, onClose, rating, ratingCount, userRating, onRate }: any) => {
+const DramaRoomDetailModal = ({ room, resolvedMovies, openMovie, onEditMovie, onClose, rating, ratingCount, userRating, onRate }: any) => {
   // Resolve each stored drama id to its movie, keeping the room's stored order
   // so the per-room numbering ("Drama 1", "Drama 2", ...) is automatic — only
   // this room's dramas are ever resolved, never dramas from other rooms.
@@ -7073,33 +7075,7 @@ const DramaRoomDetailModal = ({ room, resolvedMovies, openMovie, onClose, rating
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
             {dramas.map(({ movie, order }: any) => (
-              <button
-                type="button"
-                key={movie.id}
-                onClick={() => openMovie(movie)}
-                className="group text-right focus:outline-none"
-              >
-                <div className="aspect-[2/3] rounded-xl overflow-hidden bg-zinc-800 relative group-hover:ring-2 group-hover:ring-brand-primary/60 transition-all">
-                  {movie.posterUrl ? (
-                    <img src={movie.posterUrl} alt={movie.title} loading="lazy" className="w-full h-full object-cover" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-zinc-800 to-zinc-900">
-                      <Film className="w-8 h-8 text-white/20" />
-                    </div>
-                  )}
-                  <span className="absolute top-2 right-2 px-2 py-0.5 rounded-full bg-black/70 border border-white/15 text-white text-[10px] font-black">
-                    Drama {order + 1}
-                  </span>
-                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all flex items-center justify-center">
-                    <div className="w-10 h-10 rounded-full bg-brand-primary text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all">
-                      <Play className="w-4 h-4" />
-                    </div>
-                  </div>
-                </div>
-                <p className="mt-2 text-xs font-bold text-white kurdish-text line-clamp-1">
-                  {movie.title}
-                </p>
-              </button>
+              <DramaEpisodeCard key={movie.id} movie={movie} order={order} onOpen={openMovie} onEdit={onEditMovie} />
             ))}
           </div>
         )}
@@ -12730,6 +12706,7 @@ const handleWebkitEndFullscreen = () => {
   const SYSTEM_ADMIN_PASS = "1223344";
   const [adminTab, setAdminTab] = useState<string>("overview");
   const [movieBeingEdited, setMovieBeingEdited] = useState<any | null>(null);
+  const [showBannerImageEditor, setShowBannerImageEditor] = useState(false);
   // Compact list responses defer full cue text until a movie is actually opened.
   useEffect(() => {
     const target = (movieBeingEdited || selectedMovie) as any;
@@ -13505,6 +13482,8 @@ const handleWebkitEndFullscreen = () => {
     }
 
     const updatedMovie = payload.movie;
+    // Room cards cache live metrics; invalidate this edited record's old metadata.
+    delete resolvedMoviesCache.current[updatedMovie.id];
     setMovies((previous) =>
       previous.map((movie: any) =>
         movie.id === updatedMovie.id ? { ...movie, ...updatedMovie } : movie,
@@ -15050,7 +15029,8 @@ const handleWebkitEndFullscreen = () => {
                             key="ad-banner"
                             className="col-span-full my-12"
                           >
-                            <BoxOfficeBanner image={config.ads.banner.image} />
+                            <BoxOfficeBanner image={config.ads.banner.image}
+                              onEditImage={canEditMovies ? () => setShowBannerImageEditor(true) : undefined} />
                           </div>
                         );
                       }
@@ -15378,6 +15358,10 @@ const handleWebkitEndFullscreen = () => {
             <DramaRoomDetailModal
               room={selectedDramaRoom}
               resolvedMovies={resolvedMovies}
+              onEditMovie={canEditMovies ? (movie: Movie) => {
+                // Use the authoritative record, not the metrics-only room-card cache.
+                setMovieBeingEdited(movies.find(item => item.id === movie.id) || movie);
+              } : undefined}
               openMovie={(movie: Movie) => {
                 // Remember this room's ordered episodes so an episode that
                 // finishes auto-advances to the NEXT episode in the SAME room
@@ -17448,6 +17432,19 @@ const handleWebkitEndFullscreen = () => {
           />
         )}
       </AnimatePresence>
+
+      {canEditMovies && showBannerImageEditor && <BannerImageEditModal image={config.ads.banner.image}
+        onClose={() => setShowBannerImageEditor(false)}
+        onSave={async image => {
+          const response = await fetchApi('/api/admin/banner-image', {
+            method: 'PUT', credentials: 'include',
+            headers: { 'Content-Type': 'application/json', 'X-Admin-Username': currentUser?.username || '' },
+            body: JSON.stringify({ imageUrl: image }),
+          }, 0);
+          const payload = await response.json();
+          if (!response.ok || !payload.success || typeof payload.image !== 'string') throw new Error(payload.error || 'پاشەکەوتکردنی وێنە سەرکەوتوو نەبوو');
+          setConfig(previous => ({ ...previous, ads: { ...previous.ads, banner: { ...previous.ads.banner, image: payload.image } } }));
+        }} />}
 
       {showKurdSubStudio && canUseKurdSubStudio && (
         <KurdSubStudioModal

@@ -250,6 +250,7 @@ export function createAdminGuard(db: any) {
     // read views of their permitted tabs. Everything else stays locked so a
     // staff account can never manage admins, VIP, snapshots, bans, etc.
     const staffAllowed = (method: string, requestPath: string): boolean => {
+      if (method === 'PUT' && requestPath === '/api/admin/banner-image') return true;
       if (method === 'POST' && (requestPath === '/api/admin/post-movie' || requestPath === '/api/admin/upload-image')) return true;
       if ((method === 'GET' || method === 'POST') && requestPath === '/api/admin/hero') return true;
       // Canonical Hero config endpoints (Admin Section 7):

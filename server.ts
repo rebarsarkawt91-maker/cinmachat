@@ -27,6 +27,7 @@ import { compressedAssets } from './staticAssetCompression';
 import { compactCatalogMovie } from './catalogDelivery';
 import { loadCatalogBackup } from './catalogBackup';
 import { createStudioAdminSessions } from './studioAdminSession';
+import { createBannerImageStore, bannerImageHandler } from './server/bannerImage';
 import { stripSubtitleHtmlTags } from './src/lib/subtitleText.js';
 import { hasNonSoraniLetters } from './src/lib/studioUntranslatedCues.js';
 import { legacySubtitleFileUrl, parseLegacySubtitleListing } from './kurdSubLegacy';
@@ -5004,6 +5005,25 @@ async function startServer() {
     banner: { image: 'https://images.unsplash.com/photo-1611162617474-5b21e879e113?auto=format&fit=crop&q=80&w=1200', link: '#' },
     sidebar: { image: 'https://images.unsplash.com/photo-1611162616305-c69b3fa7fbe0?auto=format&fit=crop&q=80&w=800', link: '#' }
   };
+
+  const bannerImageStore = createBannerImageStore(ads.banner.image, {
+    read: async () => {
+      const app = initializeFirebaseAdmin();
+      if (!app) return null;
+      const snapshot = await admin.firestore(app).doc('config/homeBanner').get();
+      return snapshot.data()?.image;
+    },
+    write: async (image, username) => {
+      const app = initializeFirebaseAdmin();
+      if (!app) throw new Error('Durable banner storage unavailable');
+      await admin.firestore(app).doc('config/homeBanner').set({ image, updatedBy: username, updatedAt: new Date().toISOString() });
+    },
+  });
+  // One startup read, no realtime listener or per-visitor Firestore reads.
+  await Promise.race([
+    bannerImageStore.load().then(() => { ads.banner.image = bannerImageStore.image(); }).catch(() => {}),
+    new Promise(resolve => setTimeout(resolve, 3000)),
+  ]);
 
   function setMoviesCache(updater: (prev: any[]) => any[]) {
     moviesCache = updater(moviesCache);
@@ -14112,6 +14132,12 @@ async function startServer() {
       return account ? String(account.password || '') : OWNER_USERNAMES.includes(username) ? process.env.ADMIN_SECRET_KEY || null : null;
     });
   };
+  app.put('/api/admin/banner-image', bannerImageHandler(bannerImageStore, req => {
+    const username = studioLoginIdentity(req);
+    if (!username || username !== String(req.headers['x-admin-username'] || '').trim().toLowerCase()) return null;
+    const record = db.admins.find((item: any) => String(item.username || '').trim().toLowerCase() === username);
+    return OWNER_USERNAMES.includes(username) || ['owner', 'admin', 'super_admin', 'deputy_manager', 'staff'].includes(String(record?.role || '').toLowerCase()) ? username : null;
+  }, image => { ads.banner.image = image; }));
   app.post('/api/admin/logout', (req, res) => {
     res.clearCookie(studioCookieName, studioCookieOptions(req));
     res.json({ success: true });
