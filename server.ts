@@ -28,6 +28,7 @@ import { compactCatalogMovie } from './catalogDelivery';
 import { loadCatalogBackup } from './catalogBackup';
 import { createStudioAdminSessions } from './studioAdminSession';
 import { createBannerImageStore, bannerImageHandler } from './server/bannerImage';
+import { createPlayerAdsStore, playerAdsAdminHandler } from './server/playerAds';
 import { stripSubtitleHtmlTags } from './src/lib/subtitleText.js';
 import { hasNonSoraniLetters } from './src/lib/studioUntranslatedCues.js';
 import { legacySubtitleFileUrl, parseLegacySubtitleListing } from './kurdSubLegacy';
@@ -5005,6 +5006,25 @@ async function startServer() {
     banner: { image: 'https://images.unsplash.com/photo-1611162617474-5b21e879e113?auto=format&fit=crop&q=80&w=1200', link: '#' },
     sidebar: { image: 'https://images.unsplash.com/photo-1611162616305-c69b3fa7fbe0?auto=format&fit=crop&q=80&w=800', link: '#' }
   };
+
+  const playerAdsStore = createPlayerAdsStore({
+    read: async () => {
+      const app = initializeFirebaseAdmin();
+      if (!app) throw new Error('Player ads storage unavailable');
+      return (await admin.firestore(app).doc('player_ad_settings/main').get()).data()?.config;
+    },
+    write: async (config, username) => {
+      const app = initializeFirebaseAdmin();
+      if (!app) throw new Error('Player ads storage unavailable');
+      await admin.firestore(app).doc('player_ad_settings/main').set({ config, updatedBy: username, updatedAt: new Date().toISOString() });
+    },
+  });
+  // Shared startup load; no per-viewer Firestore reads or extra startup delay.
+  void playerAdsStore.load();
+  app.get('/api/player-ads', (_req, res) => {
+    res.setHeader('Cache-Control', 'public, max-age=60');
+    res.json(playerAdsStore.get());
+  });
 
   const bannerImageStore = createBannerImageStore(ads.banner.image, {
     read: async () => {
@@ -14132,6 +14152,14 @@ async function startServer() {
       return account ? String(account.password || '') : OWNER_USERNAMES.includes(username) ? process.env.ADMIN_SECRET_KEY || null : null;
     });
   };
+  const playerAdsAdmin = playerAdsAdminHandler(playerAdsStore, req => {
+    const username = studioLoginIdentity(req);
+    if (!username || username !== String(req.headers['x-admin-username'] || '').trim().toLowerCase()) return null;
+    const record = db.admins.find((item: any) => String(item.username || '').trim().toLowerCase() === username);
+    return OWNER_USERNAMES.includes(username) || ['owner', 'admin', 'super_admin', 'deputy_manager'].includes(String(record?.role || '').toLowerCase()) ? username : null;
+  });
+  app.get('/api/admin/player-ads', playerAdsAdmin);
+  app.put('/api/admin/player-ads', playerAdsAdmin);
   app.put('/api/admin/banner-image', bannerImageHandler(bannerImageStore, req => {
     const username = studioLoginIdentity(req);
     if (!username || username !== String(req.headers['x-admin-username'] || '').trim().toLowerCase()) return null;

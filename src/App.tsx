@@ -441,6 +441,8 @@ import { catalogHasNamedTitle, namedSearchTitle, rankNamedMovies } from './utils
 import { MovieTitleInput } from './components/MovieTitleInput';
 import { MissingMovieCards } from './components/MissingMovieCards';
 import { BoxOfficeBanner } from './components/Movie/BoxOfficeBanner';
+import { PlayerAdOverlay, publishPlayerAdsConfig } from './components/Player/PlayerAdOverlay';
+import { PlayerAdsModule } from './components/Admin/PlayerAdsModule';
 import { LiveMoviePreview } from './components/Movie/LiveMoviePreview';
 import UserActivityMonitor from "./components/Admin/UserActivityMonitor";
 import MovieEditModal from "./components/Admin/MovieEditModal";
@@ -509,6 +511,12 @@ const shouldPreferCustomDomainApi = (): boolean => {
   const host = window.location.hostname.toLowerCase();
   return host === "auth.cinamachat.com";
 };
+
+async function fetchPlayerAds() {
+  const response = await fetchApi('/api/player-ads', { signal: AbortSignal.timeout(8000) }, 0);
+  if (!response.ok) throw new Error('Player ads unavailable');
+  return response.json();
+}
 
 async function fetchApi(
   path: string,
@@ -15699,6 +15707,10 @@ const handleWebkitEndFullscreen = () => {
                         aria-hidden="true"
                       />
 
+                      {isCatalogMoviePlayer && <PlayerAdOverlay root={modalPlayerRef}
+                        source={`${selectedMovie?.id || ''}:${activeServerUrl}`}
+                        playing={isIframePlaying} currentTime={playerCurrentTime} request={fetchPlayerAds} />}
+
                       {isRoomModalActive && !isCatalogMoviePlayer && <RoomSubtitleOverlay cues={cinemaWindowSubtitleCues} original={originalCinemaWindowSubtitleCues}
                     time={subtitlePlaybackTime} language={cinemaWindowSubtitleLang} settings={ccSettings} font={ccFontSizeEntry} style={ccSubtitleStyle} />}
                       {isCatalogMoviePlayer && ccSettings.showSubtitle && mainMovieActiveSubtitleText && (
@@ -17674,6 +17686,8 @@ const handleWebkitEndFullscreen = () => {
                           label="٢١. پەخشی گشتی (Main Broadcast)"
                           onClick={() => setAdminTab("broadcast-main")}
                         />
+                        <SidebarItem icon={Tv} active={adminTab === "player-ads"}
+                          label="٢٢. ڕیکلامەکانی ناو پلەیەر" onClick={() => setAdminTab("player-ads")} />
                         <SidebarItem
                           icon={Settings}
                           label="ڕێکخستنەکان (گشتی)"
@@ -18476,6 +18490,21 @@ const trailerId = movie.trailerUrl
 
                       {adminTab === "broadcast-main" && (
                         <BroadcastControlModule />
+                      )}
+
+                      {adminTab === "player-ads" && currentUser &&
+                        ![currentUser.role, socialProfile?.role, socialProfile?.userRole].includes('staff') && (
+                        <PlayerAdsModule request={async (method, value) => {
+                          const response = await fetchApi('/api/admin/player-ads', {
+                            method, credentials: 'include', signal: AbortSignal.timeout(20000),
+                            headers: { 'Content-Type': 'application/json', 'X-Admin-Username': currentUser.username },
+                            ...(value ? { body: JSON.stringify(value) } : {}),
+                          }, 0);
+                          const result = await response.json();
+                          if (!response.ok) throw new Error(result.error || 'ڕێکخستنەکان پاشەکەوت نەکران.');
+                          if (method === 'PUT') publishPlayerAdsConfig(result);
+                          return result;
+                        }} />
                       )}
 
                       {adminTab === "user-analytics" && (

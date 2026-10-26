@@ -1,0 +1,42 @@
+import type { Request, Response } from 'express';
+import { defaultPlayerAds, parsePlayerAds, type PlayerAdsConfig } from '../src/lib/playerAds';
+
+export function createPlayerAdsStore(storage: { read(): Promise<unknown>; write(config: PlayerAdsConfig, username: string): Promise<void> }) {
+  let config = defaultPlayerAds(), revision = 0;
+  let loading: Promise<void> | undefined;
+  let writes = Promise.resolve();
+  return {
+    get: () => structuredClone(config),
+    load() {
+      // A single shared read per process, including concurrent visitors.
+      return loading ??= (async () => {
+        const before = revision, saved = await storage.read();
+        if (saved && revision === before) config = parsePlayerAds(saved);
+      })().catch(() => {}); // Unavailable storage safely leaves ads disabled.
+    },
+    async save(value: unknown, username: string) {
+      const next = parsePlayerAds(value);
+      const work = writes.then(async () => {
+        revision++;
+        await storage.write(next, username);
+        config = next;
+      });
+      writes = work.catch(() => {});
+      await work;
+      return structuredClone(next);
+    },
+  };
+}
+
+export function playerAdsAdminHandler(store: ReturnType<typeof createPlayerAdsStore>, authenticate: (req: Request) => string | null) {
+  return async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const username = authenticate(req);
+    if (!username) return res.status(401).json({ error: 'تکایە دووبارە بە ئەدمین بچۆ ژوورەوە.' });
+    if (req.method === 'GET') { await store.load(); return res.json(store.get()); }
+    try { parsePlayerAds(req.body); }
+    catch (error) { return res.status(400).json({ error: (error as Error).message }); }
+    try { return res.json(await store.save(req.body, username)); }
+    catch { return res.status(503).json({ error: 'پاشەکەوت نەکرا؛ هەڵگرتنی هەمیشەیی بەردەست نییە.' }); }
+  };
+}
