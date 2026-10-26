@@ -1,6 +1,9 @@
-export type PlayerAd = { kind: 'image' | 'video'; url: string; enabled: boolean };
+export type PlayerAd = { kind: 'image' | 'video'; url: string; enabled: boolean; size?: 1 | 2 | 3 | 4 };
 export type PlayerTextAd = { enabled: boolean; text: string; color: string; intervalSeconds: number; durationSeconds: number };
-export type PlayerAdsConfig = { enabled: boolean; intervalSeconds: number; durationSeconds: number; items: PlayerAd[]; textAd: PlayerTextAd };
+export type PlayerAdsConfig = { enabled: boolean; intervalSeconds: number; durationSeconds: number; items: PlayerAd[]; textAd: PlayerTextAd; textAds?: PlayerTextAd[] };
+export const MAX_PLAYER_TEXT_ADS = 100;
+/** Keep the legacy single message readable during rolling client/server upgrades. */
+export const playerTextAds = (config: PlayerAdsConfig): PlayerTextAd[] => config.textAds ?? (config.textAd.text ? [config.textAd] : []);
 export const defaultPlayerTextAd = (): PlayerTextAd => ({ enabled: false, text: '', color: '#FFD400', intervalSeconds: 180, durationSeconds: 10 });
 export const defaultPlayerAds = (): PlayerAdsConfig => ({ enabled: false, intervalSeconds: 180, durationSeconds: 10, items: [], textAd: defaultPlayerTextAd() });
 
@@ -52,10 +55,43 @@ export function parsePlayerAds(value: unknown): PlayerAdsConfig {
     const extension = item.kind === 'image' ? /\.(jpe?g|png|webp)$/i : /\.(mp4|webm)$/i;
     const youtube = item.kind === 'video' ? playerAdYouTubeId(url.href) : null;
     if (url.protocol !== 'https:' || url.username || url.password || (!youtube && !extension.test(url.pathname))) throw new Error('لینکی یوتیوب یان لینکی ڕاستەوخۆی HTTPS بۆ JPG/PNG/WebP یان MP4/WebM دابنێ.');
-    return { kind: item.kind, enabled: item.enabled, url: youtube ? `https://www.youtube.com/watch?v=${youtube}` : url.href };
+    if (item.size !== undefined && ![1, 2, 3, 4].includes(item.size)) throw new Error('قەبارەی ڕیکلام لە ١ تا ٤ هەڵبژێرە.');
+    return { kind: item.kind, enabled: item.enabled, url: youtube ? `https://www.youtube.com/watch?v=${youtube}` : url.href, ...(item.size === undefined ? {} : { size: item.size }) };
   });
   if (v.enabled && !items.some(item => item.enabled)) throw new Error('لانیکەم یەک ڕیکلام چالاک بکە.');
-  return { enabled: v.enabled, intervalSeconds: v.intervalSeconds, durationSeconds: v.durationSeconds, items, textAd: parsePlayerTextAd(v.textAd) };
+  if (v.textAds !== undefined && (!Array.isArray(v.textAds) || v.textAds.length > MAX_PLAYER_TEXT_ADS)) throw new Error('تا ١٠٠ تێکست زیاد بکە.');
+  const textAds = v.textAds?.map(parsePlayerTextAd);
+  return { enabled: v.enabled, intervalSeconds: v.intervalSeconds, durationSeconds: v.durationSeconds, items,
+    textAd: textAds ? textAds[0] ?? defaultPlayerTextAd() : parsePlayerTextAd(v.textAd), ...(textAds ? { textAds } : {}) };
+}
+
+/** Each message has its own viewing-time interval. Due messages queue without overlap. */
+export class PlayerTextAdClock {
+  visible = -1;
+  private elapsed: number[];
+  private displayed = 0;
+  constructor(public items: PlayerTextAd[]) { this.elapsed = items.map(() => 0); }
+  dismiss() {
+    if (this.visible >= 0) this.elapsed[this.visible] = 0;
+    this.visible = -1; this.displayed = 0;
+  }
+  tick(seconds: number, eligible: boolean, canShow: boolean) {
+    if (!eligible) return this.visible;
+    const delta = Math.max(0, Math.min(seconds, 1));
+    this.items.forEach((item, index) => { if (item.enabled && index !== this.visible) this.elapsed[index] += delta; });
+    if (this.visible >= 0) {
+      this.displayed += delta;
+      if (this.displayed >= this.items[this.visible].durationSeconds) this.dismiss();
+    } else if (canShow) {
+      // Most overdue first; equal intervals retain their configured order.
+      let overdue = -1;
+      this.items.forEach((item, index) => {
+        const waiting = this.elapsed[index] - item.intervalSeconds;
+        if (item.enabled && waiting >= 0 && waiting > overdue) { overdue = waiting; this.visible = index; }
+      });
+    }
+    return this.visible;
+  }
 }
 
 /** Counts eligible viewing time, never the film position (seeking earns no time). */

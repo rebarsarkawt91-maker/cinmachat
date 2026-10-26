@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express';
-import { defaultPlayerAds, parsePlayerAds, type PlayerAdsConfig } from '../src/lib/playerAds';
+import { defaultPlayerAds, parsePlayerAds, playerTextAds, type PlayerAdsConfig } from '../src/lib/playerAds';
 
 export function createPlayerAdsStore(storage: { read(): Promise<unknown>; write(config: PlayerAdsConfig, username: string): Promise<void> }) {
   let config = defaultPlayerAds(), revision = 0;
@@ -23,7 +23,14 @@ export function createPlayerAdsStore(storage: { read(): Promise<unknown>; write(
       const parsed = parsePlayerAds(value);
       let next = parsed;
       const work = writes.then(async () => {
-        next = (value as PlayerAdsConfig)?.textAd === undefined ? { ...parsed, textAd: config.textAd } : parsed;
+        const input = value as PlayerAdsConfig;
+        next = parsed;
+        // Old tabs may edit only the first message; preserve every other message.
+        if (input.textAds === undefined) {
+          if (input.textAd === undefined) next = { ...next, textAd: config.textAd, ...(config.textAds ? { textAds: config.textAds } : {}) };
+          else if (config.textAds) next = { ...next, textAds: [parsed.textAd, ...playerTextAds(config).slice(1)] };
+        }
+        next.items = next.items.map(item => ({ ...item, ...(item.size === undefined && config.items.find(old => old.url === item.url)?.size !== undefined ? { size: config.items.find(old => old.url === item.url)!.size } : {}) }));
         revision++;
         await storage.write(next, username);
         config = next;

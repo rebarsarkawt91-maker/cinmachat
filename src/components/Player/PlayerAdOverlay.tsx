@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
-import { defaultPlayerAds, parsePlayerAds, playerAdYouTubeId, PlayerAdClock, type PlayerAd, type PlayerAdsConfig } from '../../lib/playerAds';
+import { defaultPlayerAds, parsePlayerAds, playerAdYouTubeId, playerTextAds, PlayerAdClock, PlayerTextAdClock, type PlayerAd, type PlayerAdsConfig } from '../../lib/playerAds';
 import { YouTubePlayerAd } from './YouTubePlayerAd';
 import { PlayerTextAdvertisement } from './PlayerTextAdvertisement';
 import './playerAds.css';
@@ -27,7 +27,7 @@ function AdMedia({ ad, onError, onPlaying }: { ad: PlayerAd; onError: () => void
   const youtube = ad.kind === 'video' && playerAdYouTubeId(ad.url);
   // Existing film controls inspect descendant videos. Keep ad media outside that
   // DOM tree so volume/seek/fullscreen/CC can never select the advertisement.
-  return <div ref={host} style={{ width: '100%', height: '100%' }}>{shadow && createPortal(
+  return <div ref={host} className={ad.kind === 'video' ? 'cinema-player-ad-fade' : undefined} style={{ width: '100%', height: '100%' }}>{shadow && createPortal(
     youtube ? <YouTubePlayerAd videoId={youtube} onPlaying={onPlaying} /> : ad.kind === 'image' ? <img src={ad.url} alt="ڕیکلام" style={style} onLoad={onPlaying} onError={onError} /> :
       <video data-player-ad src={ad.url} style={style} autoPlay muted playsInline loop controls={false} disablePictureInPicture disableRemotePlayback onPlaying={onPlaying} onError={onError} />,
     shadow)}</div>;
@@ -40,9 +40,9 @@ export function PlayerAdOverlay({ root, source, playing, currentTime, request }:
   const [config, setConfig] = useState(defaultPlayerAds);
   const [visible, setVisible] = useState(-1);
   const [eligible, setEligible] = useState(false);
-  const [textVisible, setTextVisible] = useState(false);
+  const [textVisible, setTextVisible] = useState(-1);
   const clock = useRef(new PlayerAdClock(config));
-  const textClock = useRef(new PlayerAdClock({ ...config.textAd, items: [{ enabled: true }] }));
+  const textClock = useRef(new PlayerTextAdClock(playerTextAds(config)));
   const mediaReady = useRef(false);
   const playback = useRef({ playing, currentTime });
   playback.current = { playing, currentTime };
@@ -54,9 +54,9 @@ export function PlayerAdOverlay({ root, source, playing, currentTime, request }:
   }, [request]);
   useEffect(() => {
     clock.current = new PlayerAdClock(config);
-    textClock.current = new PlayerAdClock({ ...config.textAd, items: [{ enabled: true }] });
-    mediaReady.current = false; setVisible(-1); setTextVisible(false); setEligible(false);
-    if (!config.enabled && !config.textAd.enabled) return;
+    textClock.current = new PlayerTextAdClock(playerTextAds(config));
+    mediaReady.current = false; setVisible(-1); setTextVisible(-1); setEligible(false);
+    if (!config.enabled && !playerTextAds(config).some(item => item.enabled)) return;
     let last = performance.now(), lastTime = playback.current.currentTime, progressAt = -Infinity;
     const timer = window.setInterval(() => {
       const now = performance.now(), delta = (now - last) / 1000; last = now;
@@ -76,19 +76,20 @@ export function PlayerAdOverlay({ root, source, playing, currentTime, request }:
       const next = clock.current.tick(delta, Boolean(active) && textClock.current.visible < 0 && (before < 0 || mediaReady.current));
       if (before < 0 && next >= 0) mediaReady.current = false;
       setVisible(next);
-      setTextVisible(textClock.current.tick(delta, Boolean(active) && next < 0) >= 0);
+      setTextVisible(textClock.current.tick(delta, Boolean(active), next < 0));
     }, 250);
     return () => clearInterval(timer);
   }, [config, source, root]);
   const ad = config.items.filter(item => item.enabled)[visible];
+  const textAd = playerTextAds(config)[textVisible];
   if (!eligible) return null;
   const dismiss = () => { clock.current.dismiss(); setVisible(-1); };
-  return <>{ad && config.enabled && <aside className={`cinema-player-ad${playerAdYouTubeId(ad.url) ? ' cinema-player-ad-youtube' : ''}`} aria-label="ڕیکلام" data-testid="player-ad-overlay"
+  return <>{ad && config.enabled && <aside className={`cinema-player-ad cinema-player-ad-size-${ad.size ?? 2}${ad.kind === 'video' ? ' cinema-player-ad-video' : ''}${playerAdYouTubeId(ad.url) ? ' cinema-player-ad-youtube' : ''}`} aria-label="ڕیکلام" data-testid="player-ad-overlay"
     onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()} onClick={event => event.stopPropagation()}>
     <div className="cinema-player-ad-label">ڕیکلام</div>
     <button type="button" className="cinema-player-ad-close" aria-label="داخستنی ڕیکلام" onClick={dismiss}>×</button>
     <AdMedia key={ad.url} ad={ad} onError={dismiss} onPlaying={() => { mediaReady.current = true; }} />
   </aside>}
-    {textVisible && config.textAd.enabled && <PlayerTextAdvertisement ad={config.textAd} onClose={() => { textClock.current.dismiss(); setTextVisible(false); }} />}
+    {textAd?.enabled && <PlayerTextAdvertisement ad={textAd} onClose={() => { textClock.current.dismiss(); setTextVisible(-1); }} />}
   </>;
 }

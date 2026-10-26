@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultPlayerAds, inferPlayerAdKind, parsePlayerAds, playerAdYouTubeId, PlayerAdClock } from './playerAds';
+import { defaultPlayerAds, defaultPlayerTextAd, inferPlayerAdKind, parsePlayerAds, playerAdYouTubeId, playerTextAds, PlayerAdClock, PlayerTextAdClock } from './playerAds';
 import { createPlayerAdsStore, playerAdsAdminHandler } from '../../server/playerAds';
 
 const config = () => ({ ...defaultPlayerAds(), enabled: true, intervalSeconds: 60, durationSeconds: 3, items: [
@@ -160,4 +160,54 @@ test('protected HTTP endpoint saves and reloads settings; a name header is not p
   assert.equal((await fetch(url, { method: 'PUT', headers: signed, body: JSON.stringify(config()) })).status, 200);
   assert.deepEqual(await (await fetch(url, { headers: signed })).json(), config());
   assert.deepEqual(durable, config());
+});
+
+test('two-minute and twenty-minute messages keep independent schedules and pause with the film', () => {
+  const messages = [120, 1200].map((intervalSeconds, i) => ({ ...defaultPlayerTextAd(), text: `message ${i}`, enabled: true, intervalSeconds, durationSeconds: 3 }));
+  const clock = new PlayerTextAdClock(messages);
+  for (let i = 0; i < 500; i++) clock.tick(1, false, true);
+  assert.equal(clock.visible, -1);
+  const seen: [number, number][] = [];
+  for (let second = 1; second <= 1200; second++) {
+    const before = clock.visible;
+    const active = clock.tick(1, true, true);
+    if (active >= 0 && before !== active) seen.push([second, active]);
+  }
+  assert.deepEqual(seen[0], [120, 0]);
+  assert.deepEqual(seen.find(([, index]) => index === 1), [1200, 1]);
+  clock.tick(1000, false, true); assert.equal(clock.visible, 1);
+  clock.dismiss(); assert.equal(clock.visible, -1);
+});
+
+test('due texts queue behind media and each other without losing their own interval', () => {
+  const clock = new PlayerTextAdClock([0, 1, 2].map(i => ({ ...defaultPlayerTextAd(), text: String(i), enabled: i < 2, intervalSeconds: 60, durationSeconds: 3 })));
+  for (let i = 0; i < 70; i++) clock.tick(1, true, false);
+  assert.equal(clock.visible, -1);
+  assert.equal(clock.tick(0, true, true), 0);
+  clock.dismiss(); assert.equal(clock.tick(0, true, true), 1);
+  for (let i = 0; i < 3; i++) clock.tick(1, true, true);
+  assert.equal(clock.visible, -1);
+  clock.tick(10000, true, true); assert.equal(clock.visible, -1);
+});
+
+test('multiple texts, four sizes and old-tab saves survive durable reload and targeted deletion', async () => {
+  let durable: unknown;
+  const storage = { read: async () => durable, write: async (value: unknown) => { durable = value; } };
+  const texts = [120, 1200].map(intervalSeconds => ({ ...defaultPlayerTextAd(), enabled: true, text: 'ڕیکلام', intervalSeconds }));
+  const input = { ...config(), items: config().items.map(item => ({ ...item, size: 4 as const })), textAds: texts };
+  const store = createPlayerAdsStore(storage); await store.save(input, 'owner');
+  const restart = createPlayerAdsStore(storage); await restart.load();
+  assert.deepEqual(playerTextAds(restart.get()), texts);
+  await restart.save({ ...config(), textAd: { ...texts[0], text: 'گۆڕانکاریی کۆن' } }, 'owner');
+  assert.equal(restart.get().textAds?.[1].intervalSeconds, 1200);
+  assert.equal(restart.get().items[0].size, 4);
+  await restart.save({ ...restart.get(), textAds: texts.slice(1) }, 'owner');
+  assert.equal(playerTextAds(restart.get()).length, 1);
+  assert.deepEqual(restart.get().items, input.items);
+  await restart.save({ ...restart.get(), textAds: [] }, 'owner');
+  assert.deepEqual(playerTextAds(restart.get()), []);
+  for (const size of [1, 2, 3, 4]) assert.equal(parsePlayerAds({ ...config(), items: [{ ...config().items[0], size }] }).items[0].size, size);
+  assert.throws(() => parsePlayerAds({ ...config(), items: [{ ...config().items[0], size: 5 }] }));
+  assert.throws(() => parsePlayerAds({ ...config(), textAds: Array(101).fill(texts[0]) }));
+  assert.throws(() => parsePlayerAds({ ...config(), textAds: [{ ...texts[0], color: 'red' }] }));
 });
