@@ -5020,7 +5020,7 @@ async function startServer() {
     },
   });
   // Shared startup load; no per-viewer Firestore reads or extra startup delay.
-  void playerAdsStore.load();
+  void playerAdsStore.load().catch(() => console.warn('[Player ads] Saved settings unavailable; advertisements remain disabled until settings can be loaded.'));
   app.get('/api/player-ads', (_req, res) => {
     res.setHeader('Cache-Control', 'public, max-age=60');
     res.json(playerAdsStore.get());

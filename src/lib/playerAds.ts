@@ -2,7 +2,32 @@ export type PlayerAd = { kind: 'image' | 'video'; url: string; enabled: boolean 
 export type PlayerAdsConfig = { enabled: boolean; intervalSeconds: number; durationSeconds: number; items: PlayerAd[] };
 export const defaultPlayerAds = (): PlayerAdsConfig => ({ enabled: false, intervalSeconds: 180, durationSeconds: 10, items: [] });
 
-/** Only direct HTTPS media; never execute an advertiser's page or script. */
+export function playerAdYouTubeId(value: string): string | null {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:' || url.username || url.password) return null;
+    const host = url.hostname.toLowerCase();
+    let id: string | null = null;
+    if (host === 'youtu.be') id = url.pathname.slice(1);
+    else if (['youtube.com', 'www.youtube.com', 'm.youtube.com', 'www.youtube-nocookie.com'].includes(host)) {
+      id = url.pathname === '/watch' ? url.searchParams.get('v') : url.pathname.match(/^\/(?:embed|shorts)\/([\w-]+)$/)?.[1] || null;
+    }
+    return id && /^[A-Za-z0-9_-]{11}$/.test(id) ? id : null;
+  } catch { return null; }
+}
+
+/** Pasting a direct video link should not silently leave its type set to image. */
+export function inferPlayerAdKind(value: string, fallback: PlayerAd['kind']): PlayerAd['kind'] {
+  if (playerAdYouTubeId(value.trim())) return 'video';
+  try {
+    const path = new URL(value.trim()).pathname;
+    if (/\.(mp4|webm)$/i.test(path)) return 'video';
+    if (/\.(jpe?g|png|webp)$/i.test(path)) return 'image';
+  } catch { /* Keep the selected type while a URL is being typed. */ }
+  return fallback;
+}
+
+/** Direct HTTPS media or a strictly validated YouTube video, never arbitrary embeds. */
 export function parsePlayerAds(value: unknown): PlayerAdsConfig {
   const v = value as PlayerAdsConfig;
   if (!v || typeof v.enabled !== 'boolean' || !Number.isInteger(v.intervalSeconds) || v.intervalSeconds < 60 || v.intervalSeconds > 3600 ||
@@ -12,8 +37,9 @@ export function parsePlayerAds(value: unknown): PlayerAdsConfig {
     let url: URL;
     try { url = new URL(item.url.trim()); } catch { throw new Error('لینکی تەواوی HTTPS دابنێ.'); }
     const extension = item.kind === 'image' ? /\.(jpe?g|png|webp)$/i : /\.(mp4|webm)$/i;
-    if (url.protocol !== 'https:' || url.username || url.password || !extension.test(url.pathname)) throw new Error('تەنها لینکی ڕاستەوخۆی HTTPS بۆ JPG/PNG/WebP یان MP4/WebM.');
-    return { kind: item.kind, enabled: item.enabled, url: url.href };
+    const youtube = item.kind === 'video' ? playerAdYouTubeId(url.href) : null;
+    if (url.protocol !== 'https:' || url.username || url.password || (!youtube && !extension.test(url.pathname))) throw new Error('لینکی یوتیوب یان لینکی ڕاستەوخۆی HTTPS بۆ JPG/PNG/WebP یان MP4/WebM دابنێ.');
+    return { kind: item.kind, enabled: item.enabled, url: youtube ? `https://www.youtube.com/watch?v=${youtube}` : url.href };
   });
   if (v.enabled && !items.some(item => item.enabled)) throw new Error('لانیکەم یەک ڕیکلام چالاک بکە.');
   return { enabled: v.enabled, intervalSeconds: v.intervalSeconds, durationSeconds: v.durationSeconds, items };

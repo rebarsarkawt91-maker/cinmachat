@@ -1,12 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultPlayerAds, parsePlayerAds, PlayerAdClock } from './playerAds';
+import { defaultPlayerAds, inferPlayerAdKind, parsePlayerAds, playerAdYouTubeId, PlayerAdClock } from './playerAds';
 import { createPlayerAdsStore, playerAdsAdminHandler } from '../../server/playerAds';
 
 const config = () => ({ ...defaultPlayerAds(), enabled: true, intervalSeconds: 60, durationSeconds: 3, items: [
   { kind: 'image' as const, url: 'https://example.com/a.jpg', enabled: true },
   { kind: 'video' as const, url: 'https://example.com/b.mp4', enabled: true },
 ] });
+test('direct video and image links automatically select the correct media type', () => {
+  assert.equal(inferPlayerAdKind('https://example.com/ad.mp4?token=abc', 'image'), 'video');
+  assert.equal(inferPlayerAdKind('https://example.com/ad.WEBM', 'image'), 'video');
+  assert.equal(inferPlayerAdKind('https://example.com/ad.webp', 'video'), 'image');
+  assert.equal(inferPlayerAdKind('https://', 'video'), 'video');
+});
+test('the reported YouTube link is accepted as video, normalized and restricted to trusted hosts', () => {
+  const url = 'https://youtu.be/uO4wsV7HEUY?si=Aw1g3IRSVDmN8d9n';
+  assert.equal(playerAdYouTubeId(url), 'uO4wsV7HEUY');
+  assert.equal(inferPlayerAdKind(url, 'image'), 'video');
+  assert.equal(parsePlayerAds({ ...config(), items: [{ kind: 'video', url, enabled: true }] }).items[0].url, 'https://www.youtube.com/watch?v=uO4wsV7HEUY');
+  for (const bad of ['https://youtube.com.evil.test/watch?v=uO4wsV7HEUY', 'https://evil.test/embed/uO4wsV7HEUY', 'https://user:pass@youtu.be/uO4wsV7HEUY', 'https://youtu.be/invalid']) {
+    assert.equal(playerAdYouTubeId(bad), null);
+    assert.throws(() => parsePlayerAds({ ...config(), items: [{ kind: 'video', url: bad, enabled: true }] }));
+  }
+});
 test('ads default off; strict media, limits and no executable/embed URLs', () => {
   assert.equal(defaultPlayerAds().enabled, false);
   assert.deepEqual(parsePlayerAds(config()), config());
@@ -74,6 +90,18 @@ test('late storage read cannot overwrite an administrator save', async () => {
   await store.save(config(), 'owner');
   finish(defaultPlayerAds()); await loading;
   assert.deepEqual(store.get(), config());
+});
+
+test('failed reads are reported instead of showing an empty saved list, and can be retried', async () => {
+  let fail = true;
+  const store = createPlayerAdsStore({ read: async () => { if (fail) throw Error('offline'); return config(); }, write: async () => {} });
+  let status = 200, body: any;
+  const response = { setHeader() {}, status(value: number) { status = value; return this; }, json(value: unknown) { body = value; return this; } };
+  await playerAdsAdminHandler(store, () => 'owner')({ method: 'GET' } as any, response as any);
+  assert.equal(status, 503); assert.ok(body.error);
+  fail = false; status = 200;
+  await playerAdsAdminHandler(store, () => 'owner')({ method: 'GET' } as any, response as any);
+  assert.equal(status, 200); assert.deepEqual(body, config());
 });
 
 test('protected HTTP endpoint saves and reloads settings; a name header is not proof', async t => {

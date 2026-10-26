@@ -12,7 +12,10 @@ export function createPlayerAdsStore(storage: { read(): Promise<unknown>; write(
       return loading ??= (async () => {
         const before = revision, saved = await storage.read();
         if (saved && revision === before) config = parsePlayerAds(saved);
-      })().catch(() => {}); // Unavailable storage safely leaves ads disabled.
+      })().catch(error => {
+        loading = undefined; // An admin may retry a failed read; never present it as an empty saved list.
+        throw error;
+      });
     },
     async save(value: unknown, username: string) {
       const next = parsePlayerAds(value);
@@ -20,6 +23,7 @@ export function createPlayerAdsStore(storage: { read(): Promise<unknown>; write(
         revision++;
         await storage.write(next, username);
         config = next;
+        loading = Promise.resolve();
       });
       writes = work.catch(() => {});
       await work;
@@ -33,7 +37,10 @@ export function playerAdsAdminHandler(store: ReturnType<typeof createPlayerAdsSt
     res.setHeader('Cache-Control', 'no-store');
     const username = authenticate(req);
     if (!username) return res.status(401).json({ error: 'تکایە دووبارە بە ئەدمین بچۆ ژوورەوە.' });
-    if (req.method === 'GET') { await store.load(); return res.json(store.get()); }
+    if (req.method === 'GET') {
+      try { await store.load(); return res.json(store.get()); }
+      catch { return res.status(503).json({ error: 'نەتوانرا ڕیکلامە هەڵگیراوەکان بخوێندرێنەوە؛ لیستەکە ناسڕێتەوە. تکایە دووبارە ئەم بەشە بکەرەوە.' }); }
+    }
     try { parsePlayerAds(req.body); }
     catch (error) { return res.status(400).json({ error: (error as Error).message }); }
     try { return res.json(await store.save(req.body, username)); }

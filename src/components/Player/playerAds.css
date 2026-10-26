@@ -5,3 +5,4 @@
 .cinema-player-ad-close:focus-visible{outline:3px solid #ffd400;outline-offset:-3px}
 @media(max-width:640px){.cinema-player-ad{top:76px;max-width:36%;right:8px}}
 @media(max-height:450px){.cinema-player-ad{top:60px;width:160px;max-height:25%;max-width:26%}}
+.cinema-player-ad-youtube{width:clamp(200px,22vw,280px);height:200px;max-width:calc(100% - 24px);max-height:none;aspect-ratio:auto}
