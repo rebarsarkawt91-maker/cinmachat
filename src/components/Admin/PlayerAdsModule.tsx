@@ -62,8 +62,8 @@ export function PlayerAdsModule({ request }: { request: (method: 'GET' | 'PUT', 
     {loaded && <div data-testid="saved-player-ads" className="space-y-3 rounded-2xl border border-white/10 bg-zinc-950 p-4">
       <h3 className="font-black">ڕیکلامە پاشەکەوتکراوەکان ({saved.items.length}/6)</h3>
       <p className="text-sm text-zinc-400">لینکە تۆمارکراوەکان دەمێننەوە تا خۆتان بیانسڕنەوە. گۆڕانکارییەکان تەنها دوای پاشەکەوتکردن جێگیر دەبن.</p>
-      <p className={saved.enabled ? 'text-sm text-emerald-300' : 'text-sm text-yellow-300'}>{saved.enabled ? `چالاکە — هەر ${saved.intervalSeconds / 60} خولەک، بۆ ${saved.durationSeconds} چرکە.` : 'ناچالاکە — بۆ پیشاندان «پاشەکەوتکردن و چالاککردن» دابگرە.'}</p>
-      {!saved.items.length && <p className="text-sm text-zinc-400">هێشتا هیچ ڕیکلامێک تۆمار نەکراوە.</p>}
+      <p className={saved.enabled ? 'text-sm text-emerald-300' : 'text-sm text-yellow-300'}>ڕیکلامی وێنە/ڤیدیۆ: {saved.enabled ? `چالاکە — هەر ${saved.intervalSeconds / 60} خولەک، بۆ ${saved.durationSeconds} چرکە.` : 'ناچالاکە — بۆ پیشاندان «پاشەکەوتکردن و چالاککردن» دابگرە.'}</p>
+      {!saved.items.length && !saved.textAd.text && <p className="text-sm text-zinc-400">هێشتا هیچ ڕیکلامێک تۆمار نەکراوە.</p>}
       {saved.items.map((item, index) => <article key={`${index}:${item.url}`} className="flex flex-wrap items-center gap-3 rounded-xl border border-red-500/30 p-3" data-testid="saved-player-ad">
         <span className="font-bold">{index + 1}. {item.kind === 'video' ? 'ڤیدیۆ' : 'وێنە'}</span>
         <span className="text-xs text-zinc-400">{item.enabled ? 'چالاک' : 'ناچالاک'}</span>
