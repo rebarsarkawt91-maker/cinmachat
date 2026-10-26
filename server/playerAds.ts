@@ -18,8 +18,12 @@ export function createPlayerAdsStore(storage: { read(): Promise<unknown>; write(
       });
     },
     async save(value: unknown, username: string) {
-      const next = parsePlayerAds(value);
+      // Older open admin tabs know only media ads. Their saves must not erase
+      // a text message configured by a newer tab.
+      const parsed = parsePlayerAds(value);
+      let next = parsed;
       const work = writes.then(async () => {
+        next = (value as PlayerAdsConfig)?.textAd === undefined ? { ...parsed, textAd: config.textAd } : parsed;
         revision++;
         await storage.write(next, username);
         config = next;

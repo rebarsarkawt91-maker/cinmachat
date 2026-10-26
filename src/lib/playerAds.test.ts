@@ -104,6 +104,45 @@ test('failed reads are reported instead of showing an empty saved list, and can 
   assert.equal(status, 200); assert.deepEqual(body, config());
 });
 
+test('old video configurations migrate without changing their existing ads', () => {
+  const { textAd, ...legacy } = config();
+  const migrated = parsePlayerAds(legacy);
+  assert.deepEqual(migrated.items, legacy.items);
+  assert.equal(migrated.enabled, true);
+  assert.equal(migrated.textAd.enabled, false);
+  assert.equal(migrated.textAd.text, '');
+});
+
+test('text-only ads accept Kurdish, reject unsafe colors and enforce text/timing limits', () => {
+  const value = { ...defaultPlayerAds(), textAd: { ...defaultPlayerAds().textAd, enabled: true, text: 'بەخێربێن بۆ سینەماچات', color: '#00ff88' } };
+  assert.equal(parsePlayerAds(value).textAd.text, value.textAd.text);
+  for (const patch of [{ text: '' }, { text: 'a'.repeat(301) }, { color: 'red;background:url(x)' }, { color: 'url(javascript:alert(1))' }, { intervalSeconds: 0 }, { durationSeconds: 60 }]) {
+    assert.throws(() => parsePlayerAds({ ...value, textAd: { ...value.textAd, ...patch } }));
+  }
+});
+
+test('text and color persist across reloads; deleting text preserves saved video ads', async () => {
+  let durable: unknown;
+  const storage = { read: async () => durable, write: async (value: unknown) => { durable = value; } };
+  const value = { ...config(), textAd: { ...defaultPlayerAds().textAd, enabled: true, text: 'ڕیکلامی تێکست', color: '#abcdef' } };
+  const store = createPlayerAdsStore(storage); await store.save(value, 'owner');
+  const restart = createPlayerAdsStore(storage); await restart.load(); assert.deepEqual(restart.get(), value);
+  const { textAd, ...oldClient } = value;
+  await restart.save(oldClient, 'owner');
+  assert.deepEqual(restart.get().textAd, value.textAd);
+  await restart.save({ ...restart.get(), textAd: { ...value.textAd, enabled: false, text: '' } }, 'owner');
+  assert.deepEqual(restart.get().items, value.items);
+  assert.equal(restart.get().enabled, true);
+});
+
+test('a concurrent save from an older tab cannot overwrite a newly saved text message', async () => {
+  const store = createPlayerAdsStore({ read: async () => null, write: async () => {} });
+  const value = { ...config(), textAd: { ...defaultPlayerAds().textAd, text: 'نووسینی نوێ', enabled: true } };
+  const { textAd, ...legacy } = config();
+  await Promise.all([store.save(value, 'owner'), store.save(legacy, 'owner')]);
+  assert.equal(store.get().textAd.text, 'نووسینی نوێ');
+});
+
 test('protected HTTP endpoint saves and reloads settings; a name header is not proof', async t => {
   const { default: express } = await import('express');
   let durable: unknown;

@@ -1,6 +1,19 @@
 export type PlayerAd = { kind: 'image' | 'video'; url: string; enabled: boolean };
-export type PlayerAdsConfig = { enabled: boolean; intervalSeconds: number; durationSeconds: number; items: PlayerAd[] };
-export const defaultPlayerAds = (): PlayerAdsConfig => ({ enabled: false, intervalSeconds: 180, durationSeconds: 10, items: [] });
+export type PlayerTextAd = { enabled: boolean; text: string; color: string; intervalSeconds: number; durationSeconds: number };
+export type PlayerAdsConfig = { enabled: boolean; intervalSeconds: number; durationSeconds: number; items: PlayerAd[]; textAd: PlayerTextAd };
+export const defaultPlayerTextAd = (): PlayerTextAd => ({ enabled: false, text: '', color: '#FFD400', intervalSeconds: 180, durationSeconds: 10 });
+export const defaultPlayerAds = (): PlayerAdsConfig => ({ enabled: false, intervalSeconds: 180, durationSeconds: 10, items: [], textAd: defaultPlayerTextAd() });
+
+/** Missing text settings are expected on existing saved video/image records. */
+export function parsePlayerTextAd(value: unknown): PlayerTextAd {
+  if (value === undefined) return defaultPlayerTextAd();
+  const v = value as PlayerTextAd;
+  if (!v || typeof v.enabled !== 'boolean' || typeof v.text !== 'string' || v.text.length > 300 || typeof v.color !== 'string' || !/^#[0-9a-f]{6}$/i.test(v.color) ||
+    !Number.isInteger(v.intervalSeconds) || v.intervalSeconds < 60 || v.intervalSeconds > 3600 || !Number.isInteger(v.durationSeconds) || v.durationSeconds < 3 || v.durationSeconds > 30 || (v.enabled && !v.text.trim())) {
+    throw new Error('تێکست تا ٣٠٠ پیت، ڕەنگی دروست، ماوە ١–٦٠ خولەک و پیشاندان ٣–٣٠ چرکە دابنێ.');
+  }
+  return { enabled: v.enabled, text: v.text.trim(), color: v.color, intervalSeconds: v.intervalSeconds, durationSeconds: v.durationSeconds };
+}
 
 export function playerAdYouTubeId(value: string): string | null {
   try {
@@ -42,7 +55,7 @@ export function parsePlayerAds(value: unknown): PlayerAdsConfig {
     return { kind: item.kind, enabled: item.enabled, url: youtube ? `https://www.youtube.com/watch?v=${youtube}` : url.href };
   });
   if (v.enabled && !items.some(item => item.enabled)) throw new Error('لانیکەم یەک ڕیکلام چالاک بکە.');
-  return { enabled: v.enabled, intervalSeconds: v.intervalSeconds, durationSeconds: v.durationSeconds, items };
+  return { enabled: v.enabled, intervalSeconds: v.intervalSeconds, durationSeconds: v.durationSeconds, items, textAd: parsePlayerTextAd(v.textAd) };
 }
 
 /** Counts eligible viewing time, never the film position (seeking earns no time). */
@@ -50,7 +63,7 @@ export class PlayerAdClock {
   elapsed = 0;
   visible = -1;
   next = 0;
-  constructor(public config: PlayerAdsConfig) {}
+  constructor(public config: { enabled: boolean; intervalSeconds: number; durationSeconds: number; items: { enabled: boolean }[] }) {}
   dismiss() { this.visible = -1; this.elapsed = 0; }
   tick(seconds: number, eligible: boolean) {
     const items = this.config.items.filter(item => item.enabled);
