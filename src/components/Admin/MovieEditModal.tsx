@@ -53,6 +53,35 @@ export default function MovieEditModal({
 
   useEffect(() => {
     if (!movie) return;
+    const categoryKeys = new Set(
+      categories.map((category) => normalizeCategoryKey(category.tag)),
+    );
+    const selectedCategoryTags = [
+      movie.category,
+      ...(Array.isArray(movie.tags) ? movie.tags : []),
+    ].filter((tag, index, values): tag is string => {
+      if (typeof tag !== "string" || !tag.trim()) return false;
+      const key = normalizeCategoryKey(tag);
+      return (
+        categoryKeys.has(key) &&
+        values.findIndex(
+          (candidate) =>
+            typeof candidate === "string" &&
+            normalizeCategoryKey(candidate) === key,
+        ) === index
+      );
+    }).slice(0, 3);
+    const existingPostType = String(movie.postType || "").trim();
+    const legacyType = String(movie.type || "").trim().toLowerCase();
+    const hasDramaCategory = [movie.category, ...(Array.isArray(movie.tags) ? movie.tags : [])]
+      .some((tag) => ["دراما", "drama"].includes(normalizeCategoryKey(tag)));
+    const postType =
+      existingPostType === "دراما" || existingPostType === "فیلم"
+        ? existingPostType
+        : ["tv", "drama", "series", "episode"].includes(legacyType) ||
+            hasDramaCategory
+          ? "دراما"
+          : "فیلم";
     setDraft({
       ...movie,
       posterUrl: movie.posterUrl || movie.image || "",
@@ -60,17 +89,41 @@ export default function MovieEditModal({
         movie.streamingUrl || movie.videoUrl || movie.external_link || "",
       category: movie.category || movie.tags?.[0] || "",
       tagsText: Array.isArray(movie.tags) ? movie.tags.join(", ") : "",
+      selectedCategoryTags,
+      postType,
       subtitleText: movie.subtitleText || "",
       kurdishSubtitleUrl: movie.kurdishSubtitleUrl || "",
     });
     setError("");
-  }, [movie]);
+  }, [movie, categories]);
 
   const canSave = useMemo(() => Boolean(draft?.title?.trim()) && !saving, [draft, saving]);
   if (!movie || !draft) return null;
 
   const setField = (key: string, value: string) =>
     setDraft((current) => (current ? { ...current, [key]: value } : current));
+  const selectedCategoryTags: string[] = Array.isArray(draft.selectedCategoryTags)
+    ? draft.selectedCategoryTags
+    : [];
+  const toggleCategory = (tag: string) => {
+    setDraft((current) => {
+      if (!current) return current;
+      const selected: string[] = Array.isArray(current.selectedCategoryTags)
+        ? current.selectedCategoryTags
+        : [];
+      const key = normalizeCategoryKey(tag);
+      const isSelected = selected.some(
+        (value) => normalizeCategoryKey(value) === key,
+      );
+      if (!isSelected && selected.length >= 3) return current;
+      return {
+        ...current,
+        selectedCategoryTags: isSelected
+          ? selected.filter((value) => normalizeCategoryKey(value) !== key)
+          : [...selected, tag],
+      };
+    });
+  };
 
   const loadSubtitleFile = async (file?: File) => {
     if (!file) return;
@@ -120,20 +173,44 @@ export default function MovieEditModal({
         }
       }
       normalizedDraft.subtitleText = inlineSubtitleParts.join("\n\n");
-      const category = String(draft.category ?? "").trim();
+      const selectedCategories: string[] = Array.isArray(draft.selectedCategoryTags)
+        ? draft.selectedCategoryTags.slice(0, 3)
+        : [];
+      const category = selectedCategories[0] || "";
+      const categoryKeys = new Set(
+        categoryChips.map((chip) => normalizeCategoryKey(chip.tag)),
+      );
       const tags = String(draft.tagsText || "")
         .split(",")
         .map((tag) => tag.trim())
-        .filter(Boolean);
-      // Keep the saved category in tags — homepage filtering matches tags
-      // (normalized), so the chip selection must land on the record itself.
-      if (
-        category &&
-        !tags.some((t) => t.toLowerCase() === category.toLowerCase())
-      ) {
-        tags.unshift(category);
+        .filter(
+          (tag) =>
+            tag &&
+            !categoryKeys.has(normalizeCategoryKey(tag)) &&
+            !selectedCategories.some(
+              (selected) =>
+                normalizeCategoryKey(selected) === normalizeCategoryKey(tag),
+            ),
+        );
+      for (const selected of selectedCategories) {
+        if (
+          !tags.some(
+            (tag) =>
+              normalizeCategoryKey(tag) === normalizeCategoryKey(selected),
+          )
+        ) {
+          tags.push(selected);
+        }
       }
-      await onSave({ ...normalizedDraft, category, tags, image: draft.posterUrl || "" });
+      delete normalizedDraft.tagsText;
+      delete normalizedDraft.selectedCategoryTags;
+      await onSave({
+        ...normalizedDraft,
+        postType: String(draft.postType || "فیلم"),
+        category,
+        tags,
+        image: draft.posterUrl || "",
+      });
       onClose();
     } catch (err: any) {
       setError(err?.message || "پاشەکەوتکردن سەرکەوتوو نەبوو");
@@ -154,6 +231,17 @@ export default function MovieEditModal({
         </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <label className="space-y-2 text-xs font-bold text-gray-300 kurdish-text">
+            <span>جۆری پۆست</span>
+            <select
+              value={String(draft.postType || "فیلم")}
+              onChange={(event) => setField("postType", event.target.value)}
+              className="w-full rounded-xl border border-white/10 bg-black/50 px-4 py-3 text-white outline-none focus:border-red-500"
+            >
+              <option value="فیلم">فیلم</option>
+              <option value="دراما">دراما</option>
+            </select>
+          </label>
           {TEXT_FIELDS.map(({ key, label, placeholder }) => (
             <label key={key} className="space-y-2 text-xs font-bold text-gray-300 kurdish-text">
               <span>{label}</span>
@@ -166,18 +254,31 @@ export default function MovieEditModal({
             </label>
           ))}
           <label className="space-y-2 text-xs font-bold text-gray-300 kurdish-text">
-            <span>پۆلێن</span>
+            <span>پۆلەکان ({selectedCategoryTags.length}/3)</span>
             <div className="flex flex-wrap gap-2 max-h-40 overflow-y-auto rounded-xl border border-white/10 bg-black/50 p-3">
               {categoryChips.map((c) => (
                 <button
                   key={normalizeCategoryKey(c.tag)}
                   type="button"
-                  onClick={() => setField("category", c.tag)}
+                  disabled={
+                    selectedCategoryTags.length >= 3 &&
+                    !selectedCategoryTags.some(
+                      (tag) =>
+                        normalizeCategoryKey(tag) ===
+                        normalizeCategoryKey(c.tag),
+                    )
+                  }
+                  onClick={() => toggleCategory(c.tag)}
                   className={`rounded-full border px-3 py-1.5 text-[11px] font-black kurdish-text whitespace-nowrap transition-all ${
-                    normalizeCategoryKey(draft.category) ===
-                    normalizeCategoryKey(c.tag)
+                    selectedCategoryTags.some(
+                      (tag) =>
+                        normalizeCategoryKey(tag) ===
+                        normalizeCategoryKey(c.tag),
+                    )
                       ? "border-red-500 bg-red-600 text-white"
-                      : "border-white/10 bg-white/5 text-gray-300 hover:text-white hover:border-red-500/50"
+                      : selectedCategoryTags.length >= 3
+                        ? "cursor-not-allowed border-white/10 bg-white/5 text-gray-500"
+                        : "border-white/10 bg-white/5 text-gray-300 hover:text-white hover:border-red-500/50"
                   }`}
                 >
                   {c.name}
