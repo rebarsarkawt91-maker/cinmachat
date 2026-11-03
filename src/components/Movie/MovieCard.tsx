@@ -169,6 +169,14 @@ export function movieCanPlay(movie: Movie): boolean {
   );
 }
 
+/** Only the Kurdish VTT field or pasted subtitle text determines this badge. */
+export function movieHasSubtitle(movie: Movie): boolean {
+  return Boolean(
+    (typeof movie.kurdishSubtitleUrl === "string" && movie.kurdishSubtitleUrl.trim()) ||
+      (typeof movie.subtitleText === "string" && movie.subtitleText.trim()),
+  );
+}
+
 export const MovieCardBase: React.FC<MovieCardProps> = ({
   priority = false,
   movie,
@@ -193,6 +201,7 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
   const language = inferMovieLanguage(movie);
   const quality = movie.quality || "HD";
   const canPlay = movieCanPlay(movie);
+  const hasSubtitle = movieHasSubtitle(movie);
   const isBroken = Boolean(movie.isBroken);
   const posterCandidates = useMemo(() => getMoviePosterCandidates(movie), [
     movie.id,
@@ -449,6 +458,20 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
               ))}
             </div>
           )}
+
+          <div className="mt-1.5">
+            <span
+              dir="rtl"
+              className={`inline-flex max-w-full items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px] font-bold kurdish-text shadow-sm ${
+                hasSubtitle
+                  ? "border-emerald-400/60 bg-emerald-950/90 text-emerald-200"
+                  : "border-zinc-500/60 bg-black/80 text-zinc-200"
+              }`}
+            >
+              <Languages className="h-2.5 w-2.5 shrink-0" aria-hidden="true" />
+              {hasSubtitle ? "ژێرنووسی کوردی" : "ژێرنووس نەکراوە"}
+            </span>
+          </div>
 
           {/* IMDb + CinemaChat ratings + counts */}
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
