@@ -10462,7 +10462,10 @@ const handleWebkitEndFullscreen = () => {
         prev.ratingCount !== next.ratingCount ||
         prev.favoriteCount !== next.favoriteCount ||
         prev.trendingScore !== next.trendingScore ||
-        prev.userRating !== next.userRating
+        prev.userRating !== next.userRating ||
+        prev.subtitleText !== next.subtitleText ||
+        prev.kurdishSubtitleUrl !== next.kurdishSubtitleUrl ||
+        (prev as any).__inlineSubtitleUrl !== (next as any).__inlineSubtitleUrl
       ) {
         resolvedMoviesCache.current[m.id] = next;
       }

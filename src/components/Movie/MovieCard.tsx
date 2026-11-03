@@ -169,11 +169,13 @@ export function movieCanPlay(movie: Movie): boolean {
   );
 }
 
-/** Only the Kurdish VTT field or pasted subtitle text determines this badge. */
+/** Include the derived URL used when the catalog moves a large pasted VTT to /uploads. */
 export function movieHasSubtitle(movie: Movie): boolean {
   return Boolean(
     (typeof movie.kurdishSubtitleUrl === "string" && movie.kurdishSubtitleUrl.trim()) ||
-      (typeof movie.subtitleText === "string" && movie.subtitleText.trim()),
+      (typeof movie.subtitleText === "string" && movie.subtitleText.trim()) ||
+      (typeof (movie as Movie & { __inlineSubtitleUrl?: string }).__inlineSubtitleUrl === "string" &&
+        (movie as Movie & { __inlineSubtitleUrl?: string }).__inlineSubtitleUrl?.trim()),
   );
 }
 
