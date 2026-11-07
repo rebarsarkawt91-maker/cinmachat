@@ -6988,7 +6988,9 @@ const VipGoldenLoungeCard = ({ onOpen }: any) => (
   </div>
 );
 
-const DramaRoomDetailModal = ({ room, resolvedMovies, openMovie, onEditMovie, onClose, rating, ratingCount, userRating, onRate }: any) => {
+const DramaRoomDetailModal = ({ room, resolvedMovies, openMovie, onEditMovie, onPasteMovie, onRemoveMovie, onClose, rating, ratingCount, userRating, onRate }: any) => {
+  const [copiedMovieId, setCopiedMovieId] = useState<string | null>(null);
+  const [roomUpdating, setRoomUpdating] = useState(false);
   // Resolve each stored drama id to its movie, keeping the room's stored order
   // so the per-room numbering ("Drama 1", "Drama 2", ...) is automatic — only
   // this room's dramas are ever resolved, never dramas from other rooms.
@@ -7077,14 +7079,41 @@ const DramaRoomDetailModal = ({ room, resolvedMovies, openMovie, onEditMovie, on
           </div>
         </div>
 
-        {dramas.length === 0 ? (
+        {dramas.length === 0 && !onPasteMovie ? (
           <div className="py-14 text-center text-gray-500 kurdish-text">
             هیچ درامایەک لەم ژوورەدا بەردەست نییە
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
             {dramas.map(({ movie, order }: any) => (
-              <DramaEpisodeCard key={movie.id} movie={movie} order={order} onOpen={openMovie} onEdit={onEditMovie} />
+              <DramaEpisodeCard
+                key={`${movie.id}-${order}`}
+                movie={movie}
+                order={order}
+                onOpen={openMovie}
+                onEdit={onEditMovie}
+                onDuplicate={onPasteMovie ? (source: Movie) => setCopiedMovieId(source.id) : undefined}
+                onRemove={onRemoveMovie ? async () => {
+                  if (roomUpdating || !window.confirm("ئەم کارتـە تەنها لەم ژوورە لاببرێت؟")) return;
+                  setRoomUpdating(true);
+                  try { await onRemoveMovie(room, order); }
+                  finally { setRoomUpdating(false); }
+                } : undefined}
+              />
+            ))}
+            {onPasteMovie && Array.from({ length: Math.max(2, 3 - dramas.length) }, (_, index) => (
+              <button key={`empty-slot-${index}`} type="button" disabled={!copiedMovieId || roomUpdating}
+                onClick={async () => {
+                  if (!copiedMovieId || roomUpdating) return;
+                  setRoomUpdating(true);
+                  try { await onPasteMovie(room, copiedMovieId); }
+                  finally { setRoomUpdating(false); }
+                }}
+                className="aspect-[2/3] rounded-xl border-2 border-dashed border-emerald-500/60 bg-emerald-500/5 text-emerald-300 flex flex-col items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-emerald-500/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300"
+                title={copiedMovieId ? "کارتە کۆپی‌کراوەکە لێرە زیاد بکە" : "سەرەتا COPY لەسەر کارتێک بکە"}>
+                <span className="text-3xl font-bold">+</span>
+                <span className="text-xs font-bold kurdish-text">{copiedMovieId ? "لێرە پەیست بکە" : "سەرەتا COPY بکە"}</span>
+              </button>
             ))}
           </div>
         )}
@@ -13874,6 +13903,38 @@ const handleWebkitEndFullscreen = () => {
     [editingDramaRoom, refreshDramaRooms, currentUser, socialProfile],
   );
 
+  // Copy/paste and remove operate on the room's ordered episode IDs only.
+  // The movie catalog record is shared and must never be duplicated or deleted.
+  const updateDramaRoomCards = async (room: any, dramas: string[]) => {
+    const adminName = currentUser?.username || socialProfile?.username || "";
+    const data = await api.baseFetch(`/api/drama-rooms/${encodeURIComponent(room.id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "x-admin-username": adminName },
+      body: JSON.stringify({ dramas }),
+    }, 2);
+    if (!data?.success || !data?.room) throw new Error("نوێکردنەوەی ژوور سەرکەوتوو نەبوو");
+    setDramaRooms((previous) => previous.map((entry) => entry.id === room.id ? data.room : entry));
+    setSelectedDramaRoom(data.room);
+  };
+
+  const pasteDramaRoomCard = async (room: any, movieId: string) => {
+    if (!canEditMovies || !resolvedMovies[movieId]) return;
+    try {
+      await updateDramaRoomCards(room, [...(Array.isArray(room.dramas) ? room.dramas : []), movieId]);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "زیادکردنی کارت سەرکەوتوو نەبوو");
+    }
+  };
+
+  const removeDramaRoomCard = async (room: any, order: number) => {
+    if (!canEditMovies || !Array.isArray(room.dramas) || order < 0 || order >= room.dramas.length) return;
+    try {
+      await updateDramaRoomCards(room, room.dramas.filter((_: string, index: number) => index !== order));
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "لابردنی کارت سەرکەوتوو نەبوو");
+    }
+  };
+
   // Delete a drama room through the admin-guarded API (confirm first).
   const handleDeleteDramaRoom = useCallback(
     async (room: any) => {
@@ -15376,6 +15437,9 @@ const handleWebkitEndFullscreen = () => {
                 // Use the authoritative record, not the metrics-only room-card cache.
                 setMovieBeingEdited(movies.find(item => item.id === movie.id) || movie);
               } : undefined}
+              onPasteMovie={canEditMovies ? pasteDramaRoomCard : undefined}
+              onRemoveMovie={canEditMovies ? removeDramaRoomCard : undefined}
+
               openMovie={(movie: Movie) => {
                 // Remember this room's ordered episodes so an episode that
                 // finishes auto-advances to the NEXT episode in the SAME room

@@ -1,10 +1,11 @@
-import { Edit3, Film, Play } from 'lucide-react';
+import { Copy, Edit3, Film, Play, X } from 'lucide-react';
 import type { Movie } from '../../types';
 
 /** Edit is a sibling of Play, so touch/keyboard editing never starts playback. */
-export function DramaEpisodeCard({ movie, order, onOpen, onEdit }: {
+export function DramaEpisodeCard({ movie, order, onOpen, onEdit, onDuplicate, onRemove }: {
   movie: Movie & { posterUrl?: string }; order: number; onOpen: (movie: Movie) => void;
-  onEdit?: (movie: Movie) => void;
+  onEdit?: (movie: Movie) => void; onDuplicate?: (movie: Movie) => void;
+  onRemove?: () => void;
 }) {
   return <div className="relative min-w-0">
     <button type="button" onClick={() => onOpen(movie)}
@@ -19,10 +20,22 @@ export function DramaEpisodeCard({ movie, order, onOpen, onEdit }: {
       </div>
       <p className="mt-2 text-xs font-bold text-white kurdish-text line-clamp-1">{movie.title}</p>
     </button>
+    <div className="absolute left-2 top-2 z-10 flex flex-wrap gap-1">
     {onEdit && <button type="button" onClick={() => onEdit(movie)} aria-label={`Edit ${movie.title}`}
       title="دەستکاریکردنی دراما و زیادکردنی VTT"
-      className="absolute left-2 top-2 z-10 flex items-center gap-1 rounded-md border border-red-500/70 bg-black/80 px-2 py-1 text-[9px] font-black text-white shadow-lg hover:bg-red-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white">
+      className="flex items-center gap-1 rounded-md border border-red-500/70 bg-black/80 px-2 py-1 text-[9px] font-black text-white shadow-lg hover:bg-red-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white">
       <Edit3 className="h-3 w-3" aria-hidden="true" /> EDIT
+    </button>}
+    {onRemove && <button type="button" onClick={(event) => { event.preventDefault(); event.stopPropagation(); onRemove(); }} aria-label={`Remove ${movie.title} from room`}
+      title="لابردنی ئەم کارتـە تەنها لەم ژوورە"
+      className="flex items-center gap-1 rounded-md border border-red-500/70 bg-black/80 px-2 py-1 text-[9px] font-black text-white shadow-lg hover:bg-red-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white">
+      <X className="h-3 w-3" aria-hidden="true" /> REMOVE
+    </button>}
+    </div>
+    {onDuplicate && <button type="button" onClick={(event) => { event.preventDefault(); event.stopPropagation(); onDuplicate(movie); }} aria-label={`Duplicate ${movie.title}`}
+      title="کۆپی‌کردنی کارت بۆ خانەی بەتاڵی ئەم ژوورە"
+      className="absolute left-2 top-12 z-10 flex items-center gap-1 rounded-md border border-cyan-500/70 bg-black/80 px-2 py-1 text-[9px] font-black text-cyan-200 shadow-lg hover:bg-cyan-600 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300">
+      <Copy className="h-3 w-3" aria-hidden="true" /> COPY
     </button>}
   </div>;
 }
