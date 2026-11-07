@@ -439,3 +439,30 @@ video {
     transform: none;
   }
 }
+
+/* CinemaFX is completely inert while unmounted (the default OFF state). */
+.cinemafx-ambient {
+  position: absolute;
+  inset: 0;
+  z-index: 41;
+  pointer-events: none;
+  opacity: var(--fx-alpha, .35);
+  background:
+    linear-gradient(to bottom, color-mix(in srgb, var(--fx-top) 72%, transparent), transparent 20%),
+    linear-gradient(to left, color-mix(in srgb, var(--fx-right) 72%, transparent), transparent 18%),
+    linear-gradient(to top, color-mix(in srgb, var(--fx-bottom) 72%, transparent), transparent 20%),
+    linear-gradient(to right, color-mix(in srgb, var(--fx-left) 72%, transparent), transparent 18%);
+  box-shadow: inset 0 0 80px color-mix(in srgb, var(--fx-top) 34%, transparent);
+  animation: cinemafx-breathe var(--fx-duration, 6s) ease-in-out infinite alternate;
+  will-change: opacity, filter;
+}
+.cinemafx-pulse { animation: cinemafx-pulse .35s ease-out, cinemafx-breathe var(--fx-duration, 6s) ease-in-out .35s infinite alternate; }
+.cinemafx-shake { animation: cinemafx-shake .36s ease-out both; will-change: transform; }
+.cinemafx-preview { animation: cinemafx-breathe 4s ease-in-out infinite alternate; }
+@keyframes cinemafx-breathe { from { opacity: calc(var(--fx-alpha, .35) * .72); } to { opacity: var(--fx-alpha, .35); } }
+@keyframes cinemafx-pulse { 0% { opacity: var(--fx-alpha, .35); } 45% { opacity: .8; } 100% { opacity: var(--fx-alpha, .35); } }
+@keyframes cinemafx-shake { 0%,100% { transform: translate3d(0,0,0); } 20% { transform: translate3d(-5px,2px,0); } 40% { transform: translate3d(6px,-2px,0); } 60% { transform: translate3d(-4px,1px,0); } 80% { transform: translate3d(3px,0,0); } }
+@media (prefers-reduced-motion: reduce) {
+  .cinemafx-ambient, .cinemafx-preview { animation: none !important; }
+  .cinemafx-shake { animation: none !important; transform: none !important; }
+}

@@ -86,7 +86,6 @@ import {
   EyeOff,
   Layers,
   Clapperboard,
-  Languages,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { Plyr } from "plyr-react";
@@ -424,9 +423,6 @@ import { ProfileCard } from "./components/Social/ProfileCard";
 import { WatchPartyManager } from "./components/Social/WatchPartyManager";
 // The voice SDK belongs to an opened watch room, not the homepage bundle.
 const SyncRoom = lazyWithRetry(() => import("./components/Social/SyncRoom").then(m => ({ default: m.SyncRoom })), "SyncRoom");
-const SubtitleTranslatorStudio = React.lazy(() =>
-  import("./components/Admin/SubtitleTranslatorStudio"),
-);
 import { CameHereRoom } from "./components/Social/CameHereRoom";
 import { BroadcastRoom } from "./components/Social/BroadcastRoom";
 import { BroadcastPreviewCard } from "./components/Social/BroadcastPreviewCard";
@@ -462,6 +458,15 @@ import { PushBellButton } from "./components/Pwa/PushBellButton";
 import { SocialReelsSection } from "./components/Movie/SocialReelsSection";
 import { usePwaInstall } from "./pwa/PwaProvider";
 import { usePush } from "./pwa/PushProvider";
+import AmbientGlow from "./components/FX/AmbientGlow";
+import { FX_BRAND_NAME } from "./config/fxBrand";
+import { useFxSettings } from "./fx/fxSettings";
+import { collectEnteringEffects, type MovieEffect } from "./fx/effectTimeline";
+import { triggerHaptic, triggerPlayerShake } from "./fx/hapticEffects";
+import { fxSound } from "./fx/fxSound";
+
+const FxSettingsPanel = React.lazy(() => import("./components/FX/FxSettingsPanel"));
+const FxTimelineEditor = React.lazy(() => import("./components/FX/FxTimelineEditor"));
 
 import { 
   db, 
@@ -12767,7 +12772,11 @@ const handleWebkitEndFullscreen = () => {
     return () => { cancelled = true; };
   }, [selectedMovie?.id, movieBeingEdited?.id]);
   const [showKurdSubStudio, setShowKurdSubStudio] = useState(false);
-  const [showSubtitleTranslator, setShowSubtitleTranslator] = useState(false);
+  const fxSettings = useFxSettings();
+  const [showFxSettings, setShowFxSettings] = useState(false);
+  const [showFxTimeline, setShowFxTimeline] = useState(false);
+  const [fxPulse, setFxPulse] = useState(false);
+  const firedFxWindowsRef = useRef<Set<string>>(new Set());
 
   // Movie metadata editing is available to the owner plus the delegated
   // publishing roles. Destructive delete actions remain owner-only.
@@ -12788,6 +12797,64 @@ const handleWebkitEndFullscreen = () => {
         String(currentUser?.role || "").toLowerCase(),
       ),
   );
+
+  const triggerCinemaFx = useCallback((type: "fight" | "horror" | "explosion") => {
+    const current = fxSettings;
+    if (!current.enabled) return;
+    let gestureUnlocked = false;
+    try { gestureUnlocked = window.sessionStorage.getItem('cinemafx_gesture_unlocked') === '1'; } catch { /* unavailable storage */ }
+    if (gestureUnlocked && current.haptics.enabled && current.haptics.types[type]) {
+      triggerHaptic(type, current.haptics.strength);
+      if (current.haptics.shake) {
+        triggerPlayerShake(modalPlayerRef.current, window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+      }
+    }
+    if (current.sound.enabled) void fxSound.playForEffect(type, current);
+    if (current.glow.enabled) {
+      setFxPulse(false);
+      window.requestAnimationFrame(() => setFxPulse(true));
+      window.setTimeout(() => setFxPulse(false), 420);
+    }
+  }, [fxSettings]);
+
+  // Optional admin-authored effects run only for a native video. Iframe clocks
+  // are intentionally ignored because cross-origin timing is not reliable.
+  useEffect(() => {
+    if (!showPlayer || !selectedMovie?.id || !fxSettings.enabled || !fxSettings.autoEffects) return;
+    const nativeVideo = modalPlayerRef.current?.querySelector<HTMLVideoElement>('video');
+    if (!nativeVideo) return;
+    const effects = Array.isArray(selectedMovie.effects) ? selectedMovie.effects : [];
+    for (const { effect } of collectEnteringEffects(effects, playerCurrentTime, firedFxWindowsRef.current)) {
+      triggerCinemaFx(effect.type);
+    }
+  }, [showPlayer, selectedMovie?.id, selectedMovie?.effects, playerCurrentTime, fxSettings.enabled, fxSettings.autoEffects, triggerCinemaFx]);
+
+  useEffect(() => {
+    firedFxWindowsRef.current.clear();
+    setFxPulse(false);
+    fxSound.stopAll();
+  }, [selectedMovie?.id, activeServerUrl]);
+
+  useEffect(() => {
+    if (!fxSettings.enabled || !showPlayer) fxSound.stopAll();
+    const onVisibility = () => { if (document.hidden) fxSound.stopAll(); };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, [fxSettings.enabled, showPlayer]);
+
+  const saveMovieEffects = useCallback(async (effects: MovieEffect[]) => {
+    if (!selectedMovie?.id || !currentUser?.username) throw new Error('Movie/admin unavailable');
+    const response = await fetchApi(`/api/admin/movies/${encodeURIComponent(selectedMovie.id)}/effects`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Username': currentUser.username },
+      body: JSON.stringify({ effects, adminName: currentUser.username }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.success) throw new Error(payload.error || 'پاشەکەوتکردنی کاریگەری سەرکەوتوو نەبوو');
+    setMovies((previous) => previous.map((movie) => movie.id === selectedMovie.id ? { ...movie, effects: payload.effects } : movie));
+    setSelectedMovie((previous) => previous ? { ...previous, effects: payload.effects } : previous);
+    firedFxWindowsRef.current.clear();
+  }, [selectedMovie?.id, currentUser?.username]);
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -14864,17 +14931,17 @@ const handleWebkitEndFullscreen = () => {
                       </button>
                     </>
                   )}
-                  {canUseKurdSubStudio && (
-                    <button
-                      type="button"
-                      onClick={() => setShowSubtitleTranslator(true)}
-                      className="flex shrink-0 items-center justify-center gap-2 rounded-xl border border-red-400/50 bg-red-500/15 px-4 py-3 text-sm font-black text-red-100 transition-colors hover:bg-red-500/25 kurdish-text"
-                      title="Kurdish Subtitle Translator"
-                    >
-                      <Languages className="h-4 w-4 text-red-400" />
-                      <span>وەرگێڕی ژێرنووس</span>
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShowFxSettings(true)}
+                    className={`flex shrink-0 items-center justify-center gap-2 rounded-xl border px-3 py-3 text-sm font-black transition-colors kurdish-text ${fxSettings.enabled ? "border-emerald-400/50 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/25" : "border-white/15 bg-white/5 text-zinc-200 hover:bg-white/10"}`}
+                    title="کاریگەری سینەمایی"
+                    aria-label="کردنەوەی ڕێکخستنی CinemaFX"
+                  >
+                    <Sparkles className="h-4 w-4" />
+                    <span>{FX_BRAND_NAME}</span>
+                    <span aria-hidden className={`h-2 w-2 rounded-full ${fxSettings.enabled ? "bg-emerald-400 shadow-[0_0_8px_#34d399]" : "bg-zinc-600"}`} />
+                  </button>
                   {canUseKurdSubStudio && (
                     <button
                       type="button"
@@ -15666,6 +15733,14 @@ const handleWebkitEndFullscreen = () => {
                   onPointerCancel={onPlayerPointerCancel}
                   onKeyDown={revealPlayerControls}
                 >
+                  {showPlayer && fxSettings.enabled && (
+                    <AmbientGlow
+                      rootRef={modalPlayerRef}
+                      poster={selectedMovie.image}
+                      palette={selectedMovie.ambientPalette}
+                      pulse={fxPulse}
+                    />
+                  )}
                   {showPlayer && activeServerUrl ? (
                     <div className="absolute inset-0 bg-black flex items-center justify-center z-10 transition-all">
                       {/* ── Player routing via classifySourceType ────────────── */}
@@ -16018,6 +16093,30 @@ const handleWebkitEndFullscreen = () => {
                           [5] Play/Pause · [6] Back 10s ·
                           [7] Exit Fullscreen · [8] Mute */}
                       <div data-testid="player-control-bar" className={`absolute bottom-0 right-0 z-[60] h-16 flex items-center gap-1.5 md:gap-2 px-4 md:px-6 select-none font-sans transition-all duration-300 ease-out ${playerControlsVisible ? "translate-y-0 opacity-100 pointer-events-auto" : "translate-y-6 opacity-0 pointer-events-none"}`}>
+                        <div className="relative flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setShowFxSettings(true)}
+                            className={`flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur-md transition-all active:scale-95 md:h-10 md:w-10 ${fxSettings.enabled ? "border-emerald-400/60 bg-emerald-500/20 text-emerald-200" : "border-white/10 bg-black/60 text-white hover:bg-white/10"}`}
+                            title="CinemaFX — کاریگەری سینەمایی"
+                            aria-label="کردنەوەی CinemaFX"
+                          >
+                            <Sparkles className="h-4 w-4" />
+                          </button>
+                          {fxSettings.enabled && activeServerUrl && (classifySourceType(activeServerUrl) === 'supported-embed' || (classifySourceType(activeServerUrl) === 'youtube' && youtubePlayerMode !== 'direct')) && (
+                            <button type="button" onClick={() => { try { window.sessionStorage.setItem('cinemafx_gesture_unlocked', '1'); } catch { /* unavailable storage */ } triggerCinemaFx('horror'); }} className="flex h-9 w-9 items-center justify-center rounded-full border border-amber-400/40 bg-amber-500/15 text-amber-200 md:h-10 md:w-10" title="کاریگەری دەستی"><Zap className="h-4 w-4" /></button>
+                          )}
+                          {canUseKurdSubStudio && selectedMovie && (
+                            <div className="relative">
+                              <button type="button" onClick={() => setShowFxTimeline((value) => !value)} className="flex h-9 min-w-9 items-center justify-center rounded-full border border-red-400/35 bg-red-500/10 px-2 text-red-100 md:h-10" title="زیادکردنی نیشانەی کاریگەری" aria-label="زیادکردنی نیشانەی کاریگەری"><Plus className="h-4 w-4" /><span className="hidden xl:inline text-[10px] font-bold">نیشانە</span></button>
+                              {showFxTimeline && (
+                                <React.Suspense fallback={null}>
+                                  <FxTimelineEditor effects={selectedMovie.effects || []} currentTime={playerCurrentTime} onClose={() => setShowFxTimeline(false)} onSave={saveMovieEffects} />
+                                </React.Suspense>
+                              )}
+                            </div>
+                          )}
+                        </div>
                         {/* [6] Mute / Audio Toggle + vertical Volume slider.
                             Hovering (or focusing) the mute control reveals a
                             vertically-centered volume slider popup above it —
@@ -17553,15 +17652,12 @@ const handleWebkitEndFullscreen = () => {
         />
       )}
 
-      {showSubtitleTranslator && canUseKurdSubStudio && (
-        <React.Suspense fallback={<div className="fixed inset-0 z-[10050] grid place-items-center bg-black/80"><Loader2 className="h-9 w-9 animate-spin text-red-500" /></div>}>
-          <SubtitleTranslatorStudio
-            movies={movies}
-            adminName={currentUser?.username || ""}
-            onClose={() => setShowSubtitleTranslator(false)}
-            onAttached={(updatedMovie) => {
-              setMovies((previous) => previous.map((movie) => movie.id === updatedMovie.id ? { ...movie, ...updatedMovie } : movie));
-            }}
+      {showFxSettings && (
+        <React.Suspense fallback={<div className="fixed inset-0 z-[100300] grid place-items-center bg-black/70"><Loader2 className="h-8 w-8 animate-spin text-red-500" /></div>}>
+          <FxSettingsPanel
+            onClose={() => setShowFxSettings(false)}
+            iframePlayer={Boolean(showPlayer && activeServerUrl && !modalPlayerRef.current?.querySelector('video'))}
+            playerContainer={modalPlayerRef.current}
           />
         </React.Suspense>
       )}

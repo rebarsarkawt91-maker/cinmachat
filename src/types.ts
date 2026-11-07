@@ -45,8 +45,6 @@ export interface Movie {
   // --- Automatic Kurdish (ckb) subtitle pipeline (server-generated) ---
   /** Public URL of the pre-generated Sorani WebVTT track, when ready. */
   kurdishSubtitleUrl?: string;
-  /** Durable subtitle tracks attached by the admin Subtitle Translator. */
-  subtitles?: Array<{ lang: string; label: string; url: string; updatedAt?: string }>;
   /** queued | processing | ready | failed | skipped */
   kurdishSubtitleStatus?: string;
   /** Which priority supplied the source text (subtitle-url / youtube-track / pasted / stt). */
@@ -70,6 +68,9 @@ export interface Movie {
   isBroken?: boolean;
   /** Prevents automated checks from overriding an explicit admin decision. */
   brokenLinkManualOverride?: boolean;
+  /** Optional viewer CinemaFX palette and admin-authored effect timeline. */
+  ambientPalette?: string[];
+  effects?: Array<{ t: number; d: number; type: 'fight' | 'horror' | 'explosion' }>;
 }
 
 export interface SocialUser {

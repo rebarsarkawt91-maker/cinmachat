@@ -35,7 +35,7 @@ import { legacySubtitleFileUrl, parseLegacySubtitleListing } from './kurdSubLega
 import { assSubtitleToSrt, legacyRestTitleQuery, selectLegacyRestTracks } from './kurdSubLegacyRest';
 import { parseSubdlTracks, safeSubdlDownloadUrl, unpackSubdlSubtitleArchive } from './subdlService';
 import { getSearchConsoleStats } from './features/seo/searchConsole.js';
-import { registerSubtitleStudioRoutes } from './server/subtitleStudio/routes';
+import { validateMovieEffects } from './server/fx/effectsValidation';
 import {
   SCHEMA_VERSION,
   normalizeHeroValue,
@@ -5659,8 +5659,6 @@ async function startServer() {
 
   // Strict Server-Side Admin Guard Enforcement
   app.use(createAdminGuard(db));
-
-  registerSubtitleStudioRoutes(app, { db, saveDB, setMoviesCache, addAuditLog });
 
   // Check-ban status endpoint
   app.get('/api/check-ban', (req, res) => {
@@ -12116,6 +12114,26 @@ async function startServer() {
   };
   app.post('/api/admin/movies/:id/subtitle', saveMovieSubtitle);
   app.patch('/api/admin/movies/:id/subtitle', saveMovieSubtitle);
+
+  // Optional CinemaFX timeline. The existing global admin guard protects this
+  // endpoint; only the validated optional `effects` field is changed.
+  app.put('/api/admin/movies/:id/effects', async (req, res) => {
+    const { id } = req.params;
+    try {
+      const effects = validateMovieEffects(req.body?.effects);
+      const index = db.manualMovies.findIndex((movie: any) => String(movie.id) === String(id));
+      if (index < 0) return res.status(404).json({ success: false, error: 'Movie not found' });
+      const updatedMovie = { ...db.manualMovies[index], effects, updatedAt: new Date().toISOString() };
+      db.manualMovies[index] = updatedMovie;
+      setMoviesCache((previous) => previous.map((movie) => String(movie.id) === String(id) ? { ...movie, effects, updatedAt: updatedMovie.updatedAt } : movie));
+      const adminName = String(req.headers['x-admin-username'] || req.body?.adminName || 'admin');
+      await addAuditLog(db, adminName, 'Update CinemaFX Timeline', `CinemaFX timeline updated for "${updatedMovie.title || id}" (${effects.length} effects)`);
+      await saveDB(db);
+      return res.json({ success: true, effects, movie: updatedMovie });
+    } catch (error) {
+      return res.status(400).json({ success: false, error: error instanceof Error ? error.message : 'Invalid effects' });
+    }
+  });
 
   // Full movie editor. This route is intentionally owner-only even though
   // some other dashboard actions are available to deputies. Fields are
