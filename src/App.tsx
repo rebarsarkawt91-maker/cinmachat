@@ -15742,7 +15742,7 @@ const handleWebkitEndFullscreen = () => {
                     />
                   )}
                   {showPlayer && activeServerUrl ? (
-                    <div className="absolute inset-0 bg-black flex items-center justify-center z-10 transition-all">
+                    <div className={`absolute bg-black flex items-center justify-center z-10 transition-[inset,border-radius] duration-300 ${fxSettings.enabled && fxSettings.glow.enabled ? "cinemafx-player-surface" : "inset-0"}`}>
                       {/* ── Player routing via classifySourceType ────────────── */}
                       {((): React.ReactNode => {
                         const srcType = classifySourceType(activeServerUrl);
