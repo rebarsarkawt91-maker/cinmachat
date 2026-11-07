@@ -95,7 +95,12 @@ export function sanitizeInput(val: any, key?: string): any {
  * Express Middleware for Input Sanitization
  */
 export const sanitizationMiddleware = (req: any, res: any, next: any) => {
-  if (req.body) {
+  // Subtitle files contain timestamp arrows (`-->`) and dialogue punctuation
+  // that the generic SQL/XSS rewriter would corrupt. These admin-only routes
+  // validate their complete structured payloads in their own handlers; React
+  // also escapes all dialogue shown in the editor.
+  const isSubtitleStudioRoute = String(req.path || req.url || '').startsWith('/api/admin/subtitles');
+  if (req.body && !isSubtitleStudioRoute) {
     req.body = sanitizeInput(req.body);
   }
   if (req.query) {
@@ -250,6 +255,9 @@ export function createAdminGuard(db: any) {
     // read views of their permitted tabs. Everything else stays locked so a
     // staff account can never manage admins, VIP, snapshots, bans, etc.
     const staffAllowed = (method: string, requestPath: string): boolean => {
+      // Subtitle Studio mirrors the existing movie-edit permission shared by
+      // delegated publishing staff. The route itself remains admin-guarded.
+      if (requestPath.startsWith('/api/admin/subtitles/')) return true;
       if (method === 'PUT' && requestPath === '/api/admin/banner-image') return true;
       if (method === 'POST' && (requestPath === '/api/admin/post-movie' || requestPath === '/api/admin/upload-image')) return true;
       if ((method === 'GET' || method === 'POST') && requestPath === '/api/admin/hero') return true;

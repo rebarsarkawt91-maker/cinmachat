@@ -11,6 +11,7 @@
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "test:subtitles": "node --test features/subtitles/subtitleGenerator.test.cjs",
+    "test:subtitle-studio": "tsx --test server/subtitleStudio/subtitleStudio.test.ts",
     "test:hero": "node --test features/hero/heroConfig.test.cjs",
     "test:watchcall": "npx tsx --test watchCallStore.test.ts",
     "test:sweep": "npx tsx --test src/lib/privateChatSweep.test.ts",

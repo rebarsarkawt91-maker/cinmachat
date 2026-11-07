@@ -35,6 +35,7 @@ import { legacySubtitleFileUrl, parseLegacySubtitleListing } from './kurdSubLega
 import { assSubtitleToSrt, legacyRestTitleQuery, selectLegacyRestTracks } from './kurdSubLegacyRest';
 import { parseSubdlTracks, safeSubdlDownloadUrl, unpackSubdlSubtitleArchive } from './subdlService';
 import { getSearchConsoleStats } from './features/seo/searchConsole.js';
+import { registerSubtitleStudioRoutes } from './server/subtitleStudio/routes';
 import {
   SCHEMA_VERSION,
   normalizeHeroValue,
@@ -5659,6 +5660,8 @@ async function startServer() {
   // Strict Server-Side Admin Guard Enforcement
   app.use(createAdminGuard(db));
 
+  registerSubtitleStudioRoutes(app, { db, saveDB, setMoviesCache, addAuditLog });
+
   // Check-ban status endpoint
   app.get('/api/check-ban', (req, res) => {
     const identity = getClientIdentity(req);
@@ -8507,6 +8510,7 @@ async function startServer() {
       creatorAdminUsername: requester.name,
       createdAt: now,
       updatedAt: now,
+      accessCodes: [] as Array<{ code: string; status: string; createdAt: string; expiresAt: string; createdBy: string }>,
     };
     room.accessCodes = [{ code: room.uniqueCode, status: 'unused', createdAt: now, expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), createdBy: requester.name }];
     db.adminMovieRooms[id] = room;

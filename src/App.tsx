@@ -86,6 +86,7 @@ import {
   EyeOff,
   Layers,
   Clapperboard,
+  Languages,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { Plyr } from "plyr-react";
@@ -423,6 +424,9 @@ import { ProfileCard } from "./components/Social/ProfileCard";
 import { WatchPartyManager } from "./components/Social/WatchPartyManager";
 // The voice SDK belongs to an opened watch room, not the homepage bundle.
 const SyncRoom = lazyWithRetry(() => import("./components/Social/SyncRoom").then(m => ({ default: m.SyncRoom })), "SyncRoom");
+const SubtitleTranslatorStudio = React.lazy(() =>
+  import("./components/Admin/SubtitleTranslatorStudio"),
+);
 import { CameHereRoom } from "./components/Social/CameHereRoom";
 import { BroadcastRoom } from "./components/Social/BroadcastRoom";
 import { BroadcastPreviewCard } from "./components/Social/BroadcastPreviewCard";
@@ -12763,6 +12767,7 @@ const handleWebkitEndFullscreen = () => {
     return () => { cancelled = true; };
   }, [selectedMovie?.id, movieBeingEdited?.id]);
   const [showKurdSubStudio, setShowKurdSubStudio] = useState(false);
+  const [showSubtitleTranslator, setShowSubtitleTranslator] = useState(false);
 
   // Movie metadata editing is available to the owner plus the delegated
   // publishing roles. Destructive delete actions remain owner-only.
@@ -14858,6 +14863,17 @@ const handleWebkitEndFullscreen = () => {
                         {aiLoading ? "ئەی ئای بیردەکاتەوە..." : "گەڕان"}
                       </button>
                     </>
+                  )}
+                  {canUseKurdSubStudio && (
+                    <button
+                      type="button"
+                      onClick={() => setShowSubtitleTranslator(true)}
+                      className="flex shrink-0 items-center justify-center gap-2 rounded-xl border border-red-400/50 bg-red-500/15 px-4 py-3 text-sm font-black text-red-100 transition-colors hover:bg-red-500/25 kurdish-text"
+                      title="Kurdish Subtitle Translator"
+                    >
+                      <Languages className="h-4 w-4 text-red-400" />
+                      <span>وەرگێڕی ژێرنووس</span>
+                    </button>
                   )}
                   {canUseKurdSubStudio && (
                     <button
@@ -17535,6 +17551,19 @@ const handleWebkitEndFullscreen = () => {
           onClose={() => setShowKurdSubStudio(false)}
           onApply={handleApplyKurdSubStudioSubtitle}
         />
+      )}
+
+      {showSubtitleTranslator && canUseKurdSubStudio && (
+        <React.Suspense fallback={<div className="fixed inset-0 z-[10050] grid place-items-center bg-black/80"><Loader2 className="h-9 w-9 animate-spin text-red-500" /></div>}>
+          <SubtitleTranslatorStudio
+            movies={movies}
+            adminName={currentUser?.username || ""}
+            onClose={() => setShowSubtitleTranslator(false)}
+            onAttached={(updatedMovie) => {
+              setMovies((previous) => previous.map((movie) => movie.id === updatedMovie.id ? { ...movie, ...updatedMovie } : movie));
+            }}
+          />
+        </React.Suspense>
       )}
 
       {/* Professional Management Dashboard Overlay (Point 31/32/33) */}

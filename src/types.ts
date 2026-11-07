@@ -45,6 +45,8 @@ export interface Movie {
   // --- Automatic Kurdish (ckb) subtitle pipeline (server-generated) ---
   /** Public URL of the pre-generated Sorani WebVTT track, when ready. */
   kurdishSubtitleUrl?: string;
+  /** Durable subtitle tracks attached by the admin Subtitle Translator. */
+  subtitles?: Array<{ lang: string; label: string; url: string; updatedAt?: string }>;
   /** queued | processing | ready | failed | skipped */
   kurdishSubtitleStatus?: string;
   /** Which priority supplied the source text (subtitle-url / youtube-track / pasted / stt). */
