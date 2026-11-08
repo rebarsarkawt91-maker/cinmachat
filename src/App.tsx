@@ -14931,17 +14931,6 @@ const handleWebkitEndFullscreen = () => {
                       </button>
                     </>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => setShowFxSettings(true)}
-                    className={`flex shrink-0 items-center justify-center gap-2 rounded-xl border px-3 py-3 text-sm font-black transition-colors kurdish-text ${fxSettings.enabled ? "border-emerald-400/50 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/25" : "border-white/15 bg-white/5 text-zinc-200 hover:bg-white/10"}`}
-                    title="کاریگەری سینەمایی"
-                    aria-label="کردنەوەی ڕێکخستنی CinemaFX"
-                  >
-                    <Sparkles className="h-4 w-4" />
-                    <span>{FX_BRAND_NAME}</span>
-                    <span aria-hidden className={`h-2 w-2 rounded-full ${fxSettings.enabled ? "bg-emerald-400 shadow-[0_0_8px_#34d399]" : "bg-zinc-600"}`} />
-                  </button>
                   {canUseKurdSubStudio && (
                     <button
                       type="button"
