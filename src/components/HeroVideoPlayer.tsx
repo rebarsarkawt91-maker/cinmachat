@@ -537,6 +537,8 @@ const HeroVideoPlayer: React.FC<{
     forcePlay(target, 30);
     aggressiveUnmute();
     safePlayerCall(target, "setPlaybackQuality", "hd1080");
+    const host = document.getElementById("hero-yt-player");
+    if (host) safePlayerCall(target, "setSize", host.clientWidth, host.clientHeight);
     enableCaptions(target);
     setIsPlaying(true);
     setIsHeroMuted(false);
@@ -689,8 +691,8 @@ const HeroVideoPlayer: React.FC<{
       heroDebugLog(`PREPARE:${playlistIds[0]}`);
       playerRef.current = new YTT.Player("hero-yt-player", {
         videoId: playlistIds[0],
-        height: "100%",
-        width: "100%",
+        height: document.getElementById("hero-yt-player")?.clientHeight || 360,
+        width: document.getElementById("hero-yt-player")?.clientWidth || 640,
         playerVars: {
           autoplay: 1,
           mute: 1, // muted autoplay guaranteed by all browsers
@@ -730,8 +732,8 @@ const HeroVideoPlayer: React.FC<{
         } catch (_) {}
         playerRef.current = new YTT.Player("hero-yt-player", {
           videoId: playlistIds[0],
-          height: "100%",
-          width: "100%",
+          height: document.getElementById("hero-yt-player")?.clientHeight || 360,
+          width: document.getElementById("hero-yt-player")?.clientWidth || 640,
           playerVars: {
             autoplay: 1,
             mute: 1,

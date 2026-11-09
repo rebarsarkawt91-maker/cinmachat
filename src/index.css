@@ -172,14 +172,14 @@ iframe#streaming-player {
 .cinema-theater-stage {
   position: absolute;
   z-index: 0;
-  left: 29.4%;
-  top: 29.2%;
-  width: 31.2%;
-  height: 24.2%;
+  left: 22%;
+  top: 12%;
+  width: 56%;
+  height: 46%;
   overflow: hidden;
   background: #090909;
   clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%);
-  box-shadow: 0 0 28px rgba(0, 0, 0, .8);
+  box-shadow: none;
 }
 .cinema-theater-video,
 .cinema-theater-video #hero-yt-player,
@@ -200,7 +200,7 @@ iframe#streaming-player {
 }
 @media (max-width: 767px) {
   .cinema-theater-hero { background-position: center center; }
-  .cinema-theater-stage { left: 28.5%; top: 29%; width: 33%; height: 23%; }
+  .cinema-theater-stage { left: 21.5%; top: 12%; width: 57%; height: 46%; }
 }
 /* Video-player branding: a non-interactive top-left watermark that remains
    legible over bright footage without covering or intercepting controls. */
