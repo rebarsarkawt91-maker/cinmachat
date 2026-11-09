@@ -167,15 +167,15 @@ iframe#streaming-player {
 
 /* Theater hero: keep the existing trailer player inside the screen in Dola.png. */
 .cinema-theater-hero {
-  background: #050304 url("/cinema-theater-hero.png") center 48% / cover no-repeat;
+  background: #050304 url("/cinema-theater-hero.png") center / 100% 100% no-repeat;
 }
 .cinema-theater-stage {
   position: absolute;
   z-index: 0;
-  left: 16.1%;
-  top: 11.8%;
-  width: 57.8%;
-  height: 46.2%;
+  left: 29.4%;
+  top: 29.2%;
+  width: 31.2%;
+  height: 24.2%;
   overflow: hidden;
   background: #090909;
   clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%);
@@ -200,7 +200,7 @@ iframe#streaming-player {
 }
 @media (max-width: 767px) {
   .cinema-theater-hero { background-position: center center; }
-  .cinema-theater-stage { left: 15.8%; top: 12%; width: 58.4%; height: 45.5%; }
+  .cinema-theater-stage { left: 28.5%; top: 29%; width: 33%; height: 23%; }
 }
 /* Video-player branding: a non-interactive top-left watermark that remains
    legible over bright footage without covering or intercepting controls. */
