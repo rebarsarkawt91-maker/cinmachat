@@ -187,6 +187,11 @@ iframe#streaming-player {
   width: 100% !important;
   height: 100% !important;
 }
+.cinema-theater-video iframe {
+  max-width: none !important;
+  transform: scale(1.82);
+  transform-origin: center;
+}
 .cinema-theater-video {
   position: absolute;
   inset: 0;
