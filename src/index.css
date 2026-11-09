@@ -164,6 +164,44 @@ iframe#streaming-player {
 #hero-yt-player {
   pointer-events: none !important;
 }
+
+/* Theater hero: keep the existing trailer player inside the screen in Dola.png. */
+.cinema-theater-hero {
+  background: #050304 url("/cinema-theater-hero.png") center 48% / cover no-repeat;
+}
+.cinema-theater-stage {
+  position: absolute;
+  z-index: 0;
+  left: 16.1%;
+  top: 11.8%;
+  width: 57.8%;
+  height: 46.2%;
+  overflow: hidden;
+  background: #090909;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%);
+  box-shadow: 0 0 28px rgba(0, 0, 0, .8);
+}
+.cinema-theater-video,
+.cinema-theater-video #hero-yt-player,
+.cinema-theater-video iframe {
+  width: 100% !important;
+  height: 100% !important;
+}
+.cinema-theater-video {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.cinema-theater-screen-shade {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(0,0,0,.08), transparent 65%, rgba(0,0,0,.2));
+}
+@media (max-width: 767px) {
+  .cinema-theater-hero { background-position: center center; }
+  .cinema-theater-stage { left: 15.8%; top: 12%; width: 58.4%; height: 45.5%; }
+}
 /* Video-player branding: a non-interactive top-left watermark that remains
    legible over bright footage without covering or intercepting controls. */
 @keyframes cinema-player-logo-spin {

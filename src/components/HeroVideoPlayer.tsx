@@ -967,7 +967,7 @@ const HeroVideoPlayer: React.FC<{
 
   return (
     <section
-      className="relative w-full h-[60vh] md:h-[85vh] bg-black overflow-hidden select-none"
+      className="relative w-full h-[60vh] md:h-[85vh] bg-black overflow-hidden select-none cinema-theater-hero"
       style={{ display: "block", opacity: 1 }}
       data-hero-video={activeVideoId || ""}
       data-hero-seq={transitionSeq}
@@ -978,13 +978,10 @@ const HeroVideoPlayer: React.FC<{
     >
       {/* QA/verification bridge — readable from any JS world (DOM-shared) */}
       <div id="hero-debug-log" className="hidden" aria-hidden="true" />
-      <div
-        className="w-full h-full overflow-hidden pointer-events-none"
-        style={{ position: "absolute", inset: 0, zIndex: 0 }}
-      >
+      <div className="cinema-theater-stage" aria-label="CinemaChat movie trailer screen">
         {showPlayerLayer && (
           <div
-            className="w-full h-full scale-[1.35] bg-cover bg-center"
+            className="cinema-theater-video bg-cover bg-center"
             id="hero-player"
             ref={containerRef}
             style={activeVideoId ? { backgroundImage: `url(https://img.youtube.com/vi/${activeVideoId}/maxresdefault.jpg)` } : undefined}
@@ -992,8 +989,7 @@ const HeroVideoPlayer: React.FC<{
             <div id="hero-yt-player" className="w-full h-full" />
           </div>
         )}
-        <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent z-2 pointer-events-none" />
-        <div className="absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-black to-transparent z-2 pointer-events-none" />
+        <div className="cinema-theater-screen-shade" />
       </div>
 
       <div
