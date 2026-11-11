@@ -1,5 +1,8 @@
+import type { SceneBlurConfig } from "./lib/sceneBlur";
+
 export interface Movie {
   id: string;
+  sceneBlur?: SceneBlurConfig;
   title: string;
   year?: string;
   quality: string;

@@ -107,6 +107,11 @@ import { lazyWithRetry } from "./utils/lazyWithRetry";
 import { providerAction, usesProviderTouchControls, readProviderPlaybackEvent, setNativePlayerMuted, setNativePlayerVolume, enterIOSVideoFullscreen, enterPlayerElementFullscreen } from "./utils/playerControls";
 import { ProviderSourceNotice } from "./components/Player/ProviderSourceNotice";
 import { PlayerInteractionLayer } from "./components/Player/PlayerInteractionLayer";
+import { AdminSceneBlurButton } from "./components/Player/AdminSceneBlurButton";
+import { SceneBlurEditor } from "./components/Player/SceneBlurEditor";
+import { useMovieSceneBlur } from "./hooks/useMovieSceneBlur";
+import { useSceneBlurPlayback } from "./hooks/useSceneBlurPlayback";
+import { validateSceneBlurConfig, type SceneBlurConfig } from "./lib/sceneBlur";
 import { cacheableCatalogMovie } from "./lib/catalogCache";
 
 const MOVIE_URL_PARAM = "movieId";
@@ -7874,6 +7879,7 @@ export default function App() {
 
   // Main Modal Player customized states
   const [isIframePlaying, setIsIframePlaying] = useState(true);
+  const [showSceneBlurEditor, setShowSceneBlurEditor] = useState(false);
   // A replacement caption frame may report autoplay before it receives a
   // queued user pause. Keep that request separate from observed player state.
   const providerPlayingIntentRef = useRef<{ source: string; playing: boolean } | null>(null);
@@ -8842,7 +8848,9 @@ const handleWebkitEndFullscreen = () => {
         return;
       }
 
-      if (video) {
+      // Native iPhone presentation omits page effects. Configured movies use
+      // our existing custom fullscreen path so timed blurring remains visible.
+      if (video && !sceneBlurProtectionEnabled) {
         videoRef.current = video;
         // iOS requires these attributes to stay on the element or native
         // presentation is refused.
@@ -8894,6 +8902,20 @@ const handleWebkitEndFullscreen = () => {
     }
     if (document.fullscreenElement) {
       void document.exitFullscreen().catch(() => {});
+      return;
+    }
+    if (container.classList.contains("ios-fullscreen-fallback")) {
+      container.classList.remove("ios-fullscreen-fallback");
+      setIOSForcedFullscreen(false);
+      setIsIframeFullscreen(false);
+      return;
+    }
+    if (sceneBlurProtectionEnabled) {
+      enterPlayerElementFullscreen(container, () => {
+        container.classList.add("ios-fullscreen-fallback");
+        setIOSForcedFullscreen(true);
+        setIsIframeFullscreen(true);
+      });
       return;
     }
     if (video?.webkitEnterFullscreen) {
@@ -9152,6 +9174,65 @@ const handleWebkitEndFullscreen = () => {
   const modalPlayerRef = React.useRef<HTMLDivElement>(null);
   const plyrRef = React.useRef<any>(null);
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
+  const { config: sceneBlurConfig, error: sceneBlurSyncError, updateConfig: updateSceneBlurConfig } = useMovieSceneBlur({
+    movieId: selectedMovie?.id,
+    initialConfig: selectedMovie?.sceneBlur,
+    enabled: showPlayer,
+  });
+  const sceneBlurProtectionEnabled = sceneBlurConfig.enabled && sceneBlurConfig.ranges.length > 0;
+  const sceneBlurActive = useSceneBlurPlayback({
+    config: sceneBlurConfig, root: modalPlayerRef, sourceUrl: activeServerUrl,
+    currentTime: playerCurrentTime,
+    // A replacement caption/provider frame needs fresh metadata; its native
+    // verification must remain reachable instead of using the previous clock.
+    duration: usesProviderTouchControls(activeServerUrl) && !providerPlaybackReadyRef.current ? 0 : playerDuration,
+    playing: isIframePlaying,
+    playbackRate, enabled: showPlayer,
+  });
+  useEffect(() => {
+    if (!showPlayer || !sceneBlurProtectionEnabled || !modalPlayerRef.current) return;
+    const previous = new Map<HTMLVideoElement, { pip: boolean; remote: boolean; controls: string | null }>();
+    const apply = () => {
+      modalPlayerRef.current?.querySelectorAll<HTMLVideoElement>("video:not([data-player-ad])").forEach(video => {
+        if (previous.has(video)) return;
+        previous.set(video, { pip: video.disablePictureInPicture, remote: video.disableRemotePlayback, controls: video.getAttribute("controlslist") });
+        video.disablePictureInPicture = true;
+        video.disableRemotePlayback = true;
+        const controls = new Set((video.getAttribute("controlslist") || "").split(/\s+/).filter(Boolean));
+        controls.add("nofullscreen"); controls.add("noremoteplayback");
+        video.setAttribute("controlslist", [...controls].join(" "));
+        if (document.pictureInPictureElement === video) void document.exitPictureInPicture?.().catch(() => {});
+        const iosVideo = video as WebKitVideoElement;
+        if (iosVideo.webkitDisplayingFullscreen || iosVideo.webkitPresentationMode === "fullscreen") {
+          try { iosVideo.webkitExitFullscreen?.(); } catch { /* Custom fullscreen below. */ }
+          modalPlayerRef.current?.classList.add("ios-fullscreen-fallback");
+          setIOSForcedFullscreen(true);
+          setIsIframeFullscreen(true);
+        }
+      });
+    };
+    const observer = new MutationObserver(apply);
+    const enforceFramePresentation = () => {
+      const fullscreen = document.fullscreenElement;
+      if (fullscreen instanceof HTMLIFrameElement && modalPlayerRef.current?.contains(fullscreen)) {
+        void document.exitFullscreen().catch(() => {});
+      }
+    };
+    document.addEventListener("fullscreenchange", enforceFramePresentation);
+    observer.observe(modalPlayerRef.current, { childList: true, subtree: true });
+    apply();
+    enforceFramePresentation();
+    return () => {
+      observer.disconnect();
+      document.removeEventListener("fullscreenchange", enforceFramePresentation);
+      previous.forEach((value, video) => {
+        video.disablePictureInPicture = value.pip;
+        video.disableRemotePlayback = value.remote;
+        if (value.controls === null) video.removeAttribute("controlslist");
+        else video.setAttribute("controlslist", value.controls);
+      });
+    };
+  }, [showPlayer, sceneBlurProtectionEnabled, activeServerUrl]);
   const setPlayerVideoElement = useCallback((video: HTMLVideoElement | null) => {
     videoRef.current = video;
     if (video && isIOSWebKitDevice()) {
@@ -10528,6 +10609,7 @@ const handleWebkitEndFullscreen = () => {
         prev.favoriteCount !== next.favoriteCount ||
         prev.trendingScore !== next.trendingScore ||
         prev.userRating !== next.userRating ||
+        JSON.stringify(prev.sceneBlur) !== JSON.stringify(next.sceneBlur) ||
         prev.subtitleText !== next.subtitleText ||
         prev.kurdishSubtitleUrl !== next.kurdishSubtitleUrl ||
         (prev as any).__inlineSubtitleUrl !== (next as any).__inlineSubtitleUrl
@@ -11517,7 +11599,7 @@ const handleWebkitEndFullscreen = () => {
       setPlayerControlsVisible(true);
       return;
     }
-    if (playerMenu || showCcPanel || volumeSliderOpen || dragTime !== null) {
+    if (playerMenu || showCcPanel || showSceneBlurEditor || volumeSliderOpen || dragTime !== null) {
       if (playerControlsTimerRef.current) clearTimeout(playerControlsTimerRef.current);
       playerControlsTimerRef.current = null;
       setPlayerControlsVisible(true);
@@ -11527,7 +11609,7 @@ const handleWebkitEndFullscreen = () => {
     return () => {
       if (playerControlsTimerRef.current) clearTimeout(playerControlsTimerRef.current);
     };
-  }, [showPlayer, playerMenu, showCcPanel, volumeSliderOpen, dragTime, revealPlayerControls]);
+  }, [showPlayer, playerMenu, showCcPanel, showSceneBlurEditor, volumeSliderOpen, dragTime, revealPlayerControls]);
 
   // Disable provider/native captions independently from CinemaChat's uploaded
   // Kurdish overlay. Native HTML5 tracks are controlled directly; embeds get
@@ -12810,6 +12892,30 @@ const handleWebkitEndFullscreen = () => {
         String(currentUser?.role || "").toLowerCase(),
       ),
   );
+  // Only the administrative editor is local; saved ranges apply to all viewers.
+  useEffect(() => {
+    setShowSceneBlurEditor(false);
+  }, [showPlayer, selectedMovie?.id, activeServerUrl, canEditMovies]);
+  const saveSceneBlurConfig = async (value: SceneBlurConfig) => {
+    if (!canEditMovies || !selectedMovie?.id) throw new Error("دەسەڵاتی دەستکاریکردنت نییە.");
+    const movieId = selectedMovie.id;
+    const response = await fetchApi(`/api/admin/movies/${encodeURIComponent(movieId)}/scene-blur`, {
+      method: "PATCH", credentials: "include",
+      headers: { "Content-Type": "application/json", "X-Admin-Username": currentUser.username },
+      body: JSON.stringify({ sceneBlur: value }),
+    }, 0);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.success !== true || payload.movieId !== movieId) {
+      throw new Error(response.status === 403
+        ? "دانیشتنی ئەدمین کۆتایی هاتووە؛ تکایە جارێک لە بەشی ئەدمین بچۆوە ژوورەوە."
+        : "ڕێکخستنی تەڵخکردن پاشەکەوت نەکرا؛ دووبارە هەوڵبدەرەوە.");
+    }
+    const saved = validateSceneBlurConfig(payload.sceneBlur);
+    updateSceneBlurConfig(saved);
+    // The hook updates this session and the catalog supplies the next open.
+    // Replacing selectedMovie here would also rerun its source-selection effect.
+    setMovies(previous => previous.map(movie => movie.id === movieId ? { ...movie, sceneBlur: saved } : movie));
+  };
   // KurdSub Studio can change durable movie subtitle data, so keep it scoped to
   // the same delegated publishing roles that may edit a movie record.
   const canUseKurdSubStudio = Boolean(
@@ -15687,6 +15793,13 @@ const handleWebkitEndFullscreen = () => {
                 >
                   {showPlayer && activeServerUrl ? (
                     <div className="absolute inset-0 bg-black flex items-center justify-center z-10">
+                      <div
+                        data-testid="player-media-surface"
+                        data-scene-blurred={sceneBlurActive ? "true" : "false"}
+                        data-scene-filter-enabled={sceneBlurProtectionEnabled ? "true" : "false"}
+                        className="absolute inset-0 overflow-hidden"
+                        style={sceneBlurActive ? { filter: "blur(40px) brightness(0.2)" } : undefined}
+                      >
                       {/* ── Player routing via classifySourceType ────────────── */}
                       {((): React.ReactNode => {
                         const srcType = classifySourceType(activeServerUrl);
@@ -15699,6 +15812,7 @@ const handleWebkitEndFullscreen = () => {
                               iframeId="room-player"
                               onVideoElementChange={setPlayerVideoElement}
                               hideNativeControls={isIOSWebKitDevice()}
+                              disableExternalPresentation={sceneBlurProtectionEnabled}
                               title={`${selectedMovie?.title || "CinemaChat"} — YouTube Player`}
                               onModeChange={(mode) => {
                                 setYoutubePlayerMode(mode);
@@ -15757,6 +15871,7 @@ const handleWebkitEndFullscreen = () => {
                               title={`${selectedMovie?.title || "CinemaChat"} — Cinematic Player`}
                               scale={immersiveScale}
                               onPlaybackReady={handleProviderPlaybackReady}
+                              disableExternalPresentation={sceneBlurProtectionEnabled}
                               hideNativeSubtitles={!ccSettings.showOriginal}
                               playback={{ currentTime: playerCurrentTime, playing: isIframePlaying, muted: isIframeMuted,
                                 requestedPlaying: providerPlayingIntentRef.current?.source === activeServerUrl
@@ -15800,6 +15915,7 @@ const handleWebkitEndFullscreen = () => {
                           </div>
                         );
                       })()}
+                      </div>
 
                       {/* Keep the known interactive provider reachable for its
                           verification, native Play and accessibility controls. */}
@@ -15960,6 +16076,19 @@ const handleWebkitEndFullscreen = () => {
                         </SafeRender>
                       )}
                       
+                      {canEditMovies && showSceneBlurEditor && selectedMovie?.id && <SceneBlurEditor
+                        movieId={selectedMovie.id}
+                        config={sceneBlurConfig}
+                        currentTime={playerCurrentTime}
+                        approximateClock={classifySourceType(activeServerUrl) === "supported-embed" || classifySourceType(activeServerUrl) === "youtube"}
+                        syncError={sceneBlurSyncError}
+                        onSave={saveSceneBlurConfig}
+                        onClose={() => {
+                          setShowSceneBlurEditor(false);
+                          requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('[data-testid="admin-scene-blur"]')?.focus());
+                        }}
+                      />}
+
                       {/* Pro Player Overlay UI */}
                       {/* Top Header: Cinemachat Branding and Title. The close
                           X deliberately lives ONLY as the single modal-level
@@ -16037,6 +16166,16 @@ const handleWebkitEndFullscreen = () => {
                           [5] Play/Pause · [6] Back 10s ·
                           [7] Exit Fullscreen · [8] Mute */}
                       <div data-testid="player-control-bar" className={`absolute bottom-0 right-0 z-[60] h-16 flex items-center gap-1.5 md:gap-2 px-4 md:px-6 select-none font-sans transition-all duration-300 ease-out ${playerControlsVisible ? "translate-y-0 opacity-100 pointer-events-auto" : "translate-y-6 opacity-0 pointer-events-none"}`}>
+                        <AdminSceneBlurButton
+                          canAdminister={canEditMovies}
+                          active={sceneBlurProtectionEnabled}
+                          expanded={showSceneBlurEditor}
+                          onToggle={() => {
+                            setShowSceneBlurEditor(value => !value);
+                            setPlayerMenu(null);
+                            setShowCcPanel(false);
+                          }}
+                        />
                         {/* [6] Mute / Audio Toggle + vertical Volume slider.
                             Hovering (or focusing) the mute control reveals a
                             vertically-centered volume slider popup above it —

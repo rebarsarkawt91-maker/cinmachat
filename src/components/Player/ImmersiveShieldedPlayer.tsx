@@ -37,6 +37,8 @@ interface ImmersiveShieldedPlayerProps {
   playback?: { currentTime: number; playing: boolean; muted: boolean; requestedPlaying?: boolean };
   /** Actual provider media readiness, rather than iframe/title loading. */
   onPlaybackReady?: (ready: boolean) => void;
+  /** Keep playback in the CinemaChat frame while shared masking is enabled. */
+  disableExternalPresentation?: boolean;
   className?: string;
 }
 
@@ -128,6 +130,7 @@ export default function ImmersiveShieldedPlayer({
   hideNativeSubtitles = false,
   playback,
   onPlaybackReady,
+  disableExternalPresentation = false,
   className,
 }: ImmersiveShieldedPlayerProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -276,8 +279,10 @@ export default function ImmersiveShieldedPlayer({
           className="w-full h-full border-0"
           frameBorder="0"
           scrolling="no"
-          allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
-          allowFullScreen
+          allow={disableExternalPresentation
+            ? "autoplay; encrypted-media; fullscreen 'none'; picture-in-picture 'none'"
+            : "autoplay; encrypted-media; fullscreen; picture-in-picture"}
+          allowFullScreen={!disableExternalPresentation}
           onLoad={() => {
             // Best-effort first sweep right after (re)load.
             setTimeout(() => installShield(iframeRef.current!, hideNativeSubtitles), 200);

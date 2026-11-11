@@ -278,7 +278,14 @@ export function createAdminGuard(db: any) {
       return next();
     }
 
-    const isAuthorized = adminName === 'dekan@123' || 
+    // This focused movie control follows the same publishing-role list as the
+    // client editor; keep the exception scoped to this exact endpoint.
+    const isSceneBlurEditor = req.method === 'PATCH' &&
+      /^\/api\/admin\/movies\/[^/]+\/scene-blur$/.test(requestPath) &&
+      ['owner', 'admin', 'super_admin', 'deputy_manager', 'staff'].includes(
+        String(adminRecord?.role || '').toLowerCase(),
+      );
+    const isAuthorized = isSceneBlurEditor || adminName === 'dekan@123' ||
                          adminName === 'admin' || 
                          requesterRole === 'super_admin' || 
                          requesterRole === 'ROLE_SUPER_ADMIN' || 

@@ -58,6 +58,7 @@ interface YouTubeResilientPlayerProps {
   onModeChange?: (mode: PlayerMode) => void;
   onVideoElementChange?: (video: HTMLVideoElement | null) => void;
   hideNativeControls?: boolean;
+  disableExternalPresentation?: boolean;
 }
 
 export default function YouTubeResilientPlayer({
@@ -68,6 +69,7 @@ export default function YouTubeResilientPlayer({
   onModeChange,
   onVideoElementChange,
   hideNativeControls = false,
+  disableExternalPresentation = false,
 }: YouTubeResilientPlayerProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   // Live flags read inside the message listener / stall timer so they never go stale.
@@ -370,8 +372,10 @@ export default function YouTubeResilientPlayer({
           className="w-full h-[120%] -translate-y-[8.3%] border-none shadow-[0_0_200px_rgba(229,9,20,0.4)] pointer-events-none"
           frameBorder="0"
           scrolling="no"
-          allow="autoplay; fullscreen; encrypted-media; picture-in-picture; accelerometer; gyroscope; clipboard-write"
-          allowFullScreen
+          allow={disableExternalPresentation
+            ? "autoplay; encrypted-media; accelerometer; gyroscope; clipboard-write; fullscreen 'none'; picture-in-picture 'none'"
+            : "autoplay; fullscreen; encrypted-media; picture-in-picture; accelerometer; gyroscope; clipboard-write"}
+          allowFullScreen={!disableExternalPresentation}
           // NOTE: NO `sandbox` attribute on purpose. A sandboxed iframe creates a
           // distinct WindowProxy, so `event.source === frame.contentWindow` is
           // always false in Chrome. The parent's onMessage relies on that identity
@@ -393,6 +397,9 @@ export default function YouTubeResilientPlayer({
             autoPlay
             muted
             playsInline
+            disablePictureInPicture={disableExternalPresentation}
+            disableRemotePlayback={disableExternalPresentation}
+            controlsList={disableExternalPresentation ? "nofullscreen noremoteplayback" : undefined}
             preload="auto"
             className={`w-full h-full max-h-full ${hideNativeControls ? "ios-hide-native-controls" : ""}`}
             onLoadStart={() => {

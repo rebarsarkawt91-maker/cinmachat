@@ -147,6 +147,13 @@ iframe#streaming-player[data-provider-interactive="true"] {
   pointer-events: auto !important;
 }
 
+/* Fullscreen stays on CinemaChat's enclosing frame for scheduled masks. */
+[data-scene-filter-enabled="true"] .plyr__control[data-plyr="fullscreen"],
+[data-scene-filter-enabled="true"] .plyr__control[data-plyr="pip"],
+[data-scene-filter-enabled="true"] .plyr__control[data-plyr="airplay"] {
+  display: none !important;
+}
+
 /* Block YouTube overlay click-through for all embedded player containers */
 #broadcast-yt-player iframe,
 #camehere-yt-player iframe {

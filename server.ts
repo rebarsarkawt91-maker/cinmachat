@@ -29,6 +29,7 @@ import { loadCatalogBackup } from './catalogBackup';
 import { createStudioAdminSessions } from './studioAdminSession';
 import { createBannerImageStore, bannerImageHandler } from './server/bannerImage';
 import { createPlayerAdsStore, playerAdsAdminHandler } from './server/playerAds';
+import { createSceneBlurHandlers, signedSceneBlurAdminUsername } from './server/sceneBlur';
 import { stripSubtitleHtmlTags } from './src/lib/subtitleText.js';
 import { hasNonSoraniLetters } from './src/lib/studioUntranslatedCues.js';
 import { legacySubtitleFileUrl, parseLegacySubtitleListing } from './kurdSubLegacy';
@@ -12099,6 +12100,11 @@ async function startServer() {
       if (!movieAdminApp) throw new Error('Firebase Admin is unavailable');
       const firestoreDocId = String((existing as any).__firestoreDocId || id);
       await admin.firestore(movieAdminApp).collection('movies').doc(firestoreDocId).set(changes, { merge: true });
+      // A concurrent timing save may have completed while this write waited.
+      // Preserve that latest field when publishing this subtitle snapshot.
+      if (Object.prototype.hasOwnProperty.call(firestoreMoviesCache[id] || {}, 'sceneBlur')) {
+        updatedMovie.sceneBlur = firestoreMoviesCache[id].sceneBlur;
+      }
       firestoreMoviesCache[id] = updatedMovie;
       setMoviesCache((previous) => previous.map((movie) => movie.id === id ? updatedMovie : movie));
       const manualIndex = db.manualMovies.findIndex((movie: any) => movie.id === id);
@@ -12113,6 +12119,51 @@ async function startServer() {
   };
   app.post('/api/admin/movies/:id/subtitle', saveMovieSubtitle);
   app.patch('/api/admin/movies/:id/subtitle', saveMovieSubtitle);
+
+  // Shared timing settings are small enough to sync while a viewer watches.
+  // The existing global admin guard runs before the focused mutation handler.
+  const sceneBlurDocumentIds = new Map<string, string>();
+  const sceneBlurHandlers = createSceneBlurHandlers({
+    findMovie: async (id) => {
+      if (Array.isArray(db.deletedIds) && db.deletedIds.includes(id)) return undefined;
+      await waitForCatalogIfWarming();
+      const mirrored = Object.prototype.hasOwnProperty.call(firestoreMoviesCache, id)
+        ? firestoreMoviesCache[id] : undefined;
+      const existing = mirrored || db.manualMovies.find((movie: any) => movie.id === id) ||
+        moviesCache.find((movie: any) => movie.id === id);
+      // Viewer polling never performs per-ID Firestore reads. The bounded
+      // shared catalog warmup supplies records, including their saved config.
+      return existing?.id === id ? existing : undefined;
+    },
+    save: async (movie, sceneBlur, username) => {
+      const movieAdminApp = initializeFirebaseAdmin();
+      if (!movieAdminApp) throw new Error('Firebase Admin is unavailable');
+      const id = movie.id;
+      const documentId = String(movie.__firestoreDocId || sceneBlurDocumentIds.get(id) || id);
+      const collection = admin.firestore(movieAdminApp).collection('movies');
+      let document = await collection.doc(documentId).get();
+      if (!document.exists && documentId !== id) document = await collection.doc(id).get();
+      if (!document.exists) {
+        const match = (await collection.where('id', '==', id).limit(1).get()).docs[0];
+        if (!match) throw new Error('Canonical movie document not found');
+        document = match;
+      }
+      // Update only the focused field on an existing canonical record. Unlike
+      // set(merge), update also refuses to recreate a doc deleted after lookup.
+      await document.ref.update({ sceneBlur });
+      sceneBlurDocumentIds.set(id, document.id);
+      // Apply only this field to the latest mirrors, preserving concurrent
+      // metadata/subtitle edits rather than replacing the original snapshot.
+      firestoreMoviesCache[id] = { ...(firestoreMoviesCache[id] || movie), sceneBlur };
+      setMoviesCache(previous => previous.map(item => item.id === id ? { ...item, sceneBlur } : item));
+      const manualIndex = db.manualMovies.findIndex((item: any) => item.id === id);
+      if (manualIndex !== -1) db.manualMovies[manualIndex] = { ...db.manualMovies[manualIndex], sceneBlur };
+      await addAuditLog(db, username, 'Edit Movie Scene Blur', `Scene blur settings updated for movie ${id}`);
+      await saveDB(db);
+    },
+  }, req => signedSceneBlurAdminUsername(req, studioLoginIdentity(req), db.admins || [], OWNER_USERNAMES));
+  app.get('/api/movies/:id/scene-blur', sceneBlurHandlers.get);
+  app.patch('/api/admin/movies/:id/scene-blur', sceneBlurHandlers.patch);
 
   // Full movie editor. This route is intentionally owner-only even though
   // some other dashboard actions are available to deputies. Fields are
@@ -12248,6 +12299,10 @@ async function startServer() {
       if (!movieAdminApp) throw new Error('Firebase Admin is unavailable');
       const firestoreDocId = String((existing as any).__firestoreDocId || id);
       await admin.firestore(movieAdminApp).collection('movies').doc(firestoreDocId).set(changes, { merge: true });
+      // Metadata edits must not publish a pre-await copy of shared timings.
+      if (Object.prototype.hasOwnProperty.call(firestoreMoviesCache[id] || {}, 'sceneBlur')) {
+        updatedMovie.sceneBlur = firestoreMoviesCache[id].sceneBlur;
+      }
       firestoreMoviesCache[id] = updatedMovie;
       setMoviesCache((previous) =>
         previous.map((movie) => movie.id === id ? updatedMovie : movie)
