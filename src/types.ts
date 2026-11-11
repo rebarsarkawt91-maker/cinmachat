@@ -68,9 +68,6 @@ export interface Movie {
   isBroken?: boolean;
   /** Prevents automated checks from overriding an explicit admin decision. */
   brokenLinkManualOverride?: boolean;
-  /** Optional viewer CinemaFX palette and admin-authored effect timeline. */
-  ambientPalette?: string[];
-  effects?: Array<{ t: number; d: number; type: 'fight' | 'horror' | 'explosion' }>;
 }
 
 export interface SocialUser {

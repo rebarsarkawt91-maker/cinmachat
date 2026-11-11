@@ -258,7 +258,6 @@ export function createAdminGuard(db: any) {
       if (method === 'GET' && requestPath === '/api/admin/smart-analytics') return true;
       if (method === 'GET' && requestPath === '/api/admin/seo-stats') return true;
       if (method === 'PATCH' && requestPath.startsWith('/api/admin/movies/')) return true;
-      if (method === 'PUT' && /^\/api\/admin\/movies\/[^/]+\/effects$/.test(requestPath)) return true;
       return false;
     };
 

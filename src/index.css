@@ -7,7 +7,6 @@
   --font-display: "Space Grotesk", sans-serif;
   --font-sans: "Inter", sans-serif;
 }
-
 @layer base {
   html {
     height: 100%;
@@ -481,81 +480,4 @@ video {
   .cinema-player-brand__message {
     transform: none;
   }
-}
-
-/* CinemaFX is completely inert while unmounted (the default OFF state). */
-.cinemafx-ambient {
-  position: absolute;
-  inset: var(--cinemafx-frame-inset, clamp(14px, 2vw, 28px));
-  z-index: 9;
-  pointer-events: none;
-  opacity: var(--fx-alpha, .35);
-  border-radius: clamp(10px, 1.2vw, 20px);
-  animation: cinemafx-breathe var(--fx-duration, 6s) ease-in-out infinite alternate;
-  will-change: opacity, filter;
-}
-.cinemafx-player-surface {
-  inset: var(--cinemafx-frame-inset, clamp(14px, 2vw, 28px));
-  overflow: hidden;
-  border-radius: clamp(10px, 1.2vw, 20px);
-  box-shadow: 0 0 0 1px rgb(255 255 255 / .06), 0 18px 70px rgb(0 0 0 / .72);
-}
-.cinemafx-ambient__edge {
-  position: absolute;
-  display: block;
-  border-radius: 999px;
-  filter: blur(clamp(9px, 1.1vw, 18px));
-  opacity: .96;
-  will-change: background-color, box-shadow;
-  transition: background-color .4s linear, box-shadow .4s linear;
-}
-.cinemafx-ambient__edge--top,
-.cinemafx-ambient__edge--bottom {
-  left: 5%;
-  right: 5%;
-  height: clamp(5px, .55vw, 10px);
-}
-.cinemafx-ambient__edge--left,
-.cinemafx-ambient__edge--right {
-  top: 5%;
-  bottom: 5%;
-  width: clamp(5px, .55vw, 10px);
-}
-.cinemafx-ambient__edge--top {
-  top: 0;
-  transform: translateY(-55%);
-  background-color: var(--fx-top);
-  box-shadow: 0 -10px 30px 8px var(--fx-top), 0 0 44px 13px var(--fx-top);
-}
-.cinemafx-ambient__edge--right {
-  right: 0;
-  transform: translateX(55%);
-  background-color: var(--fx-right);
-  box-shadow: 10px 0 30px 8px var(--fx-right), 0 0 44px 13px var(--fx-right);
-}
-.cinemafx-ambient__edge--bottom {
-  bottom: 0;
-  transform: translateY(55%);
-  background-color: var(--fx-bottom);
-  box-shadow: 0 10px 30px 8px var(--fx-bottom), 0 0 44px 13px var(--fx-bottom);
-}
-.cinemafx-ambient__edge--left {
-  left: 0;
-  transform: translateX(-55%);
-  background-color: var(--fx-left);
-  box-shadow: -10px 0 30px 8px var(--fx-left), 0 0 44px 13px var(--fx-left);
-}
-.cinemafx-pulse { animation: cinemafx-pulse .35s ease-out, cinemafx-breathe var(--fx-duration, 6s) ease-in-out .35s infinite alternate; }
-.cinemafx-shake { animation: cinemafx-shake .36s ease-out both; will-change: transform; }
-.cinemafx-preview { animation: cinemafx-breathe 4s ease-in-out infinite alternate; }
-@keyframes cinemafx-breathe { from { opacity: calc(var(--fx-alpha, .35) * .72); } to { opacity: var(--fx-alpha, .35); } }
-@keyframes cinemafx-pulse { 0% { opacity: var(--fx-alpha, .35); } 45% { opacity: .8; } 100% { opacity: var(--fx-alpha, .35); } }
-@keyframes cinemafx-shake { 0%,100% { transform: translate3d(0,0,0); } 20% { transform: translate3d(-5px,2px,0); } 40% { transform: translate3d(6px,-2px,0); } 60% { transform: translate3d(-4px,1px,0); } 80% { transform: translate3d(3px,0,0); } }
-@media (prefers-reduced-motion: reduce) {
-  .cinemafx-ambient, .cinemafx-preview { animation: none !important; }
-  .cinemafx-shake { animation: none !important; transform: none !important; }
-}
-@media (max-width: 640px) {
-  .cinemafx-ambient, .cinemafx-player-surface { --cinemafx-frame-inset: 8px; border-radius: 9px; }
-  .cinemafx-ambient__edge { filter: blur(8px); }
 }

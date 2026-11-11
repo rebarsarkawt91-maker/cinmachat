@@ -272,6 +272,9 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
       tabIndex={0}
       aria-label={`${movie.title}${isBroken ? ", currently unavailable" : ""}${year ? ` (${year})` : ""}${liveViewers > 0 ? `, ${liveViewers} watching now` : ""}${views > 0 ? `, ${views.toLocaleString()} total views` : ""}`}
     >
+      <h3 className="mb-1.5 min-h-8 rounded-lg border border-emerald-400/25 bg-emerald-950/35 px-2 py-1.5 text-center font-bold kurdish-text text-xs leading-5 text-white line-clamp-1 transition-colors group-hover:text-brand-primary">
+        {movie.title}
+      </h3>
       {/* Poster */}
       <div className="relative aspect-[2/3] rounded-2xl overflow-hidden bg-[#0b0b0d] ring-1 ring-white/10 shadow-[0_8px_30px_rgba(0,0,0,0.55)] transition-all duration-300 group-hover:-translate-y-1.5 group-hover:ring-brand-primary/60 group-hover:shadow-[0_22px_60px_-15px_rgba(229,9,20,0.45)]">
         <img
@@ -409,28 +412,38 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
               />
             </button>
           </div>
-          {/* Quality badge (HD / 4K / CAM ...) */}
-          <div
-            className={`px-2 py-0.5 rounded text-[9px] font-black text-white border flex items-center gap-1 backdrop-blur-md ${qualityChipClass(quality)}`}
-          >
-            <Sparkles className="w-2.5 h-2.5" aria-hidden="true" />
-            {quality}
-          </div>
-          {/* Language badge */}
-          {language && (
-            <div className="px-2 py-0.5 rounded text-[9px] font-black text-white bg-black/60 backdrop-blur-md border border-white/10 flex items-center gap-1">
-              <Languages className="w-2.5 h-2.5" aria-hidden="true" />
-              {language}
-            </div>
-          )}
         </div>
 
-        {/* Bottom overlay content: title, meta, ratings, actions */}
-        <div className="absolute inset-x-0 bottom-0 p-3 z-10 pointer-events-none">
-          <h3 className="font-bold kurdish-text text-sm leading-snug text-white line-clamp-1 group-hover:text-brand-primary transition-colors">
-            {movie.title}
-          </h3>
+        {/* Poster controls stay on the image; movie information is below it. */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/60 to-transparent" />
 
+        {/* Hover play overlay */}
+        <div
+          className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/30 to-black/40 flex flex-col justify-center items-center p-4 opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-10 pointer-events-none"
+          aria-hidden="true"
+        >
+          <div className="w-14 h-14 bg-white/15 backdrop-blur-xl border border-white/30 text-white rounded-full flex items-center justify-center shadow-2xl group-hover:bg-brand-primary group-hover:border-brand-primary transition-all duration-300">
+            <Play className="w-7 h-7 fill-current translate-x-0.5" />
+          </div>
+          <span className="mt-3 text-xs font-black kurdish-text text-white drop-shadow-lg">
+            {canPlay ? "ئێستا سەیری بکە" : "زانیاری فیلم"}
+          </span>
+        </div>
+      </div>
+
+      <div className="mt-2 min-h-[5.5rem] space-y-1.5 px-1 pb-1 pointer-events-none">
+          <div className="flex flex-wrap items-center gap-1">
+            <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-black text-white border ${qualityChipClass(quality)}`}>
+              <Sparkles className="h-2.5 w-2.5" aria-hidden="true" />
+              {quality}
+            </span>
+            {language && (
+              <span className="inline-flex items-center gap-1 rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[9px] font-bold text-gray-300">
+                <Languages className="h-2.5 w-2.5" aria-hidden="true" />
+                {language}
+              </span>
+            )}
+          </div>
           {/* Year • Runtime */}
           {(metaDate || duration) && (
             <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[9px] font-semibold text-gray-400">
@@ -550,20 +563,6 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
               <span className="text-[7px] font-bold text-gray-400">Views</span>
             </span>
           </div>
-        </div>
-
-        {/* Hover play overlay */}
-        <div
-          className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/30 to-black/40 flex flex-col justify-center items-center p-4 opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-10 pointer-events-none"
-          aria-hidden="true"
-        >
-          <div className="w-14 h-14 bg-white/15 backdrop-blur-xl border border-white/30 text-white rounded-full flex items-center justify-center shadow-2xl group-hover:bg-brand-primary group-hover:border-brand-primary transition-all duration-300">
-            <Play className="w-7 h-7 fill-current translate-x-0.5" />
-          </div>
-          <span className="mt-3 text-xs font-black kurdish-text text-white drop-shadow-lg">
-            {canPlay ? "ئێستا سەیری بکە" : "زانیاری فیلم"}
-          </span>
-        </div>
       </div>
     </div>
   );
