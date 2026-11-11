@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { providerCaptionUrl, usesProviderTouchControls } from "../../utils/playerControls";
+import { providerCaptionUrl, readProviderPlaybackEvent, usesProviderTouchControls } from "../../utils/playerControls";
 
 /**
  * ImmersiveShieldedPlayer — Cinematic Shielded Player for embedded movie streams
@@ -10,8 +10,8 @@ import { providerCaptionUrl, usesProviderTouchControls } from "../../utils/playe
  *     - A MutationObserver + injected stylesheet sweep inside the embedded document
  *       (works whenever the embed is same-origin / allow-same-origin-accessible) that
  *       continuously removes popups, share-boxes, banners and promotional overlays.
- *     - The parent interaction layer owns clicks. Known relay providers are
- *       controlled by CinemaChat buttons instead of exposing their click ads.
+ *     - Providers that require a native Play gesture or human verification
+ *       remain directly interactive; CinemaChat's toolbar also uses their relay.
  *  2) Original-aspect playback:
  *     - The embedded player remains unscaled by default, preserving the provider's
  *       original frame and avoiding the blur/cropping caused by forced cover zoom.
@@ -35,6 +35,8 @@ interface ImmersiveShieldedPlayerProps {
   hideNativeSubtitles?: boolean;
   /** Snapshot read only when the source/caption setting changes, not every tick. */
   playback?: { currentTime: number; playing: boolean; muted: boolean; requestedPlaying?: boolean };
+  /** Actual provider media readiness, rather than iframe/title loading. */
+  onPlaybackReady?: (ready: boolean) => void;
   className?: string;
 }
 
@@ -125,6 +127,7 @@ export default function ImmersiveShieldedPlayer({
   subtitleOffset = 0,
   hideNativeSubtitles = false,
   playback,
+  onPlaybackReady,
   className,
 }: ImmersiveShieldedPlayerProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -135,6 +138,11 @@ export default function ImmersiveShieldedPlayer({
   const lastClock = useRef<{ time: number; at: number; playing: boolean } | null>(null);
   const pendingResumeTime = useRef<number | null>(null);
   const pendingRestore = useRef(!!playback);
+  const pendingPlaying = useRef(playback?.requestedPlaying ?? playback?.playing ?? true);
+  const providerReady = useRef(false);
+  const readinessCallback = useRef(onPlaybackReady);
+  readinessCallback.current = onPlaybackReady;
+  const [showProviderHelp, setShowProviderHelp] = useState(false);
   const configured = useRef({ url, hideNativeSubtitles });
   const emptyCaptionUrl = new URL('/player-captions-off.vtt', window.location.origin).href;
   const [frameUrl, setFrameUrl] = useState(() => providerCaptionUrl(url, !hideNativeSubtitles, emptyCaptionUrl));
@@ -155,6 +163,7 @@ export default function ImmersiveShieldedPlayer({
       playing: current.requestedPlaying ?? current.playing,
     } : undefined;
     pendingResumeTime.current = snapshot?.currentTime ?? null;
+    pendingPlaying.current = snapshot?.playing ?? current?.requestedPlaying ?? true;
     setFrameUrl(providerCaptionUrl(url, !hideNativeSubtitles, emptyCaptionUrl, snapshot));
     pendingRestore.current = !!current;
     lastClock.current = null;
@@ -162,39 +171,51 @@ export default function ImmersiveShieldedPlayer({
   }, [url, hideNativeSubtitles, emptyCaptionUrl]);
 
   useEffect(() => {
+    setShowProviderHelp(false);
     if (!usesProviderTouchControls(frameUrl)) return;
+    providerReady.current = false;
+    readinessCallback.current?.(false);
+    // This is guidance, not CAPTCHA detection: cross-origin challenges are
+    // opaque. Never put a click-blocking loading cover over the provider.
+    const helpTimer = window.setTimeout(() => {
+      if (!providerReady.current) setShowProviderHelp(true);
+    }, 8_000);
     const receive = (event: MessageEvent) => {
       const frame = iframeRef.current;
       if (!frame?.contentWindow || event.source !== frame.contentWindow ||
           event.origin !== new URL(frameUrl).origin) return;
       let data = event.data;
       try { if (typeof data === 'string') data = JSON.parse(data); } catch { return; }
-      if (data?.type === 'PLAYER_EVENT') {
-        const time = Number(data.data?.player_progress);
-        if (Number.isFinite(time) && time >= 0 && Number(data.data?.player_duration) > 0) {
-          const status = data.data?.player_status;
-          const playing = status === 'playing' ? true : status === 'paused' ? false :
-            lastClock.current?.playing ?? latestPlayback.current?.playing ?? true;
-          lastClock.current = { time, at: performance.now(), playing };
-          pendingResumeTime.current = null;
-        }
+      const report = readProviderPlaybackEvent(data);
+      if (!report) return;
+      const playing = report.status === 'playing' ? true :
+        report.status === 'paused' || report.status === 'ended' || report.status === 'buffering' ? false :
+        lastClock.current?.playing ?? latestPlayback.current?.playing ?? false;
+      lastClock.current = { time: report.currentTime, at: performance.now(), playing };
+      pendingResumeTime.current = null;
+      if (!providerReady.current) {
+        providerReady.current = true;
+        clearTimeout(helpTimer);
+        setShowProviderHelp(false);
+        readinessCallback.current?.(true);
       }
       // A caption change reloads the source at startAt. Commands clicked during
       // loading can arrive before its listener exists; restore the latest user
       // choices once metadata is ready, including a newly requested pause/play.
-      const ready = data?.type === 'PLAYER_TITLE' ||
-        (data?.type === 'PLAYER_EVENT' && Number(data.data?.player_duration) > 0);
       const target = latestPlayback.current;
-      if (pendingRestore.current && ready && target) {
+      if (pendingRestore.current && target) {
         frame.contentWindow.postMessage(JSON.stringify({ player: true,
           action: target.muted ? 'mute' : 'unmute' }), event.origin);
         frame.contentWindow.postMessage(JSON.stringify({ player: true,
-          action: (target.requestedPlaying ?? target.playing) ? 'play' : 'pause' }), event.origin);
+          action: (target.requestedPlaying ?? pendingPlaying.current) ? 'play' : 'pause' }), event.origin);
         pendingRestore.current = false;
       }
     };
     window.addEventListener('message', receive);
-    return () => window.removeEventListener('message', receive);
+    return () => {
+      clearTimeout(helpTimer);
+      window.removeEventListener('message', receive);
+    };
   }, [frameUrl]);
 
   // Install the anti-popup / overlay shield once the document is ready.
@@ -248,7 +269,8 @@ export default function ImmersiveShieldedPlayer({
           }}
           id={iframeId}
           src={frameUrl}
-          tabIndex={-1}
+          data-provider-interactive={usesProviderTouchControls(frameUrl) ? "true" : undefined}
+          tabIndex={usesProviderTouchControls(frameUrl) ? 0 : -1}
           title={title || "CinemaChat Cinematic Player"}
           loading="eager"
           className="w-full h-full border-0"
@@ -262,6 +284,14 @@ export default function ImmersiveShieldedPlayer({
           }}
         />
       </div>
+      {showProviderHelp && (
+        <aside role="status" dir="rtl" lang="ckb"
+          className="pointer-events-none absolute left-3 top-16 z-[44] max-w-sm rounded-xl border border-amber-400/30 bg-black/85 px-3 py-2 text-xs leading-6 text-amber-100 kurdish-text">
+          <button type="button" aria-label="داخستنی ڕێنمایی" onClick={() => setShowProviderHelp(false)}
+            className="pointer-events-auto float-left ml-2 rounded px-2 text-lg text-white/80 hover:bg-white/10">×</button>
+          سەرچاوەی ڤیدیۆ ئامادە دەکرێت. ئەگەر پشکنین یان دوگمەی Play دیارە، لە ناو هەمان پلەیەر تەواوی بکە.
+        </aside>
+      )}
     </div>
   );
 }

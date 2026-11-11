@@ -1,11 +1,51 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { providerCaptionUrl, providerAction, usesProviderTouchControls, setNativePlayerMuted, setNativePlayerVolume, enterIOSVideoFullscreen, enterPlayerElementFullscreen } from './playerControls';
+import { providerCaptionUrl, providerAction, readProviderPlaybackEvent, usesProviderTouchControls, setNativePlayerMuted, setNativePlayerVolume, enterIOSVideoFullscreen, enterPlayerElementFullscreen } from './playerControls';
 
 test('provider touch pass-through is restricted to the known HTTPS embed host', () => {
   assert.equal(usesProviderTouchControls('https://proxy.garageband.rocks/embed/movie/tt27613895'), true);
+  assert.equal(usesProviderTouchControls('https://proxy.garageband.rocks/embed/tv/tt39325975/1/1?autonext=1'), true);
   for (const url of [null, '', 'https://youtube.com/embed/a', 'https://proxy.garageband.rocks.evil.test/embed/a', 'https://proxy.garageband.rocks/', 'http://proxy.garageband.rocks/embed/a']) {
     assert.equal(usesProviderTouchControls(url), false);
+  }
+});
+
+test('provider title and verification/loading messages do not establish media readiness', () => {
+  for (const payload of [
+    { type: 'PLAYER_TITLE', data: { player_progress: 0, player_duration: 2700 } },
+    { type: 'PLAYER_EVENT', data: { player_status: 'loading', player_progress: 0, player_duration: 0 } },
+    { type: 'PLAYER_EVENT', data: { player_status: 'loading' } },
+    '{invalid JSON', null, [], { type: 'PLAYER_EVENT', data: [] },
+  ]) assert.equal(readProviderPlaybackEvent(payload), null);
+});
+
+test('provider TV events parse object and JSON clocks with explicit playback states', () => {
+  const episode = { type: 'PLAYER_EVENT', data: {
+    player_progress: 12.5, player_duration: 2700, player_status: 'playing',
+  } };
+  assert.deepEqual(readProviderPlaybackEvent(episode), { currentTime: 12.5, duration: 2700, status: 'playing' });
+  assert.deepEqual(readProviderPlaybackEvent(JSON.stringify({ type: 'PLAYER_EVENT', data: {
+    player_progress: '0', player_duration: '2700', player_status: 'paused',
+  } })), { currentTime: 0, duration: 2700, status: 'paused' });
+  for (const [status, expected] of [['buffering', 'buffering'], ['waiting', 'buffering'], ['ended', 'ended']] as const) {
+    assert.equal(readProviderPlaybackEvent({ ...episode, data: { ...episode.data, player_status: status } })?.status, expected);
+  }
+});
+
+test('provider clocks reject missing, coerced-empty, non-finite and negative values', () => {
+  const invalid = [undefined, null, '', ' ', false, [], {}, NaN, Infinity, -1, 'NaN', 'Infinity'];
+  for (const value of invalid) {
+    assert.equal(readProviderPlaybackEvent({ type: 'PLAYER_EVENT', data: { player_progress: value, player_duration: 120 } }), null);
+    assert.equal(readProviderPlaybackEvent({ type: 'PLAYER_EVENT', data: { player_progress: 0, player_duration: value } }), null);
+  }
+  assert.equal(readProviderPlaybackEvent({ type: 'PLAYER_EVENT', data: { player_progress: 0, player_duration: 0 } }), null);
+});
+
+test('unknown or absent provider statuses preserve the valid clock without inventing playback', () => {
+  for (const status of [undefined, null, 'loading', 'ready', true, 'PLAYING']) {
+    assert.deepEqual(readProviderPlaybackEvent({ type: 'PLAYER_EVENT', data: {
+      player_progress: 0, player_duration: 120, player_status: status,
+    } }), { currentTime: 0, duration: 120, status: null });
   }
 });
 

@@ -10,13 +10,47 @@ export function providerAction(command: string): string {
   return ({ playVideo: 'play', pauseVideo: 'pause', unMute: 'unmute' } as Record<string, string>)[command] || command;
 }
 
+export interface ProviderPlaybackEvent {
+  currentTime: number;
+  duration: number;
+  status: 'playing' | 'paused' | 'buffering' | 'ended' | null;
+}
+
+/** Read real media metadata only; iframe/title loading is not playback readiness.
+ * The caller must separately authenticate the message's source window and origin.
+ */
+export function readProviderPlaybackEvent(payload: unknown): ProviderPlaybackEvent | null {
+  let message: unknown = payload;
+  if (typeof message === 'string') {
+    try { message = JSON.parse(message); } catch { return null; }
+  }
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return null;
+  const envelope = message as Record<string, unknown>;
+  if (envelope.type !== 'PLAYER_EVENT' || !envelope.data ||
+      typeof envelope.data !== 'object' || Array.isArray(envelope.data)) return null;
+  const data = envelope.data as Record<string, unknown>;
+  const clockValue = (value: unknown): number | null => {
+    if (typeof value !== 'number' && (typeof value !== 'string' || !value.trim())) return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  };
+  const currentTime = clockValue(data.player_progress);
+  const duration = clockValue(data.player_duration);
+  if (currentTime === null || currentTime < 0 || duration === null || duration <= 0) return null;
+  const rawStatus = data.player_status;
+  const status: ProviderPlaybackEvent['status'] =
+    rawStatus === 'playing' || rawStatus === 'paused' || rawStatus === 'ended'
+      ? rawStatus : rawStatus === 'buffering' || rawStatus === 'waiting' ? 'buffering' : null;
+  return { currentTime, duration, status };
+}
+
 /** Use the provider's supported custom-caption URL rather than ignored CC messages. */
 export function providerCaptionUrl(source: string, showOriginal: boolean, emptyTrackUrl: string,
   playback?: { currentTime: number; playing: boolean }): string {
   if (!usesProviderTouchControls(source)) return source;
   const url = new URL(source);
-  // The protected frame cannot receive a click on its landing/play overlay.
-  // Request the provider's player mode when CinemaChat's Play opens the frame.
+  // Autoplay is best-effort. External human verification or a browser play
+  // gesture still requires direct interaction with the provider's frame.
   if (!url.searchParams.has('autoplay')) url.searchParams.set('autoplay', '1');
   if (showOriginal) {
     // An explicit language overrides a previously saved empty custom track.

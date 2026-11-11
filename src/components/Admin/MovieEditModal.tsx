@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Edit3, Loader2, Save, X, Youtube } from "lucide-react";
 import type { Movie } from "../../types";
+import ProviderSourceNotice from "../Player/ProviderSourceNotice";
 import {
   ALL_CATEGORY_KEY,
   normalizeCategoryKey,
@@ -40,6 +41,11 @@ const TEXT_FIELDS: Array<{ key: string; label: string; placeholder?: string }> =
   { key: "whatsappLink", label: "WhatsApp URL" },
   { key: "externalMovieLink", label: "External Movie URL" },
 ];
+
+const VIDEO_URL_FIELDS = new Set([
+  "streamingUrl", "hdtodayUrl", "vidsrcUrl", "vidmolyUrl", "streamwishUrl",
+  "fileLrunUrl", "youtubeMovieUrl", "otherVideoUrl", "externalMovieLink",
+]);
 
 export default function MovieEditModal({
   movie,
@@ -251,6 +257,7 @@ export default function MovieEditModal({
                 placeholder={placeholder}
                 className="w-full rounded-xl border border-white/10 bg-black/50 px-4 py-3 text-white outline-none transition-colors focus:border-red-500"
               />
+              {VIDEO_URL_FIELDS.has(key) && <ProviderSourceNotice url={String(draft[key] ?? "")} />}
             </label>
           ))}
           <label className="space-y-2 text-xs font-bold text-gray-300 kurdish-text">

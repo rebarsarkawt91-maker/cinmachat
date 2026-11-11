@@ -104,7 +104,9 @@ import { ROOM_SUBTITLE_LANGUAGES, loadRoomSubtitleLanguage } from "./lib/roomSub
 import { api } from "./services/api";
 import { useI18n } from "./i18n";
 import { lazyWithRetry } from "./utils/lazyWithRetry";
-import { providerAction, usesProviderTouchControls, setNativePlayerMuted, setNativePlayerVolume, enterIOSVideoFullscreen, enterPlayerElementFullscreen } from "./utils/playerControls";
+import { providerAction, usesProviderTouchControls, readProviderPlaybackEvent, setNativePlayerMuted, setNativePlayerVolume, enterIOSVideoFullscreen, enterPlayerElementFullscreen } from "./utils/playerControls";
+import { ProviderSourceNotice } from "./components/Player/ProviderSourceNotice";
+import { PlayerInteractionLayer } from "./components/Player/PlayerInteractionLayer";
 import { cacheableCatalogMovie } from "./lib/catalogCache";
 
 const MOVIE_URL_PARAM = "movieId";
@@ -2727,6 +2729,7 @@ const ContentModule = ({
                 {universalLinkError}
               </p>
             )}
+            <ProviderSourceNotice url={universalVideoLink} />
           </div>
 
           {/* Subtitle source (optional): pasted .srt/.vtt content feeds the
@@ -7874,8 +7877,12 @@ export default function App() {
   // A replacement caption frame may report autoplay before it receives a
   // queued user pause. Keep that request separate from observed player state.
   const providerPlayingIntentRef = useRef<{ source: string; playing: boolean } | null>(null);
+  const providerPlaybackReadyRef = useRef(false);
   useEffect(() => {
-    if (!showPlayer) providerPlayingIntentRef.current = null;
+    if (!showPlayer) {
+      providerPlayingIntentRef.current = null;
+      providerPlaybackReadyRef.current = false;
+    }
   }, [showPlayer]);
   const [isIframeMuted, setIsIframeMuted] = useState(false);
   // Volume level (0-100) for players we can control natively (direct <video>,
@@ -8023,6 +8030,22 @@ const handleWebkitEndFullscreen = () => {
   // Mirrors `isIframePlaying` for stable live-sync callbacks (the state version
   // would otherwise force re-subscribing the SyncRoom listener on every change).
   const ytPlayingRef = useRef(true);
+  const handleProviderPlaybackReady = useCallback((ready: boolean) => {
+    providerPlaybackReadyRef.current = ready;
+    setPlayerLoading(!ready);
+    if (!ready) {
+      // An iframe can be loaded while its provider is still requesting a user
+      // gesture or verification. Do not advertise playback before media exists.
+      ytPlayingRef.current = false;
+      setIsIframePlaying(false);
+    } else {
+      setPlayerLoadError(null);
+      if (playerLoadTimerRef.current) {
+        clearTimeout(playerLoadTimerRef.current);
+        playerLoadTimerRef.current = null;
+      }
+    }
+  }, []);
   // Latest activeServerUrl, mirrored for the same reason (stable callbacks).
   const activeServerUrlRef = useRef<string | null>(null);
   useEffect(() => {
@@ -8069,20 +8092,31 @@ const handleWebkitEndFullscreen = () => {
       if (data?.type === "PLAYER_EVENT" && data.data) {
         const frame = document.getElementById("streaming-player") as HTMLIFrameElement | null;
         if (!frame?.contentWindow || event.source !== frame.contentWindow) return;
-        const progress = Number(data.data.player_progress);
-        const duration = Number(data.data.player_duration);
+        const providerFrame = usesProviderTouchControls(frame.src);
+        if (providerFrame && event.origin !== new URL(frame.src).origin) return;
+        const report = providerFrame ? readProviderPlaybackEvent(data) : null;
+        if (providerFrame && !report) return;
+        const progress = report?.currentTime ?? Number(data.data.player_progress);
+        const duration = report?.duration ?? Number(data.data.player_duration);
         if (Number.isFinite(progress) && progress >= 0) {
           localClockRef.current = progress;
           setPlayerCurrentTime(progress);
         }
         if (Number.isFinite(duration) && duration > 0) setPlayerDuration(duration);
-        if (data.data.player_status === "playing") {
+        const status = report?.status ?? data.data.player_status;
+        if (status === "playing") {
           ytPlayingRef.current = true;
           setIsIframePlaying(true);
         }
-        if (data.data.player_status === "paused") {
+        if (status === "paused" || status === "ended") {
           ytPlayingRef.current = false;
           setIsIframePlaying(false);
+        }
+        if (providerFrame && (status === "playing" || status === "paused")) {
+          const intent = providerPlayingIntentRef.current;
+          if (intent?.source === activeServerUrlRef.current && intent.playing === (status === "playing")) {
+            providerPlayingIntentRef.current = null;
+          }
         }
         return;
       }
@@ -8567,9 +8601,13 @@ const handleWebkitEndFullscreen = () => {
       modalPlayerRef.current?.querySelectorAll<HTMLVideoElement>("video") || [],
     );
     const nativeIsPlaying = nativeVideos.some((video) => !video.paused && !video.ended);
-    const isPlaying = nativeVideos.length > 0 ? !nativeIsPlaying : !isIframePlaying;
+    const providerWaiting = usesProviderTouchControls(activeServerUrlRef.current) && !providerPlaybackReadyRef.current;
+    const pendingIntent = providerPlayingIntentRef.current;
+    const wasRequestedPlaying = pendingIntent?.source === activeServerUrlRef.current ? pendingIntent.playing : false;
+    const isPlaying = nativeVideos.length > 0 ? !nativeIsPlaying :
+      providerWaiting ? !wasRequestedPlaying : !isIframePlaying;
     providerPlayingIntentRef.current = { source: activeServerUrlRef.current || '', playing: isPlaying };
-    setIsIframePlaying(isPlaying);
+    if (!providerWaiting) setIsIframePlaying(isPlaying);
 
     nativeVideos.forEach((video) => {
       if (isPlaying) {
@@ -8616,7 +8654,7 @@ const handleWebkitEndFullscreen = () => {
     // 3. Control the cinematic shielded embed (hdtoday, vidcloud, ...) if active
     postVideoCommand("streaming-player", isPlaying ? "playVideo" : "pauseVideo");
 
-    ytPlayingRef.current = isPlaying;
+    if (!providerWaiting) ytPlayingRef.current = isPlaying;
     // Publish the play/pause intent immediately (player clocks may lag the
     // command, so publish the intent rather than the live read).
     publishPlaybackNowRef.current({ isPlaying });
@@ -15709,7 +15747,8 @@ const handleWebkitEndFullscreen = () => {
                           );
                         }
 
-                        // 5. Supported embed (known providers) → sandboxed iframe
+                        // 5. Supported embed. Interactive providers retain their
+                        // own play/verification controls inside the same frame.
                         if (srcType === "supported-embed") {
                           return (
                             <ImmersiveShieldedPlayer
@@ -15717,6 +15756,7 @@ const handleWebkitEndFullscreen = () => {
                               iframeId="streaming-player"
                               title={`${selectedMovie?.title || "CinemaChat"} — Cinematic Player`}
                               scale={immersiveScale}
+                              onPlaybackReady={handleProviderPlaybackReady}
                               hideNativeSubtitles={!ccSettings.showOriginal}
                               playback={{ currentTime: playerCurrentTime, playing: isIframePlaying, muted: isIframeMuted,
                                 requestedPlaying: providerPlayingIntentRef.current?.source === activeServerUrl
@@ -15761,14 +15801,12 @@ const handleWebkitEndFullscreen = () => {
                         );
                       })()}
 
-                      {/* The interaction glass catches source clicks before ad
-                          handlers; CinemaChat controls use the provider relay. */}
-                      <div
-                        data-testid="player-interaction-layer"
-                        className="absolute inset-0 z-[42] cursor-default"
+                      {/* Keep the known interactive provider reachable for its
+                          verification, native Play and accessibility controls. */}
+                      <PlayerInteractionLayer
+                        url={activeServerUrl}
                         onPointerMove={revealPlayerControls}
                         onPointerDown={revealPlayerControls}
-                        aria-hidden="true"
                       />
 
                       {isCatalogMoviePlayer && <PlayerAdOverlay root={modalPlayerRef}

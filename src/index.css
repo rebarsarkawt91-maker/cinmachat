@@ -141,6 +141,12 @@ iframe#streaming-player {
   pointer-events: none !important;
 }
 
+/* The known provider needs native Play/verification gestures. The player sets
+   this flag only after checking the exact HTTPS embed host and path. */
+iframe#streaming-player[data-provider-interactive="true"] {
+  pointer-events: auto !important;
+}
+
 /* Block YouTube overlay click-through for all embedded player containers */
 #broadcast-yt-player iframe,
 #camehere-yt-player iframe {
