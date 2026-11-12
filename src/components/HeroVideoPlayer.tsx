@@ -207,17 +207,6 @@ const DramaHeroCarousel = ({
       >
         ›
       </button>
-      {count > 1 && (
-        <button
-          type="button"
-          className="drama-hero-carousel__pause"
-          onClick={() => setPaused((value) => !value)}
-          aria-label={paused ? "دەستپێکردنەوەی جووڵەی کارتەکان" : "وەستاندنی جووڵەی کارتەکان"}
-          aria-pressed={paused}
-        >
-          {paused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
-        </button>
-      )}
     </div>
   );
 };

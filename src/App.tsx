@@ -13678,6 +13678,73 @@ const handleWebkitEndFullscreen = () => {
     }
   };
 
+  const duplicateMovieRecord = async (movie: Movie): Promise<Movie> => {
+    if (!canEditMovies || !movie?.id) {
+      throw new Error("تەنها ئەدمین دەتوانێت کارت کۆپی بکات");
+    }
+    const source = resolvedMovies[movie.id] ?? movie;
+    const sourceAny = source as any;
+    const duplicateId = `${source.id}-copy-${Date.now()}`;
+    const duplicatedMovie = {
+      ...source,
+      id: duplicateId,
+      title: `${source.title} (کۆپی)`,
+      date: new Date().toISOString(),
+      isBroken: false,
+      brokenLinkManualOverride: false,
+      likes: 0,
+      likedBy: [],
+      views: 0,
+      favoriteCount: 0,
+      ccRating: 0,
+      ratingCount: 0,
+      userRating: 0,
+      trendingScore: 0,
+      liveViewers: 0,
+      isLive: false,
+      subtitleText: source.subtitleText || "",
+      subtitleUrl: source.subtitleUrl || "",
+      subtitleUrl2: source.subtitleUrl2 || "",
+      kurdishSubtitleUrl: source.kurdishSubtitleUrl || "",
+      kurdishSubtitleStatus: "",
+      kurdishSubtitleSource: "",
+      tags: Array.isArray(source.tags) ? [...source.tags] : [source.category || "هەمووی"],
+      category: source.category || source.tags?.[0] || "هەمووی",
+    };
+
+    const response = await fetchApi("/api/admin/post-movie", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Admin-Username": currentUser?.username || "",
+      },
+      body: JSON.stringify({
+        ...duplicatedMovie,
+        adminName: currentUser?.username || "Admin",
+        streamingUrl: duplicatedMovie.streamingUrl || duplicatedMovie.videoUrl || duplicatedMovie.external_link || duplicatedMovie.embedUrl || "",
+        videoUrl: duplicatedMovie.videoUrl || duplicatedMovie.streamingUrl || duplicatedMovie.external_link || duplicatedMovie.embedUrl || "",
+        image: duplicatedMovie.image || sourceAny.posterUrl || "",
+        posterUrl: sourceAny.posterUrl || duplicatedMovie.image || "",
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload?.movie) {
+      throw new Error(payload?.error || "کۆپی‌کردنی فیلم سەرکەوتوو نەبوو");
+    }
+
+    const created = payload.movie as Movie;
+    setMovies((previous) => [created, ...previous]);
+    refreshCatalog();
+    return created;
+  };
+
+  function handleDuplicateMovie(movie: Movie) {
+    void duplicateMovieRecord(movie).catch((error) => {
+      console.error("[DuplicateMovie] failed:", error);
+      alert(error instanceof Error ? error.message : "کۆپی‌کردنی فیلم سەرکەوتوو نەبوو");
+    });
+  }
+
   const handleApplyKurdSubStudioSubtitle = async (movieId: string, subtitleText: string) => {
     if (!canUseKurdSubStudio || !movieId || !subtitleText.trim()) {
       throw new Error("دەسەڵات یان داتای ژێرنووس بەردەست نییە");
@@ -14059,9 +14126,17 @@ const handleWebkitEndFullscreen = () => {
   };
 
   const pasteDramaRoomCard = async (room: any, movieId: string) => {
-    if (!canEditMovies || !resolvedMovies[movieId]) return;
+    const source = resolvedMovies[movieId];
+    if (!canEditMovies || !source) return;
     try {
-      await updateDramaRoomCards(room, [...(Array.isArray(room.dramas) ? room.dramas : []), movieId]);
+      // A pasted card must receive its own catalog record. Reusing the source
+      // id makes every COPY card point to the same movie, so editing one also
+      // edits all siblings. The post endpoint assigns a durable unique id.
+      const created = await duplicateMovieRecord(source as Movie);
+      await updateDramaRoomCards(room, [
+        ...(Array.isArray(room.dramas) ? room.dramas : []),
+        created.id,
+      ]);
     } catch (error) {
       alert(error instanceof Error ? error.message : "زیادکردنی کارت سەرکەوتوو نەبوو");
     }

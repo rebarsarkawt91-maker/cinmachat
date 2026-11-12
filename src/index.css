@@ -380,8 +380,7 @@ iframe#streaming-player[data-provider-interactive="true"] {
   font-weight: 900;
   line-height: 1;
 }
-.drama-hero-carousel__arrow,
-.drama-hero-carousel__pause {
+.drama-hero-carousel__arrow {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -399,19 +398,9 @@ iframe#streaming-player[data-provider-interactive="true"] {
   font-size: 1.5rem;
   line-height: 1;
 }
-.drama-hero-carousel__arrow:hover,
-.drama-hero-carousel__pause:hover { border-color: rgba(248,113,113,.8); background: rgba(127,29,29,.75); }
-.drama-hero-carousel__pause {
-  position: absolute;
-  right: .2rem;
-  bottom: -.2rem;
-  width: 1.7rem;
-  height: 1.7rem;
-  border-radius: 999px;
-}
+.drama-hero-carousel__arrow:hover { border-color: rgba(248,113,113,.8); background: rgba(127,29,29,.75); }
 .drama-hero-carousel__card:focus-visible,
-.drama-hero-carousel__arrow:focus-visible,
-.drama-hero-carousel__pause:focus-visible {
+.drama-hero-carousel__arrow:focus-visible {
   outline: 2px solid #facc15;
   outline-offset: 3px;
 }
@@ -429,7 +418,6 @@ iframe#streaming-player[data-provider-interactive="true"] {
   .site-visitor-badge { min-width: 6.4rem; padding: .3rem .44rem; font-size: .46rem; }
   .site-visitor-badge__row { min-width: 5.4rem; gap: .45rem; }
   .drama-hero-carousel__arrow { width: 1.7rem; height: 1.7rem; font-size: 1.25rem; }
-  .drama-hero-carousel__pause { right: .05rem; bottom: -.15rem; width: 1.5rem; height: 1.5rem; }
 }
 @media (prefers-reduced-motion: reduce) {
   .drama-hero-carousel__card { transition: none !important; }
