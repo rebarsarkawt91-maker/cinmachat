@@ -409,6 +409,11 @@ const HeroVideoPlayer: React.FC<{
   };
   const [ccEnabled, setCcEnabled] = useState(true);
   const [onlineViewers, setOnlineViewers] = useState(0);
+  const [siteVisitorStats, setSiteVisitorStats] = useState({
+    totalViews: 0,
+    uniqueVisitors: 0,
+    startedAt: "",
+  });
   const sessionIdRef = useRef<string>("");
   if (sessionIdRef.current === "") {
     sessionIdRef.current =
@@ -419,16 +424,23 @@ const HeroVideoPlayer: React.FC<{
 
   useEffect(() => {
     let cancelled = false;
-    const updateViewers = async () => {
+    const updateViewers = async (recordVisit = false) => {
       try {
-        const data = await api.getStats(sessionIdRef.current);
+        const data = await api.getStats(sessionIdRef.current, recordVisit);
         if (!cancelled && data && typeof data.visitors === "number") {
           setOnlineViewers(data.visitors);
         }
+        if (!cancelled && data) {
+          setSiteVisitorStats((current) => ({
+            totalViews: typeof data.totalViews === "number" ? data.totalViews : current.totalViews,
+            uniqueVisitors: typeof data.uniqueVisitors === "number" ? data.uniqueVisitors : current.uniqueVisitors,
+            startedAt: typeof data.startedAt === "string" ? data.startedAt : current.startedAt,
+          }));
+        }
       } catch (_) {}
     };
-    updateViewers();
-    const interval = setInterval(updateViewers, 15000);
+    updateViewers(true);
+    const interval = setInterval(() => updateViewers(false), 15000);
     return () => {
       cancelled = true;
       clearInterval(interval);
@@ -1594,16 +1606,16 @@ const HeroVideoPlayer: React.FC<{
             transition={{ duration: 0.8, ease: "easeOut" }}
             className="flex flex-col items-start gap-1"
           >
-            <div className="flex flex-col items-start bg-black/20 backdrop-blur-sm p-4 rounded-3xl border border-white/5">
-              <span className="text-xl md:text-2xl font-black text-white kurdish-text tracking-[0.1em] drop-shadow-2xl">
-                شۆی سینەما چات
-              </span>
-              <span className="text-[10px] md:text-xs font-black text-brand-primary uppercase tracking-[0.6em] font-mono">
-                CINEMACHAT SHOW
-              </span>
+            <div
+              className="site-visitor-badge"
+              dir="rtl"
+              title={siteVisitorStats.startedAt ? `لە ${siteVisitorStats.startedAt}` : "سەردانەکانی سایت"}
+              aria-label="ژمارەی سەردانیکەرانی سایت"
+            >
+              <span className="site-visitor-badge__title">سەردانیکەری سایتەکە</span>
+              <span>بینین: {formatUserCount(siteVisitorStats.totalViews)}</span>
+              <span>IP/ئامێر: {formatUserCount(siteVisitorStats.uniqueVisitors)}</span>
             </div>
-
-            <div className="w-12 h-1 bg-brand-primary mt-4 rounded-full shadow-[0_0_15px_rgba(239,68,68,0.5)]" />
           </motion.div>
         </div>
       </div>

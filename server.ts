@@ -2303,6 +2303,14 @@ const FIREBASE_API_KEY =
 // (rules: allow read, write: if true — no deploy of firestore.rules needed).
 const MOVIE_VIEWS_DOC = process.env.MOVIE_VIEWS_DOC || 'config/movieViews';
 
+// Durable homepage visitor counters. Only a one-way hash of the caller's
+// device id/IP is stored; the raw identity never enters this collection or the
+// public response. The Admin SDK transaction keeps totals correct across
+// multiple Render instances when Firebase credentials are available.
+const SITE_VISITOR_STATS_DOC = process.env.SITE_VISITOR_STATS_DOC || 'config/siteVisitorStats';
+const SITE_VISITOR_COLLECTION = process.env.SITE_VISITOR_COLLECTION || 'siteVisitorVisitors';
+const SITE_VISITOR_HASH_SALT = process.env.SITE_VISITOR_HASH_SALT || FIREBASE_PROJECT_ID;
+
 // Owner/superadmin usernames — configurable via env var so no privileged
 // usernames are hardcoded in source code.  Comma-separated list.
 const OWNER_USERNAMES: string[] = (process.env.OWNER_USERNAMES || 'admin,dekan@123')
@@ -2381,6 +2389,14 @@ const INITIAL_DB = {
   // movies that only exist in Firestore (not in manualMovies), seeded at boot
   // from the movies' existing `views` field and incremented once per session.
   viewsCounts: {} as Record<string, number>,
+  // Homepage lifetime visitor counters. `visitorKeys` is only the local
+  // fallback; production uses the durable Firestore visitor collection.
+  siteVisitorStats: {
+    startedAt: null as string | null,
+    totalViews: 0,
+    uniqueVisitors: 0,
+    visitorKeys: {} as Record<string, string>,
+  },
   // CinemaChat user ratings: movieId -> { uid: score(1-10) }.
   ratings: {} as Record<string, Record<string, number>>,
   // Per-room CinemaChat user ratings: roomId -> { uid: score(1-10) }. Kept
@@ -4367,6 +4383,17 @@ async function startServer() {
   if (!db.searchHistory) db.searchHistory = {};
   if (!db.popularSearchTerms) db.popularSearchTerms = {};
   if (!db.continueWatching) db.continueWatching = {};
+  if (!db.siteVisitorStats || typeof db.siteVisitorStats !== 'object') {
+    db.siteVisitorStats = { ...INITIAL_DB.siteVisitorStats, visitorKeys: {} };
+  }
+  if (!db.siteVisitorStats.startedAt) {
+    db.siteVisitorStats.startedAt = process.env.SITE_LAUNCH_DATE || new Date().toISOString();
+  }
+  if (!Number.isFinite(Number(db.siteVisitorStats.totalViews))) db.siteVisitorStats.totalViews = 0;
+  if (!Number.isFinite(Number(db.siteVisitorStats.uniqueVisitors))) db.siteVisitorStats.uniqueVisitors = 0;
+  if (!db.siteVisitorStats.visitorKeys || typeof db.siteVisitorStats.visitorKeys !== 'object') {
+    db.siteVisitorStats.visitorKeys = {};
+  }
 
   // Initialize syncGroups if not present, ensuring global room exists
   if (!db.syncGroups) db.syncGroups = {};
@@ -4747,6 +4774,94 @@ async function startServer() {
     const ip = String(clientIp).trim();
     return { deviceId, ip, key: deviceId || ip };
   };
+
+  type SiteVisitorStats = {
+    startedAt: string;
+    totalViews: number;
+    uniqueVisitors: number;
+  };
+
+  const getSiteVisitorStats = (): SiteVisitorStats => ({
+    startedAt: String(db.siteVisitorStats?.startedAt || process.env.SITE_LAUNCH_DATE || new Date().toISOString()),
+    totalViews: Math.max(0, Number(db.siteVisitorStats?.totalViews) || 0),
+    uniqueVisitors: Math.max(0, Number(db.siteVisitorStats?.uniqueVisitors) || 0),
+  });
+
+  const hashSiteVisitorIdentity = (identity: string): string =>
+    crypto.createHash('sha256').update(`${SITE_VISITOR_HASH_SALT}:${identity}`).digest('hex');
+  let siteVisitorFirestoreRetryAt = 0;
+
+  // Rehydrate the summary from Firestore when available. The local db.json
+  // copy remains a safe fallback for development or an offline backend.
+  const hydrateSiteVisitorStats = async (): Promise<void> => {
+    const firebaseApp = initializeFirebaseAdmin();
+    if (!firebaseApp) return;
+    try {
+      const snapshot = await admin.firestore(firebaseApp).doc(SITE_VISITOR_STATS_DOC).get();
+      if (!snapshot.exists) return;
+      const remote = snapshot.data() || {};
+      if (typeof remote.startedAt === 'string' && remote.startedAt) db.siteVisitorStats.startedAt = remote.startedAt;
+      if (Number.isFinite(Number(remote.totalViews))) db.siteVisitorStats.totalViews = Math.max(0, Number(remote.totalViews));
+      if (Number.isFinite(Number(remote.uniqueVisitors))) db.siteVisitorStats.uniqueVisitors = Math.max(0, Number(remote.uniqueVisitors));
+      await saveDB(db);
+    } catch (error: any) {
+      console.warn('[site-visitors] Firestore hydrate skipped:', error?.message || error);
+    }
+  };
+
+  const recordSiteVisit = async (req: any): Promise<SiteVisitorStats> => {
+    const identity = getClientIdentity(req);
+    const identityValue = identity.deviceId ? `device:${identity.deviceId}` : `ip:${identity.ip || 'unknown'}`;
+    const visitorHash = hashSiteVisitorIdentity(identityValue);
+    const now = new Date().toISOString();
+    const firebaseApp = initializeFirebaseAdmin();
+
+    if (firebaseApp && Date.now() >= siteVisitorFirestoreRetryAt) {
+      try {
+        const firestore = admin.firestore(firebaseApp);
+        const summaryRef = firestore.doc(SITE_VISITOR_STATS_DOC);
+        const visitorRef = firestore.collection(SITE_VISITOR_COLLECTION).doc(visitorHash);
+        const transactionPromise = firestore.runTransaction(async (transaction) => {
+          const summarySnapshot = await transaction.get(summaryRef);
+          const visitorSnapshot = await transaction.get(visitorRef);
+          const previous = summarySnapshot.exists ? (summarySnapshot.data() || {}) : {};
+          const startedAt = String(previous.startedAt || db.siteVisitorStats.startedAt || process.env.SITE_LAUNCH_DATE || now);
+          const totalViews = Math.max(0, Number(previous.totalViews) || 0) + 1;
+          const uniqueVisitors = Math.max(0, Number(previous.uniqueVisitors) || 0) + (visitorSnapshot.exists ? 0 : 1);
+          transaction.set(visitorRef, { firstSeen: visitorSnapshot.exists ? (visitorSnapshot.data()?.firstSeen || now) : now, lastSeen: now }, { merge: true });
+          transaction.set(summaryRef, { startedAt, totalViews, uniqueVisitors, updatedAt: now }, { merge: true });
+          return { startedAt, totalViews, uniqueVisitors };
+        });
+        // Do not hold the public homepage on a broken Firestore connection.
+        // A slow transaction is abandoned for this request and retried after a
+        // short cooldown while the local counter keeps the UI responsive.
+        transactionPromise.catch(() => {});
+        const result = await Promise.race([
+          transactionPromise,
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('visitor transaction timeout')), 5000)),
+        ]);
+        db.siteVisitorStats.startedAt = result.startedAt;
+        db.siteVisitorStats.totalViews = result.totalViews;
+        db.siteVisitorStats.uniqueVisitors = result.uniqueVisitors;
+        void saveDB(db).catch(() => {});
+        return result;
+      } catch (error: any) {
+        siteVisitorFirestoreRetryAt = Date.now() + 60_000;
+        console.warn('[site-visitors] Firestore record failed; using local fallback:', error?.message || error);
+      }
+    }
+
+    const localStats = db.siteVisitorStats;
+    localStats.totalViews = Math.max(0, Number(localStats.totalViews) || 0) + 1;
+    if (!localStats.visitorKeys[visitorHash]) {
+      localStats.visitorKeys[visitorHash] = now;
+      localStats.uniqueVisitors = Math.max(0, Number(localStats.uniqueVisitors) || 0) + 1;
+    }
+    await saveDB(db);
+    return getSiteVisitorStats();
+  };
+
+  void hydrateSiteVisitorStats();
 
   // Whitelist the Owner's IP after a verified Owner login so any future
   // accidental block becomes a temporary 1-minute exemption, not a permanent ban.
@@ -7739,7 +7854,15 @@ async function startServer() {
     for (const [sid, lastSeen] of activeSessions) {
       if (now - lastSeen > SESSION_TTL_MS) activeSessions.delete(sid);
     }
-    res.json({ visitors: activeSessions.size });
+    const visitRequested = String(req.query.visit || '') === '1';
+    const response = async () => {
+      if (visitRequested) await recordSiteVisit(req);
+      res.json({ visitors: activeSessions.size, ...getSiteVisitorStats() });
+    };
+    void response().catch((error: any) => {
+      console.warn('[site-visitors] Stats response fallback:', error?.message || error);
+      res.json({ visitors: activeSessions.size, ...getSiteVisitorStats() });
+    });
   });
 
   // --- MODULE 14: DYNAMIC 'CAME HERE' ROOMS ENDPOINTS ---

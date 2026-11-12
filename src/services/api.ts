@@ -21,6 +21,25 @@ export { resolveApiUrl };
 // recovery remains separate, and explicit admin refresh bypasses this cache.
 let publicCatalogFallback: any[] | null = null;
 
+// Stable anonymous device id used only for server-side visitor deduplication.
+// It contains no account data and falls back to IP counting when storage is
+// unavailable (private browsing or a locked-down browser).
+const getVisitorDeviceId = (): string => {
+  try {
+    const key = 'cinemachat_device_id';
+    let id = window.localStorage.getItem(key) || '';
+    if (!id) {
+      id = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `dev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+      window.localStorage.setItem(key, id);
+    }
+    return id;
+  } catch {
+    return '';
+  }
+};
+
 const loadPublicCatalogFallback = async (): Promise<any[]> => {
   if (publicCatalogFallback) return publicCatalogFallback;
   try {
@@ -637,10 +656,16 @@ export const api = {
     return data?.user || null;
   },
 
-  async getStats(sessionId?: string) {
+  async getStats(sessionId?: string, recordVisit = false) {
     try {
-      const query = sessionId ? `?session=${encodeURIComponent(sessionId)}` : '';
-      return await api.baseFetch(`/api/stats${query}`);
+      const params = new URLSearchParams();
+      if (sessionId) params.set('session', sessionId);
+      if (recordVisit) params.set('visit', '1');
+      const query = params.toString() ? `?${params.toString()}` : '';
+      const deviceId = typeof window !== 'undefined' ? getVisitorDeviceId() : '';
+      return await api.baseFetch(`/api/stats${query}`, deviceId ? {
+        headers: { 'X-Device-Id': deviceId },
+      } : {});
     } catch { return { visitors: 0 }; }
   },
 
