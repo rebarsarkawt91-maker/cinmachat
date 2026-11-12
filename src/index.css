@@ -224,7 +224,7 @@ iframe#streaming-player[data-provider-interactive="true"] {
   left: 10%;
   right: 16%;
   bottom: 6%;
-  height: clamp(10.5rem, 22vw, 15rem);
+  height: clamp(8.5rem, 17vw, 11.5rem);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -233,7 +233,7 @@ iframe#streaming-player[data-provider-interactive="true"] {
 }
 .drama-hero-carousel__track {
   position: relative;
-  width: min(76vw, 58rem);
+  width: min(66vw, 46rem);
   height: 100%;
   display: flex;
   align-items: center;
@@ -262,19 +262,21 @@ iframe#streaming-player[data-provider-interactive="true"] {
   z-index: 4;
   left: 50%;
   translate: -50% 0;
-  width: clamp(11rem, 22vw, 16rem);
-  height: clamp(10rem, 17vw, 13rem);
+  width: clamp(8.5rem, 17vw, 12.5rem);
+  height: clamp(7rem, 12vw, 9rem);
   border-color: rgba(248,113,113,.8);
   box-shadow: 0 1rem 2rem rgba(0,0,0,.6), 0 0 1.4rem rgba(239,68,68,.4);
 }
 .drama-hero-carousel__card--side {
   z-index: 2;
-  width: clamp(7.5rem, 15vw, 11rem);
-  height: clamp(6.5rem, 12vw, 8.75rem);
+  width: clamp(6.5rem, 13vw, 9rem);
+  height: clamp(5.5rem, 10vw, 7.25rem);
   filter: saturate(.8);
 }
-.drama-hero-carousel__card--previous { left: 0; }
-.drama-hero-carousel__card--next { right: 0; }
+.drama-hero-carousel__card--previous-far { left: 0; }
+.drama-hero-carousel__card--previous { left: 22%; }
+.drama-hero-carousel__card--next { right: 22%; }
+.drama-hero-carousel__card--next-far { right: 0; }
 .drama-hero-carousel__card--side span {
   position: absolute;
   right: .45rem;
@@ -373,10 +375,10 @@ iframe#streaming-player[data-provider-interactive="true"] {
 @media (max-width: 767px) {
   .cinema-theater-hero { background-position: center center; }
   .cinema-theater-stage { left: 21.5%; top: 12%; width: 57%; height: 46%; }
-  .drama-hero-carousel { left: 3%; right: 6%; bottom: 5%; height: 9.75rem; }
-  .drama-hero-carousel__track { width: min(82vw, 24rem); }
-  .drama-hero-carousel__card--current { width: 10rem; height: 8rem; }
-  .drama-hero-carousel__card--side { width: 6.5rem; height: 5.7rem; }
+  .drama-hero-carousel { left: 5%; right: 8%; bottom: 5%; height: 8rem; }
+  .drama-hero-carousel__track { width: min(72vw, 20rem); }
+  .drama-hero-carousel__card--current { width: 8.5rem; height: 6.7rem; }
+  .drama-hero-carousel__card--side { width: 5.8rem; height: 5.1rem; }
   .drama-hero-carousel__caption strong { font-size: .67rem; }
   .drama-hero-carousel__caption small { font-size: .55rem; }
   .drama-hero-carousel__series-label { padding: .16rem .32rem; font-size: .5rem; }

@@ -70,7 +70,9 @@ const DramaHeroCarousel = ({
   const count = visibleRooms.length;
   const current = visibleRooms[activeIndex];
   const previous = visibleRooms[(activeIndex - 1 + count) % count];
+  const previousFar = visibleRooms[(activeIndex - 2 + count) % count];
   const next = visibleRooms[(activeIndex + 1) % count];
+  const nextFar = visibleRooms[(activeIndex + 2) % count];
   const move = (delta: number) => {
     setActiveIndex((index) => (index + delta + count) % count);
   };
@@ -106,6 +108,22 @@ const DramaHeroCarousel = ({
       </button>
       <div className="drama-hero-carousel__track">
         <AnimatePresence initial={false} mode="popLayout">
+          {count > 4 && previousFar.id !== current.id && previousFar.id !== previous.id && (
+            <motion.button
+              type="button"
+              key={`previous-far-${previousFar.id}-${activeIndex}`}
+              className="drama-hero-carousel__card drama-hero-carousel__card--side drama-hero-carousel__card--previous-far"
+              initial={{ opacity: 0, x: -120, scale: 0.74 }}
+              animate={{ opacity: 0.4, x: 0, scale: 0.78 }}
+              exit={{ opacity: 0, x: -100, scale: 0.7 }}
+              transition={reducedMotion ? { duration: 0 } : { duration: 0.48, ease: "easeOut" }}
+              onClick={(event) => openRoom(previousFar, event)}
+              aria-label={`کردنەوەی ژووری ${previousFar.title || "دراما"}`}
+            >
+              <img src={imageFor(previousFar)} alt="" loading="lazy" />
+              <span>{previousFar.title || "دراما"}</span>
+            </motion.button>
+          )}
           {previous.id !== current.id && (
             <motion.button
               type="button"
@@ -161,6 +179,22 @@ const DramaHeroCarousel = ({
             >
               <img src={imageFor(next)} alt="" loading="lazy" />
               <span>{next.title || "دراما"}</span>
+            </motion.button>
+          )}
+          {count > 4 && nextFar.id !== current.id && nextFar.id !== next.id && (
+            <motion.button
+              type="button"
+              key={`next-far-${nextFar.id}-${activeIndex}`}
+              className="drama-hero-carousel__card drama-hero-carousel__card--side drama-hero-carousel__card--next-far"
+              initial={{ opacity: 0, x: 120, scale: 0.74 }}
+              animate={{ opacity: 0.4, x: 0, scale: 0.78 }}
+              exit={{ opacity: 0, x: 100, scale: 0.7 }}
+              transition={reducedMotion ? { duration: 0 } : { duration: 0.48, ease: "easeOut" }}
+              onClick={(event) => openRoom(nextFar, event)}
+              aria-label={`کردنەوەی ژووری ${nextFar.title || "دراما"}`}
+            >
+              <img src={imageFor(nextFar)} alt="" loading="lazy" />
+              <span>{nextFar.title || "دراما"}</span>
             </motion.button>
           )}
         </AnimatePresence>
