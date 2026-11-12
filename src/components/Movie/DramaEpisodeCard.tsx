@@ -4,7 +4,7 @@ import type { Movie } from '../../types';
 /** Edit is a sibling of Play, so touch/keyboard editing never starts playback. */
 export function DramaEpisodeCard({ movie, order, onOpen, onEdit, onDuplicate, onRemove }: {
   movie: Movie & { posterUrl?: string }; order: number; onOpen: (movie: Movie) => void;
-  onEdit?: (movie: Movie) => void; onDuplicate?: (movie: Movie) => void;
+  onEdit?: (movie: Movie, order: number) => void; onDuplicate?: (movie: Movie) => void;
   onRemove?: () => void;
 }) {
   return <div className="relative min-w-0">
@@ -21,7 +21,7 @@ export function DramaEpisodeCard({ movie, order, onOpen, onEdit, onDuplicate, on
       <p className="mt-2 text-xs font-bold text-white kurdish-text line-clamp-1">{movie.title}</p>
     </button>
     <div className="absolute left-2 top-2 z-10 flex flex-wrap gap-1">
-    {onEdit && <button type="button" onClick={() => onEdit(movie)} aria-label={`Edit ${movie.title}`}
+    {onEdit && <button type="button" onClick={() => onEdit(movie, order)} aria-label={`Edit ${movie.title}`}
       title="دەستکاریکردنی دراما و زیادکردنی VTT"
       className="flex items-center gap-1 rounded-md border border-red-500/70 bg-black/80 px-2 py-1 text-[9px] font-black text-white shadow-lg hover:bg-red-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white">
       <Edit3 className="h-3 w-3" aria-hidden="true" /> EDIT

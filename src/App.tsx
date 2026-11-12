@@ -15651,7 +15651,26 @@ const handleWebkitEndFullscreen = () => {
             <DramaRoomDetailModal
               room={selectedDramaRoom}
               resolvedMovies={resolvedMovies}
-              onEditMovie={canEditMovies ? (movie: Movie) => {
+              onEditMovie={canEditMovies ? async (movie: Movie, order: number) => {
+                // Older rooms may contain the same movie id more than once
+                // because COPY used to append the source id. Before editing
+                // one of those occurrences, split only that card into its own
+                // durable movie record so sibling cards stay untouched.
+                const room = selectedDramaRoom;
+                const ids = Array.isArray(room?.dramas) ? room.dramas : [];
+                const duplicateCount = ids.filter((id: string) => id === movie.id).length;
+                if (room?.id && duplicateCount > 1 && ids[order] === movie.id) {
+                  try {
+                    const created = await duplicateMovieRecord(movie);
+                    await updateDramaRoomCards(room, ids.map((id: string, index: number) =>
+                      index === order ? created.id : id,
+                    ));
+                    setMovieBeingEdited(created);
+                  } catch (error) {
+                    alert(error instanceof Error ? error.message : "جیاکردنەوەی کارتەکە سەرکەوتوو نەبوو");
+                  }
+                  return;
+                }
                 // Use the authoritative record, not the metrics-only room-card cache.
                 setMovieBeingEdited(movies.find(item => item.id === movie.id) || movie);
               } : undefined}
