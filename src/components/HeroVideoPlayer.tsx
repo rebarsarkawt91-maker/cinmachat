@@ -43,18 +43,27 @@ const DramaHeroCarousel = ({
   );
   const [activeIndex, setActiveIndex] = useState(0);
   const [paused, setPaused] = useState(false);
+  const [reducedMotion, setReducedMotion] = useState(false);
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setReducedMotion(media.matches);
+    update();
+    media.addEventListener?.("change", update);
+    return () => media.removeEventListener?.("change", update);
+  }, []);
 
   useEffect(() => {
     setActiveIndex((current) => Math.min(current, Math.max(visibleRooms.length - 1, 0)));
   }, [visibleRooms.length]);
 
   useEffect(() => {
-    if (paused || visibleRooms.length < 2) return;
+    if (paused || reducedMotion || visibleRooms.length < 2) return;
     const timer = window.setInterval(() => {
       setActiveIndex((current) => (current + 1) % visibleRooms.length);
     }, 4200);
     return () => window.clearInterval(timer);
-  }, [paused, visibleRooms.length]);
+  }, [paused, reducedMotion, visibleRooms.length]);
 
   if (!visibleRooms.length) return null;
 
@@ -81,7 +90,10 @@ const DramaHeroCarousel = ({
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setPaused(false);
       }}
-      onPointerDown={(event) => event.stopPropagation()}
+      onPointerDown={(event) => {
+        event.stopPropagation();
+        setPaused(true);
+      }}
       onClick={(event) => event.stopPropagation()}
     >
       <button
@@ -102,7 +114,7 @@ const DramaHeroCarousel = ({
               initial={{ opacity: 0, x: -90, scale: 0.82 }}
               animate={{ opacity: 0.64, x: 0, scale: 0.86 }}
               exit={{ opacity: 0, x: -80, scale: 0.78 }}
-              transition={{ duration: 0.48, ease: "easeOut" }}
+              transition={reducedMotion ? { duration: 0 } : { duration: 0.48, ease: "easeOut" }}
               onClick={(event) => openRoom(previous, event)}
               aria-label={`کردنەوەی ژووری ${previous.title || "دراما"}`}
             >
@@ -117,7 +129,7 @@ const DramaHeroCarousel = ({
             initial={{ opacity: 0, x: activeIndex % 2 === 0 ? -190 : 190, scale: 0.76 }}
             animate={{ opacity: 1, x: 0, scale: 1 }}
             exit={{ opacity: 0, x: activeIndex % 2 === 0 ? 190 : -190, scale: 0.74 }}
-            transition={{ duration: 0.62, ease: [0.22, 0.8, 0.24, 1] }}
+            transition={reducedMotion ? { duration: 0 } : { duration: 0.62, ease: [0.22, 0.8, 0.24, 1] }}
             onClick={(event) => openRoom(current, event)}
             aria-label={`کردنەوەی ژووری ${current.title || "دراما"}`}
           >
@@ -136,7 +148,7 @@ const DramaHeroCarousel = ({
               initial={{ opacity: 0, x: 90, scale: 0.82 }}
               animate={{ opacity: 0.64, x: 0, scale: 0.86 }}
               exit={{ opacity: 0, x: 80, scale: 0.78 }}
-              transition={{ duration: 0.48, ease: "easeOut" }}
+              transition={reducedMotion ? { duration: 0 } : { duration: 0.48, ease: "easeOut" }}
               onClick={(event) => openRoom(next, event)}
               aria-label={`کردنەوەی ژووری ${next.title || "دراما"}`}
             >
