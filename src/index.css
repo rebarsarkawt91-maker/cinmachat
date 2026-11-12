@@ -338,12 +338,10 @@ iframe#streaming-player[data-provider-interactive="true"] {
 }
 .drama-hero-carousel__series-label b { color: #86efac; padding: 0 .08rem; }
 .site-visitor-badge {
-  align-self: flex-end;
-  display: grid;
-  grid-template-columns: auto auto;
-  align-items: center;
-  gap: .14rem .5rem;
-  min-width: 7.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: .16rem;
+  min-width: 7.4rem;
   padding: .38rem .58rem;
   border: 1px solid rgba(255,255,255,.12);
   border-radius: .7rem;
@@ -359,11 +357,28 @@ iframe#streaming-player[data-provider-interactive="true"] {
   -webkit-backdrop-filter: blur(5px);
   opacity: .86;
 }
-.site-visitor-badge__title {
-  grid-column: 1 / -1;
-  color: rgba(255,255,255,.88);
-  font-size: .62rem;
+.site-visitor-badge-wrap {
+  position: absolute;
+  top: clamp(3.9rem, 9%, 6.5rem);
+  right: clamp(.7rem, 2.5vw, 2.5rem);
+  z-index: 35;
+  pointer-events: none;
+}
+.site-visitor-badge-motion { display: flex; }
+.site-visitor-badge__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .65rem;
+  min-width: 6.2rem;
+}
+.site-visitor-badge__label { color: rgba(255,255,255,.72); }
+.site-visitor-badge__row strong {
+  color: #86efac;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .56rem;
   font-weight: 900;
+  line-height: 1;
 }
 .drama-hero-carousel__arrow,
 .drama-hero-carousel__pause {
@@ -410,8 +425,9 @@ iframe#streaming-player[data-provider-interactive="true"] {
   .drama-hero-carousel__caption strong { font-size: .67rem; }
   .drama-hero-carousel__caption small { font-size: .55rem; }
   .drama-hero-carousel__series-label { padding: .16rem .32rem; font-size: .5rem; }
+  .site-visitor-badge-wrap { top: 3.2rem; right: .55rem; }
   .site-visitor-badge { min-width: 6.4rem; padding: .3rem .44rem; font-size: .46rem; }
-  .site-visitor-badge__title { font-size: .54rem; }
+  .site-visitor-badge__row { min-width: 5.4rem; gap: .45rem; }
   .drama-hero-carousel__arrow { width: 1.7rem; height: 1.7rem; font-size: 1.25rem; }
   .drama-hero-carousel__pause { right: .05rem; bottom: -.15rem; width: 1.5rem; height: 1.5rem; }
 }

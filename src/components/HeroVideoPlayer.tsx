@@ -1599,12 +1599,12 @@ const HeroVideoPlayer: React.FC<{
           </div>
         )}
 
-        <div className="absolute inset-x-0 bottom-0 h-48 flex flex-col justify-end pb-12 px-8 z-30">
+        <div className="site-visitor-badge-wrap">
           <motion.div
             initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.8, ease: "easeOut" }}
-            className="flex flex-col items-start gap-1"
+            className="site-visitor-badge-motion"
           >
             <div
               className="site-visitor-badge"
@@ -1612,9 +1612,18 @@ const HeroVideoPlayer: React.FC<{
               title={siteVisitorStats.startedAt ? `لە ${siteVisitorStats.startedAt}` : "سەردانەکانی سایت"}
               aria-label="ژمارەی سەردانیکەرانی سایت"
             >
-              <span className="site-visitor-badge__title">سەردانیکەری سایتەکە</span>
-              <span>بینین: {formatUserCount(siteVisitorStats.totalViews)}</span>
-              <span>IP/ئامێر: {formatUserCount(siteVisitorStats.uniqueVisitors)}</span>
+              <span className="site-visitor-badge__row">
+                <span className="site-visitor-badge__label">لایڤ</span>
+                <strong>{formatUserCount(onlineViewers)}</strong>
+              </span>
+              <span className="site-visitor-badge__row">
+                <span className="site-visitor-badge__label">IP/ئامێر</span>
+                <strong>{formatUserCount(siteVisitorStats.uniqueVisitors)}</strong>
+              </span>
+              <span className="site-visitor-badge__row">
+                <span className="site-visitor-badge__label">کۆی سەردان</span>
+                <strong>{formatUserCount(siteVisitorStats.totalViews)}</strong>
+              </span>
             </div>
           </motion.div>
         </div>
