@@ -138,6 +138,13 @@ const DramaHeroCarousel = ({
             <span className="drama-hero-carousel__caption">
               <strong>{current.title || "ژووری دراما"}</strong>
               <small>{Array.isArray(current.dramas) ? `${current.dramas.length} دراما` : "ژووری دراما"}</small>
+              <span className="drama-hero-carousel__series-label" dir="rtl">
+                <span>دراماکان</span>
+                <b>|</b>
+                <span>حلقات</span>
+                <b>|</b>
+                <span dir="ltr">Series</span>
+              </span>
             </span>
           </motion.button>
           {next.id !== current.id && (
