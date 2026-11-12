@@ -14941,6 +14941,8 @@ const handleWebkitEndFullscreen = () => {
                   heroReady={heroConfigReady}
                   config={config}
                   activeAudioSource={activeAudioSource}
+                  dramaRooms={dramaRoomsFiltered}
+                  onOpenDramaRoom={(room: any) => setSelectedDramaRoom(room)}
                   // The mini trailer in the details modal is also an active
                   // audio source. Claim the existing hero-audio interlock as
                   // soon as that preview mounts so the background hero pauses

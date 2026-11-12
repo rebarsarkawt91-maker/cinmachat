@@ -18,6 +18,157 @@ import { api } from "../services/api";
 import { loadYouTubeAPI, getYTId, isYTVideoId } from "../utils/youtube";
 import { formatUserCount } from "../utils/format";
 
+type HeroDramaRoom = {
+  id: string;
+  title?: string;
+  coverUrl?: string;
+  dramas?: string[];
+};
+
+/**
+ * A small, presentation-only carousel that sits over the theatre seats. It
+ * reuses the existing Drama Room records and open handler; it never changes
+ * room order or the hero player's source/lifecycle.
+ */
+const DramaHeroCarousel = ({
+  rooms,
+  onOpenRoom,
+}: {
+  rooms: HeroDramaRoom[];
+  onOpenRoom?: (room: HeroDramaRoom) => void;
+}) => {
+  const visibleRooms = useMemo(
+    () => rooms.filter((room) => room?.id).slice(0, 9),
+    [rooms],
+  );
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [paused, setPaused] = useState(false);
+
+  useEffect(() => {
+    setActiveIndex((current) => Math.min(current, Math.max(visibleRooms.length - 1, 0)));
+  }, [visibleRooms.length]);
+
+  useEffect(() => {
+    if (paused || visibleRooms.length < 2) return;
+    const timer = window.setInterval(() => {
+      setActiveIndex((current) => (current + 1) % visibleRooms.length);
+    }, 4200);
+    return () => window.clearInterval(timer);
+  }, [paused, visibleRooms.length]);
+
+  if (!visibleRooms.length) return null;
+
+  const count = visibleRooms.length;
+  const current = visibleRooms[activeIndex];
+  const previous = visibleRooms[(activeIndex - 1 + count) % count];
+  const next = visibleRooms[(activeIndex + 1) % count];
+  const move = (delta: number) => {
+    setActiveIndex((index) => (index + delta + count) % count);
+  };
+  const openRoom = (room: HeroDramaRoom, event: React.MouseEvent) => {
+    event.stopPropagation();
+    onOpenRoom?.(room);
+  };
+  const imageFor = (room: HeroDramaRoom) => room.coverUrl || "/cinema-theater-hero.png";
+
+  return (
+    <div
+      className="drama-hero-carousel"
+      aria-label="کارتەکانی ژووری دراما"
+      onMouseEnter={() => setPaused(true)}
+      onMouseLeave={() => setPaused(false)}
+      onFocus={() => setPaused(true)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setPaused(false);
+      }}
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <button
+        type="button"
+        className="drama-hero-carousel__arrow drama-hero-carousel__arrow--prev"
+        onClick={() => move(-1)}
+        aria-label="ژووری درامای پێشوو"
+      >
+        ‹
+      </button>
+      <div className="drama-hero-carousel__track">
+        <AnimatePresence initial={false} mode="popLayout">
+          {previous.id !== current.id && (
+            <motion.button
+              type="button"
+              key={`previous-${previous.id}-${activeIndex}`}
+              className="drama-hero-carousel__card drama-hero-carousel__card--side drama-hero-carousel__card--previous"
+              initial={{ opacity: 0, x: -90, scale: 0.82 }}
+              animate={{ opacity: 0.64, x: 0, scale: 0.86 }}
+              exit={{ opacity: 0, x: -80, scale: 0.78 }}
+              transition={{ duration: 0.48, ease: "easeOut" }}
+              onClick={(event) => openRoom(previous, event)}
+              aria-label={`کردنەوەی ژووری ${previous.title || "دراما"}`}
+            >
+              <img src={imageFor(previous)} alt="" loading="lazy" />
+              <span>{previous.title || "دراما"}</span>
+            </motion.button>
+          )}
+          <motion.button
+            type="button"
+            key={`current-${current.id}`}
+            className="drama-hero-carousel__card drama-hero-carousel__card--current"
+            initial={{ opacity: 0, x: activeIndex % 2 === 0 ? -190 : 190, scale: 0.76 }}
+            animate={{ opacity: 1, x: 0, scale: 1 }}
+            exit={{ opacity: 0, x: activeIndex % 2 === 0 ? 190 : -190, scale: 0.74 }}
+            transition={{ duration: 0.62, ease: [0.22, 0.8, 0.24, 1] }}
+            onClick={(event) => openRoom(current, event)}
+            aria-label={`کردنەوەی ژووری ${current.title || "دراما"}`}
+          >
+            <img src={imageFor(current)} alt={current.title || ""} loading="lazy" />
+            <span className="drama-hero-carousel__shade" />
+            <span className="drama-hero-carousel__caption">
+              <strong>{current.title || "ژووری دراما"}</strong>
+              <small>{Array.isArray(current.dramas) ? `${current.dramas.length} دراما` : "ژووری دراما"}</small>
+            </span>
+          </motion.button>
+          {next.id !== current.id && (
+            <motion.button
+              type="button"
+              key={`next-${next.id}-${activeIndex}`}
+              className="drama-hero-carousel__card drama-hero-carousel__card--side drama-hero-carousel__card--next"
+              initial={{ opacity: 0, x: 90, scale: 0.82 }}
+              animate={{ opacity: 0.64, x: 0, scale: 0.86 }}
+              exit={{ opacity: 0, x: 80, scale: 0.78 }}
+              transition={{ duration: 0.48, ease: "easeOut" }}
+              onClick={(event) => openRoom(next, event)}
+              aria-label={`کردنەوەی ژووری ${next.title || "دراما"}`}
+            >
+              <img src={imageFor(next)} alt="" loading="lazy" />
+              <span>{next.title || "دراما"}</span>
+            </motion.button>
+          )}
+        </AnimatePresence>
+      </div>
+      <button
+        type="button"
+        className="drama-hero-carousel__arrow drama-hero-carousel__arrow--next"
+        onClick={() => move(1)}
+        aria-label="ژووری درامای داهاتوو"
+      >
+        ›
+      </button>
+      {count > 1 && (
+        <button
+          type="button"
+          className="drama-hero-carousel__pause"
+          onClick={() => setPaused((value) => !value)}
+          aria-label={paused ? "دەستپێکردنەوەی جووڵەی کارتەکان" : "وەستاندنی جووڵەی کارتەکان"}
+          aria-pressed={paused}
+        >
+          {paused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+        </button>
+      )}
+    </div>
+  );
+};
+
 /**
  * Parse EXACTLY ONE bare 11-char YouTube video id out of an Admin URL.
  * Anything else (playlists, channels, garbage) yields "" and is dropped.
@@ -63,6 +214,8 @@ const HeroVideoPlayer: React.FC<{
   config: any;
   activeAudioSource?: "hero" | "room";
   isMoviePlayerOpen?: boolean;
+  dramaRooms?: HeroDramaRoom[];
+  onOpenDramaRoom?: (room: HeroDramaRoom) => void;
 }> = ({
   activeFeaturedMovie,
   countdown,
@@ -75,6 +228,8 @@ const HeroVideoPlayer: React.FC<{
   config,
   activeAudioSource = "hero",
   isMoviePlayerOpen = false,
+  dramaRooms = [],
+  onOpenDramaRoom,
 }) => {
   const [isPlaying, setIsPlaying] = useState(true);
   const isMuted = isHeroMuted;
@@ -999,6 +1154,10 @@ const HeroVideoPlayer: React.FC<{
         style={{ zIndex: 10 }}
         onClick={handleHeroTap}
       />
+
+      {dramaRooms.length > 0 && (
+        <DramaHeroCarousel rooms={dramaRooms} onOpenRoom={onOpenDramaRoom} />
+      )}
 
       <div
         className="relative w-full h-full flex flex-col justify-between p-4 md:p-8 pointer-events-none"
