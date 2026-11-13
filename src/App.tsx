@@ -104,7 +104,7 @@ import { ROOM_SUBTITLE_LANGUAGES, loadRoomSubtitleLanguage } from "./lib/roomSub
 import { api } from "./services/api";
 import { useI18n } from "./i18n";
 import { lazyWithRetry } from "./utils/lazyWithRetry";
-import { providerAction, usesProviderTouchControls, readProviderPlaybackEvent, setNativePlayerMuted, setNativePlayerVolume, enterIOSVideoFullscreen, enterPlayerElementFullscreen } from "./utils/playerControls";
+import { providerAction, providerCommandMessage, providerSeekMessage, usesProviderTouchControls, readProviderPlaybackEvent, setNativePlayerMuted, setNativePlayerVolume, enterIOSVideoFullscreen, enterPlayerElementFullscreen } from "./utils/playerControls";
 import { ProviderSourceNotice } from "./components/Player/ProviderSourceNotice";
 import { PlayerInteractionLayer } from "./components/Player/PlayerInteractionLayer";
 import { AdminSceneBlurButton } from "./components/Player/AdminSceneBlurButton";
@@ -8463,8 +8463,9 @@ const handleWebkitEndFullscreen = () => {
 
   const broadcastSeekToFrame = (frame: HTMLIFrameElement, targetTime: number) => {
     const wholeSecond = Math.max(0, Math.floor(targetTime));
-    if (usesProviderTouchControls(frame.src)) {
-      frame.contentWindow?.postMessage(JSON.stringify({ player: true, action: `seek${wholeSecond}` }), new URL(frame.src).origin);
+    const providerSeek = providerSeekMessage(frame.src, targetTime);
+    if (providerSeek) {
+      frame.contentWindow?.postMessage(providerSeek, new URL(frame.src).origin);
       return;
     }
     const payloads = [
@@ -8640,11 +8641,12 @@ const handleWebkitEndFullscreen = () => {
   const postVideoCommand = (id: string, func: string) => {
     const frame = document.getElementById(id) as HTMLIFrameElement | null;
     if (!frame?.contentWindow) return;
-    const action = providerAction(func);
-    if (usesProviderTouchControls(frame.src)) {
-      frame.contentWindow.postMessage(JSON.stringify({ player: true, action }), new URL(frame.src).origin);
+    const providerCommand = providerCommandMessage(frame.src, func);
+    if (providerCommand) {
+      frame.contentWindow.postMessage(providerCommand, new URL(frame.src).origin);
       return;
     }
+    const action = providerAction(func);
     const commands = [
       { event: "command", func, args: [] },
       // VidSrc/proxy.garageband transport (the same provider that emits the

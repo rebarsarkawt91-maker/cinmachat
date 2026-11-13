@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { providerCaptionUrl, readProviderPlaybackEvent, usesProviderTouchControls } from "../../utils/playerControls";
+import { providerCaptionUrl, providerCommandMessage, readProviderPlaybackEvent, usesProviderTouchControls } from "../../utils/playerControls";
 
 /**
  * ImmersiveShieldedPlayer — Cinematic Shielded Player for embedded movie streams
@@ -207,10 +207,11 @@ export default function ImmersiveShieldedPlayer({
       // choices once metadata is ready, including a newly requested pause/play.
       const target = latestPlayback.current;
       if (pendingRestore.current && target) {
-        frame.contentWindow.postMessage(JSON.stringify({ player: true,
-          action: target.muted ? 'mute' : 'unmute' }), event.origin);
-        frame.contentWindow.postMessage(JSON.stringify({ player: true,
-          action: (target.requestedPlaying ?? pendingPlaying.current) ? 'play' : 'pause' }), event.origin);
+        const muteCommand = providerCommandMessage(frameUrl, target.muted ? 'mute' : 'unMute');
+        const playCommand = providerCommandMessage(frameUrl,
+          (target.requestedPlaying ?? pendingPlaying.current) ? 'playVideo' : 'pauseVideo');
+        if (muteCommand) frame.contentWindow.postMessage(muteCommand, event.origin);
+        if (playCommand) frame.contentWindow.postMessage(playCommand, event.origin);
         pendingRestore.current = false;
       }
     };

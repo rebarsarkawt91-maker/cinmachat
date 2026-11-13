@@ -1,13 +1,46 @@
-/** Provider transports use lower-case actions, unlike YouTube's API names. */
-export function usesProviderTouchControls(url: string | null | undefined): boolean {
+type ProviderKind = 'proxy' | 'braflix' | null;
+
+function providerKind(url: string | null | undefined): ProviderKind {
   try {
     const source = new URL(url || '');
-    return source.protocol === 'https:' && source.hostname === 'proxy.garageband.rocks' && source.pathname.startsWith('/embed/');
-  } catch { return false; }
+    if (source.protocol !== 'https:' || !source.pathname.startsWith('/embed/')) return null;
+    if (source.hostname === 'proxy.garageband.rocks') return 'proxy';
+    if (source.hostname === 'braflix.dev') return 'braflix';
+    return null;
+  } catch { return null; }
+}
+
+/** Known provider embeds expose their own transport controls through postMessage. */
+export function usesProviderTouchControls(url: string | null | undefined): boolean {
+  return providerKind(url) !== null;
 }
 
 export function providerAction(command: string): string {
   return ({ playVideo: 'play', pauseVideo: 'pause', unMute: 'unmute' } as Record<string, string>)[command] || command;
+}
+
+/** Provider-specific seek transport. Braflix uses PLAYER_COMMAND; the proxy
+ * relay uses the legacy VidSrc-style `player/action` message. */
+export function providerSeekMessage(url: string | null | undefined, seconds: number): string | null {
+  const kind = providerKind(url);
+  if (!kind) return null;
+  const target = Math.max(0, Number.isFinite(seconds) ? seconds : 0);
+  if (kind === 'braflix') {
+    return JSON.stringify({ type: 'PLAYER_COMMAND', command: 'seek', value: target });
+  }
+  return JSON.stringify({ player: true, action: `seek${Math.floor(target)}` });
+}
+
+/** Provider-specific play/pause/mute transport used after a caption reload and
+ * by the CinemaChat toolbar. */
+export function providerCommandMessage(url: string | null | undefined, command: string): string | null {
+  const kind = providerKind(url);
+  if (!kind) return null;
+  const action = providerAction(command);
+  if (kind === 'braflix') {
+    return JSON.stringify({ type: 'PLAYER_COMMAND', command: action });
+  }
+  return JSON.stringify({ player: true, action });
 }
 
 export interface ProviderPlaybackEvent {
@@ -34,20 +67,27 @@ export function readProviderPlaybackEvent(payload: unknown): ProviderPlaybackEve
     const number = Number(value);
     return Number.isFinite(number) ? number : null;
   };
-  const currentTime = clockValue(data.player_progress);
-  const duration = clockValue(data.player_duration);
+  // proxy.garageband relays player_progress/player_duration while Braflix's
+  // JWPlayer bridge emits currentTime/duration. Accept both contracts without
+  // treating title/loading events as playback readiness.
+  const currentTime = clockValue(data.player_progress ?? data.currentTime);
+  const duration = clockValue(data.player_duration ?? data.duration);
   if (currentTime === null || currentTime < 0 || duration === null || duration <= 0) return null;
-  const rawStatus = data.player_status;
+  const rawStatus = data.player_status ?? data.status ?? data.event;
   const status: ProviderPlaybackEvent['status'] =
-    rawStatus === 'playing' || rawStatus === 'paused' || rawStatus === 'ended'
-      ? rawStatus : rawStatus === 'buffering' || rawStatus === 'waiting' ? 'buffering' : null;
+    rawStatus === 'playing' || rawStatus === 'play' ? 'playing' :
+      rawStatus === 'paused' || rawStatus === 'pause' ? 'paused' :
+        rawStatus === 'ended' ? 'ended' :
+          rawStatus === 'buffering' || rawStatus === 'buffer' || rawStatus === 'waiting' ? 'buffering' : null;
   return { currentTime, duration, status };
 }
 
 /** Use the provider's supported custom-caption URL rather than ignored CC messages. */
 export function providerCaptionUrl(source: string, showOriginal: boolean, emptyTrackUrl: string,
   playback?: { currentTime: number; playing: boolean }): string {
-  if (!usesProviderTouchControls(source)) return source;
+  // Only the proxy relay understands these caption query parameters. Braflix
+  // owns its JWPlayer subtitles and must receive its URL unchanged.
+  if (providerKind(source) !== 'proxy') return source;
   const url = new URL(source);
   // Autoplay is best-effort. External human verification or a browser play
   // gesture still requires direct interaction with the provider's frame.

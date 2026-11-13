@@ -1,13 +1,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { providerCaptionUrl, providerAction, readProviderPlaybackEvent, usesProviderTouchControls, setNativePlayerMuted, setNativePlayerVolume, enterIOSVideoFullscreen, enterPlayerElementFullscreen } from './playerControls';
+import { providerCaptionUrl, providerAction, providerCommandMessage, providerSeekMessage, readProviderPlaybackEvent, usesProviderTouchControls, setNativePlayerMuted, setNativePlayerVolume, enterIOSVideoFullscreen, enterPlayerElementFullscreen } from './playerControls';
 
 test('provider touch pass-through is restricted to the known HTTPS embed host', () => {
   assert.equal(usesProviderTouchControls('https://proxy.garageband.rocks/embed/movie/tt27613895'), true);
   assert.equal(usesProviderTouchControls('https://proxy.garageband.rocks/embed/tv/tt39325975/1/1?autonext=1'), true);
+  assert.equal(usesProviderTouchControls('https://braflix.dev/embed/tv/279246/1/1'), true);
   for (const url of [null, '', 'https://youtube.com/embed/a', 'https://proxy.garageband.rocks.evil.test/embed/a', 'https://proxy.garageband.rocks/', 'http://proxy.garageband.rocks/embed/a']) {
     assert.equal(usesProviderTouchControls(url), false);
   }
+});
+
+test('Braflix uses its PLAYER_COMMAND seek/playback contract', () => {
+  const source = 'https://braflix.dev/embed/tv/279246/1/1';
+  assert.deepEqual(JSON.parse(providerSeekMessage(source, 123.75)!), {
+    type: 'PLAYER_COMMAND', command: 'seek', value: 123.75,
+  });
+  assert.deepEqual(JSON.parse(providerCommandMessage(source, 'playVideo')!), {
+    type: 'PLAYER_COMMAND', command: 'play',
+  });
+  assert.deepEqual(JSON.parse(providerCommandMessage(source, 'unMute')!), {
+    type: 'PLAYER_COMMAND', command: 'unmute',
+  });
+  assert.deepEqual(readProviderPlaybackEvent({ type: 'PLAYER_EVENT', data: {
+    currentTime: 42, duration: 900, event: 'play',
+  } }), { currentTime: 42, duration: 900, status: 'playing' });
+  assert.deepEqual(readProviderPlaybackEvent({ type: 'PLAYER_EVENT', data: {
+    currentTime: 42, duration: 900, event: 'pause',
+  } }), { currentTime: 42, duration: 900, status: 'paused' });
 });
 
 test('provider title and verification/loading messages do not establish media readiness', () => {
@@ -68,6 +88,7 @@ test('provider captions off/on preserves the movie and resumes its time and paus
   assert.equal(new URL(providerCaptionUrl(original, true, blank)).searchParams.get('ds_lang'), 'fr');
   assert.equal(new URL(providerCaptionUrl(original, true, blank)).searchParams.get('sub_url'), 'https://example.test/original.vtt');
   assert.equal(providerCaptionUrl('https://youtube.com/embed/id', false, blank), 'https://youtube.com/embed/id');
+  assert.equal(providerCaptionUrl('https://braflix.dev/embed/tv/279246/1/1', false, blank), 'https://braflix.dev/embed/tv/279246/1/1');
 });
 
 test('native volume handles HLS, zero mute, recovery, clamping and iOS hardware ownership', () => {
