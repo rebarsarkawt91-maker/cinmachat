@@ -6493,46 +6493,107 @@ const CinemaChatCard = ({ onOpen }: any) => (
   </div>
 );
 
-const DramaHubCard = ({ roomCount, activeCount, onOpen }: any) => (
-  <div className="group relative flex-shrink-0 w-[220px] md:w-[280px] bg-gradient-to-br from-zinc-950 via-red-950/25 to-zinc-950 border border-brand-primary/40 rounded-3xl overflow-hidden transition-all hover:border-brand-primary/70 hover:shadow-2xl hover:shadow-red-600/10 hover:scale-[1.02]">
-    <button type="button" onClick={onOpen} className="block w-full text-right focus:outline-none">
-      <div className="aspect-video w-full bg-gradient-to-br from-red-950/60 via-zinc-950 to-black overflow-hidden relative">
-        <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(239,68,68,0.28),transparent_35%,rgba(255,255,255,0.06)_70%,transparent)]" />
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="w-16 h-16 rounded-3xl bg-brand-primary/15 border border-brand-primary/35 flex items-center justify-center shadow-2xl shadow-red-600/15">
-            <Layers className="w-8 h-8 text-brand-primary" />
+const DramaHubCard = ({ roomCount, activeCount, onOpen, rooms = [] }: any) => {
+  const previewRooms = useMemo(
+    () => (Array.isArray(rooms) ? rooms : []).filter((room: any) => room?.id).slice(0, 8),
+    [rooms],
+  );
+  const [previewIndex, setPreviewIndex] = useState(0);
+
+  useEffect(() => {
+    setPreviewIndex((current) => Math.min(current, Math.max(previewRooms.length - 1, 0)));
+  }, [previewRooms.length]);
+
+  useEffect(() => {
+    if (previewRooms.length < 2) return;
+    const timer = window.setInterval(() => {
+      setPreviewIndex((current) => (current + 1) % previewRooms.length);
+    }, 3200);
+    return () => window.clearInterval(timer);
+  }, [previewRooms.length]);
+
+  const previewRoom = previewRooms[previewIndex];
+  const previewImage = previewRoom?.coverUrl || "/cinema-theater-hero.png";
+
+  return (
+    <div className="group relative flex-shrink-0 w-[220px] md:w-[280px] bg-gradient-to-br from-zinc-950 via-red-950/25 to-zinc-950 border border-brand-primary/40 rounded-3xl overflow-hidden transition-all hover:border-brand-primary/70 hover:shadow-2xl hover:shadow-red-600/10 hover:scale-[1.02]">
+      <button type="button" onClick={onOpen} className="block w-full text-right focus:outline-none">
+        <div className="aspect-video w-full bg-gradient-to-br from-red-950/60 via-zinc-950 to-black overflow-hidden relative">
+          <AnimatePresence initial={false} mode="wait">
+            {previewRoom ? (
+              <motion.div
+                key={previewRoom.id}
+                initial={{ opacity: 0, scale: 1.04, x: 22 }}
+                animate={{ opacity: 1, scale: 1, x: 0 }}
+                exit={{ opacity: 0, scale: 0.97, x: -22 }}
+                transition={{ duration: 0.62, ease: "easeOut" }}
+                className="absolute inset-2 overflow-hidden rounded-2xl border border-white/20 bg-black/60 shadow-2xl"
+              >
+                <img
+                  src={previewImage}
+                  alt=""
+                  loading="lazy"
+                  className="h-full w-full object-cover opacity-75 transition-transform duration-[3200ms] group-hover:scale-105"
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/25 to-black/45" />
+                <div className="absolute inset-x-3 bottom-3 flex items-end justify-between gap-2">
+                  <span className="min-w-0 truncate text-[11px] font-black text-white kurdish-text">
+                    {previewRoom.title || "ژووری دراما"}
+                  </span>
+                  <span className="shrink-0 rounded-full border border-emerald-300/40 bg-black/55 px-2 py-0.5 text-[8px] font-black text-emerald-200 backdrop-blur-md">
+                    {Array.isArray(previewRoom.dramas) ? `${previewRoom.dramas.length} دراما` : "ژوور"}
+                  </span>
+                </div>
+              </motion.div>
+            ) : (
+              <div className="absolute inset-2 rounded-2xl border border-white/15 bg-gradient-to-br from-red-950/55 via-zinc-950 to-black" />
+            )}
+          </AnimatePresence>
+          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(239,68,68,0.22),transparent_35%,rgba(255,255,255,0.07)_70%,transparent)]" />
+          <div className="pointer-events-none absolute inset-2 rounded-2xl border border-white/15 bg-white/[0.03] backdrop-blur-[1.5px]" />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-14 h-14 rounded-3xl bg-black/45 border border-brand-primary/40 flex items-center justify-center shadow-2xl shadow-red-600/20 backdrop-blur-sm">
+              <Layers className="w-7 h-7 text-brand-primary" />
+            </div>
+          </div>
+          <span className="absolute top-3 right-3 px-2 py-0.5 bg-brand-primary text-white text-[8px] font-black rounded-full flex items-center gap-1 uppercase tracking-widest">
+            <ShieldCheck className="w-2.5 h-2.5" />
+            Permanent
+          </span>
+          <span className="absolute bottom-3 right-3 px-2.5 py-1 bg-black/70 border border-white/10 text-white text-[10px] font-black rounded-full flex items-center gap-1">
+            <Tv className="w-3 h-3" />
+            {roomCount} rooms
+          </span>
+          {previewRooms.length > 1 && (
+            <span className="absolute bottom-3 left-3 flex items-center gap-1 rounded-full border border-white/15 bg-black/45 px-2 py-1 backdrop-blur-md">
+              {previewRooms.slice(0, 5).map((room: any, index: number) => (
+                <i key={room.id} className={`h-1.5 w-1.5 rounded-full ${index === previewIndex ? "bg-brand-primary" : "bg-white/45"}`} />
+              ))}
+            </span>
+          )}
+        </div>
+        <div className="p-4">
+          <h3 className="text-base font-black text-white kurdish-text leading-snug flex items-center gap-2">
+            <Film className="w-3.5 h-3.5 text-brand-primary" />
+            Drama Rooms
+          </h3>
+          <p className="mt-1.5 text-[11px] text-gray-400 kurdish-text leading-relaxed line-clamp-2">
+            کتێبخانەی هەمیشەیی بۆ هەموو ژوورەکانی دراما و ئەڵقەکان.
+          </p>
+          <div className="mt-3 flex items-center justify-between">
+            <span className="text-[10px] font-black text-emerald-400 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+              {activeCount} active
+            </span>
+            <span className="text-[10px] font-black text-brand-primary uppercase tracking-widest">
+              Open Hub
+            </span>
           </div>
         </div>
-        <span className="absolute top-3 right-3 px-2 py-0.5 bg-brand-primary text-white text-[8px] font-black rounded-full flex items-center gap-1 uppercase tracking-widest">
-          <ShieldCheck className="w-2.5 h-2.5" />
-          Permanent
-        </span>
-        <span className="absolute bottom-3 right-3 px-2.5 py-1 bg-black/70 border border-white/10 text-white text-[10px] font-black rounded-full flex items-center gap-1">
-          <Tv className="w-3 h-3" />
-          {roomCount} rooms
-        </span>
-      </div>
-      <div className="p-4">
-        <h3 className="text-base font-black text-white kurdish-text leading-snug flex items-center gap-2">
-          <Film className="w-3.5 h-3.5 text-brand-primary" />
-          Drama Rooms
-        </h3>
-        <p className="mt-1.5 text-[11px] text-gray-400 kurdish-text leading-relaxed line-clamp-2">
-          کتێبخانەی هەمیشەیی بۆ هەموو ژوورەکانی دراما و ئەڵقەکان.
-        </p>
-        <div className="mt-3 flex items-center justify-between">
-          <span className="text-[10px] font-black text-emerald-400 flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-            {activeCount} active
-          </span>
-          <span className="text-[10px] font-black text-brand-primary uppercase tracking-widest">
-            Open Hub
-          </span>
-        </div>
-      </div>
-    </button>
-  </div>
-);
+      </button>
+    </div>
+  );
+};
 
 const DramaHubModal = ({
   rooms,
@@ -7426,6 +7487,7 @@ const DramaRoomsHub = ({
             roomCount={rooms.length}
             activeCount={activeRoomCount}
             onOpen={onOpenDramaHub}
+            rooms={rooms}
           />
           <CinemaWindowCard onOpen={onOpenCinemaWindow} room={cinemaWindowRoom} />
           <VipGoldenLoungeCard onOpen={onOpenVip} />
