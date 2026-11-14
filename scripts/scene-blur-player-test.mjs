@@ -26,11 +26,12 @@ import React,{useRef,useState,useEffect,useMemo} from 'react';
 import {createRoot} from 'react-dom/client';
 import {AdminSceneBlurButton} from './src/components/Player/AdminSceneBlurButton';
 import {SceneBlurEditor} from './src/components/Player/SceneBlurEditor';
+import {SceneBlurNotice} from './src/components/Player/SceneBlurNotice';
 import {useMovieSceneBlur} from './src/hooks/useMovieSceneBlur';
 import {useSceneBlurPlayback} from './src/hooks/useSceneBlurPlayback';
 function Fixture(){
  const query=new URLSearchParams(location.search),admin=query.has('admin'),external=query.has('external');
- const [movie,setMovie]=useState('movie-a'),[open,setOpen]=useState(false);
+ const [movie,setMovie]=useState(query.get('movie')||'movie-a'),[open,setOpen]=useState(false);
  const [time,setTime]=useState(0),[duration,setDuration]=useState(0),[playing,setPlaying]=useState(false);
  const format=new URLSearchParams(location.search).get('format')==='webm'?'webm':'mp4';
  const root=useRef(null),source=external?'https://provider.test/embed/'+movie:'https://app.test/media/'+movie+'.'+format;
@@ -50,6 +51,7 @@ function Fixture(){
     onLoadedMetadata={e=>setDuration(e.currentTarget.duration)} onTimeUpdate={e=>setTime(e.currentTarget.currentTime)}
     onPlay={()=>setPlaying(true)} onPause={()=>setPlaying(false)}/>}
   </div>
+  <SceneBlurNotice active={active}/>
   <div data-testid="subtitle" style={{position:'absolute',bottom:'90px',zIndex:50}}>ژێرنووسی کوردی</div>
   <div data-testid="toolbar" style={{position:'absolute',bottom:0,zIndex:60}}>
    <AdminSceneBlurButton canAdminister={admin} active={config.enabled} expanded={open} onToggle={()=>setOpen(v=>!v)}/>
@@ -71,13 +73,14 @@ const copy = value => JSON.parse(JSON.stringify(value));
 const selectedEngine = process.argv.find(argument => argument.startsWith('--engine='))?.split('=')[1];
 assert.ok(!selectedEngine || ['chromium', 'webkit'].includes(selectedEngine), 'Choose --engine=chromium or --engine=webkit');
 const iframeOnly = process.argv.includes('--iframe-only');
+const channel = process.argv.find(argument => argument.startsWith('--channel='))?.split('=')[1];
 for (const engine of [chromium, webkit].filter(engine => !selectedEngine || engine.name() === selectedEngine)) {
   const saved = new Map([
     ['movie-a', { enabled: true, ranges: [{ start: 2, end: 4 }] }],
     ['movie-b', { enabled: false, ranges: [] }],
   ]);
   let writes = 0;
-  const browser = await engine.launch();
+  const browser = await engine.launch(engine.name() === 'chromium' && channel ? { channel } : {});
   const errors = [];
   const contexts = [];
   try {
@@ -202,17 +205,21 @@ for (const engine of [chromium, webkit].filter(engine => !selectedEngine || engi
     await viewer.locator('#film').evaluate(video => video.pause());
     await seek(viewer, 3, true);
     await seek(adminPage, 3, true);
+    await viewer.getByTestId('scene-blur-notice').waitFor();
+    assert.match(await viewer.getByTestId('scene-blur-notice').innerText(), /خێزان و منداڵان/);
+    assert.match(await viewer.getByTestId('scene-blur-notice').innerText(), /وەتسئەپ/);
     const layers = await viewer.evaluate(() => {
       const filters = selector => {
         let element = document.querySelector(selector); const values = [];
         while (element) { const filter = getComputedStyle(element).filter; if (filter !== 'none') values.push(filter); element = element.parentElement; }
         return values;
       };
-      return { media: filters('[data-testid="media"]'), toolbar: filters('[data-testid="toolbar"]'), subtitle: filters('[data-testid="subtitle"]') };
+      return { media: filters('[data-testid="media"]'), toolbar: filters('[data-testid="toolbar"]'), subtitle: filters('[data-testid="subtitle"]'), notice: filters('[data-testid="scene-blur-notice"]') };
     });
     assert.ok(layers.media.some(filter => filter.includes('blur(40px)')));
     assert.deepEqual(layers.toolbar, [], 'Toolbar must remain outside the filtered media subtree');
     assert.deepEqual(layers.subtitle, [], 'Subtitles must remain outside the filtered media subtree');
+    assert.deepEqual(layers.notice, [], 'The family notice must remain legible above the concealed video');
     const paused = await viewer.locator('#film').evaluate(video => new Promise(resolve => {
       const before = video.currentTime; let frames = 0;
       const tick = () => { if (++frames === 12) resolve({ before, after: video.currentTime, paused: video.paused }); else requestAnimationFrame(tick); };
@@ -221,6 +228,7 @@ for (const engine of [chromium, webkit].filter(engine => !selectedEngine || engi
     assert.equal(paused.paused, true);
     assert.equal(paused.after, paused.before, 'A paused native media clock must not drift with wall time');
     await seek(viewer, 4.5, false);
+    assert.equal(await viewer.getByTestId('scene-blur-notice').count(), 0);
     await seek(viewer, 6, false);
 
     let screenshotTaken = false;
@@ -267,6 +275,24 @@ for (const engine of [chromium, webkit].filter(engine => !selectedEngine || engi
     assert.equal(await viewer.getByTestId('media').getAttribute('data-blurred'), 'false', 'New source cannot inherit the previous movie mask');
     await loaded(viewer);
     await expectConfig(viewer, 'enabled', false);
+    // A newly recorded range enables masking and remains on this card only.
+    const firstMovieConfig = copy(saved.get('movie-a'));
+    await adminPage.locator('#switch').click();
+    await adminPage.waitForSelector('[data-movie="movie-b"]');
+    await loaded(adminPage);
+    await edit(async panel => {
+      await panel.getByRole('button', { name: 'زیادکردنی ماوە', exact: true }).click();
+      assert.equal(await panel.getByRole('checkbox').isChecked(), true);
+      await panel.locator('input[dir="ltr"]').nth(0).fill('00:01');
+      await panel.locator('input[dir="ltr"]').nth(1).fill('00:03');
+    });
+    await expectConfig(viewer, 'range', 1);
+    await expectConfig(viewer, 'enabled', true);
+    await viewer.goto(`https://app.test/?movie=movie-b&format=${format}`); await loaded(viewer);
+    await expectConfig(viewer, 'range', 1);
+    await seek(viewer, 2, true);
+    await viewer.getByTestId('scene-blur-notice').waitFor();
+    assert.deepEqual(saved.get('movie-a'), firstMovieConfig, 'Saving another card must not change the first movie');
     assert.deepEqual(errors, [], 'Player integration must not throw page errors');
     console.log(`PASS ${engine.name()}: admin-only timing editor, shared viewer sync, native seek/pause, clear controls/subtitles, reload and source reset`);
   } finally {

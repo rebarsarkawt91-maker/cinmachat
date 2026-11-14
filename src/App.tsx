@@ -109,6 +109,7 @@ import { ProviderSourceNotice } from "./components/Player/ProviderSourceNotice";
 import { PlayerInteractionLayer } from "./components/Player/PlayerInteractionLayer";
 import { AdminSceneBlurButton } from "./components/Player/AdminSceneBlurButton";
 import { SceneBlurEditor } from "./components/Player/SceneBlurEditor";
+import { SceneBlurNotice } from "./components/Player/SceneBlurNotice";
 import { useMovieSceneBlur } from "./hooks/useMovieSceneBlur";
 import { useSceneBlurPlayback } from "./hooks/useSceneBlurPlayback";
 import { validateSceneBlurConfig, type SceneBlurConfig } from "./lib/sceneBlur";
@@ -7993,6 +7994,11 @@ export default function App() {
   // Progress / seek bar state.
   const [playerCurrentTime, setPlayerCurrentTime] = useState(0);
   const [playerDuration, setPlayerDuration] = useState(0);
+  // Masking must use confirmed provider frames, never the optimistic seek-bar
+  // position or its interpolated clock while the source is still buffering.
+  const [providerMediaClock, setProviderMediaClock] = useState<{
+    source: string; time: number; duration: number; playing: boolean;
+  } | null>(null);
   const [dragTime, setDragTime] = useState<number | null>(null);
   const dragTimeRef = useRef<number | null>(null);
   // Throttle gate for the real-time scrub while the user drags the seek bar.
@@ -8102,6 +8108,7 @@ const handleWebkitEndFullscreen = () => {
     providerPlaybackReadyRef.current = ready;
     setPlayerLoading(!ready);
     if (!ready) {
+      setProviderMediaClock(null);
       // An iframe can be loaded while its provider is still requesting a user
       // gesture or verification. Do not advertise playback before media exists.
       ytPlayingRef.current = false;
@@ -8172,6 +8179,15 @@ const handleWebkitEndFullscreen = () => {
         }
         if (Number.isFinite(duration) && duration > 0) setPlayerDuration(duration);
         const status = report?.status ?? data.data.player_status;
+        if (report) {
+          const source = activeServerUrlRef.current || frame.src;
+          setProviderMediaClock(previous => ({
+            source, time: report.currentTime, duration: report.duration,
+            playing: report.status === 'playing' ? true :
+              report.status === 'paused' || report.status === 'ended' || report.status === 'buffering' ? false :
+                previous?.source === source ? previous.playing : false,
+          }));
+        }
         if (status === "playing") {
           ytPlayingRef.current = true;
           setIsIframePlaying(true);
@@ -8311,6 +8327,7 @@ const handleWebkitEndFullscreen = () => {
     ytCurrentTimeRef.current = 0;
     setPlayerCurrentTime(0);
     setPlayerDuration(0);
+    setProviderMediaClock(null);
   }, [selectedMovie?.id, activeServerUrl]);
 
   // ---- Progress / seek bar ----
@@ -9253,13 +9270,15 @@ const handleWebkitEndFullscreen = () => {
     enabled: showPlayer,
   });
   const sceneBlurProtectionEnabled = sceneBlurConfig.enabled && sceneBlurConfig.ranges.length > 0;
+  const usesConfirmedSceneClock = usesProviderTouchControls(activeServerUrl);
+  const sceneClock = providerMediaClock?.source === activeServerUrl ? providerMediaClock : null;
   const sceneBlurActive = useSceneBlurPlayback({
     config: sceneBlurConfig, root: modalPlayerRef, sourceUrl: activeServerUrl,
-    currentTime: playerCurrentTime,
+    currentTime: usesConfirmedSceneClock ? sceneClock?.time ?? 0 : playerCurrentTime,
     // A replacement caption/provider frame needs fresh metadata; its native
     // verification must remain reachable instead of using the previous clock.
-    duration: usesProviderTouchControls(activeServerUrl) && !providerPlaybackReadyRef.current ? 0 : playerDuration,
-    playing: isIframePlaying,
+    duration: usesConfirmedSceneClock ? sceneClock?.duration ?? 0 : playerDuration,
+    playing: usesConfirmedSceneClock ? sceneClock?.playing ?? false : isIframePlaying,
     playbackRate, enabled: showPlayer,
   });
   useEffect(() => {
@@ -16093,6 +16112,8 @@ const handleWebkitEndFullscreen = () => {
                         onPointerMove={revealPlayerControls}
                         onPointerDown={revealPlayerControls}
                       />
+
+                      <SceneBlurNotice active={sceneBlurActive} />
 
                       {isCatalogMoviePlayer && <PlayerAdOverlay root={modalPlayerRef}
                         source={`${selectedMovie?.id || ''}:${activeServerUrl}`}

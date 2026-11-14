@@ -58,6 +58,7 @@ export function SceneBlurEditor({ movieId, config, currentTime, approximateClock
       <input type="checkbox" autoFocus checked={enabled} onChange={event => setEnabled(event.target.checked)} disabled={saving} className="accent-amber-400" />
       چالاککردنی ماوە دیاریکراوەکان
     </label>
+    {!enabled && ranges.length > 0 && <p role="note" className="mb-3 rounded-lg bg-amber-400/10 p-2 text-xs leading-6 text-amber-200">ماوەکان ناچالاکن؛ بۆ شاردنەوەی دیمەنەکان، چالاککردن هەڵبژێرە و پاشەکەوتی بکە.</p>}
     <p className="mb-3 text-[11px] text-zinc-400">کاتی ئێستا: <span dir="ltr">{formatSceneTime(now)}</span> · کات بە شێوەی 12:30 یان 01:12:30</p>
     {approximateClock && <p role="note" className="mb-3 rounded-lg bg-amber-400/10 p-2 text-[11px] leading-6 text-amber-200">کاتی لینکی دەرەکی ڕەنگە چەند چرکە جیاوازی هەبێت. ماوەکان تاقی بکەرەوە؛ بۆ شاردنەوەی ورد لینکی ڕاستەوخۆی MP4/HLS بەکاربهێنە.</p>}
     <div className="space-y-3">
@@ -75,7 +76,10 @@ export function SceneBlurEditor({ movieId, config, currentTime, approximateClock
       </div>)}
     </div>
     {!ranges.length && <p className="py-4 text-xs text-zinc-400">هێشتا هیچ ماوەیەک دیاری نەکراوە.</p>}
-    <button type="button" disabled={saving || ranges.length >= MAX_SCENE_BLUR_RANGES} onClick={() => setRanges(previous => [...previous, { id: ++sequence.current, start: formatSceneTime(now), end: formatSceneTime(Math.min(86400, now + 10)) }])} className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-white/15 py-2 text-xs hover:bg-white/5 disabled:opacity-40"><Plus className="h-4 w-4" /> زیادکردنی ماوە</button>
+    <button type="button" disabled={saving || ranges.length >= MAX_SCENE_BLUR_RANGES} onClick={() => {
+      setRanges(previous => [...previous, { id: ++sequence.current, start: formatSceneTime(now), end: formatSceneTime(Math.min(86400, now + 10)) }]);
+      setEnabled(true);
+    }} className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-white/15 py-2 text-xs hover:bg-white/5 disabled:opacity-40"><Plus className="h-4 w-4" /> زیادکردنی ماوە</button>
     {(error || syncError) && <p role="alert" className="mt-3 text-xs text-red-300">{error || syncError}</p>}
     <button type="button" disabled={saving} onClick={() => { void save(); }} className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-amber-400 py-2.5 text-xs font-bold text-black disabled:opacity-50"><Save className="h-4 w-4" />{saving ? "پاشەکەوت دەکرێت..." : "پاشەکەوتکردن بۆ هەموو بینەران"}</button>
   </section>;

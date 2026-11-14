@@ -6,16 +6,20 @@ import { chromium } from 'playwright';
 const live = process.argv.includes('--live');
 const source = 'https://braflix.dev/embed/tv/279246/1/1';
 const bundled = await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
-import React,{useEffect,useState} from 'react';
+import React,{useEffect,useState,useRef} from 'react';
 import {createRoot} from 'react-dom/client';
 import Player from './src/components/Player/ImmersiveShieldedPlayer';
+import {SceneBlurNotice} from './src/components/Player/SceneBlurNotice';
+import {useSceneBlurPlayback} from './src/hooks/useSceneBlurPlayback';
 import {providerCommandMessage,providerSeekMessage,readProviderPlaybackEvent} from './src/utils/playerControls';
 const url=${JSON.stringify(source)};
 function Fixture(){
  const [clock,setClock]=useState(null);
- useEffect(()=>{const receive=e=>{const frame=document.querySelector('iframe');if(e.source!==frame?.contentWindow||e.origin!==new URL(url).origin)return;const report=readProviderPlaybackEvent(e.data);if(report)setClock(report)};addEventListener('message',receive);return()=>removeEventListener('message',receive)},[]);
+ const root=useRef(null);
+ const active=useSceneBlurPlayback({config:{enabled:true,ranges:[{start:9,end:20}]},root,sourceUrl:url,currentTime:clock?.currentTime??0,duration:clock?.duration??0,playing:clock?.status==='playing',playbackRate:1,enabled:true});
+ useEffect(()=>{const receive=e=>{const frame=document.querySelector('iframe');if(e.source!==frame?.contentWindow||e.origin!==new URL(url).origin)return;const report=readProviderPlaybackEvent(e.data);if(report)setClock(previous=>({...report,status:report.status??previous?.status??null}))};addEventListener('message',receive);return()=>removeEventListener('message',receive)},[]);
  const send=(command,value)=>document.querySelector('iframe')?.contentWindow?.postMessage(command==='seek'?providerSeekMessage(url,value):providerCommandMessage(url,command,value),new URL(url).origin);
- return <><div style={{position:'relative',width:900,height:500}}><Player url={url} iframeId="streaming-player"/></div>
+ return <><div ref={root} style={{position:'relative',width:900,height:500}}><Player url={url} iframeId="streaming-player"/><SceneBlurNotice active={active}/></div>
  <button id="seek" onClick={()=>send('seek',30)}>Seek 30</button><button id="back" onClick={()=>send('seek',10)}>Seek 10</button>
  <button id="pause" onClick={()=>send('pauseVideo')}>Pause</button><button id="play" onClick={()=>send('playVideo')}>Play</button>
  <button id="mute" onClick={()=>send('mute')}>Mute</button><button id="unmute" onClick={()=>send('unMute')}>Unmute</button>
@@ -42,7 +46,7 @@ try {
  page.on('popup', () => popups++);
  await page.route('https://player-test.local/**', route => route.fulfill({ contentType: 'text/html', body: `<style>.absolute{position:absolute}.inset-0{inset:0}.w-full{width:100%}.h-full{height:100%}</style><div id="root"></div><script>${bundled.outputFiles[0].text}</script>` }));
  if (!live) await page.route('https://braflix.dev/**', route => route.fulfill({ contentType: 'text/html', body: receiver }));
- await page.goto('https://player-test.local/');
+ await page.goto('https://player-test.local/',{waitUntil:'domcontentloaded'});
  await page.waitForFunction(() => {const report=JSON.parse(document.querySelector('#clock').textContent);return report?.duration>0}, null, {timeout:live?90000:15000});
  const provider = page.frames().find(frame => frame.url().startsWith(source));
  assert.ok(provider);
@@ -67,7 +71,17 @@ try {
  for (const [id,target] of [['seek',30],['back',10]]) {
   await page.locator('#'+id).click();
   await page.waitForFunction(target=>{const report=JSON.parse(document.querySelector('#clock').textContent);return Math.abs(report.currentTime-target)<3},target,{timeout:live?45000:10000});
+  if (target===30) assert.equal(await page.getByTestId('scene-blur-notice').count(),0);
+  else {
+   await page.getByTestId('scene-blur-notice').waitFor();
+   assert.match(await page.getByTestId('scene-blur-notice').innerText(),/خێزان و منداڵان/);
+  }
  }
+ await page.locator('#pause').click();
+ await page.waitForFunction(()=>JSON.parse(document.querySelector('#clock').textContent)?.status==='paused');
+ assert.equal(await page.getByTestId('scene-blur-notice').count(),1,'Paused protected frame must stay concealed');
+ await page.locator('#seek').click();
+ await page.waitForFunction(()=>!document.querySelector('[data-testid="scene-blur-notice"]'));
  if (!live) {
   await provider.locator('#source-click').click();
   await provider.waitForFunction(()=>window.popupBlocked&&window.topNavigationBlocked);
