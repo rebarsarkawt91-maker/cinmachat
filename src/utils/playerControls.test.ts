@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { providerCaptionUrl, providerAction, providerCommandMessage, providerSeekMessage, readProviderPlaybackEvent, usesProviderTouchControls, setNativePlayerMuted, setNativePlayerVolume, enterIOSVideoFullscreen, enterPlayerElementFullscreen } from './playerControls';
+import { providerCaptionUrl, providerAction, providerCommandMessage, providerSeekMessage, providerFrameSandbox, providerSeeksOnRelease, readProviderPlaybackEvent, usesProviderTouchControls, setNativePlayerMuted, setNativePlayerVolume, enterIOSVideoFullscreen, enterPlayerElementFullscreen } from './playerControls';
 
 test('provider touch pass-through is restricted to the known HTTPS embed host', () => {
   assert.equal(usesProviderTouchControls('https://proxy.garageband.rocks/embed/movie/tt27613895'), true);
@@ -13,13 +13,14 @@ test('provider touch pass-through is restricted to the known HTTPS embed host', 
 
 test('Braflix uses its PLAYER_COMMAND seek/playback contract', () => {
   const source = 'https://braflix.dev/embed/tv/279246/1/1';
-  assert.deepEqual(JSON.parse(providerSeekMessage(source, 123.75)!), {
+  // Pass the wire payload straight to the receiver: Braflix does not JSON.parse.
+  assert.deepEqual(providerSeekMessage(source, 123.75), {
     type: 'PLAYER_COMMAND', command: 'seek', value: 123.75,
   });
-  assert.deepEqual(JSON.parse(providerCommandMessage(source, 'playVideo')!), {
+  assert.deepEqual(providerCommandMessage(source, 'playVideo'), {
     type: 'PLAYER_COMMAND', command: 'play',
   });
-  assert.deepEqual(JSON.parse(providerCommandMessage(source, 'unMute')!), {
+  assert.deepEqual(providerCommandMessage(source, 'unMute'), {
     type: 'PLAYER_COMMAND', command: 'unmute',
   });
   assert.deepEqual(readProviderPlaybackEvent({ type: 'PLAYER_EVENT', data: {
@@ -28,6 +29,22 @@ test('Braflix uses its PLAYER_COMMAND seek/playback contract', () => {
   assert.deepEqual(readProviderPlaybackEvent({ type: 'PLAYER_EVENT', data: {
     currentTime: 42, duration: 900, event: 'pause',
   } }), { currentTime: 42, duration: 900, status: 'paused' });
+  assert.deepEqual(providerCommandMessage(source, 'volume', 65), {
+    type: 'PLAYER_COMMAND', command: 'volume', value: 65,
+  });
+  const proxy = 'https://proxy.garageband.rocks/embed/tv/tt39325975/1/1';
+  assert.equal(typeof providerSeekMessage(proxy, 30), 'string');
+  assert.equal(typeof providerCommandMessage(proxy, 'playVideo'), 'string');
+  assert.equal(providerSeeksOnRelease(source), true);
+  assert.equal(providerSeeksOnRelease(proxy), false);
+});
+
+test('Braflix sandbox preserves media origins while denying popup and top navigation grants', () => {
+  const tokens = providerFrameSandbox('https://braflix.dev/embed/tv/279246/1/1')!.split(' ');
+  assert.ok(tokens.includes('allow-scripts'));
+  assert.ok(tokens.includes('allow-same-origin'));
+  assert.ok(!tokens.some(token => token.includes('popups') || token.includes('top-navigation')));
+  assert.equal(providerFrameSandbox('https://proxy.garageband.rocks/embed/tv/tt39325975/1/1'), undefined);
 });
 
 test('provider title and verification/loading messages do not establish media readiness', () => {

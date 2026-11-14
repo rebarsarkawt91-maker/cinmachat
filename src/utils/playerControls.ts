@@ -15,30 +15,52 @@ export function usesProviderTouchControls(url: string | null | undefined): boole
   return providerKind(url) !== null;
 }
 
+/** JWPlayer restarts its loader on each seek; commit a drag only on release. */
+export function providerSeeksOnRelease(url: string | null | undefined): boolean {
+  return providerKind(url) === 'braflix';
+}
+
+/** Preserve media/scripts/storage, but deny popups and parent navigation even
+ * when a provider advertisement receives a trusted click. */
+export function providerFrameSandbox(url: string | null | undefined): string | undefined {
+  return providerKind(url) === 'braflix'
+    ? 'allow-scripts allow-same-origin allow-forms allow-presentation'
+    : undefined;
+}
+
 export function providerAction(command: string): string {
   return ({ playVideo: 'play', pauseVideo: 'pause', unMute: 'unmute' } as Record<string, string>)[command] || command;
 }
 
+// Braflix reads event.data.type without JSON.parse. Preserve the object on the
+// wire; the proxy's legacy receiver instead expects a JSON string.
+export type ProviderMessage = string | {
+  type: 'PLAYER_COMMAND';
+  command: string;
+  value?: number;
+};
+
 /** Provider-specific seek transport. Braflix uses PLAYER_COMMAND; the proxy
  * relay uses the legacy VidSrc-style `player/action` message. */
-export function providerSeekMessage(url: string | null | undefined, seconds: number): string | null {
+export function providerSeekMessage(url: string | null | undefined, seconds: number): ProviderMessage | null {
   const kind = providerKind(url);
   if (!kind) return null;
   const target = Math.max(0, Number.isFinite(seconds) ? seconds : 0);
   if (kind === 'braflix') {
-    return JSON.stringify({ type: 'PLAYER_COMMAND', command: 'seek', value: target });
+    return { type: 'PLAYER_COMMAND', command: 'seek', value: target };
   }
   return JSON.stringify({ player: true, action: `seek${Math.floor(target)}` });
 }
 
 /** Provider-specific play/pause/mute transport used after a caption reload and
  * by the CinemaChat toolbar. */
-export function providerCommandMessage(url: string | null | undefined, command: string): string | null {
+export function providerCommandMessage(url: string | null | undefined, command: string, value?: number): ProviderMessage | null {
   const kind = providerKind(url);
   if (!kind) return null;
   const action = providerAction(command);
   if (kind === 'braflix') {
-    return JSON.stringify({ type: 'PLAYER_COMMAND', command: action });
+    return { type: 'PLAYER_COMMAND', command: action,
+      ...(typeof value === 'number' && Number.isFinite(value) ? { value } : {}) };
   }
   return JSON.stringify({ player: true, action });
 }

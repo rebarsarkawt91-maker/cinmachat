@@ -104,7 +104,7 @@ import { ROOM_SUBTITLE_LANGUAGES, loadRoomSubtitleLanguage } from "./lib/roomSub
 import { api } from "./services/api";
 import { useI18n } from "./i18n";
 import { lazyWithRetry } from "./utils/lazyWithRetry";
-import { providerAction, providerCommandMessage, providerSeekMessage, usesProviderTouchControls, readProviderPlaybackEvent, setNativePlayerMuted, setNativePlayerVolume, enterIOSVideoFullscreen, enterPlayerElementFullscreen } from "./utils/playerControls";
+import { providerAction, providerCommandMessage, providerSeekMessage, providerSeeksOnRelease, usesProviderTouchControls, readProviderPlaybackEvent, setNativePlayerMuted, setNativePlayerVolume, enterIOSVideoFullscreen, enterPlayerElementFullscreen } from "./utils/playerControls";
 import { ProviderSourceNotice } from "./components/Player/ProviderSourceNotice";
 import { PlayerInteractionLayer } from "./components/Player/PlayerInteractionLayer";
 import { AdminSceneBlurButton } from "./components/Player/AdminSceneBlurButton";
@@ -8176,7 +8176,7 @@ const handleWebkitEndFullscreen = () => {
           ytPlayingRef.current = true;
           setIsIframePlaying(true);
         }
-        if (status === "paused" || status === "ended") {
+        if (status === "paused" || status === "ended" || status === "buffering") {
           ytPlayingRef.current = false;
           setIsIframePlaying(false);
         }
@@ -8309,6 +8309,8 @@ const handleWebkitEndFullscreen = () => {
   useEffect(() => {
     localClockRef.current = 0;
     ytCurrentTimeRef.current = 0;
+    setPlayerCurrentTime(0);
+    setPlayerDuration(0);
   }, [selectedMovie?.id, activeServerUrl]);
 
   // ---- Progress / seek bar ----
@@ -8384,7 +8386,7 @@ const handleWebkitEndFullscreen = () => {
   // raw seek path — used identically for single clicks (pointerdown) and for
   // continuous dragging, so the actual playback always follows the bar.
   const applyScrubToPlayers = (seconds: number) => {
-    const t = Math.max(0, seconds);
+    const t = Math.max(0, playerDuration > 0 ? Math.min(seconds, playerDuration) : seconds);
     // Keep every clock variant in sync so no read-back path can snap the bar
     // back to the pre-seek position before the player acknowledges the move.
     localClockRef.current = t;
@@ -8525,7 +8527,7 @@ const handleWebkitEndFullscreen = () => {
   // Commit a seek: show the target immediately, scrub every live element and
   // publish the new position so Watch Together guests follow the host.
   const seekToPlayer = (seconds: number) => {
-    const t = Math.max(0, seconds);
+    const t = Math.max(0, playerDuration > 0 ? Math.min(seconds, playerDuration) : seconds);
     // Force the internal clock so the slider locks on the new timestamp instead
     // of snapping back to the pre-seek position while the proxy acknowledges.
     localClockRef.current = t;
@@ -8534,10 +8536,11 @@ const handleWebkitEndFullscreen = () => {
     setDragTime(null);
     dragTimeRef.current = null;
     applyScrubToPlayers(t);
-    broadcastSeekToIframes(modalPlayerRef.current, t);
     // Proxies that boot a nested player late may miss the one-shot postMessage;
     // re-assert the seek so the embedded frame reliably lands on the target.
-    reassertSeekToIframes(modalPlayerRef.current, t);
+    if (!providerSeeksOnRelease(activeServerUrlRef.current)) {
+      reassertSeekToIframes(modalPlayerRef.current, t);
+    }
     publishPlaybackNowRef.current({ currentTime: t });
   };
 
@@ -8556,8 +8559,9 @@ const handleWebkitEndFullscreen = () => {
     ytCurrentTimeRef.current = nextTime;
     setPlayerCurrentTime(nextTime);
     lastScrubAppliedAtRef.current = Date.now();
-    // A bare click is a seek: apply immediately on pointerdown.
-    applyScrubToPlayers(nextTime);
+    // Braflix's JWPlayer reloads the stream on every seek. Preview its drag
+    // locally, then send one command on release instead of a seek storm.
+    if (!providerSeeksOnRelease(activeServerUrlRef.current)) applyScrubToPlayers(nextTime);
   };
 
   const updateSeekDrag = (e: React.PointerEvent) => {
@@ -8573,7 +8577,7 @@ const handleWebkitEndFullscreen = () => {
     // Live scrub: drive the actual playback position while dragging. Throttled
     // (~100ms) so MSE/hls.js don't receive a seek storm on every movement tick.
     const now = Date.now();
-    if (now - lastScrubAppliedAtRef.current >= 100) {
+    if (!providerSeeksOnRelease(activeServerUrlRef.current) && now - lastScrubAppliedAtRef.current >= 100) {
       lastScrubAppliedAtRef.current = now;
       applyScrubToPlayers(nextTime);
     }
@@ -8859,6 +8863,11 @@ const handleWebkitEndFullscreen = () => {
       JSON.stringify({ event: "command", func: "setVolume", args: [volume] }),
       "https://www.youtube.com",
     );
+    const frame = document.getElementById("streaming-player") as HTMLIFrameElement | null;
+    const volumeCommand = frame && providerCommandMessage(frame.src, 'volume', volume);
+    if (frame?.contentWindow && volumeCommand && typeof volumeCommand === 'object') {
+      frame.contentWindow.postMessage(volumeCommand, new URL(frame.src).origin);
+    }
   };
 
   // iOS custom-fullscreen: force the whole dialog (root + player wrapper) to

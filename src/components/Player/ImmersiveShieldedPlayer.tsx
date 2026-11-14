@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { providerCaptionUrl, providerCommandMessage, readProviderPlaybackEvent, usesProviderTouchControls } from "../../utils/playerControls";
+import { providerCaptionUrl, providerCommandMessage, providerFrameSandbox, readProviderPlaybackEvent, usesProviderTouchControls } from "../../utils/playerControls";
 
 /**
  * ImmersiveShieldedPlayer — Cinematic Shielded Player for embedded movie streams
@@ -280,6 +280,7 @@ export default function ImmersiveShieldedPlayer({
           className="w-full h-full border-0"
           frameBorder="0"
           scrolling="no"
+          sandbox={providerFrameSandbox(frameUrl)}
           allow={disableExternalPresentation
             ? "autoplay; encrypted-media; fullscreen 'none'; picture-in-picture 'none'"
             : "autoplay; encrypted-media; fullscreen; picture-in-picture"}
