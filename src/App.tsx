@@ -114,8 +114,10 @@ import { useMovieSceneBlur } from "./hooks/useMovieSceneBlur";
 import { useSceneBlurPlayback } from "./hooks/useSceneBlurPlayback";
 import { validateSceneBlurConfig, type SceneBlurConfig } from "./lib/sceneBlur";
 import { cacheableCatalogMovie } from "./lib/catalogCache";
+import { buildCatalogSeo, buildDramaRoomSeo, catalogDramaRoomUrl } from "./lib/catalogSeo";
 
 const MOVIE_URL_PARAM = "movieId";
+const DRAMA_URL_PARAM = "dramaRoomId";
 const SITE_ORIGIN = "https://www.cinamachat.com";
 
 const upsertMetaTag = (attribute: "name" | "property", key: string, content: string) => {
@@ -142,6 +144,13 @@ const setMovieUrl = (movieId: string | null, replace = false) => {
   const url = new URL(window.location.href);
   if (movieId) url.searchParams.set(MOVIE_URL_PARAM, movieId);
   else url.searchParams.delete(MOVIE_URL_PARAM);
+  window.history[replace ? "replaceState" : "pushState"]({}, "", `${url.pathname}${url.search}${url.hash}`);
+};
+
+const setDramaRoomUrl = (roomId: string | null, replace = false) => {
+  const url = new URL(window.location.href);
+  if (roomId) { url.searchParams.set(DRAMA_URL_PARAM, roomId); url.searchParams.delete(MOVIE_URL_PARAM); }
+  else url.searchParams.delete(DRAMA_URL_PARAM);
   window.history[replace ? "replaceState" : "pushState"]({}, "", `${url.pathname}${url.search}${url.hash}`);
 };
 
@@ -6354,9 +6363,12 @@ const DramaRoomCard = ({ room, onOpen, onEdit, onDelete, showActions, compact, l
         compact ? "w-[170px] md:w-[220px]" : "w-[200px] md:w-[260px]"
       }`}
     >
-      <button
-        type="button"
-        onClick={() => onOpen(room)}
+      <a
+        href={room.isFallback ? undefined : catalogDramaRoomUrl(room.id)}
+        onClick={(event) => {
+          if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+          event.preventDefault(); onOpen(room);
+        }}
         className="block w-full text-right focus:outline-none"
       >
         <div className="aspect-video w-full bg-gradient-to-br from-zinc-800 to-zinc-950 overflow-hidden relative">
@@ -6425,7 +6437,7 @@ const DramaRoomCard = ({ room, onOpen, onEdit, onDelete, showActions, compact, l
             </p>
           )}
         </div>
-      </button>
+      </a>
       {showActions && (
         <div className="absolute top-3 left-3 flex gap-2 z-10">
           <button
@@ -7084,9 +7096,9 @@ const DramaRoomDetailModal = ({ room, resolvedMovies, openMovie, onEditMovie, on
               )}
             </div>
             <div className="min-w-0">
-              <h3 className="text-xl font-black text-white kurdish-text truncate">
+              <h1 className="text-xl font-black text-white kurdish-text truncate">
                 {room?.title}
-              </h3>
+              </h1>
               <p className="mt-1 text-xs text-gray-400 kurdish-text leading-relaxed">
                 {room?.description || "بێ وەسف"}
               </p>
@@ -7640,6 +7652,14 @@ export default function App() {
   const [dramaRooms, setDramaRooms] = useState<any[]>([]);
   const [dramaCategory, setDramaCategory] = useState("all");
   const [selectedDramaRoom, setSelectedDramaRoom] = useState<any>(null);
+  const openDramaRoom = useCallback((room: any) => {
+    setSelectedDramaRoom(room);
+    setDramaRoomUrl(room.id);
+  }, []);
+  const closeDramaRoom = useCallback(() => {
+    if (new URLSearchParams(window.location.search).get(DRAMA_URL_PARAM) === selectedDramaRoom?.id) setDramaRoomUrl(null, true);
+    setSelectedDramaRoom(null);
+  }, [selectedDramaRoom?.id]);
   const [showDramaRoomModal, setShowDramaRoomModal] = useState(false);
   const [editingDramaRoom, setEditingDramaRoom] = useState<any>(null);
   const [showDramaHubModal, setShowDramaHubModal] = useState(false);
@@ -10346,6 +10366,7 @@ const handleWebkitEndFullscreen = () => {
       setSelectedMovie(movie);
       setActiveServerUrl(getMovieSourceUrl(movie));
       setShowPlayer(true);
+      setMovieUrl(movie.id);
       // Restore a saved resume point (continue-watching) so reopening a movie
       // resumes where the user left off instead of always starting at 0s —
       // EXCEPT for drama-room auto-advance, which must start the next episode
@@ -10526,58 +10547,64 @@ const handleWebkitEndFullscreen = () => {
   // Keep the document head aligned with the currently selected movie.
   useEffect(() => {
     const movie = selectedMovie;
-    const defaultTitle = "kurdCinamaChat -کورد سینەماچات نوێترین فیلم و دراما بە ژێرنوسى کوردى ";
-    const defaultDescription = "CinamaChat -kurdsh movise - kurdsubtitle cinamachatکورد سینەما چات ئامەدەیە بۆ بڵاوکردنەوەى فیلمەکانى بۆکس ئۆفیس و فیلمە بیانیەکان و خاوەنى پێشکەوتو ترین گەڕانەلە ئێستادا ";
-    const title = movie ? `${movie.title} بە ژێرنووسی کوردی | CinemaChat` : defaultTitle;
-    const description = (movie?.description || defaultDescription).replace(/\s+/g, " ").trim().slice(0, 160);
-    const keywords = movie
-      ? [movie.title, ...(movie.tags || []), "فیلمی کوردی", "سینەما چات"].filter(Boolean).join(", ")
-      : "فیلم, زنجیرە, دۆبلاژ, کوردی, نێتفلێکس, CinamaChat";
-    const image = movie?.image || `${SITE_ORIGIN}/pwa/icon-512.png`;
-    const movieUrl = movie ? `${SITE_ORIGIN}/?${MOVIE_URL_PARAM}=${encodeURIComponent(movie.id)}` : `${SITE_ORIGIN}/`;
+    const room = selectedDramaRoom;
+    const query = new URLSearchParams(window.location.search);
+    // Preserve the server's detail metadata while its catalog is still loading.
+    if (!movie && !room && (query.has(MOVIE_URL_PARAM) || query.has(DRAMA_URL_PARAM))) return;
+    const parentRoom = movie && dramaRooms.find(entry => Array.isArray(entry.dramas) && entry.dramas.includes(movie.id));
+    const metadata = movie ? buildCatalogSeo(movie, parentRoom ? {
+      room: { id: parentRoom.id, title: parentRoom.title }, episodeNumber: parentRoom.dramas.indexOf(movie.id) + 1,
+    } : {}) : room ? buildDramaRoomSeo(room, (room.dramas || []).map((id: string) => movies.find(entry => entry.id === id)).filter(Boolean)) : null;
+    const title = metadata?.title || "سینەما چات | فیلم و دراما بە کوردی — CinemaChat";
+    const description = metadata?.description || "فیلم و دراماکان لە سینەما چات؛ ناونیشان، وەسف و ئەڵقەکان بدۆزەرەوە و بەردەستبوونی ژێرنووسی کوردی ببینە. CinemaChat movies and drama series with Kurdish subtitles where available.";
+    const image = metadata?.image || `${SITE_ORIGIN}/pwa/icon-512.png`;
+    const movieUrl = metadata?.canonical || `${SITE_ORIGIN}/`;
 
     document.title = title;
     upsertMetaTag("name", "description", description);
-    upsertMetaTag("name", "keywords", keywords);
+    document.head.querySelector('meta[name="keywords"]')?.remove();
     upsertMetaTag("property", "og:title", title);
     upsertMetaTag("property", "og:description", description);
     upsertMetaTag("property", "og:image", image);
     upsertMetaTag("property", "og:url", movieUrl);
-    upsertMetaTag("property", "og:type", movie ? "video.movie" : "website");
+    upsertMetaTag("property", "og:type", metadata?.kind === 'Movie' ? 'video.movie' : metadata?.kind === 'TVEpisode' ? 'video.episode' : 'website');
+    upsertMetaTag("name", "twitter:card", "summary_large_image");
+    upsertMetaTag("name", "twitter:title", title);
+    upsertMetaTag("name", "twitter:description", description);
+    upsertMetaTag("name", "twitter:image", image);
     upsertLinkTag("canonical", movieUrl);
 
     document.getElementById("cinemachat-movie-jsonld")?.remove();
-    if (!movie) return;
-
-    const rating = Number(movie.ccRating || movie.rating || movie.imdbRating);
-    const schema: Record<string, unknown> = {
-      "@context": "https://schema.org",
-      "@type": "Movie",
-      name: movie.title,
-      image: [image],
-      description,
-      url: movieUrl,
-      inLanguage: "ckb",
-    };
-    const publishedDate = movie.date || (movie.year ? `${movie.year}-01-01` : "");
-    if (publishedDate && !Number.isNaN(Date.parse(publishedDate))) {
-      schema.datePublished = new Date(publishedDate).toISOString().slice(0, 10);
-    }
-    if (Number.isFinite(rating) && rating > 0) {
-      schema.aggregateRating = {
-        "@type": "AggregateRating",
-        ratingValue: rating,
-        bestRating: 10,
-        worstRating: 0,
-        ratingCount: Number(movie.ratingCount) || 1,
-      };
-    }
+    if (!metadata) return;
     const script = document.createElement("script");
     script.id = "cinemachat-movie-jsonld";
     script.type = "application/ld+json";
-    script.textContent = JSON.stringify(schema);
+    script.textContent = JSON.stringify(metadata.schema);
     document.head.appendChild(script);
-  }, [selectedMovie]);
+  }, [selectedMovie, selectedDramaRoom, dramaRooms, movies]);
+
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get(DRAMA_URL_PARAM);
+    if (!id || selectedDramaRoom?.id === id) return;
+    const room = dramaRooms.find(entry => entry.id === id);
+    if (room) setSelectedDramaRoom(room);
+  }, [dramaRooms, selectedDramaRoom?.id]);
+
+  useEffect(() => {
+    const navigate = () => {
+      const query = new URLSearchParams(window.location.search);
+      const movie = movies.find(entry => entry.id === query.get(MOVIE_URL_PARAM));
+      if (!movie) {
+        setSelectedMovie(null); setShowPlayer(false); setIsMovieDetailsOpen(false); setActiveServerUrl(null);
+      } else if (movie.id !== selectedMovie?.id) {
+        setSelectedMovie(movie); setActiveServerUrl(getMovieSourceUrl(movie));
+        setShowPlayer(false); setIsMovieDetailsOpen(true);
+      }
+      setSelectedDramaRoom(dramaRooms.find(entry => entry.id === query.get(DRAMA_URL_PARAM)) || null);
+    };
+    window.addEventListener('popstate', navigate);
+    return () => window.removeEventListener('popstate', navigate);
+  }, [movies, dramaRooms, selectedMovie?.id]);
 
   // Keep the page's scroll position stable across the movie modal lifecycle.
   // On open: remember where the homepage was and neutralize any scroll the
@@ -14522,7 +14549,7 @@ const handleWebkitEndFullscreen = () => {
       currentUser={currentUser}
       systemVerified={systemVerified}
       canCreateRoom={canCreateDramaRoom}
-      onOpenRoom={setSelectedDramaRoom}
+      onOpenRoom={openDramaRoom}
       onCreate={() => {
         setEditingDramaRoom(null);
         setShowDramaRoomModal(true);
@@ -15109,7 +15136,7 @@ const handleWebkitEndFullscreen = () => {
                   config={config}
                   activeAudioSource={activeAudioSource}
                   dramaRooms={dramaRoomsFiltered}
-                  onOpenDramaRoom={(room: any) => setSelectedDramaRoom(room)}
+                  onOpenDramaRoom={openDramaRoom}
                   // The mini trailer in the details modal is also an active
                   // audio source. Claim the existing hero-audio interlock as
                   // soon as that preview mounts so the background hero pauses
@@ -15724,7 +15751,7 @@ const handleWebkitEndFullscreen = () => {
               currentUser={currentUser}
               systemVerified={systemVerified}
               canCreateRoom={canCreateDramaRoom}
-              onOpenRoom={(room: any) => setSelectedDramaRoom(room)}
+              onOpenRoom={openDramaRoom}
               onCreate={() => {
                 setEditingDramaRoom(null);
                 setShowDramaRoomModal(true);
@@ -15781,7 +15808,7 @@ const handleWebkitEndFullscreen = () => {
                 };
                 openMovie(movie);
               }}
-              onClose={() => setSelectedDramaRoom(null)}
+              onClose={closeDramaRoom}
               rating={getRoomCCRating(selectedDramaRoom)}
               ratingCount={getRoomRatingCount(selectedDramaRoom)}
               userRating={getUserRoomRating(selectedDramaRoom)}

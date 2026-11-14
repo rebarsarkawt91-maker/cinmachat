@@ -1,5 +1,6 @@
 import { Copy, Edit3, Film, Play, X } from 'lucide-react';
 import type { Movie } from '../../types';
+import { catalogMovieUrl } from '../../lib/catalogSeo';
 
 /** Edit is a sibling of Play, so touch/keyboard editing never starts playback. */
 export function DramaEpisodeCard({ movie, order, onOpen, onEdit, onDuplicate, onRemove }: {
@@ -8,8 +9,10 @@ export function DramaEpisodeCard({ movie, order, onOpen, onEdit, onDuplicate, on
   onRemove?: () => void;
 }) {
   return <div className="relative min-w-0">
-    <button type="button" onClick={() => onOpen(movie)}
-      className="group w-full text-right focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-500">
+    <a href={catalogMovieUrl(movie.id)} onClick={(event) => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault(); onOpen(movie);
+    }} className="group block w-full text-right focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-500">
       <div className="aspect-[2/3] rounded-xl overflow-hidden bg-zinc-800 relative group-hover:ring-2 group-hover:ring-brand-primary/60 transition-all">
         {movie.posterUrl ? <img src={movie.posterUrl} alt={movie.title} loading="lazy" className="w-full h-full object-cover" />
           : <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-zinc-800 to-zinc-900"><Film className="w-8 h-8 text-white/20" /></div>}
@@ -19,7 +22,7 @@ export function DramaEpisodeCard({ movie, order, onOpen, onEdit, onDuplicate, on
         </div>
       </div>
       <p className="mt-2 text-xs font-bold text-white kurdish-text line-clamp-1">{movie.title}</p>
-    </button>
+    </a>
     <div className="absolute left-2 top-2 z-10 flex flex-wrap gap-1">
     {onEdit && <button type="button" onClick={() => onEdit(movie, order)} aria-label={`Edit ${movie.title}`}
       title="دەستکاریکردنی دراما و زیادکردنی VTT"

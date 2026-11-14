@@ -14,6 +14,7 @@ import {
   Trash2,
 } from "lucide-react";
 import type { Movie } from "../../types";
+import { catalogMovieUrl } from "../../lib/catalogSeo";
 
 /**
  * Premium movie card used across the whole catalog (home grid, trending row,
@@ -252,6 +253,7 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return;
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       onOpen(movie);
@@ -273,7 +275,11 @@ export const MovieCardBase: React.FC<MovieCardProps> = ({
       aria-label={`${movie.title}${isBroken ? ", currently unavailable" : ""}${year ? ` (${year})` : ""}${liveViewers > 0 ? `, ${liveViewers} watching now` : ""}${views > 0 ? `, ${views.toLocaleString()} total views` : ""}`}
     >
       <h3 className="mb-1.5 min-h-8 rounded-lg border border-emerald-400/25 bg-emerald-950/35 px-2 py-1.5 text-center font-bold kurdish-text text-xs leading-5 text-white line-clamp-1 transition-colors group-hover:text-brand-primary">
-        {movie.title}
+        <a href={catalogMovieUrl(movie.id)} onClick={(event) => {
+          event.stopPropagation();
+          if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+          event.preventDefault(); onOpen(movie);
+        }}>{movie.title}</a>
       </h3>
       {/* Poster */}
       <div className="relative aspect-[2/3] rounded-2xl overflow-hidden bg-[#0b0b0d] ring-1 ring-white/10 shadow-[0_8px_30px_rgba(0,0,0,0.55)] transition-all duration-300 group-hover:-translate-y-1.5 group-hover:ring-brand-primary/60 group-hover:shadow-[0_22px_60px_-15px_rgba(229,9,20,0.45)]">

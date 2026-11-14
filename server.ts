@@ -30,6 +30,8 @@ import { createStudioAdminSessions } from './studioAdminSession';
 import { createBannerImageStore, bannerImageHandler } from './server/bannerImage';
 import { createPlayerAdsStore, playerAdsAdminHandler } from './server/playerAds';
 import { createSceneBlurHandlers, signedSceneBlurAdminUsername } from './server/sceneBlur';
+import { buildCatalogSeo, buildDramaRoomSeo, catalogMovieUrl, catalogDramaRoomUrl } from './src/lib/catalogSeo';
+import { renderCatalogHtml } from './server/catalogSeoHtml';
 import { stripSubtitleHtmlTags } from './src/lib/subtitleText.js';
 import { hasNonSoraniLetters } from './src/lib/studioUntranslatedCues.js';
 import { legacySubtitleFileUrl, parseLegacySubtitleListing } from './kurdSubLegacy';
@@ -16541,12 +16543,19 @@ let videoDownloaded = false;
 
   // Generate a fresh sitemap from the same published catalog served to users.
   // Movie detail URLs use the client-supported movieId deep-link parameter.
+  const seoPublished = (value: any) => value?.id && value.title && value.id !== 'hero-promo' &&
+    value.published !== false && value.isPublished !== false && value.status !== 'draft' &&
+    value.isPrivate !== true && value.visibility !== 'private';
+  const seoMovies = () => mergeCatalogWithFirestore(moviesCache, db.deletedIds).filter(seoPublished);
+  const seoRooms = () => Object.values(db.dramaRooms || {}).filter(seoPublished) as any[];
+  app.get('/robots.txt', (_req, res) => {
+    res.type('text/plain').set('Cache-Control', 'public, max-age=300')
+      .send('User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /admin/\n\nSitemap: https://www.cinamachat.com/sitemap.xml\n');
+  });
   app.get('/sitemap.xml', async (_req, res) => {
     try {
       await waitForCatalogIfWarming();
-      const publishedMovies = mergeCatalogWithFirestore(moviesCache, db.deletedIds)
-        .filter((movie: any) => movie?.id && movie.id !== 'hero-promo' && movie.title)
-        .filter((movie: any) => movie.published !== false && movie.isPublished !== false && movie.status !== 'draft');
+      const publishedMovies = seoMovies();
       const escapeXml = (value: string) => value
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
@@ -16564,6 +16573,7 @@ let videoDownloaded = false;
           const loc = escapeXml(`https://www.cinamachat.com/?movieId=${id}`);
           return `<url><loc>${loc}</loc>${lastmod ? `<lastmod>${lastmod}</lastmod>` : ''}<changefreq>weekly</changefreq><priority>0.8</priority></url>`;
         }),
+        ...seoRooms().map(room => `<url><loc>${escapeXml(catalogDramaRoomUrl(room.id))}</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>`),
       ].join('');
       res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=3600');
       res.type('application/xml').send(
@@ -16629,6 +16639,43 @@ let videoDownloaded = false;
     });
   } else {
     const distPath = path.join(process.cwd(), 'dist');
+    const seoTemplate = await fs.readFile(path.join(distPath, 'index.html'), 'utf8');
+    // The canonical public domain serves detail metadata in the first HTML
+    // response. This must precede express.static, which otherwise ignores query
+    // parameters when serving index.html at /.
+    app.get(['/', '/index.html'], async (req, res, next) => {
+      const movieId = typeof req.query.movieId === 'string' ? req.query.movieId : '';
+      const roomId = typeof req.query.dramaRoomId === 'string' ? req.query.dramaRoomId : '';
+      if (!movieId && !roomId) return next();
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      try {
+        await waitForCatalogIfWarming();
+        const catalog = seoMovies();
+        const rooms = seoRooms();
+        if (!catalog.length) return res.status(503).set('Retry-After', '60').type('html').send(seoTemplate);
+        const movie = catalog.find((entry: any) => String(entry.id) === movieId);
+        const room = rooms.find(entry => String(entry.id) === roomId);
+        if (movieId && movie) {
+          const parentRoom = rooms.find(entry => Array.isArray(entry.dramas) && entry.dramas.includes(movieId));
+          const metadata = buildCatalogSeo(movie, parentRoom ? {
+            room: { id: parentRoom.id, title: parentRoom.title },
+            episodeNumber: parentRoom.dramas.indexOf(movieId) + 1,
+          } : {});
+          const links = parentRoom ? [{ href: catalogDramaRoomUrl(parentRoom.id), title: parentRoom.title }] : [];
+          return res.type('html').send(renderCatalogHtml(seoTemplate, metadata, links));
+        }
+        if (!movieId && room) {
+          const byId = new Map(catalog.map((entry: any) => [String(entry.id), entry]));
+          const episodes = (Array.isArray(room.dramas) ? room.dramas : []).map((id: string) => byId.get(id)).filter(Boolean) as any[];
+          return res.type('html').send(renderCatalogHtml(seoTemplate, buildDramaRoomSeo(room, episodes),
+            episodes.map(entry => ({ href: catalogMovieUrl(entry.id), title: entry.title }))));
+        }
+        return res.status(404).type('html').send(seoTemplate.replace('</head>', '<meta name="robots" content="noindex"></head>'));
+      } catch (error) {
+        console.warn('[SEO] Detail HTML temporarily unavailable:', error instanceof Error ? error.message : error);
+        return res.status(503).set('Retry-After', '60').type('html').send(seoTemplate);
+      }
+    });
     // ── WEBVIEW-SAFE CACHE POLICY (Facebook/Messenger in-app browsers) ──────
     // Social-app webviews heuristically cache HTML for days when a response
     // carries no Cache-Control (only ETag/Last-Modified), leaving users stuck
