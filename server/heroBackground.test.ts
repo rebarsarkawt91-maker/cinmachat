@@ -39,6 +39,10 @@ test('background YouTube URLs are canonicalized from exact video hosts and paths
     4: { kind: 'video', url: 'https://www.youtube.com/playlist?list=one' },
     5: clip,
   } }), { mode: 3, slots: { 3: youtube, 5: clip } });
+  assert.deepEqual(parseHeroBackgroundMedia({ kind: 'video', url: '/uploads/hero-background/background-demo.mp4' }), {
+    kind: 'video', url: '/uploads/hero-background/background-demo.mp4',
+  });
+  assert.equal(parseHeroBackgroundMedia({ kind: 'video', url: '/uploads/other/background-demo.mp4' }), null);
 });
 
 test('classic slot remains read-only while legacy links in editable slots migrate', () => {
@@ -121,4 +125,22 @@ test('legacy raster files remain durable and failed writes keep the previous liv
   await loadedAgain.load();
   assert.deepEqual(loadedAgain.get(), replacement);
   assert.equal(loadedAgain.getImage(hash), undefined);
+});
+
+test('replaced uploaded background videos are removed only when no slot references them', async () => {
+  let stored: unknown = { mode: 3, slots: {
+    3: { kind: 'video', url: '/uploads/hero-background/old.mp4' },
+    4: { kind: 'video', url: '/uploads/hero-background/old.mp4' },
+  } };
+  const removed: string[] = [];
+  const storage = {
+    read: async () => stored,
+    write: async (value: HeroBackgroundSettings) => { stored = value; },
+  };
+  const store = createHeroBackgroundStore(storage, { removeAsset: async url => { removed.push(url); } });
+  await store.load();
+  await store.save({ slot: { mode: 3, media: { kind: 'video', url: '/uploads/hero-background/new.webm' } } }, 'admin');
+  assert.deepEqual(removed, []);
+  await store.save({ slot: { mode: 4, media: null } }, 'admin');
+  assert.deepEqual(removed, ['/uploads/hero-background/old.mp4']);
 });

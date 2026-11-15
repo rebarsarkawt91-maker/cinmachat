@@ -5158,6 +5158,21 @@ async function startServer() {
         settings, updatedBy: username, updatedAt: new Date().toISOString(),
       });
     },
+  }, {
+    // Uploaded background videos live outside Firestore. Remove an old file
+    // only after its replacement has been durably written and no other slot
+    // still references it.
+    removeAsset: async (url) => {
+      const match = /^\/uploads\/hero-background\/([A-Za-z0-9._-]+\.(?:mp4|webm))$/i.exec(url);
+      if (!match) return;
+      const fileName = match[1];
+      const uploadRoot = path.resolve(process.cwd(), 'uploads', 'hero-background');
+      const filePath = path.resolve(uploadRoot, fileName);
+      if (!filePath.startsWith(`${uploadRoot}${path.sep}`)) return;
+      await fs.unlink(filePath).catch(error => {
+        if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') throw error;
+      });
+    },
   });
   void heroBackgroundStore.load().catch(() => console.warn('[Hero background] Saved settings unavailable.'));
 
@@ -14365,12 +14380,45 @@ async function startServer() {
     const record = db.admins.find((item: any) => String(item.username || '').trim().toLowerCase() === username);
     return OWNER_USERNAMES.includes(username) || ['owner', 'admin', 'super_admin', 'deputy_manager', 'staff'].includes(String(record?.role || '').toLowerCase()) ? username : null;
   }, image => { ads.banner.image = image; }));
-  app.put('/api/admin/hero-background', heroBackgroundAdminHandler(heroBackgroundStore, req => {
+  const heroBackgroundAdminIdentity = (req: express.Request) => {
     const username = studioLoginIdentity(req);
     if (!username || username !== String(req.headers['x-admin-username'] || '').trim().toLowerCase()) return null;
     const record = db.admins.find((item: any) => String(item.username || '').trim().toLowerCase() === username);
     return OWNER_USERNAMES.includes(username) || isHeroBackgroundAdminRole(record?.role) ? username : null;
-  }));
+  };
+  app.put('/api/admin/hero-background', heroBackgroundAdminHandler(heroBackgroundStore, heroBackgroundAdminIdentity));
+  const HERO_BACKGROUND_VIDEO_MAX_BYTES = 50 * 1024 * 1024;
+  app.post('/api/admin/hero-background-upload', express.raw({
+    type: ['video/mp4', 'video/webm'],
+    limit: HERO_BACKGROUND_VIDEO_MAX_BYTES,
+  }), async (req, res) => {
+    const username = heroBackgroundAdminIdentity(req);
+    if (!username) return res.status(401).json({ success: false, error: 'تکایە دووبارە بە ئەدمین بچۆ ژوورەوە.' });
+    const mimeType = String(req.headers['content-type'] || '').split(';', 1)[0].toLowerCase();
+    const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    if (!body.length || !['video/mp4', 'video/webm'].includes(mimeType)) {
+      return res.status(400).json({ success: false, error: 'تەنها ڤیدیۆی MP4 یان WebM پێشوازیکراوە.' });
+    }
+    if (body.length > HERO_BACKGROUND_VIDEO_MAX_BYTES) {
+      return res.status(413).json({ success: false, error: 'قەبارەی ڤیدیۆکە نابێت لە ٥٠ MB زیاتر بێت.' });
+    }
+    const isMp4 = mimeType === 'video/mp4' && body.length >= 12 && body.subarray(4, 8).toString('ascii') === 'ftyp';
+    const isWebm = mimeType === 'video/webm' && body.length >= 4 && body.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]));
+    if (!isMp4 && !isWebm) {
+      return res.status(400).json({ success: false, error: 'ناوەڕۆکی ڤیدیۆکە لەگەڵ فۆرماتەکە ناگونجێت.' });
+    }
+    const extension = isMp4 ? 'mp4' : 'webm';
+    const fileName = `background-${crypto.randomUUID()}.${extension}`;
+    const uploadRoot = path.join(process.cwd(), 'uploads', 'hero-background');
+    try {
+      await fs.mkdir(uploadRoot, { recursive: true });
+      await fs.writeFile(path.join(uploadRoot, fileName), body, { flag: 'wx' });
+      return res.json({ success: true, url: `/uploads/hero-background/${fileName}`, mimeType, sizeBytes: body.length, uploadedBy: username });
+    } catch (error) {
+      console.error('[Hero background] video upload failed:', error);
+      return res.status(503).json({ success: false, error: 'بارکردنی ڤیدیۆ سەرکەوتوو نەبوو.' });
+    }
+  });
   app.get('/api/hero-background', (_req, res) => {
     res.set('Cache-Control', 'no-store').json({ heroBackground: heroBackgroundStore.get() });
   });

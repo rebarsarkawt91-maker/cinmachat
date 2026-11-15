@@ -473,6 +473,7 @@ import FriendPresenceNotification from "./components/Social/FriendPresenceNotifi
 import RoomSubtitleOverlay from "./components/Player/RoomSubtitleOverlay";
 import RoomSubtitleSelector from "./components/Player/RoomSubtitleSelector";
 import { PwaInstallButton } from "./components/Pwa/PwaInstallButton";
+import { resolveApiUrl } from "./services/backendConfig";
 import { PushBellButton } from "./components/Pwa/PushBellButton";
 import { SocialReelsSection } from "./components/Movie/SocialReelsSection";
 import { usePwaInstall } from "./pwa/PwaProvider";
@@ -13038,6 +13039,26 @@ const handleWebkitEndFullscreen = () => {
     heroBackgroundWrite.current++;
     setConfig(previous => ({ ...previous, heroBackground: saved }));
   };
+  const uploadHeroBackgroundVideo = async (file: File): Promise<string> => {
+    const response = await fetchApi('/api/admin/hero-background-upload', {
+      method: 'POST', credentials: 'include',
+      signal: AbortSignal.timeout(120000),
+      headers: {
+        'Content-Type': file.type,
+        'X-Admin-Username': currentUser?.username || '',
+      },
+      body: file,
+    }, 0);
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || payload?.success !== true || typeof payload.url !== 'string') {
+      if (response.status === 401 || response.status === 403) {
+        throw new Error('دانیشتنی ئەدمین پێویستە. جارێکی تر بچۆ ژوورەوە.');
+      }
+      if (response.status === 413) throw new Error('قەبارەی ڤیدیۆکە نابێت لە ٥٠ MB زیاتر بێت.');
+      throw new Error(String(payload?.error || 'بارکردنی ڤیدیۆ سەرکەوتوو نەبوو.'));
+    }
+    return resolveApiUrl(payload.url);
+  };
   // Only the administrative editor is local; saved ranges apply to all viewers.
   useEffect(() => {
     setShowSceneBlurEditor(false);
@@ -15188,7 +15209,8 @@ const handleWebkitEndFullscreen = () => {
                 </div>
               }>
                 <HeroBackgroundExperience siteSetting={config.heroBackground}
-                  saveGlobalSetting={canManageHeroBackground ? saveHeroBackground : undefined}>
+                  saveGlobalSetting={canManageHeroBackground ? saveHeroBackground : undefined}
+                  uploadVideo={canManageHeroBackground ? uploadHeroBackgroundVideo : undefined}>
                   {({ backdrop, controls }) => <div className="relative">
                     <HeroSection
                       activeFeaturedMovie={activeFeaturedMovie}

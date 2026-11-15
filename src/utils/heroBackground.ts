@@ -4,6 +4,9 @@ import { isYTVideoId } from './youtube';
 export const HERO_BACKGROUND_MODE_COUNT = 20;
 export const CLASSIC_HERO_BACKGROUND_MODE = 2;
 export const HERO_BACKGROUND_IMAGE_MAX_BYTES = BANNER_IMAGE_MAX_BYTES;
+/** Uploaded hero videos are intentionally capped for fast, silent background playback. */
+export const HERO_BACKGROUND_VIDEO_MAX_BYTES = 50 * 1024 * 1024;
+export const HERO_BACKGROUND_VIDEO_MAX_SECONDS = 60;
 export const HERO_BACKGROUND_IMAGE_PATH = '/api/hero-background-image/';
 
 export type HeroBackgroundMedia = {
@@ -47,6 +50,10 @@ function parseHttpsUrl(value: string): URL | null {
   } catch {
     return null;
   }
+}
+
+function isUploadedHeroVideoPath(value: string): boolean {
+  return /^\/uploads\/hero-background\/[A-Za-z0-9._-]+\.(?:mp4|webm)$/i.test(value);
 }
 
 const youtubeHosts = new Set([
@@ -93,6 +100,7 @@ export function parseHeroBackgroundMedia(value: unknown): HeroBackgroundMedia | 
     if (url.startsWith('data:image/') && validBannerImage(url)) return { kind, url };
   }
 
+  if (kind === 'video' && isUploadedHeroVideoPath(url)) return { kind, url };
   return parsed ? { kind, url: parsed.href } : null;
 }
 

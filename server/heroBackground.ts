@@ -15,6 +15,10 @@ type HeroBackgroundStorage = {
   write: (settings: HeroBackgroundSettings, username: string) => Promise<void>;
 };
 
+type HeroBackgroundStoreOptions = {
+  removeAsset?: (url: string) => Promise<void>;
+};
+
 // Leave room for Firestore field names, metadata and document overhead.
 const MAX_SETTINGS_BYTES = 896 * 1024;
 class HeroBackgroundStorageLimit extends Error {}
@@ -39,7 +43,7 @@ function prepareBackground(settings: HeroBackgroundSettings) {
   return { settings, publicSettings, images };
 }
 
-export function createHeroBackgroundStore(storage: HeroBackgroundStorage) {
+export function createHeroBackgroundStore(storage: HeroBackgroundStorage, options: HeroBackgroundStoreOptions = {}) {
   let state = prepareBackground(DEFAULT_HERO_BACKGROUND);
   let loaded = false;
   let loading: Promise<void> | undefined;
@@ -96,7 +100,22 @@ export function createHeroBackgroundStore(storage: HeroBackgroundStorage) {
 
         const next = prepareBackground(normalized);
         await storage.write(normalized, username);
+        const previousAssets = new Set(Object.values(state.settings.slots ?? {})
+          .map(media => media?.url)
+          .filter((url): url is string => typeof url === 'string'));
+        const nextAssets = new Set(Object.values(normalized.slots ?? {})
+          .map(media => media?.url)
+          .filter((url): url is string => typeof url === 'string'));
         state = next;
+        if (options.removeAsset) {
+          for (const url of previousAssets) {
+            if (!nextAssets.has(url)) {
+              // Cleanup is best-effort: the settings write already succeeded,
+              // so an OS-level unlink failure must not report a false save error.
+              await options.removeAsset(url).catch(() => undefined);
+            }
+          }
+        }
         return next.publicSettings;
       });
       writes = work.then(() => {}, () => {});

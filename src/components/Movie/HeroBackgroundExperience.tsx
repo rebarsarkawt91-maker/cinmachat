@@ -3,6 +3,7 @@ import { Image as ImageIcon, X } from 'lucide-react';
 import { resolveApiUrl } from '../../services/backendConfig';
 import {
   DEFAULT_HERO_BACKGROUND, HERO_BACKGROUND_IMAGE_MAX_BYTES, HERO_BACKGROUND_IMAGE_PATH,
+  HERO_BACKGROUND_VIDEO_MAX_BYTES, HERO_BACKGROUND_VIDEO_MAX_SECONDS,
   getHeroBackgroundYouTubeId, parseHeroBackground, parseHeroBackgroundMedia,
   type HeroBackgroundMedia, type HeroBackgroundSettings,
   type HeroBackgroundUpdate,
@@ -24,7 +25,7 @@ function readPreference(): Preference | null {
 }
 
 function resolveMediaUrl(url: string) {
-  return url.startsWith(HERO_BACKGROUND_IMAGE_PATH) ? resolveApiUrl(url) : url;
+  return (url.startsWith(HERO_BACKGROUND_IMAGE_PATH) || url.startsWith('/uploads/')) ? resolveApiUrl(url) : url;
 }
 
 function VideoBackdrop({ url, onError }: { url: string; onError: () => void }) {
@@ -110,10 +111,11 @@ function Swatches({ mode, onSelect }: { mode?: number; onSelect: (mode: number) 
 
 type FormMedia = Media['kind'] | '';
 
-function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
+function BackgroundDialog({ initial, activeMode, save, uploadVideo, select, onDismiss }: {
   initial: HeroBackgroundSettings;
   activeMode: number;
   save?: (value: HeroBackgroundUpdate) => Promise<void>;
+  uploadVideo?: (file: File) => Promise<string>;
   select: (mode: number | null) => void;
   onDismiss: () => void;
 }) {
@@ -246,6 +248,43 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
               reader.readAsDataURL(file);
             }} />
           </label>}
+          {kind === 'video' && uploadVideo && <label className="hero-bg-field hero-bg-slot-editor__upload">
+            <span>یان ڤیدیۆ بار بکە (MP4/WebM تا ١ خولەک)</span>
+            <input type="file" accept="video/mp4,video/webm" disabled={busy} onChange={event => {
+              const file = event.target.files?.[0];
+              event.target.value = '';
+              if (!file) return;
+              setProblem(''); setSaved(''); setBadMedia(false);
+              if (file.size > HERO_BACKGROUND_VIDEO_MAX_BYTES) {
+                setProblem('ڤیدیۆکە زۆر گەورەیە؛ قەبارەکە نابێت لە ٥٠ MB زیاتر بێت.'); return;
+              }
+              if (file.type !== 'video/mp4' && file.type !== 'video/webm') {
+                setProblem('تەنها ڤیدیۆی MP4 یان WebM پێشوازیکراوە.'); return;
+              }
+              setReading(true);
+              const objectUrl = URL.createObjectURL(file);
+              const probe = document.createElement('video');
+              probe.preload = 'metadata';
+              probe.onloadedmetadata = async () => {
+                URL.revokeObjectURL(objectUrl);
+                if (!Number.isFinite(probe.duration) || probe.duration <= 0 || probe.duration > HERO_BACKGROUND_VIDEO_MAX_SECONDS) {
+                  setReading(false);
+                  setProblem('ماوەی ڤیدیۆکە نابێت لە ١ خولەک زیاتر بێت.'); return;
+                }
+                if (!uploadVideo) { setReading(false); return; }
+                try {
+                  const uploadedUrl = await uploadVideo(file);
+                  const media = parseHeroBackgroundMedia({ kind: 'video', url: uploadedUrl });
+                  if (!media) throw new Error('لینکی ڤیدیۆی بارکراو دروست نییە.');
+                  setUrl(media.url); setPreview(media); setSaved('ڤیدیۆکە بارکرا؛ بۆ جێگیرکردن «پاشەکەوتی مۆد» بکە.');
+                } catch (error) {
+                  setProblem(error instanceof Error ? error.message : 'بارکردنی ڤیدیۆ سەرکەوتوو نەبوو.');
+                } finally { setReading(false); }
+              };
+              probe.onerror = () => { URL.revokeObjectURL(objectUrl); setReading(false); setProblem('ڤیدیۆکە نەتوانرا بخوێندرێتەوە.'); };
+              probe.src = objectUrl;
+            }} />
+          </label>}
           {kind && <button type="button" className="hero-bg-action" disabled={busy} onClick={() => {
             setProblem(''); setSaved('');
             const media = readDraft();
@@ -277,9 +316,10 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
   );
 }
 
-export function HeroBackgroundExperience({ siteSetting, saveGlobalSetting, children }: {
+export function HeroBackgroundExperience({ siteSetting, saveGlobalSetting, uploadVideo, children }: {
   siteSetting: unknown;
   saveGlobalSetting?: (value: HeroBackgroundUpdate) => Promise<void>;
+  uploadVideo?: (file: File) => Promise<string>;
   children: (layers: { backdrop: ReactNode; controls: ReactNode }) => ReactNode;
 }) {
   const global = useMemo(() => parseHeroBackground(siteSetting) ?? DEFAULT_HERO_BACKGROUND, [siteSetting]);
@@ -313,7 +353,7 @@ export function HeroBackgroundExperience({ siteSetting, saveGlobalSetting, child
         </div>
       </>,
     })}
-    {open && <BackgroundDialog initial={global} activeMode={mode}
+    {open && <BackgroundDialog initial={global} activeMode={mode} uploadVideo={uploadVideo}
       save={saveGlobalSetting ? async value => {
         await saveGlobalSetting(value);
         if (value.mode !== undefined) select(null);
