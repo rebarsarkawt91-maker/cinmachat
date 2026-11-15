@@ -5163,6 +5163,19 @@ async function startServer() {
     // only after its replacement has been durably written and no other slot
     // still references it.
     removeAsset: async (url) => {
+      try {
+        const remote = new URL(url);
+        if (remote.hostname === 'firebasestorage.googleapis.com') {
+          const pathParts = remote.pathname.split('/');
+          const bucketName = pathParts[3] || '';
+          const objectName = decodeURIComponent(pathParts.slice(5).join('/'));
+          if (/^[^/]+$/.test(bucketName) && /^hero-background\/background-[A-Za-z0-9-]+\.(?:mp4|webm)$/i.test(objectName)) {
+            const app = initializeFirebaseAdmin();
+            if (app) await admin.storage(app).bucket(bucketName).file(objectName).delete().catch(() => undefined);
+          }
+          return;
+        }
+      } catch { /* Invalid/non-storage URLs are handled by the local path guard below. */ }
       const match = /^\/uploads\/hero-background\/([A-Za-z0-9._-]+\.(?:mp4|webm))$/i.exec(url);
       if (!match) return;
       const fileName = match[1];
@@ -14409,6 +14422,28 @@ async function startServer() {
     }
     const extension = isMp4 ? 'mp4' : 'webm';
     const fileName = `background-${crypto.randomUUID()}.${extension}`;
+    try {
+      const firebaseApp = initializeFirebaseAdmin();
+      if (firebaseApp) {
+        const bucketName = process.env.FIREBASE_STORAGE_BUCKET || `${FIREBASE_ADMIN_PROJECT_ID}.firebasestorage.app`;
+        const objectName = `hero-background/${fileName}`;
+        const token = crypto.randomUUID();
+        const file = admin.storage(firebaseApp).bucket(bucketName).file(objectName);
+        await file.save(body, {
+          resumable: false,
+          metadata: {
+            contentType: mimeType,
+            metadata: { firebaseStorageDownloadTokens: token },
+          },
+        });
+        const publicUrl = `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucketName)}/o/${encodeURIComponent(objectName)}?alt=media&token=${encodeURIComponent(token)}`;
+        return res.json({ success: true, url: publicUrl, mimeType, sizeBytes: body.length, uploadedBy: username });
+      }
+    } catch (error) {
+      // Local disk is a safe fallback for development or a temporarily
+      // unavailable Storage bucket; the saved slot still uses a server URL.
+      console.warn('[Hero background] Firebase Storage upload unavailable; using local upload:', error);
+    }
     const uploadRoot = path.join(process.cwd(), 'uploads', 'hero-background');
     try {
       await fs.mkdir(uploadRoot, { recursive: true });
