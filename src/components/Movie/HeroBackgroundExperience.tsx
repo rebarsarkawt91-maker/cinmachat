@@ -111,11 +111,16 @@ function Swatches({ mode, onSelect }: { mode?: number; onSelect: (mode: number) 
 
 type FormMedia = Media['kind'] | '';
 
+function formatVideoSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '٠ MB';
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
 function BackgroundDialog({ initial, activeMode, save, uploadVideo, select, onDismiss }: {
   initial: HeroBackgroundSettings;
   activeMode: number;
   save?: (value: HeroBackgroundUpdate) => Promise<void>;
-  uploadVideo?: (file: File) => Promise<string>;
+  uploadVideo?: (file: File, onProgress?: (percent: number) => void) => Promise<string>;
   select: (mode: number | null) => void;
   onDismiss: () => void;
 }) {
@@ -129,6 +134,8 @@ function BackgroundDialog({ initial, activeMode, save, uploadVideo, select, onDi
   const [problem, setProblem] = useState('');
   const [saved, setSaved] = useState('');
   const [badMedia, setBadMedia] = useState(false);
+  const [uploadPercent, setUploadPercent] = useState(0);
+  const [uploadSizeBytes, setUploadSizeBytes] = useState(0);
   const locked = mode === DEFAULT_HERO_BACKGROUND.mode;
   const busy = saving || reading;
   const close = () => dialog.current?.close();
@@ -146,6 +153,8 @@ function BackgroundDialog({ initial, activeMode, save, uploadVideo, select, onDi
     setProblem('');
     setSaved('');
     setBadMedia(false);
+    setUploadPercent(0);
+    setUploadSizeBytes(0);
   }
 
   function readDraft(): Media | null | undefined {
@@ -210,7 +219,7 @@ function BackgroundDialog({ initial, activeMode, save, uploadVideo, select, onDi
             <span>جۆری باگراوند</span>
             <select value={kind} disabled={busy} onChange={event => {
               setKind(event.target.value as FormMedia); setUrl(''); setPreview(undefined);
-              setSaved(''); setProblem(''); setBadMedia(false);
+              setSaved(''); setProblem(''); setBadMedia(false); setUploadPercent(0); setUploadSizeBytes(0);
             }}>
               <option value="">دیزاینی سەرەکی</option>
               <option value="image">وێنە</option>
@@ -255,6 +264,7 @@ function BackgroundDialog({ initial, activeMode, save, uploadVideo, select, onDi
               event.target.value = '';
               if (!file) return;
               setProblem(''); setSaved(''); setBadMedia(false);
+              setUploadPercent(0); setUploadSizeBytes(file.size);
               if (file.size > HERO_BACKGROUND_VIDEO_MAX_BYTES) {
                 setProblem('ڤیدیۆکە زۆر گەورەیە؛ قەبارەکە نابێت لە ٥٠ MB زیاتر بێت.'); return;
               }
@@ -273,7 +283,7 @@ function BackgroundDialog({ initial, activeMode, save, uploadVideo, select, onDi
                 }
                 if (!uploadVideo) { setReading(false); return; }
                 try {
-                  const uploadedUrl = await uploadVideo(file);
+                  const uploadedUrl = await uploadVideo(file, setUploadPercent);
                   const media = parseHeroBackgroundMedia({ kind: 'video', url: uploadedUrl });
                   if (!media) throw new Error('لینکی ڤیدیۆی بارکراو دروست نییە.');
                   setUrl(media.url); setPreview(media); setSaved('ڤیدیۆکە بارکرا؛ بۆ جێگیرکردن «پاشەکەوتی مۆد» بکە.');
@@ -285,6 +295,16 @@ function BackgroundDialog({ initial, activeMode, save, uploadVideo, select, onDi
               probe.src = objectUrl;
             }} />
           </label>}
+          {kind === 'video' && uploadSizeBytes > 0 && <div className="hero-bg-upload-status" role="status" aria-live="polite">
+            <div className="hero-bg-upload-status__meta">
+              <span>قەبارەی ڤیدیۆ: {formatVideoSize(uploadSizeBytes)}</span>
+              {(reading || uploadPercent >= 100) && <strong>{reading ? Math.max(1, uploadPercent) : 100}٪</strong>}
+            </div>
+            {reading && <div className="hero-bg-upload-status__track" aria-hidden="true">
+              <span style={{ width: `${Math.max(1, uploadPercent)}%` }} />
+            </div>}
+            {reading && <small>بارکردن و جێگیرکردن لە سێرڤەر…</small>}
+          </div>}
           {kind && <button type="button" className="hero-bg-action" disabled={busy} onClick={() => {
             setProblem(''); setSaved('');
             const media = readDraft();

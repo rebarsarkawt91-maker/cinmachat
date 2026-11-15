@@ -13039,25 +13039,33 @@ const handleWebkitEndFullscreen = () => {
     heroBackgroundWrite.current++;
     setConfig(previous => ({ ...previous, heroBackground: saved }));
   };
-  const uploadHeroBackgroundVideo = async (file: File): Promise<string> => {
-    const response = await fetchApi('/api/admin/hero-background-upload', {
-      method: 'POST', credentials: 'include',
-      signal: AbortSignal.timeout(120000),
-      headers: {
-        'Content-Type': file.type,
-        'X-Admin-Username': currentUser?.username || '',
-      },
-      body: file,
-    }, 0);
-    const payload = await response.json().catch(() => null);
-    if (!response.ok || payload?.success !== true || typeof payload.url !== 'string') {
-      if (response.status === 401 || response.status === 403) {
-        throw new Error('دانیشتنی ئەدمین پێویستە. جارێکی تر بچۆ ژوورەوە.');
-      }
-      if (response.status === 413) throw new Error('قەبارەی ڤیدیۆکە نابێت لە ٥٠ MB زیاتر بێت.');
-      throw new Error(String(payload?.error || 'بارکردنی ڤیدیۆ سەرکەوتوو نەبوو.'));
-    }
-    return resolveApiUrl(payload.url);
+  const uploadHeroBackgroundVideo = async (file: File, onProgress?: (percent: number) => void): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      request.open('POST', resolveApiUrl('/api/admin/hero-background-upload'));
+      request.withCredentials = true;
+      request.timeout = 120000;
+      request.setRequestHeader('Content-Type', file.type);
+      request.setRequestHeader('X-Admin-Username', currentUser?.username || '');
+      request.upload.onprogress = event => {
+        if (!event.lengthComputable) return;
+        onProgress?.(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+      };
+      request.onerror = () => reject(new Error('پەیوەندی بە سێرڤەرەوە لە کاتی ئەپلۆددا پچڕا.'));
+      request.ontimeout = () => reject(new Error('کاتی ئەپلۆد تەواو بوو؛ تکایە ڤیدیۆیەکی کەمتر هەڵبژێرە.'));
+      request.onload = () => {
+        let payload: any = null;
+        try { payload = JSON.parse(request.responseText || 'null'); } catch { /* handled below */ }
+        if (request.status < 200 || request.status >= 300 || payload?.success !== true || typeof payload.url !== 'string') {
+          if (request.status === 401 || request.status === 403) return reject(new Error('دانیشتنی ئەدمین پێویستە. جارێکی تر بچۆ ژوورەوە.'));
+          if (request.status === 413) return reject(new Error('قەبارەی ڤیدیۆکە نابێت لە ٥٠ MB زیاتر بێت.'));
+          return reject(new Error(String(payload?.error || 'بارکردنی ڤیدیۆ سەرکەوتوو نەبوو.')));
+        }
+        onProgress?.(100);
+        resolve(resolveApiUrl(payload.url));
+      };
+      request.send(file);
+    });
   };
   // Only the administrative editor is local; saved ranges apply to all viewers.
   useEffect(() => {
