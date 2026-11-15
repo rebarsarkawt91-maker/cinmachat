@@ -14647,7 +14647,7 @@ const handleWebkitEndFullscreen = () => {
 
   return (
     <div
-      className="relative min-h-dvh bg-black text-white select-none overflow-x-hidden"
+      className="relative min-h-dvh bg-transparent text-white select-none overflow-x-hidden"
       dir="rtl"
     >
       {/* Background Layer (Video) — fixed behind all content */}

@@ -44,7 +44,7 @@ export const HERO_BACKGROUND_PRESETS: readonly BackgroundPreset[] = [
 
 const FRAME_INTERVAL = 1000 / 24;
 
-function AnimatedBackdrop({ design }: { design: BackgroundPreset }) {
+function AnimatedBackdrop({ design, pageBackground = false }: { design: BackgroundPreset; pageBackground?: boolean }) {
   const host = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const updatePreset = useRef<((preset: BackgroundPreset) => void) | null>(null);
@@ -65,10 +65,15 @@ function AnimatedBackdrop({ design }: { design: BackgroundPreset }) {
     let measuredWidth = 0;
     let measuredHeight = 0;
 
+    // The page-wide modes follow the document scroll as well as the clock,
+    // matching the supplied scroll reference while keeping the canvas fixed
+    // behind the complete site.
+    const scrollOffset = () => pageBackground && typeof window !== 'undefined' ? window.scrollY / 420 : 0;
+
     const isVisible = () => inView && !document.hidden;
     const animate = () => isVisible() && !motion.matches;
     const draw = () => {
-      renderer?.draw(seconds);
+      renderer?.draw(seconds + scrollOffset());
       if (renderer) element.dataset.renderer = 'webgl';
     };
 
@@ -130,6 +135,9 @@ function AnimatedBackdrop({ design }: { design: BackgroundPreset }) {
       }
       syncMotion();
     };
+    const onScroll = () => {
+      if (isVisible()) draw();
+    };
     const lost = (event: Event) => {
       event.preventDefault();
       renderer = null;
@@ -151,6 +159,7 @@ function AnimatedBackdrop({ design }: { design: BackgroundPreset }) {
     smallScreen.addEventListener('change', resize);
     motion.addEventListener('change', syncMotion);
     document.addEventListener('visibilitychange', onVisible);
+    if (pageBackground) window.addEventListener('scroll', onScroll, { passive: true });
     surface.addEventListener('webglcontextlost', lost);
     surface.addEventListener('webglcontextrestored', restored);
     onVisible();
@@ -169,12 +178,13 @@ function AnimatedBackdrop({ design }: { design: BackgroundPreset }) {
       smallScreen.removeEventListener('change', resize);
       motion.removeEventListener('change', syncMotion);
       document.removeEventListener('visibilitychange', onVisible);
+      if (pageBackground) window.removeEventListener('scroll', onScroll);
       surface.removeEventListener('webglcontextlost', lost);
       surface.removeEventListener('webglcontextrestored', restored);
       if (frame) cancelAnimationFrame(frame);
       renderer?.dispose();
     };
-  }, []);
+  }, [pageBackground]);
 
   useEffect(() => { updatePreset.current?.(design); }, [design]);
   const [primary, secondary, accent] = design.colors;
@@ -187,7 +197,8 @@ function AnimatedBackdrop({ design }: { design: BackgroundPreset }) {
   } as CSSProperties;
   return (
     <div ref={host} className="hero-background-layer" data-background-mode={design.id}
-      data-background-shape={design.shape} aria-hidden="true" style={style}>
+      data-background-shape={design.shape} data-page-background={pageBackground ? 'true' : undefined}
+      aria-hidden="true" style={style}>
       <div className="hero-background-layer__fallback" />
       <canvas ref={canvas} className="hero-background-layer__canvas" width={1} height={1} />
     </div>
@@ -195,7 +206,9 @@ function AnimatedBackdrop({ design }: { design: BackgroundPreset }) {
 }
 
 /** The classic setting keeps the existing cinema photograph untouched. */
-export function HeroBackgroundLayer({ mode }: { mode: number }) {
+export function HeroBackgroundLayer({ mode, pageBackground = false }: { mode: number; pageBackground?: boolean }) {
   const design = HERO_BACKGROUND_PRESETS[mode - 1];
-  return design && design.id !== DEFAULT_HERO_BACKGROUND_ID ? <AnimatedBackdrop design={design} /> : null;
+  return design && design.id !== DEFAULT_HERO_BACKGROUND_ID
+    ? <AnimatedBackdrop design={design} pageBackground={pageBackground} />
+    : null;
 }

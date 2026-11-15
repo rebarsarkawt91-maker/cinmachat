@@ -7,6 +7,14 @@
   background: #07060d;
 }
 
+/* Modes 3+ are document backgrounds: keep the animated surface fixed while
+   the normal site content scrolls above it, like the supplied scroll demo. */
+.hero-background-layer[data-page-background="true"] {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+}
+
 .hero-background-layer__canvas,
 .hero-background-layer__fallback {
   position: absolute;

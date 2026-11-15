@@ -27,7 +27,7 @@ function resolveMediaUrl(url: string) {
   return (url.startsWith(HERO_BACKGROUND_IMAGE_PATH) || url.startsWith('/uploads/')) ? resolveApiUrl(url) : url;
 }
 
-function VideoBackdrop({ url, onError }: { url: string; onError: () => void }) {
+function VideoBackdrop({ url, onError, pageBackground = false }: { url: string; onError: () => void; pageBackground?: boolean }) {
   const video = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
@@ -63,37 +63,39 @@ function VideoBackdrop({ url, onError }: { url: string; onError: () => void }) {
     };
   }, [url]);
 
-  return <video ref={video} className="hero-bg-media" src={url} aria-hidden="true"
+  return <video ref={video} className={`hero-bg-media${pageBackground ? ' hero-bg-media--page' : ''}`} src={url} aria-hidden="true"
     muted loop playsInline preload="none" disablePictureInPicture disableRemotePlayback
     onPlaying={event => { event.currentTarget.dataset.playing = 'true'; }} onError={onError} />;
 }
 
-function MediaBackdrop({ media, onMediaFailure }: {
+function MediaBackdrop({ media, onMediaFailure, pageBackground = false }: {
   media: Media;
   onMediaFailure?: () => void;
+  pageBackground?: boolean;
 }) {
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
   const fail = () => { setFailed(true); onMediaFailure?.(); };
   if (failed) return null;
-  if (media.kind === 'video') return <VideoBackdrop url={resolveMediaUrl(media.url)} onError={fail} />;
+  if (media.kind === 'video') return <VideoBackdrop url={resolveMediaUrl(media.url)} onError={fail} pageBackground={pageBackground} />;
   const source = media.kind === 'youtube'
     ? `https://img.youtube.com/vi/${getHeroBackgroundYouTubeId(media.url)}/hqdefault.jpg`
     : resolveMediaUrl(media.url);
-  return <img className="hero-bg-media" data-playing={ready} src={source}
+  return <img className={`hero-bg-media${pageBackground ? ' hero-bg-media--page' : ''}`} data-playing={ready} src={source}
         alt="" aria-hidden="true" referrerPolicy="no-referrer" decoding="async"
         onLoad={() => setReady(true)} onError={fail} />;
 }
 
-function Backdrop({ mode, media, onMediaFailure }: {
+function Backdrop({ mode, media, onMediaFailure, pageBackground = false }: {
   mode: number;
   media?: Media;
   onMediaFailure?: () => void;
+  pageBackground?: boolean;
 }) {
   return <>
-    <HeroBackgroundLayer mode={mode} />
+    <HeroBackgroundLayer mode={mode} pageBackground={pageBackground} />
     {mode !== DEFAULT_HERO_BACKGROUND.mode && media &&
-      <MediaBackdrop key={`${media.kind}|${media.url}`} media={media} onMediaFailure={onMediaFailure} />}
+      <MediaBackdrop key={`${media.kind}|${media.url}`} media={media} onMediaFailure={onMediaFailure} pageBackground={pageBackground} />}
   </>;
 }
 
@@ -327,7 +329,7 @@ export function HeroBackgroundExperience({ siteSetting, saveGlobalSetting, child
 
   return <>
     {children({
-      backdrop: open ? null : <Backdrop mode={mode} media={media} />,
+      backdrop: open ? null : <Backdrop mode={mode} media={media} pageBackground={mode >= 3} />,
       controls: <>
         <div className="hero-bg-quick" dir="ltr" role="group" aria-label="مۆدەکانی باگراوند">
           <Swatches mode={mode} onSelect={select} />
