@@ -1,4 +1,5 @@
 import { boxOfficeSeed, type BoxOfficeChart, type BoxOfficeMovie } from '../src/data/boxOfficeSeed';
+import { lookupBoxOfficeSynopsis } from '../src/data/boxOfficeSynopses';
 import { descriptionText } from '../src/utils/descriptionSearch';
 import { createExternalTitleSearch } from './externalTitleSearch';
 
@@ -62,8 +63,9 @@ export function createBoxOfficeService(options: { request?: typeof fetch; now?: 
             .sort((a, b) => (b.year || 0) - (a.year || 0))[0];
           // Posters are optional. A failed metadata request cannot change rank.
           const old = last.items.find(film => film.title === item.title);
+          const imdbId = found?.imdbId || old?.imdbId;
           return { ...item, poster: found?.poster || old?.poster || '', year: found?.year || old?.year || null,
-            imdbId: found?.imdbId || old?.imdbId };
+            imdbId, synopsisKu: lookupBoxOfficeSynopsis(imdbId) };
         }));
         last = { ...chart, items, source: 'Box Office Mojo', fetchedAt: new Date(now()).toISOString(), stale: false };
         nextRefresh = now() + BOX_OFFICE_TTL;

@@ -457,6 +457,7 @@ import { catalogHasNamedTitle, namedSearchTitle, rankNamedMovies } from './utils
 import { MovieTitleInput } from './components/MovieTitleInput';
 import { MissingMovieCards } from './components/MissingMovieCards';
 import { BoxOfficeBanner } from './components/Movie/BoxOfficeBanner';
+import { HeroBoxOfficeCard } from './components/Movie/HeroBoxOfficeCard';
 import { PlayerAdOverlay, publishPlayerAdsConfig } from './components/Player/PlayerAdOverlay';
 import { PlayerAdsModule } from './components/Admin/PlayerAdsModule';
 import { LiveMoviePreview } from './components/Movie/LiveMoviePreview';
@@ -15124,29 +15125,32 @@ const handleWebkitEndFullscreen = () => {
                   </div>
                 </div>
               }>
-                <HeroSection
-                  activeFeaturedMovie={activeFeaturedMovie}
-                  countdown={countdown}
-                  setCountdown={setCountdown}
-                  isHeroMuted={isHeroMuted}
-                  setIsHeroMuted={setIsHeroMuted}
-                  hasInteracted={hasInteracted}
-                  heroPlaylist={activeFeaturedMovie?.heroPlaylist}
-                  heroReady={heroConfigReady}
-                  config={config}
-                  activeAudioSource={activeAudioSource}
-                  dramaRooms={dramaRoomsFiltered}
-                  onOpenDramaRoom={openDramaRoom}
-                  // The mini trailer in the details modal is also an active
-                  // audio source. Claim the existing hero-audio interlock as
-                  // soon as that preview mounts so the background hero pauses
-                  // and cannot mix with the trailer soundtrack.
-                  isMoviePlayerOpen={
-                    showCinemaWindowModal ||
-                    (!!selectedMovie &&
-                      (showPlayer || (!!isMovieDetailsOpen && !!trailerPreviewId)))
-                  }
-                />
+                <div className="relative">
+                  <HeroSection
+                    activeFeaturedMovie={activeFeaturedMovie}
+                    countdown={countdown}
+                    setCountdown={setCountdown}
+                    isHeroMuted={isHeroMuted}
+                    setIsHeroMuted={setIsHeroMuted}
+                    hasInteracted={hasInteracted}
+                    heroPlaylist={activeFeaturedMovie?.heroPlaylist}
+                    heroReady={heroConfigReady}
+                    config={config}
+                    activeAudioSource={activeAudioSource}
+                    dramaRooms={dramaRoomsFiltered}
+                    onOpenDramaRoom={openDramaRoom}
+                    // The mini trailer in the details modal is also an active
+                    // audio source. Claim the existing hero-audio interlock as
+                    // soon as that preview mounts so the background hero pauses
+                    // and cannot mix with the trailer soundtrack.
+                    isMoviePlayerOpen={
+                      showCinemaWindowModal ||
+                      (!!selectedMovie &&
+                        (showPlayer || (!!isMovieDetailsOpen && !!trailerPreviewId)))
+                    }
+                  />
+                  <HeroBoxOfficeCard catalog={publicMovies} />
+                </div>
               </React.Suspense>
             )}
 

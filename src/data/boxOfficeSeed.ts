@@ -1,6 +1,8 @@
+import { lookupBoxOfficeSynopsis } from './boxOfficeSynopses';
+
 export interface BoxOfficeMovie {
   rank: number; title: string; weekendGross: string; poster: string;
-  year: number | null; imdbId?: string;
+  year: number | null; imdbId?: string; synopsisKu?: string;
 }
 export interface BoxOfficeChart {
   items: BoxOfficeMovie[]; period: string; fetchedAt: string;
@@ -17,5 +19,5 @@ export const boxOfficeSeed: BoxOfficeChart = {
     { rank: 3, title: 'Resident Evil', weekendGross: '$8.6 M', year: 2026, imdbId: 'tt35538033', poster: 'https://m.media-amazon.com/images/M/MV5BOGZjZWI1NTItOGUwZC00YWZkLWIxZWEtNzE2ZTIxODdjNmZmXkEyXkFqcGc@._V1_QL75_UX240_.jpg' },
     { rank: 4, title: 'Heart of the Beast', weekendGross: '$7.4 M', year: 2026, imdbId: 'tt7526136', poster: 'https://m.media-amazon.com/images/M/MV5BMDVlMTRhMjgtMjdmZi00NjJhLWExMmYtODExNWJkZGZjNjdhXkEyXkFqcGc@._V1_QL75_UX240_.jpg' },
     { rank: 5, title: 'The Social Reckoning', weekendGross: '$5.0 M', year: 2026, imdbId: 'tt37510326', poster: 'https://m.media-amazon.com/images/M/MV5BYjdlZTgzZDUtMmVjYy00M2EyLWFlNGMtNjVhYjM2ODNmZjEzXkEyXkFqcGc@._V1_QL75_UX240_.jpg' },
-  ],
+  ].map(movie => ({ ...movie, synopsisKu: lookupBoxOfficeSynopsis(movie.imdbId) })),
 };
