@@ -14371,6 +14371,9 @@ async function startServer() {
     const record = db.admins.find((item: any) => String(item.username || '').trim().toLowerCase() === username);
     return OWNER_USERNAMES.includes(username) || isHeroBackgroundAdminRole(record?.role) ? username : null;
   }));
+  app.get('/api/hero-background', (_req, res) => {
+    res.set('Cache-Control', 'no-store').json({ heroBackground: heroBackgroundStore.get() });
+  });
   app.get('/api/hero-background-image/:hash', (req, res) => {
     const image = heroBackgroundStore.getImage(req.params.hash);
     if (!image) return res.status(404).set('Cache-Control', 'no-store').end();

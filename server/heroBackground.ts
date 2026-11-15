@@ -1,10 +1,13 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { Request, Response } from 'express';
 import {
   DEFAULT_HERO_BACKGROUND,
   HERO_BACKGROUND_IMAGE_PATH,
   parseHeroBackground,
+  parseHeroBackgroundUpdate,
+  type HeroBackgroundMedia,
   type HeroBackgroundSettings,
+  type HeroBackgroundUpdate,
 } from '../src/utils/heroBackground';
 
 type HeroBackgroundStorage = {
@@ -12,45 +15,87 @@ type HeroBackgroundStorage = {
   write: (settings: HeroBackgroundSettings, username: string) => Promise<void>;
 };
 
+// Leave room for Firestore field names, metadata and document overhead.
+const MAX_SETTINGS_BYTES = 896 * 1024;
+class HeroBackgroundStorageLimit extends Error {}
+
 function prepareBackground(settings: HeroBackgroundSettings) {
-  const url = settings.media?.url;
-  const raster = url?.match(/^data:(image\/(?:png|jpeg|webp));base64,(.+)$/);
-  if (!raster) return { settings, publicSettings: settings, image: undefined };
-  const [data, mime, base64] = raster;
-  const hash = createHash('sha256').update(data).digest('hex');
-  const image = { hash, mime, bytes: Buffer.from(base64, 'base64') };
-  // Keep the config response small and let the browser cache the raster separately.
-  const publicSettings: HeroBackgroundSettings = {
-    mode: settings.mode,
-    media: { kind: 'image', url: HERO_BACKGROUND_IMAGE_PATH + hash },
-  };
-  return { settings, publicSettings, image };
+  const images = new Map<string, { mime: string; bytes: Buffer; media: HeroBackgroundMedia }>();
+  const slots: NonNullable<HeroBackgroundSettings['slots']> = {};
+  for (const [mode, media] of Object.entries(settings.slots ?? {})) {
+    if (!media) continue;
+    const raster = media.kind === 'image' && media.url.match(/^data:(image\/(?:png|jpeg|webp));base64,(.+)$/);
+    if (raster) {
+      const [data, mime, base64] = raster;
+      const hash = createHash('sha256').update(data).digest('hex');
+      if (!images.has(hash)) images.set(hash, { mime, bytes: Buffer.from(base64, 'base64'), media });
+      // Keep the config response small and let the browser cache the raster separately.
+      slots[Number(mode)] = { kind: 'image', url: HERO_BACKGROUND_IMAGE_PATH + hash };
+    } else {
+      slots[Number(mode)] = media;
+    }
+  }
+  const publicSettings = { ...settings, ...(Object.keys(slots).length ? { slots } : {}) };
+  return { settings, publicSettings, images };
 }
 
 export function createHeroBackgroundStore(storage: HeroBackgroundStorage) {
   let state = prepareBackground(DEFAULT_HERO_BACKGROUND);
-  let revision = 0;
+  let loaded = false;
+  let loading: Promise<void> | undefined;
   let writes = Promise.resolve();
+
+  function load() {
+    if (loaded) return Promise.resolve();
+    if (!loading) {
+      loading = storage.read().then(value => {
+        const saved = parseHeroBackground(value);
+        if (saved && !Object.values(saved.slots ?? {}).some(media => media?.url.startsWith(HERO_BACKGROUND_IMAGE_PATH))) {
+          state = prepareBackground(saved);
+        }
+        loaded = true;
+      }).finally(() => { loading = undefined; });
+    }
+    return loading;
+  }
+
   return {
     get: () => state.publicSettings,
-    getImage: (hash: string) => state.image?.hash === hash ? state.image : undefined,
-    async load() {
-      const before = revision;
-      const saved = parseHeroBackground(await storage.read());
-      if (saved && revision === before && !saved.media?.url.startsWith(HERO_BACKGROUND_IMAGE_PATH)) {
-        state = prepareBackground(saved);
-      }
-    },
-    async save(settings: HeroBackgroundSettings, username: string) {
+    getImage: (hash: string) => state.images.get(hash),
+    load,
+    async save(input: HeroBackgroundUpdate, username: string) {
+      const update = parseHeroBackgroundUpdate(input);
+      if (!update) return null;
       const work = writes.then(async () => {
-        let normalized = settings;
-        if (settings.media?.url.startsWith(HERO_BACKGROUND_IMAGE_PATH)) {
-          if (!state.image || settings.media.url !== state.publicSettings.media?.url || !state.settings.media) return null;
-          normalized = { mode: settings.mode, media: state.settings.media };
+        // A write during startup must merge against the durable slots, not the seed.
+        await load();
+        const slots = { ...state.settings.slots };
+        if (update.slot) {
+          const { mode, media } = update.slot;
+          if (!media) {
+            delete slots[mode];
+          } else if (media.url.startsWith(HERO_BACKGROUND_IMAGE_PATH)) {
+            const image = state.images.get(media.url.slice(HERO_BACKGROUND_IMAGE_PATH.length));
+            if (!image) return null;
+            slots[mode] = image.media;
+          } else {
+            slots[mode] = media;
+          }
         }
+
+        const mode = update.mode ?? state.settings.mode;
+        const revision = mode === state.settings.mode ? state.settings.revision : randomUUID();
+        const normalized: HeroBackgroundSettings = {
+          mode,
+          ...(Object.keys(slots).length ? { slots } : {}),
+          ...(revision ? { revision } : {}),
+        };
+        if (Buffer.byteLength(JSON.stringify(normalized), 'utf8') > MAX_SETTINGS_BYTES) {
+          throw new HeroBackgroundStorageLimit();
+        }
+
         const next = prepareBackground(normalized);
         await storage.write(normalized, username);
-        revision++;
         state = next;
         return next.publicSettings;
       });
@@ -68,13 +113,16 @@ export function heroBackgroundAdminHandler(
     res.setHeader('Cache-Control', 'no-store');
     const username = authenticate(req);
     if (!username) return res.status(401).json({ success: false, error: 'تکایە دووبارە بە ئەدمین بچۆ ژوورەوە.' });
-    const settings = parseHeroBackground(req.body);
-    if (!settings) return res.status(400).json({ success: false, error: 'مۆدێکی دروست هەڵبژێرە و لینکی ڕاستەوخۆی HTTPS یان فایلێکی وێنەی دروست دابنێ.' });
+    const update = parseHeroBackgroundUpdate(req.body);
+    if (!update) return res.status(400).json({ success: false, error: 'مۆدێکی دەستکاریکراو هەڵبژێرە و لینکی دروستی وێنە، ڤیدیۆ یان یوتیوب دابنێ.' });
     try {
-      const heroBackground = await store.save(settings, username);
+      const heroBackground = await store.save(update, username);
       if (!heroBackground) return res.status(409).json({ success: false, error: 'باگراوند گۆڕدراوە. پەڕەکە نوێ بکەرەوە و دووبارە هەوڵ بدە.' });
       return res.json({ success: true, heroBackground });
-    } catch {
+    } catch (error) {
+      if (error instanceof HeroBackgroundStorageLimit) {
+        return res.status(413).json({ success: false, error: 'قەبارەی وێنە بارکراوەکان زۆرە. لینکی وێنە بەکاربهێنە.' });
+      }
       return res.status(503).json({ success: false, error: 'باگراوند پاشەکەوت نەکرا. تکایە دووبارە هەوڵ بدە.' });
     }
   };

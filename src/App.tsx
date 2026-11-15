@@ -459,7 +459,7 @@ import { MissingMovieCards } from './components/MissingMovieCards';
 import { BoxOfficeBanner } from './components/Movie/BoxOfficeBanner';
 import { HeroBoxOfficeCard } from './components/Movie/HeroBoxOfficeCard';
 import { HeroBackgroundExperience } from './components/Movie/HeroBackgroundExperience';
-import { DEFAULT_HERO_BACKGROUND, isHeroBackgroundAdminRole, parseHeroBackground, type HeroBackgroundSettings } from './utils/heroBackground';
+import { DEFAULT_HERO_BACKGROUND, isHeroBackgroundAdminRole, parseHeroBackground, type HeroBackgroundUpdate } from './utils/heroBackground';
 import { PlayerAdOverlay, publishPlayerAdsConfig } from './components/Player/PlayerAdOverlay';
 import { PlayerAdsModule } from './components/Admin/PlayerAdsModule';
 import { LiveMoviePreview } from './components/Movie/LiveMoviePreview';
@@ -13017,19 +13017,25 @@ const handleWebkitEndFullscreen = () => {
   const canManageHeroBackground = Boolean(
     currentUser?.username && (isPrimaryOwner || isHeroBackgroundAdminRole(currentUser.role)),
   );
-  const saveHeroBackground = async (value: HeroBackgroundSettings) => {
+  const heroBackgroundWrite = useRef(0);
+  const saveHeroBackground = async (value: HeroBackgroundUpdate) => {
+    heroBackgroundWrite.current++;
     const response = await fetchApi('/api/admin/hero-background', {
       method: 'PUT', credentials: 'include',
+      signal: AbortSignal.timeout(15000),
       headers: { 'Content-Type': 'application/json', 'X-Admin-Username': currentUser?.username || '' },
       body: JSON.stringify(value),
     }, 0);
     const payload = await response.json().catch(() => null);
     const saved = parseHeroBackground(payload?.heroBackground);
     if (!response.ok || payload?.success !== true || !saved) {
-      throw new Error(response.status === 401 || response.status === 403
-        ? 'دانیشتنی ئەدمین پێویستە. جارێکی تر بچۆ ژوورەوە.'
-        : 'باگراوند پاشەکەوت نەکرا. دووبارە هەوڵ بدەرەوە.');
+      if (response.status === 401 || response.status === 403) {
+        throw new Error('دانیشتنی ئەدمین پێویستە. جارێکی تر بچۆ ژوورەوە.');
+      }
+      if (response.status === 413) throw new Error('قەبارەی وێنە بارکراوەکان زۆرە. لینکی وێنە بەکاربهێنە.');
+      throw new Error('باگراوند پاشەکەوت نەکرا. دووبارە هەوڵ بدەرەوە.');
     }
+    heroBackgroundWrite.current++;
     setConfig(previous => ({ ...previous, heroBackground: saved }));
   };
   // Only the administrative editor is local; saved ranges apply to all viewers.
@@ -13272,6 +13278,7 @@ const handleWebkitEndFullscreen = () => {
   // Fetch Config
   useEffect(() => {
     const fetchConfig = async () => {
+      const heroWrite = heroBackgroundWrite.current;
       try {
         const res = await fetchApi("/api/config");
         if (!res.ok) {
@@ -13281,6 +13288,9 @@ const handleWebkitEndFullscreen = () => {
         setConfig((prev) => ({
           ...prev,
           ...data,
+          heroBackground: heroWrite === heroBackgroundWrite.current
+            ? parseHeroBackground(data.heroBackground) ?? prev.heroBackground
+            : prev.heroBackground,
           heroVideoUrl: data.heroVideoUrl || "",
           youtubeChannelUrl:
             data.youtubeUrl || data.youtubeChannelUrl || prev.youtubeChannelUrl,
@@ -13315,6 +13325,37 @@ const handleWebkitEndFullscreen = () => {
     };
     fetchConfig();
   }, []);
+
+  // Refresh only the cinema setting, using the server's in-memory public value.
+  useEffect(() => {
+    if (socialTab !== 'movies') return;
+    let cancelled = false;
+    let pending: AbortController | undefined;
+    const refresh = async () => {
+      if (document.hidden || pending) return;
+      const controller = new AbortController();
+      pending = controller;
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      const heroWrite = heroBackgroundWrite.current;
+      try {
+        const response = await fetchApi('/api/hero-background', { signal: controller.signal, cache: 'no-store' }, 0);
+        if (!response.ok) return;
+        const next = parseHeroBackground((await response.json()).heroBackground);
+        if (!next || cancelled || heroWrite !== heroBackgroundWrite.current) return;
+        setConfig(previous => JSON.stringify(previous.heroBackground) === JSON.stringify(next)
+          ? previous : { ...previous, heroBackground: next });
+      } catch { /* Keep the last working public setting on a transient failure. */ }
+      finally { clearTimeout(timeout); pending = undefined; }
+    };
+    const timer = setInterval(refresh, 30000);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      cancelled = true;
+      pending?.abort();
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [socialTab]);
 
   // Module 9: Channel & Brand links — live from the dedicated channel_settings
   // collection. Any save in the admin panel propagates app-wide in real time

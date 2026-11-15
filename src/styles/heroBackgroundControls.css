@@ -11,10 +11,13 @@
 
 .hero-bg-media[data-playing="true"] { opacity: 1; }
 
-.hero-bg-quick, .hero-bg-trigger {
+.hero-bg-quick, .hero-bg-buttons {
   position: absolute;
   top: .45rem;
   z-index: 145;
+}
+
+.hero-bg-quick, .hero-bg-trigger {
   align-items: center;
   border: 1px solid rgb(255 255 255 / 18%);
   border-radius: 999px;
@@ -29,8 +32,13 @@
   padding-inline: .35rem;
 }
 
-.hero-bg-trigger {
+.hero-bg-buttons {
   right: clamp(.65rem, 2.5vw, 2.5rem);
+  display: flex;
+  gap: .3rem;
+}
+
+.hero-bg-trigger {
   display: flex;
   gap: .3rem;
   min-height: 32px;
@@ -68,7 +76,7 @@
 }
 
 .hero-bg-swatch:focus-visible, .hero-bg-trigger:focus-visible, .hero-bg-action:focus-visible,
-.hero-bg-field input:focus-visible {
+.hero-bg-field input:focus-visible, .hero-bg-field select:focus-visible {
   outline: 2px solid #ffda80;
   outline-offset: 2px;
 }
@@ -90,6 +98,8 @@
 }
 
 .hero-bg-dialog::backdrop { background: rgb(0 0 0 / 82%); }
+
+.hero-bg-dialog--admin { width: min(46rem, calc(100vw - 1.25rem)); }
 
 .hero-bg-dialog__heading {
   display: flex;
@@ -149,25 +159,29 @@
 
 .hero-bg-action:disabled { opacity: .55; cursor: wait; }
 
-.hero-bg-personal, .hero-bg-media-options {
+.hero-bg-personal {
   display: flex;
   flex-wrap: wrap;
   gap: .45rem;
 }
 
-.hero-bg-admin {
-  display: grid;
-  gap: .65rem;
-  margin-top: .9rem;
-  padding-top: .75rem;
-  border-top: 1px solid rgb(255 255 255 / 16%);
-  font-size: .83rem;
+.hero-bg-slot-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: .45rem;
+  margin-bottom: .6rem;
+  font-size: .76rem;
 }
 
-.hero-bg-field { display: grid; gap: .35rem; }
-.hero-bg-field input {
+.hero-bg-field { display: grid; min-width: 0; gap: .25rem; }
+.hero-bg-field select { max-width: 11rem; }
+.hero-bg-slot-editor__url { flex: 1 1 12rem; }
+.hero-bg-slot-editor__upload { flex: 1 1 15rem; }
+.hero-bg-field input, .hero-bg-field select {
   width: 100%;
-  padding: .55rem .62rem;
+  min-height: 36px;
+  padding: .35rem .5rem;
   border: 1px solid rgb(255 255 255 / 21%);
   border-radius: .5rem;
   background: #0b0a0d;
@@ -175,6 +189,16 @@
 }
 
 .hero-bg-error { margin: .35rem 0; color: #fda4af; font-size: .75rem; }
+.hero-bg-slot-note { margin: .35rem 0 .65rem; color: #e9cdbc; font-size: .75rem; }
+.hero-bg-watch iframe {
+  display: block;
+  width: 100%;
+  min-height: 200px;
+  aspect-ratio: 16 / 9;
+  border: 0;
+  background: #000;
+}
+.hero-bg-watch__link { display: inline-block; margin-top: .55rem; color: #ffda80; font-size: .8rem; }
 
 @media (max-width: 420px) {
   .hero-bg-dialog__swatches { grid-template-columns: repeat(5, minmax(0, 1fr)); }
