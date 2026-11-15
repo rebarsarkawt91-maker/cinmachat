@@ -237,7 +237,9 @@ function BackgroundDialog({ initial, activeMode, save, uploadVideo, select, onDi
                 if (getHeroBackgroundYouTubeId(link)) setKind('youtube');
               }} />
           </label>}
-          <button type="submit" className="hero-bg-action hero-bg-action--primary" disabled={busy}>پاشەکەوتی مۆد</button>
+          <button type="submit" className="hero-bg-action hero-bg-action--primary" disabled={busy}>
+            {saving ? 'پاشەکەوتکردن لە سێرڤەر…' : 'پاشەکەوتی مۆد'}
+          </button>
           {kind === 'image' && <label className="hero-bg-field hero-bg-slot-editor__upload">
             <span>یان وێنە بار بکە (PNG، JPG، WebP تا ٥٠٠ KB)</span>
             <input type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={event => {
