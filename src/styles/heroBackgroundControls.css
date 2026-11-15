@@ -190,15 +190,6 @@
 
 .hero-bg-error { margin: .35rem 0; color: #fda4af; font-size: .75rem; }
 .hero-bg-slot-note { margin: .35rem 0 .65rem; color: #e9cdbc; font-size: .75rem; }
-.hero-bg-watch iframe {
-  display: block;
-  width: 100%;
-  min-height: 200px;
-  aspect-ratio: 16 / 9;
-  border: 0;
-  background: #000;
-}
-.hero-bg-watch__link { display: inline-block; margin-top: .55rem; color: #ffda80; font-size: .8rem; }
 
 @media (max-width: 420px) {
   .hero-bg-dialog__swatches { grid-template-columns: repeat(5, minmax(0, 1fr)); }

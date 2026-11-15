@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { Image as ImageIcon, Play, X } from 'lucide-react';
+import { Image as ImageIcon, X } from 'lucide-react';
 import { resolveApiUrl } from '../../services/backendConfig';
 import {
   DEFAULT_HERO_BACKGROUND, HERO_BACKGROUND_IMAGE_MAX_BYTES, HERO_BACKGROUND_IMAGE_PATH,
@@ -40,6 +40,7 @@ function VideoBackdrop({ url, onError }: { url: string; onError: () => void }) {
       if (!inView || document.hidden || reducedMotion.matches) {
         element.pause();
       } else {
+        element.muted = true;
         void element.play().then(() => {
           if (disposed || !inView || document.hidden || reducedMotion.matches) element.pause();
         }).catch(() => {});
@@ -64,7 +65,7 @@ function VideoBackdrop({ url, onError }: { url: string; onError: () => void }) {
 
   return <video ref={video} className="hero-bg-media" src={url} aria-hidden="true"
     muted loop playsInline preload="none" disablePictureInPicture disableRemotePlayback
-    onTimeUpdate={event => { event.currentTarget.dataset.playing = 'true'; }} onError={onError} />;
+    onPlaying={event => { event.currentTarget.dataset.playing = 'true'; }} onError={onError} />;
 }
 
 function MediaBackdrop({ media, onMediaFailure }: {
@@ -105,23 +106,6 @@ function Swatches({ mode, onSelect }: { mode?: number; onSelect: (mode: number) 
       <span aria-hidden="true" />
     </button>
   ));
-}
-
-function YouTubeBackgroundPlayer({ url, close }: { url: string; close: () => void }) {
-  const dialog = useRef<HTMLDialogElement>(null);
-  useEffect(() => { dialog.current?.showModal(); }, []);
-
-  return <dialog ref={dialog} className="hero-bg-dialog hero-bg-watch kurdish-text" dir="rtl" lang="ckb"
-    aria-labelledby="hero-bg-watch-title" onClose={close}>
-    <div className="hero-bg-dialog__heading">
-      <h2 id="hero-bg-watch-title">ڤیدیۆی باگراوند لە یوتیوب</h2>
-      <button type="button" className="hero-bg-action" aria-label="داخستن"
-        onClick={() => dialog.current?.close()}><X size={18} /></button>
-    </div>
-    <iframe title="YouTube background video" src={`https://www.youtube-nocookie.com/embed/${getHeroBackgroundYouTubeId(url)}`}
-      referrerPolicy="strict-origin-when-cross-origin" allow="encrypted-media; picture-in-picture; fullscreen" allowFullScreen />
-    <a className="hero-bg-watch__link" href={url} target="_blank" rel="noopener noreferrer">کردنەوە لە یوتیوب</a>
-  </dialog>;
 }
 
 type FormMedia = Media['kind'] | '';
@@ -172,6 +156,13 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
     return value;
   }
 
+  function applyDraftMedia(media: Media | null) {
+    setKind(media?.kind ?? '');
+    setUrl(media?.url ?? '');
+    setPreview(media ?? undefined);
+    setBadMedia(false);
+  }
+
   async function persist(value: HeroBackgroundUpdate, success: string) {
     if (!save || busy) return false;
     setProblem('');
@@ -202,10 +193,7 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
         setProblem('');
         const media = readDraft();
         if (media === undefined) return;
-        if (await persist({ slot: { mode, media } }, 'باگراوندی ئەم مۆدە پاشەکەوت کرا.')) {
-          setPreview(media ?? undefined);
-          setBadMedia(false);
-        }
+        if (await persist({ slot: { mode, media } }, 'باگراوندی ئەم مۆدە پاشەکەوت کرا.')) applyDraftMedia(media);
       }}>
         <label className="hero-bg-field">
           <span>مۆدی باگراوند</span>
@@ -232,7 +220,11 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
             <span>{kind === 'youtube' ? 'لینکی یوتیوب' : 'لینکی ڕاستەوخۆ'}</span>
             <input type="text" dir="ltr" inputMode="url" autoComplete="off" placeholder="https://…"
               disabled={busy} value={url.startsWith('data:') ? '' : url}
-              onChange={event => { setUrl(event.target.value); setSaved(''); setProblem(''); }} />
+              onChange={event => {
+                const link = event.target.value;
+                setUrl(link); setSaved(''); setProblem(''); setBadMedia(false);
+                if (getHeroBackgroundYouTubeId(link)) setKind('youtube');
+              }} />
           </label>}
           <button type="submit" className="hero-bg-action hero-bg-action--primary" disabled={busy}>پاشەکەوتی مۆد</button>
           {kind === 'image' && <label className="hero-bg-field hero-bg-slot-editor__upload">
@@ -257,7 +249,7 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
           {kind && <button type="button" className="hero-bg-action" disabled={busy} onClick={() => {
             setProblem(''); setSaved('');
             const media = readDraft();
-            if (media) { setBadMedia(false); setPreview(media); }
+            if (media) applyDraftMedia(media);
           }}>پێشبینینی لینک</button>}
         </>}
       </form>}
@@ -293,7 +285,6 @@ export function HeroBackgroundExperience({ siteSetting, saveGlobalSetting, child
   const global = useMemo(() => parseHeroBackground(siteSetting) ?? DEFAULT_HERO_BACKGROUND, [siteSetting]);
   const [personal, setPersonal] = useState(readPreference);
   const [open, setOpen] = useState(false);
-  const [watch, setWatch] = useState<string | null>(null);
   // A newly published site default supersedes choices made under older defaults.
   const mode = personal && personal.revision === global.revision ? personal.mode : global.mode;
   const media = mode === DEFAULT_HERO_BACKGROUND.mode ? undefined : global.slots?.[mode];
@@ -309,7 +300,7 @@ export function HeroBackgroundExperience({ siteSetting, saveGlobalSetting, child
 
   return <>
     {children({
-      backdrop: open || watch ? null : <Backdrop mode={mode} media={media} />,
+      backdrop: open ? null : <Backdrop mode={mode} media={media} />,
       controls: <>
         <div className="hero-bg-quick" dir="ltr" role="group" aria-label="مۆدەکانی باگراوند">
           <Swatches mode={mode} onSelect={select} />
@@ -319,10 +310,6 @@ export function HeroBackgroundExperience({ siteSetting, saveGlobalSetting, child
             aria-label="گۆڕینی باگراوند" aria-haspopup="dialog" title="گۆڕینی باگراوند">
             <ImageIcon size={15} aria-hidden="true" /><span>باگراوند</span>
           </button>
-          {media?.kind === 'youtube' && <button type="button" className="hero-bg-trigger kurdish-text" onClick={() => setWatch(media.url)}
-            aria-label="بینینی ڤیدیۆی باگراوند لە یوتیوب" aria-haspopup="dialog" title="ڤیدیۆی باگراوند لە یوتیوب">
-            <Play size={15} aria-hidden="true" /><span>یوتیوب</span>
-          </button>}
         </div>
       </>,
     })}
@@ -332,6 +319,5 @@ export function HeroBackgroundExperience({ siteSetting, saveGlobalSetting, child
         if (value.mode !== undefined) select(null);
       } : undefined}
       select={select} onDismiss={() => setOpen(false)} />}
-    {watch && <YouTubeBackgroundPlayer url={watch} close={() => setWatch(null)} />}
   </>;
 }

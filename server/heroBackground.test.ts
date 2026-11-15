@@ -21,6 +21,7 @@ test('background YouTube URLs are canonicalized from exact video hosts and paths
     'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?autoplay=1',
   ]) {
     assert.deepEqual(parseHeroBackgroundMedia({ kind: 'youtube', url }), youtube);
+    assert.deepEqual(parseHeroBackgroundMedia({ kind: 'video', url }), youtube);
   }
   for (const url of [
     'https://youtube.com.evil.test/watch?v=dQw4w9WgXcQ',
@@ -32,6 +33,12 @@ test('background YouTube URLs are canonicalized from exact video hosts and paths
   ]) {
     assert.equal(getHeroBackgroundYouTubeId(url), null);
   }
+  assert.equal(parseHeroBackgroundMedia({ kind: 'video', url: 'https://www.youtube.com/playlist?list=one' }), null);
+  assert.deepEqual(parseHeroBackground({ mode: 3, slots: {
+    3: { kind: 'video', url: 'https://youtu.be/dQw4w9WgXcQ?si=tracking' },
+    4: { kind: 'video', url: 'https://www.youtube.com/playlist?list=one' },
+    5: clip,
+  } }), { mode: 3, slots: { 3: youtube, 5: clip } });
 });
 
 test('classic slot remains read-only while legacy links in editable slots migrate', () => {
@@ -102,4 +109,16 @@ test('legacy raster files remain durable and failed writes keep the previous liv
   await restarted.load();
   assert.deepEqual(restarted.get(), changed);
   assert.equal(restarted.getImage(hash)?.mime, 'image/png');
+
+  fail = false;
+  await restarted.save({ slot: { mode: 3, media: clip } }, 'admin');
+  assert.equal(restarted.getImage(hash)?.mime, 'image/png', 'The other slot still uses the upload');
+  const replacement = await restarted.save({ slot: { mode: 9, media: youtube } }, 'admin');
+  assert.deepEqual(replacement?.slots, { 3: clip, 9: youtube });
+  assert.equal(restarted.getImage(hash), undefined, 'There are no remaining references to the upload');
+  assert.ok(!JSON.stringify(stored).includes(raster), 'Old bytes were removed from durable settings');
+  const loadedAgain = createHeroBackgroundStore(storage);
+  await loadedAgain.load();
+  assert.deepEqual(loadedAgain.get(), replacement);
+  assert.equal(loadedAgain.getImage(hash), undefined);
 });

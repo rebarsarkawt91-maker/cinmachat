@@ -14378,7 +14378,8 @@ async function startServer() {
     const image = heroBackgroundStore.getImage(req.params.hash);
     if (!image) return res.status(404).set('Cache-Control', 'no-store').end();
     return res.set({
-      'Cache-Control': 'public, max-age=31536000, immutable',
+      // Replaced uploads must stop being served when their last slot is cleared.
+      'Cache-Control': 'no-store',
       'Content-Type': image.mime,
       'X-Content-Type-Options': 'nosniff',
     }).send(image.bytes);

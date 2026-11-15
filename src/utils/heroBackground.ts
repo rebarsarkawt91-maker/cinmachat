@@ -49,6 +49,11 @@ function parseHttpsUrl(value: string): URL | null {
   }
 }
 
+const youtubeHosts = new Set([
+  'youtu.be', 'youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com',
+  'youtube-nocookie.com', 'www.youtube-nocookie.com',
+]);
+
 /** Extract a single video from an exact YouTube host. Strip playlist and tracking options. */
 export function getHeroBackgroundYouTubeId(value: string): string | null {
   if (typeof value !== 'string') return null;
@@ -75,12 +80,12 @@ export function parseHeroBackgroundMedia(value: unknown): HeroBackgroundMedia | 
   const input = asRecord(value);
   if (!input) return null;
   const { kind, url } = input;
-  if (typeof url !== 'string') return null;
-  if (kind === 'youtube') {
+  if (typeof url !== 'string' || (kind !== 'image' && kind !== 'video' && kind !== 'youtube')) return null;
+  const parsed = parseHttpsUrl(url);
+  if (kind === 'youtube' || (parsed && youtubeHosts.has(parsed.hostname))) {
     const id = getHeroBackgroundYouTubeId(url);
-    return id ? { kind, url: `https://www.youtube.com/watch?v=${id}` } : null;
+    return id ? { kind: 'youtube', url: `https://www.youtube.com/watch?v=${id}` } : null;
   }
-  if (kind !== 'image' && kind !== 'video') return null;
 
   if (kind === 'image') {
     const hash = url.startsWith(HERO_BACKGROUND_IMAGE_PATH) ? url.slice(HERO_BACKGROUND_IMAGE_PATH.length) : '';
@@ -88,7 +93,6 @@ export function parseHeroBackgroundMedia(value: unknown): HeroBackgroundMedia | 
     if (url.startsWith('data:image/') && validBannerImage(url)) return { kind, url };
   }
 
-  const parsed = parseHttpsUrl(url);
   return parsed ? { kind, url: parsed.href } : null;
 }
 
@@ -105,14 +109,12 @@ export function parseHeroBackground(value: unknown): HeroBackgroundSettings | nu
       const id = Number(key);
       if (!isMode(id) || String(id) !== key || id === CLASSIC_HERO_BACKGROUND_MODE) return null;
       const media = parseHeroBackgroundMedia(raw);
-      if (!media) return null;
-      slots[id] = media;
+      if (media) slots[id] = media;
     }
   } else if (input.media != null && mode !== CLASSIC_HERO_BACKGROUND_MODE) {
     // Existing deployments stored one link alongside the site default.
     const media = parseHeroBackgroundMedia(input.media);
-    if (!media) return null;
-    slots[mode] = media;
+    if (media) slots[mode] = media;
   }
 
   return {
