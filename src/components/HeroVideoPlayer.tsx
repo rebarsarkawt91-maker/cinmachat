@@ -258,6 +258,8 @@ const HeroVideoPlayer: React.FC<{
   isMoviePlayerOpen?: boolean;
   dramaRooms?: HeroDramaRoom[];
   onOpenDramaRoom?: (room: HeroDramaRoom) => void;
+  backgroundLayer?: React.ReactNode;
+  backgroundControls?: React.ReactNode;
 }> = ({
   activeFeaturedMovie,
   countdown,
@@ -272,6 +274,8 @@ const HeroVideoPlayer: React.FC<{
   isMoviePlayerOpen = false,
   dramaRooms = [],
   onOpenDramaRoom,
+  backgroundLayer,
+  backgroundControls,
 }) => {
   const [isPlaying, setIsPlaying] = useState(true);
   const isMuted = isHeroMuted;
@@ -1189,6 +1193,7 @@ const HeroVideoPlayer: React.FC<{
     >
       {/* QA/verification bridge — readable from any JS world (DOM-shared) */}
       <div id="hero-debug-log" className="hidden" aria-hidden="true" />
+      {backgroundLayer}
       <div className="cinema-theater-stage" aria-label="CinemaChat movie trailer screen">
         {showPlayerLayer && (
           <div
@@ -1212,6 +1217,7 @@ const HeroVideoPlayer: React.FC<{
       {dramaRooms.length > 0 && (
         <DramaHeroCarousel rooms={dramaRooms} onOpenRoom={onOpenDramaRoom} />
       )}
+      {backgroundControls}
 
       <div
         className="relative w-full h-full flex flex-col justify-between p-4 md:p-8 pointer-events-none"

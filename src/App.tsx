@@ -458,6 +458,8 @@ import { MovieTitleInput } from './components/MovieTitleInput';
 import { MissingMovieCards } from './components/MissingMovieCards';
 import { BoxOfficeBanner } from './components/Movie/BoxOfficeBanner';
 import { HeroBoxOfficeCard } from './components/Movie/HeroBoxOfficeCard';
+import { HeroBackgroundExperience } from './components/Movie/HeroBackgroundExperience';
+import { DEFAULT_HERO_BACKGROUND, isHeroBackgroundAdminRole, parseHeroBackground, type HeroBackgroundSettings } from './utils/heroBackground';
 import { PlayerAdOverlay, publishPlayerAdsConfig } from './components/Player/PlayerAdOverlay';
 import { PlayerAdsModule } from './components/Admin/PlayerAdsModule';
 import { LiveMoviePreview } from './components/Movie/LiveMoviePreview';
@@ -13012,6 +13014,24 @@ const handleWebkitEndFullscreen = () => {
         String(currentUser?.role || "").toLowerCase(),
       ),
   );
+  const canManageHeroBackground = Boolean(
+    currentUser?.username && (isPrimaryOwner || isHeroBackgroundAdminRole(currentUser.role)),
+  );
+  const saveHeroBackground = async (value: HeroBackgroundSettings) => {
+    const response = await fetchApi('/api/admin/hero-background', {
+      method: 'PUT', credentials: 'include',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Username': currentUser?.username || '' },
+      body: JSON.stringify(value),
+    }, 0);
+    const payload = await response.json().catch(() => null);
+    const saved = parseHeroBackground(payload?.heroBackground);
+    if (!response.ok || payload?.success !== true || !saved) {
+      throw new Error(response.status === 401 || response.status === 403
+        ? 'دانیشتنی ئەدمین پێویستە. جارێکی تر بچۆ ژوورەوە.'
+        : 'باگراوند پاشەکەوت نەکرا. دووبارە هەوڵ بدەرەوە.');
+    }
+    setConfig(previous => ({ ...previous, heroBackground: saved }));
+  };
   // Only the administrative editor is local; saved ranges apply to all viewers.
   useEffect(() => {
     setShowSceneBlurEditor(false);
@@ -13078,6 +13098,7 @@ const handleWebkitEndFullscreen = () => {
   const [stats, setStats] = useState({ visitors: 0 });
   const [isQuotaExceeded, setIsQuotaExceeded] = useState(false);
   const [config, setConfig] = useState({
+    heroBackground: DEFAULT_HERO_BACKGROUND,
     ads: {
       banner: { image: "", link: "" },
       sidebar: { image: "", link: "" },
@@ -15125,32 +15146,37 @@ const handleWebkitEndFullscreen = () => {
                   </div>
                 </div>
               }>
-                <div className="relative">
-                  <HeroSection
-                    activeFeaturedMovie={activeFeaturedMovie}
-                    countdown={countdown}
-                    setCountdown={setCountdown}
-                    isHeroMuted={isHeroMuted}
-                    setIsHeroMuted={setIsHeroMuted}
-                    hasInteracted={hasInteracted}
-                    heroPlaylist={activeFeaturedMovie?.heroPlaylist}
-                    heroReady={heroConfigReady}
-                    config={config}
-                    activeAudioSource={activeAudioSource}
-                    dramaRooms={dramaRoomsFiltered}
-                    onOpenDramaRoom={openDramaRoom}
-                    // The mini trailer in the details modal is also an active
-                    // audio source. Claim the existing hero-audio interlock as
-                    // soon as that preview mounts so the background hero pauses
-                    // and cannot mix with the trailer soundtrack.
-                    isMoviePlayerOpen={
-                      showCinemaWindowModal ||
-                      (!!selectedMovie &&
-                        (showPlayer || (!!isMovieDetailsOpen && !!trailerPreviewId)))
-                    }
-                  />
-                  <HeroBoxOfficeCard catalog={publicMovies} />
-                </div>
+                <HeroBackgroundExperience siteSetting={config.heroBackground}
+                  saveGlobalSetting={canManageHeroBackground ? saveHeroBackground : undefined}>
+                  {({ backdrop, controls }) => <div className="relative">
+                    <HeroSection
+                      activeFeaturedMovie={activeFeaturedMovie}
+                      countdown={countdown}
+                      setCountdown={setCountdown}
+                      isHeroMuted={isHeroMuted}
+                      setIsHeroMuted={setIsHeroMuted}
+                      hasInteracted={hasInteracted}
+                      heroPlaylist={activeFeaturedMovie?.heroPlaylist}
+                      heroReady={heroConfigReady}
+                      config={config}
+                      activeAudioSource={activeAudioSource}
+                      dramaRooms={dramaRoomsFiltered}
+                      onOpenDramaRoom={openDramaRoom}
+                      backgroundLayer={backdrop}
+                      backgroundControls={controls}
+                      // The mini trailer in the details modal is also an active
+                      // audio source. Claim the existing hero-audio interlock as
+                      // soon as that preview mounts so the background hero pauses
+                      // and cannot mix with the trailer soundtrack.
+                      isMoviePlayerOpen={
+                        showCinemaWindowModal ||
+                        (!!selectedMovie &&
+                          (showPlayer || (!!isMovieDetailsOpen && !!trailerPreviewId)))
+                      }
+                    />
+                    <HeroBoxOfficeCard catalog={publicMovies} />
+                  </div>}
+                </HeroBackgroundExperience>
               </React.Suspense>
             )}
 

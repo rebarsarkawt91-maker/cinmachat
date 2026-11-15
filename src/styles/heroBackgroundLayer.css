@@ -1,0 +1,119 @@
+.hero-background-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: #07060d;
+}
+
+.hero-background-layer__canvas,
+.hero-background-layer__fallback {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.hero-background-layer__canvas { visibility: hidden; }
+.hero-background-layer[data-renderer="webgl"] .hero-background-layer__canvas { visibility: visible; }
+.hero-background-layer[data-renderer="webgl"] .hero-background-layer__fallback { visibility: hidden; }
+
+.hero-background-layer__fallback {
+  isolation: isolate;
+  opacity: var(--hero-backdrop-light, .6);
+}
+
+.hero-background-layer__fallback::before,
+.hero-background-layer__fallback::after {
+  content: "";
+  position: absolute;
+  inset: -17%;
+  background-repeat: no-repeat;
+  transform-origin: center;
+}
+
+.hero-background-layer__fallback::before {
+  background-image:
+    radial-gradient(ellipse at 14% 46%, var(--hero-backdrop-primary), transparent 42%),
+    radial-gradient(ellipse at 80% 62%, var(--hero-backdrop-secondary), transparent 47%),
+    radial-gradient(ellipse at 62% 28%, var(--hero-backdrop-accent), transparent 37%);
+  opacity: .53;
+}
+
+.hero-background-layer__fallback::after {
+  background-image:
+    radial-gradient(ellipse at 17% 62%, transparent 23%, var(--hero-backdrop-accent) 35%, transparent 52%),
+    radial-gradient(ellipse at 75% 34%, transparent 28%, var(--hero-backdrop-secondary) 42%, transparent 56%);
+  opacity: .36;
+}
+
+.hero-background-layer:is([data-background-shape="4"], [data-background-shape="11"]) .hero-background-layer__fallback::before {
+  background-image:
+    radial-gradient(ellipse 40% 25% at 50% 51%, transparent 68%, var(--hero-backdrop-accent) 76%, var(--hero-backdrop-primary) 83%, transparent 100%),
+    radial-gradient(ellipse at 56% 68%, var(--hero-backdrop-secondary), transparent 56%);
+  transform: rotate(-12deg);
+}
+
+.hero-background-layer:is([data-background-shape="2"], [data-background-shape="5"], [data-background-shape="6"], [data-background-shape="12"]) .hero-background-layer__fallback::after {
+  background-image:
+    linear-gradient(var(--hero-backdrop-angle), transparent 18%, var(--hero-backdrop-primary) 36%, transparent 52%),
+    linear-gradient(calc(var(--hero-backdrop-angle) - 30deg), transparent 26%, var(--hero-backdrop-secondary) 54%, transparent 73%);
+}
+
+.hero-background-layer[data-background-shape="7"] .hero-background-layer__fallback::before {
+  background-image:
+    radial-gradient(ellipse 43% 4% at 49% 77%, var(--hero-backdrop-primary), transparent 97%),
+    radial-gradient(ellipse 15% 9% at 15% 27%, var(--hero-backdrop-accent), transparent),
+    conic-gradient(from 72deg at 15% 27%, transparent 0deg, var(--hero-backdrop-primary) 18deg, transparent 36deg);
+}
+
+.hero-background-layer[data-background-shape="8"] .hero-background-layer__fallback::after {
+  background-image: radial-gradient(circle, var(--hero-backdrop-accent) 1px, transparent 2px);
+  background-size: 58px 63px;
+  background-repeat: repeat;
+  mask-image: radial-gradient(ellipse at 50% 50%, #000, transparent 71%);
+}
+
+.hero-background-layer[data-background-shape="9"] .hero-background-layer__fallback::after {
+  background-image:
+    repeating-conic-gradient(from 116deg at 48% 5%, transparent 0deg 11deg, var(--hero-backdrop-primary) 15deg, transparent 23deg),
+    radial-gradient(ellipse at 49% 72%, var(--hero-backdrop-secondary), transparent 34%);
+  mask-image: linear-gradient(#000, transparent 95%);
+}
+
+.hero-background-layer[data-background-shape="10"] .hero-background-layer__fallback::after {
+  background-image:
+    radial-gradient(circle, var(--hero-backdrop-accent) 1px, transparent 2px),
+    radial-gradient(circle, var(--hero-backdrop-primary) 1px, transparent 2px);
+  background-size: 43px 121px, 57px 73px;
+  background-repeat: repeat;
+  mask-image: linear-gradient(transparent, #000 30%, #000 70%, transparent);
+}
+
+.hero-background-layer[data-motion="on"]:not([data-renderer="webgl"]) .hero-background-layer__fallback::before {
+  animation: hero-background-drift 17s ease-in-out infinite alternate;
+}
+
+.hero-background-layer[data-motion="on"]:not([data-renderer="webgl"]) .hero-background-layer__fallback::after {
+  animation: hero-background-drift 24s ease-in-out -8s infinite alternate-reverse;
+}
+
+.hero-background-layer[data-background-shape="10"][data-motion="on"]:not([data-renderer="webgl"]) .hero-background-layer__fallback::after {
+  animation: hero-background-gold-fall 7s linear infinite;
+}
+
+@keyframes hero-background-drift {
+  from { transform: translate3d(-5%, 3%, 0) rotate(-7deg) scale(1.05); }
+  to { transform: translate3d(6%, -4%, 0) rotate(8deg) scale(1.16); }
+}
+
+@keyframes hero-background-gold-fall {
+  from { background-position: 0 0, 13px 0; }
+  to { background-position: 0 242px, 13px 73px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-background-layer .hero-background-layer__fallback::before,
+  .hero-background-layer .hero-background-layer__fallback::after { animation: none !important; }
+}

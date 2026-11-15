@@ -28,6 +28,8 @@ import { compactCatalogMovie } from './catalogDelivery';
 import { loadCatalogBackup } from './catalogBackup';
 import { createStudioAdminSessions } from './studioAdminSession';
 import { createBannerImageStore, bannerImageHandler } from './server/bannerImage';
+import { createHeroBackgroundStore, heroBackgroundAdminHandler } from './server/heroBackground';
+import { isHeroBackgroundAdminRole } from './src/utils/heroBackground';
 import { createPlayerAdsStore, playerAdsAdminHandler } from './server/playerAds';
 import { createSceneBlurHandlers, signedSceneBlurAdminUsername } from './server/sceneBlur';
 import { buildCatalogSeo, buildDramaRoomSeo, catalogMovieUrl, catalogDramaRoomUrl } from './src/lib/catalogSeo';
@@ -5143,6 +5145,21 @@ async function startServer() {
     res.setHeader('Cache-Control', 'public, max-age=60');
     res.json(playerAdsStore.get());
   });
+
+  const heroBackgroundStore = createHeroBackgroundStore({
+    read: async () => {
+      const app = initializeFirebaseAdmin();
+      return app ? (await admin.firestore(app).doc('hero_background_settings/main').get()).data()?.settings : null;
+    },
+    write: async (settings, username) => {
+      const app = initializeFirebaseAdmin();
+      if (!app) throw new Error('Hero background storage unavailable');
+      await admin.firestore(app).doc('hero_background_settings/main').set({
+        settings, updatedBy: username, updatedAt: new Date().toISOString(),
+      });
+    },
+  });
+  void heroBackgroundStore.load().catch(() => console.warn('[Hero background] Saved settings unavailable.'));
 
   const bannerImageStore = createBannerImageStore(ads.banner.image, {
     read: async () => {
@@ -12824,6 +12841,7 @@ async function startServer() {
     const heroView = deriveHeroView(getHeroState());
     res.json({
       ads,
+      heroBackground: heroBackgroundStore.get(),
       trackerText, // Expose tracker text
       socialLinks,
       // Canonical slots + revision (explicit clears are observable):
@@ -14347,6 +14365,21 @@ async function startServer() {
     const record = db.admins.find((item: any) => String(item.username || '').trim().toLowerCase() === username);
     return OWNER_USERNAMES.includes(username) || ['owner', 'admin', 'super_admin', 'deputy_manager', 'staff'].includes(String(record?.role || '').toLowerCase()) ? username : null;
   }, image => { ads.banner.image = image; }));
+  app.put('/api/admin/hero-background', heroBackgroundAdminHandler(heroBackgroundStore, req => {
+    const username = studioLoginIdentity(req);
+    if (!username || username !== String(req.headers['x-admin-username'] || '').trim().toLowerCase()) return null;
+    const record = db.admins.find((item: any) => String(item.username || '').trim().toLowerCase() === username);
+    return OWNER_USERNAMES.includes(username) || isHeroBackgroundAdminRole(record?.role) ? username : null;
+  }));
+  app.get('/api/hero-background-image/:hash', (req, res) => {
+    const image = heroBackgroundStore.getImage(req.params.hash);
+    if (!image) return res.status(404).set('Cache-Control', 'no-store').end();
+    return res.set({
+      'Cache-Control': 'public, max-age=31536000, immutable',
+      'Content-Type': image.mime,
+      'X-Content-Type-Options': 'nosniff',
+    }).send(image.bytes);
+  });
   app.post('/api/admin/logout', (req, res) => {
     res.clearCookie(studioCookieName, studioCookieOptions(req));
     res.json({ success: true });
