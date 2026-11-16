@@ -23,6 +23,9 @@
   border: 0;
   pointer-events: none;
   background: transparent;
+  contain: strict;
+  transform: translateZ(0);
+  will-change: transform;
 }
 
 .hero-bg-quick, .hero-bg-buttons {
