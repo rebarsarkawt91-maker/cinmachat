@@ -138,6 +138,36 @@ function mediaLabel(media: Media | undefined): string {
   return 'وێنە';
 }
 
+function BackgroundCardMedia({ media }: { media: Media }) {
+  if (media.kind === 'html') {
+    return <iframe
+      className="hero-bg-card__embedded"
+      src={media.url}
+      title="پێشبینینی باگراوندی HTML"
+      aria-hidden="true"
+      tabIndex={-1}
+      loading="lazy"
+      sandbox="allow-scripts"
+      referrerPolicy="no-referrer"
+    />;
+  }
+  if (media.kind === 'video') {
+    return <video
+      className="hero-bg-card__embedded"
+      src={resolveMediaUrl(media.url)}
+      aria-hidden="true"
+      muted
+      loop
+      autoPlay
+      playsInline
+      preload="metadata"
+      disablePictureInPicture
+      disableRemotePlayback
+    />;
+  }
+  return null;
+}
+
 function BackgroundLibrary({
   initial,
   activeMode,
@@ -159,6 +189,7 @@ function BackgroundLibrary({
         className={`hero-bg-card${active ? ' hero-bg-card--active' : ''}${locked ? ' hero-bg-card--locked' : ''}`}
         aria-pressed={active} aria-label={`${item.id}. ${item.label}`} onClick={() => onSelect(item.id)}>
         <span className="hero-bg-card__preview" style={{ backgroundImage: preview ? `url(${preview})` : item.swatch }}>
+          {media && <BackgroundCardMedia media={media} />}
           {!preview && media?.kind === 'video' && <span className="hero-bg-card__type">MP4</span>}
           {!preview && media?.kind === 'html' && <span className="hero-bg-card__type">HTML</span>}
           {locked && <span className="hero-bg-card__lock"><LockKeyhole size={13} aria-hidden="true" /></span>}
