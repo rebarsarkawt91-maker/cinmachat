@@ -72,6 +72,7 @@ function VideoBackdrop({ url, onError, pageBackground = false }: { url: string; 
 function HtmlBackdrop({ url, pageBackground = false, onError }: { url: string; pageBackground?: boolean; onError?: () => void }) {
   return <iframe
     className={`hero-bg-media hero-bg-media--html${pageBackground ? ' hero-bg-media--page' : ''}`}
+    data-playing="true"
     src={url}
     title="CinemaChat animated HTML background"
     aria-hidden="true"
