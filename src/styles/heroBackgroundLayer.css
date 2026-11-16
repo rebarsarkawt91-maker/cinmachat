@@ -15,6 +15,14 @@
   z-index: 0;
 }
 
+html[data-hero-page-background="true"] .cinema-theater-hero {
+  background-color: transparent !important;
+}
+
+html[data-hero-page-background="true"] .official-footer {
+  background-color: rgb(5 5 5 / 72%) !important;
+}
+
 .hero-background-layer__canvas,
 .hero-background-layer__fallback {
   position: absolute;

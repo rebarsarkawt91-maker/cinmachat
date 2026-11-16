@@ -318,6 +318,16 @@ export function HeroBackgroundExperience({ siteSetting, saveGlobalSetting, child
   const mode = personal && personal.revision === global.revision ? personal.mode : global.mode;
   const media = mode === DEFAULT_HERO_BACKGROUND.mode ? undefined : global.slots?.[mode];
 
+  // Let the page-level background pass through the few legacy full-width
+  // sections that still carry an opaque cinema-black surface. Cards and modal
+  // panels keep their own contrast; only the site canvas is relaxed.
+  useEffect(() => {
+    const root = document.documentElement;
+    if (mode >= 3) root.dataset.heroPageBackground = 'true';
+    else delete root.dataset.heroPageBackground;
+    return () => { delete root.dataset.heroPageBackground; };
+  }, [mode]);
+
   function select(value: number | null) {
     const preference = value === null ? null : { mode: value, revision: global.revision };
     setPersonal(preference);
