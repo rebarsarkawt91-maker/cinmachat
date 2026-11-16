@@ -110,7 +110,9 @@ function Backdrop({ mode, media, onMediaFailure, pageBackground = false }: {
   pageBackground?: boolean;
 }) {
   return <>
-    <HeroBackgroundLayer mode={mode} pageBackground={pageBackground} />
+    {/* A saved media slot fully replaces its preset. Rendering the preset underneath
+        made the old background flash while a new image/video/HTML iframe loaded. */}
+    {!media && <HeroBackgroundLayer mode={mode} pageBackground={pageBackground} />}
     {mode !== DEFAULT_HERO_BACKGROUND.mode && media &&
       <MediaBackdrop key={`${media.kind}|${media.url}`} media={media} onMediaFailure={onMediaFailure} pageBackground={pageBackground} />}
   </>;
