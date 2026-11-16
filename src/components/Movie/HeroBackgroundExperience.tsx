@@ -360,7 +360,8 @@ export function HeroBackgroundExperience({ siteSetting, saveGlobalSetting, child
   saveGlobalSetting?: (value: HeroBackgroundUpdate) => Promise<void>;
   children: (layers: { backdrop: ReactNode; controls: ReactNode }) => ReactNode;
 }) {
-  const global = useMemo(() => parseHeroBackground(siteSetting) ?? DEFAULT_HERO_BACKGROUND, [siteSetting]);
+  const parsedGlobal = useMemo(() => parseHeroBackground(siteSetting), [siteSetting]);
+  const global = parsedGlobal ?? DEFAULT_HERO_BACKGROUND;
   const [personal, setPersonal] = useState(readPreference);
   const [open, setOpen] = useState(false);
   // A newly published site default supersedes choices made under older defaults.
@@ -388,7 +389,10 @@ export function HeroBackgroundExperience({ siteSetting, saveGlobalSetting, child
 
   return <>
     {children({
-      backdrop: open ? null : <Backdrop mode={mode} media={media} pageBackground={mode >= 3} />,
+      // Do not paint the seed/default background while the public config is
+      // still loading; otherwise the previous preset flashes before the saved
+      // HTML/image/video slot arrives from the server.
+      backdrop: open || !parsedGlobal ? null : <Backdrop mode={mode} media={media} pageBackground={mode >= 3} />,
       controls: <>
         <div className="hero-bg-quick" dir="ltr" role="group" aria-label="مۆدەکانی باگراوند">
           <Swatches mode={mode} onSelect={select} />

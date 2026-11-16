@@ -15188,7 +15188,7 @@ const handleWebkitEndFullscreen = () => {
                   </div>
                 </div>
               }>
-                <HeroBackgroundExperience siteSetting={config.heroBackground}
+                <HeroBackgroundExperience siteSetting={heroConfigReady ? config.heroBackground : null}
                   saveGlobalSetting={canManageHeroBackground ? saveHeroBackground : undefined}>
                   {({ backdrop, controls }) => <div className="relative">
                     <HeroSection
