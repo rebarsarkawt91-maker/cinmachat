@@ -310,7 +310,7 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
               reader.onloadend = () => {
                 const text = typeof reader.result === 'string' ? reader.result : '';
                 if (!text) { setReading(false); setProblem('فایلی HTML نەتوانرا بخوێندرێتەوە.'); return; }
-                const injected = '<style data-cinemachat-background>html,body{margin:0!important;width:100%!important;height:100%!important;overflow:hidden!important;background:transparent!important}body>*:not(canvas):not(#scene){display:none!important}canvas,#scene{position:fixed!important;inset:0!important;width:100%!important;height:100%!important;pointer-events:none!important}</style>';
+                const injected = '<style data-cinemachat-background>html,body{margin:0!important;width:100%!important;height:100%!important;overflow:hidden!important;background:transparent!important}body>*:not(canvas):not(#scene):not(svg):not(.scene):not(.background):not(.bg):not(.bg-layer):not([data-background]){display:none!important}.scene,.background,.bg,.bg-layer,[data-background],canvas,#scene,body>svg{position:fixed!important;inset:0!important;width:100%!important;height:100%!important;pointer-events:none!important}</style>';
                 const prepared = /<\/head\s*>/i.test(text) ? text.replace(/<\/head\s*>/i, `${injected}</head>`) : `${injected}${text}`;
                 const encoded = btoa(unescape(encodeURIComponent(prepared)));
                 const dataUrl = `data:text/html;base64,${encoded}#${encodeURIComponent(file.name)}`;
