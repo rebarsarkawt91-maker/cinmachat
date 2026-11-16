@@ -19,6 +19,11 @@
   height: 100vh;
   object-fit: cover;
 }
+.hero-bg-media--html {
+  border: 0;
+  pointer-events: none;
+  background: transparent;
+}
 
 .hero-bg-quick, .hero-bg-buttons {
   position: absolute;

@@ -133,7 +133,7 @@ export function heroBackgroundAdminHandler(
     const username = authenticate(req);
     if (!username) return res.status(401).json({ success: false, error: 'تکایە دووبارە بە ئەدمین بچۆ ژوورەوە.' });
     const update = parseHeroBackgroundUpdate(req.body);
-    if (!update) return res.status(400).json({ success: false, error: 'مۆدێکی دەستکاریکراو هەڵبژێرە و لینکی دروستی وێنە، ڤیدیۆ یان یوتیوب دابنێ.' });
+    if (!update) return res.status(400).json({ success: false, error: 'مۆدێکی دەستکاریکراو هەڵبژێرە و لینکی دروستی وێنە، ڤیدیۆ، HTML یان یوتیوب دابنێ.' });
     try {
       const heroBackground = await store.save(update, username);
       if (!heroBackground) return res.status(409).json({ success: false, error: 'باگراوند گۆڕدراوە. پەڕەکە نوێ بکەرەوە و دووبارە هەوڵ بدە.' });

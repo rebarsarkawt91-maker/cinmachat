@@ -4,13 +4,15 @@ import { isYTVideoId } from './youtube';
 export const HERO_BACKGROUND_MODE_COUNT = 20;
 export const CLASSIC_HERO_BACKGROUND_MODE = 2;
 export const HERO_BACKGROUND_IMAGE_MAX_BYTES = BANNER_IMAGE_MAX_BYTES;
+/** Inline HTML backgrounds stay small enough for durable config storage. */
+export const HERO_BACKGROUND_HTML_MAX_BYTES = 256 * 1024;
 /** Uploaded hero videos are intentionally capped for fast, silent background playback. */
 export const HERO_BACKGROUND_VIDEO_MAX_BYTES = 50 * 1024 * 1024;
 export const HERO_BACKGROUND_VIDEO_MAX_SECONDS = 60;
 export const HERO_BACKGROUND_IMAGE_PATH = '/api/hero-background-image/';
 
 export type HeroBackgroundMedia = {
-  kind: 'image' | 'video' | 'youtube';
+  kind: 'image' | 'video' | 'youtube' | 'html';
   url: string;
 };
 
@@ -56,6 +58,18 @@ function isUploadedHeroVideoPath(value: string): boolean {
   return /^\/uploads\/hero-background\/[A-Za-z0-9._-]+\.(?:mp4|webm)$/i.test(value);
 }
 
+function isInlineHtml(value: string): boolean {
+  if (!/^data:text\/html(?:;charset=[^;,]+)?(?:;base64)?,/i.test(value)) return false;
+  const comma = value.indexOf(',');
+  const payload = value.slice(comma + 1).split('#', 1)[0];
+  try {
+    const bytes = value.slice(0, comma).toLowerCase().includes(';base64')
+      ? Math.max(0, Math.floor(payload.length * 3 / 4) - (payload.endsWith('==') ? 2 : payload.endsWith('=') ? 1 : 0))
+      : new TextEncoder().encode(decodeURIComponent(payload)).byteLength;
+    return bytes > 0 && bytes <= HERO_BACKGROUND_HTML_MAX_BYTES;
+  } catch { return false; }
+}
+
 const youtubeHosts = new Set([
   'youtu.be', 'youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com',
   'youtube-nocookie.com', 'www.youtube-nocookie.com',
@@ -87,7 +101,7 @@ export function parseHeroBackgroundMedia(value: unknown): HeroBackgroundMedia | 
   const input = asRecord(value);
   if (!input) return null;
   const { kind, url } = input;
-  if (typeof url !== 'string' || (kind !== 'image' && kind !== 'video' && kind !== 'youtube')) return null;
+  if (typeof url !== 'string' || (kind !== 'image' && kind !== 'video' && kind !== 'youtube' && kind !== 'html')) return null;
   const parsed = parseHttpsUrl(url);
   if (kind === 'youtube' || (parsed && youtubeHosts.has(parsed.hostname))) {
     const id = getHeroBackgroundYouTubeId(url);
@@ -101,6 +115,8 @@ export function parseHeroBackgroundMedia(value: unknown): HeroBackgroundMedia | 
   }
 
   if (kind === 'video' && isUploadedHeroVideoPath(url)) return { kind, url };
+  if (kind === 'html' && isInlineHtml(url)) return { kind, url };
+  if (kind === 'html' && parsed) return { kind, url: parsed.href };
   return parsed ? { kind, url: parsed.href } : null;
 }
 

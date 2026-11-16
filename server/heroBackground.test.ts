@@ -12,6 +12,7 @@ import { createHeroBackgroundStore } from './heroBackground';
 const raster = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==';
 const clip = { kind: 'video', url: 'https://media.example.org/background.mp4' } as const;
 const youtube = { kind: 'youtube', url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' } as const;
+const html = { kind: 'html', url: 'https://cdn.example.org/background.html' } as const;
 
 test('background YouTube URLs are canonicalized from exact video hosts and paths', () => {
   for (const url of [
@@ -43,6 +44,8 @@ test('background YouTube URLs are canonicalized from exact video hosts and paths
     kind: 'video', url: '/uploads/hero-background/background-demo.mp4',
   });
   assert.equal(parseHeroBackgroundMedia({ kind: 'video', url: '/uploads/other/background-demo.mp4' }), null);
+  assert.deepEqual(parseHeroBackgroundMedia(html), html);
+  assert.equal(parseHeroBackgroundMedia({ kind: 'html', url: 'data:text/html;base64,PGh0bWw+PC9odG1sPg==' })?.kind, 'html');
 });
 
 test('classic slot remains read-only while legacy links in editable slots migrate', () => {

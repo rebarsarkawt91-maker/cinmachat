@@ -3,6 +3,7 @@ import { Image as ImageIcon, X } from 'lucide-react';
 import { resolveApiUrl } from '../../services/backendConfig';
 import {
   DEFAULT_HERO_BACKGROUND, HERO_BACKGROUND_IMAGE_MAX_BYTES, HERO_BACKGROUND_IMAGE_PATH,
+  HERO_BACKGROUND_HTML_MAX_BYTES,
   getHeroBackgroundYouTubeId, parseHeroBackground, parseHeroBackgroundMedia,
   type HeroBackgroundMedia, type HeroBackgroundSettings,
   type HeroBackgroundUpdate,
@@ -68,6 +69,20 @@ function VideoBackdrop({ url, onError, pageBackground = false }: { url: string; 
     onPlaying={event => { event.currentTarget.dataset.playing = 'true'; }} onError={onError} />;
 }
 
+function HtmlBackdrop({ url, pageBackground = false, onError }: { url: string; pageBackground?: boolean; onError?: () => void }) {
+  return <iframe
+    className={`hero-bg-media hero-bg-media--html${pageBackground ? ' hero-bg-media--page' : ''}`}
+    src={url}
+    title="CinemaChat animated HTML background"
+    aria-hidden="true"
+    tabIndex={-1}
+    sandbox="allow-scripts"
+    loading="eager"
+    referrerPolicy="no-referrer"
+    onError={onError}
+  />;
+}
+
 function MediaBackdrop({ media, onMediaFailure, pageBackground = false }: {
   media: Media;
   onMediaFailure?: () => void;
@@ -78,6 +93,7 @@ function MediaBackdrop({ media, onMediaFailure, pageBackground = false }: {
   const fail = () => { setFailed(true); onMediaFailure?.(); };
   if (failed) return null;
   if (media.kind === 'video') return <VideoBackdrop url={resolveMediaUrl(media.url)} onError={fail} pageBackground={pageBackground} />;
+  if (media.kind === 'html') return <HtmlBackdrop url={media.url} onError={fail} pageBackground={pageBackground} />;
   const source = media.kind === 'youtube'
     ? `https://img.youtube.com/vi/${getHeroBackgroundYouTubeId(media.url)}/hqdefault.jpg`
     : resolveMediaUrl(media.url);
@@ -118,6 +134,10 @@ function describeMedia(kind: FormMedia, value: string): { name: string; type: st
   if (kind === 'youtube') {
     const id = getHeroBackgroundYouTubeId(trimmed);
     return id ? { name: id, type: 'YouTube' } : null;
+  }
+  if (kind === 'html' && trimmed.startsWith('data:text/html')) {
+    const fileName = decodeURIComponent(trimmed.split('#')[1] || '').trim();
+    return { name: fileName || 'background.html', type: 'HTML' };
   }
   try {
     const parsed = new URL(trimmed);
@@ -173,7 +193,7 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
     if (!kind) return null;
     const value = parseHeroBackgroundMedia({ kind, url: url.trim() });
     if (!value) {
-      setProblem(kind === 'youtube' ? 'لینکی دروستی ڤیدیۆی یوتیوب دابنێ.' : 'لینکی ڕاستەوخۆی HTTPS یان وێنەیەکی دروست دابنێ.');
+      setProblem(kind === 'youtube' ? 'لینکی دروستی ڤیدیۆی یوتیوب دابنێ.' : kind === 'html' ? 'لینکی HTTPS یان فایلێکی HTML ی دروست دابنێ.' : 'لینکی ڕاستەوخۆی HTTPS یان وێنەیەکی دروست دابنێ.');
       return undefined;
     }
     return value;
@@ -237,10 +257,11 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
               <option value="image">وێنە</option>
               <option value="video">ڤیدیۆی MP4 / WebM</option>
               <option value="youtube">یوتیوب</option>
+              <option value="html">فایلی HTML (باگراوندی جوڵاو)</option>
             </select>
           </label>
           {kind && <label className="hero-bg-field hero-bg-slot-editor__url">
-            <span>{kind === 'youtube' ? 'لینکی یوتیوب' : kind === 'video' ? 'لینکی فایلەکەی ڤیدیۆ (MP4/WebM)' : 'لینکی فایلەکەی وێنە'}</span>
+            <span>{kind === 'youtube' ? 'لینکی یوتیوب' : kind === 'video' ? 'لینکی فایلەکەی ڤیدیۆ (MP4/WebM)' : kind === 'html' ? 'لینکی فایلەکەی HTML' : 'لینکی فایلەکەی وێنە'}</span>
             <input type="text" dir="ltr" inputMode="url" autoComplete="off" placeholder="https://…"
               disabled={busy} value={url.startsWith('data:') ? '' : url}
               onChange={event => {
@@ -275,6 +296,31 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
               reader.readAsDataURL(file);
             }} />
           </label>}
+          {kind === 'html' && <label className="hero-bg-field hero-bg-slot-editor__upload">
+            <span>فایلی HTML هەڵبژێرە (تا ٢٥٦ KB)</span>
+            <input type="file" accept=".html,.htm,text/html" disabled={busy} onChange={event => {
+              const file = event.target.files?.[0];
+              event.target.value = '';
+              if (!file) return;
+              setProblem(''); setSaved('');
+              if (file.size > HERO_BACKGROUND_HTML_MAX_BYTES) { setProblem('فایلی HTML دەبێت ٢٥٦ KB یان کەمتر بێت.'); return; }
+              setReading(true);
+              const reader = new FileReader();
+              reader.onloadend = () => {
+                const text = typeof reader.result === 'string' ? reader.result : '';
+                if (!text) { setReading(false); setProblem('فایلی HTML نەتوانرا بخوێندرێتەوە.'); return; }
+                const injected = '<style data-cinemachat-background>html,body{margin:0!important;width:100%!important;height:100%!important;overflow:hidden!important;background:transparent!important}body>*:not(canvas):not(#scene){display:none!important}canvas,#scene{position:fixed!important;inset:0!important;width:100%!important;height:100%!important;pointer-events:none!important}</style>';
+                const prepared = /<\/head\s*>/i.test(text) ? text.replace(/<\/head\s*>/i, `${injected}</head>`) : `${injected}${text}`;
+                const encoded = btoa(unescape(encodeURIComponent(prepared)));
+                const dataUrl = `data:text/html;base64,${encoded}#${encodeURIComponent(file.name)}`;
+                const result = parseHeroBackgroundMedia({ kind: 'html', url: dataUrl });
+                setReading(false);
+                if (!result) { setProblem('فایلی HTML زۆر گەورەیە یان دروست نییە.'); return; }
+                setUrl(result.url); setPreview(result); setBadMedia(false);
+              };
+              reader.readAsText(file);
+            }} />
+          </label>}
           {kind && <button type="button" className="hero-bg-action" disabled={busy} onClick={() => {
             setProblem(''); setSaved('');
             const media = readDraft();
@@ -284,7 +330,7 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
       </form>}
       {save && locked && <p className="hero-bg-slot-note">مۆدی ٢ قوفڵە. پەردەی سووری سەرەکییە.</p>}
       {save && kind === 'youtube' && !locked &&
-        <p className="hero-bg-slot-note">وێنەی ڤیدیۆی یوتیوب دەبێتە باگراوند. بۆ باگراوندی جوڵاو، لینکی MP4 یان WebM دابنێ.</p>}
+        <p className="hero-bg-slot-note">وێنەی ڤیدیۆی یوتیوب دەبێتە باگراوند. بۆ باگراوندی جوڵاو، لینکی MP4/WebM یان فایلی HTML دابنێ.</p>}
       {(problem || badMedia) && <p role="alert" className="hero-bg-error">{problem || 'ئەم لینکە بار نەبوو. لینکەکە بپشکنە.'}</p>}
       {saved && <p role="status" className="hero-bg-slot-note">{saved}</p>}
       <div className="hero-bg-preview">
