@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Check, FolderOpen, LockKeyhole, Trash2, Upload, X } from 'lucide-react';
+import { Check, FolderOpen, LockKeyhole, Plus, Trash2, Upload, X } from 'lucide-react';
 import { resolveApiUrl } from '../../services/backendConfig';
 import {
   DEFAULT_HERO_BACKGROUND, HERO_BACKGROUND_IMAGE_MAX_BYTES, HERO_BACKGROUND_IMAGE_PATH,
@@ -14,6 +14,14 @@ import '../../styles/heroBackgroundControls.css';
 const PREFERENCE_KEY = 'cinemachat.hero.background';
 type Media = HeroBackgroundMedia;
 type Preference = { mode: number; revision?: string };
+type BackgroundCard = {
+  id: number;
+  label: string;
+  swatch: string;
+  media?: Media;
+  locked?: boolean;
+  empty?: boolean;
+};
 
 function readPreference(): Preference | null {
   try {
@@ -138,6 +146,36 @@ function mediaLabel(media: Media | undefined): string {
   return 'وێنە';
 }
 
+function customSwatch(id: number): string {
+  const hue = (id * 67) % 360;
+  return `linear-gradient(135deg, hsl(${hue} 78% 48%), hsl(${(hue + 72) % 360} 72% 30%) 70%, hsl(${(hue + 144) % 360} 82% 58%))`;
+}
+
+function buildBackgroundCards(
+  slots: NonNullable<HeroBackgroundSettings['slots']>,
+  emptyModes: number[],
+  activeMode: number,
+): BackgroundCard[] {
+  const classic = HERO_BACKGROUND_PRESETS.find(item => item.id === DEFAULT_HERO_BACKGROUND.mode);
+  const ids = new Set<number>([
+    DEFAULT_HERO_BACKGROUND.mode,
+    ...Object.keys(slots).map(Number),
+    ...emptyModes,
+  ]);
+  if (activeMode !== DEFAULT_HERO_BACKGROUND.mode) ids.add(activeMode);
+  return [...ids].filter(Number.isInteger).sort((a, b) => a - b).map(id => {
+    const media = id === DEFAULT_HERO_BACKGROUND.mode ? undefined : slots[id];
+    return {
+      id,
+      label: id === DEFAULT_HERO_BACKGROUND.mode ? (classic?.label ?? 'سینەمای سوور') : `باگراوندی تایبەت ${id}`,
+      swatch: id === DEFAULT_HERO_BACKGROUND.mode ? (classic?.swatch ?? '#390909') : customSwatch(id),
+      media,
+      locked: id === DEFAULT_HERO_BACKGROUND.mode,
+      empty: id !== DEFAULT_HERO_BACKGROUND.mode && !media,
+    };
+  });
+}
+
 function BackgroundCardMedia({ media }: { media: Media }) {
   if (media.kind === 'html') {
     return <iframe
@@ -169,36 +207,43 @@ function BackgroundCardMedia({ media }: { media: Media }) {
 }
 
 function BackgroundLibrary({
-  initial,
+  cards,
   activeMode,
   save,
   onSelect,
+  onAdd,
 }: {
-  initial: HeroBackgroundSettings;
+  cards: BackgroundCard[];
   activeMode: number;
   save?: boolean;
   onSelect: (mode: number) => void;
+  onAdd?: () => void;
 }) {
   return <div className="hero-bg-library" role="list" aria-label="هەموو باگراوندەکان">
-    {HERO_BACKGROUND_PRESETS.map(item => {
-      const media = initial.slots?.[item.id];
-      const preview = mediaPreview(media);
-      const active = activeMode === item.id;
-      const locked = item.id === DEFAULT_HERO_BACKGROUND.mode;
-      return <button key={item.id} type="button" role="listitem"
-        className={`hero-bg-card${active ? ' hero-bg-card--active' : ''}${locked ? ' hero-bg-card--locked' : ''}`}
-        aria-pressed={active} aria-label={`${item.id}. ${item.label}`} onClick={() => onSelect(item.id)}>
-        <span className="hero-bg-card__preview" style={{ backgroundImage: preview ? `url(${preview})` : item.swatch }}>
-          {media && <BackgroundCardMedia media={media} />}
-          {!preview && media?.kind === 'video' && <span className="hero-bg-card__type">MP4</span>}
-          {!preview && media?.kind === 'html' && <span className="hero-bg-card__type">HTML</span>}
-          {locked && <span className="hero-bg-card__lock"><LockKeyhole size={13} aria-hidden="true" /></span>}
+    {cards.map(card => {
+      const preview = mediaPreview(card.media);
+      const active = activeMode === card.id;
+      return <button key={card.id} type="button" role="listitem"
+        className={`hero-bg-card${active ? ' hero-bg-card--active' : ''}${card.locked ? ' hero-bg-card--locked' : ''}${card.empty ? ' hero-bg-card--empty' : ''}`}
+        aria-pressed={active} aria-label={`${card.id}. ${card.label}`} onClick={() => onSelect(card.id)}>
+        <span className="hero-bg-card__preview" style={{ backgroundImage: preview ? `url(${preview})` : card.swatch }}>
+          {card.media && <BackgroundCardMedia media={card.media} />}
+          {card.empty && <span className="hero-bg-card__empty-mark"><Plus size={24} aria-hidden="true" /></span>}
+          {!preview && card.media?.kind === 'video' && <span className="hero-bg-card__type">MP4</span>}
+          {!preview && card.media?.kind === 'html' && <span className="hero-bg-card__type">HTML</span>}
+          {card.locked && <span className="hero-bg-card__lock"><LockKeyhole size={13} aria-hidden="true" /></span>}
           {active && <span className="hero-bg-card__check"><Check size={14} aria-hidden="true" /></span>}
         </span>
-        <span className="hero-bg-card__name"><b>{item.id}.</b> {item.label}</span>
-        <span className="hero-bg-card__meta">{mediaLabel(media)}{save && media ? ' • جێگیرکراوە' : ''}</span>
+        <span className="hero-bg-card__name"><b>{card.id}.</b> {card.label}</span>
+        <span className="hero-bg-card__meta">{card.empty ? 'خانەی بەتاڵ • فایل دابنێ' : `${mediaLabel(card.media)}${save && card.media ? ' • جێگیرکراوە' : ''}`}</span>
       </button>;
     })}
+    {save && onAdd && <button type="button" role="listitem" className="hero-bg-card hero-bg-card--add"
+      onClick={onAdd} aria-label="زیادکردنی کارتی باگراوند">
+      <span className="hero-bg-card__preview"><span className="hero-bg-card__empty-mark"><Plus size={28} aria-hidden="true" /></span></span>
+      <span className="hero-bg-card__name">زیادکردنی کارت</span>
+      <span className="hero-bg-card__meta">فایلێکی نوێ دابنێ</span>
+    </button>}
   </div>;
 }
 
@@ -239,6 +284,7 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
   const [url, setUrl] = useState(initial.slots?.[activeMode]?.url ?? '');
   const [preview, setPreview] = useState<Media | undefined>(initial.slots?.[activeMode]);
   const [slotMedia, setSlotMedia] = useState<NonNullable<HeroBackgroundSettings['slots']>>(() => ({ ...(initial.slots ?? {}) }));
+  const [emptyModes, setEmptyModes] = useState<number[]>([]);
   const [saving, setSaving] = useState(false);
   const [reading, setReading] = useState(false);
   const [problem, setProblem] = useState('');
@@ -247,6 +293,7 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
   const locked = mode === DEFAULT_HERO_BACKGROUND.mode;
   const busy = saving || reading;
   const mediaDetails = describeMedia(kind, url);
+  const cards = buildBackgroundCards(slotMedia, emptyModes, mode);
   const close = () => dialog.current?.close();
 
   useEffect(() => { dialog.current?.showModal(); }, []);
@@ -284,6 +331,28 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
       else delete next[mode];
       return next;
     });
+    setEmptyModes(previous => media
+      ? previous.filter(id => id !== mode)
+      : (mode === DEFAULT_HERO_BACKGROUND.mode || previous.includes(mode) ? previous : [...previous, mode]));
+    setBadMedia(false);
+  }
+
+  function addEmptySlot() {
+    if (!save || busy) return;
+    const used = new Set([DEFAULT_HERO_BACKGROUND.mode, ...Object.keys(slotMedia).map(Number), ...emptyModes]);
+    const next = HERO_BACKGROUND_PRESETS.reduce((candidate, item) => candidate === 0 && !used.has(item.id) ? item.id : candidate, 0)
+      || Array.from({ length: 20 }, (_, index) => index + 1).find(id => !used.has(id));
+    if (!next) {
+      setProblem('هەموو خانەکان پڕ بوون. یەک خانە بسڕەوە یان فایلێکی نوێ لە کارتێکی بەتاڵ دابنێ.');
+      return;
+    }
+    setEmptyModes(previous => previous.includes(next) ? previous : [...previous, next]);
+    setMode(next);
+    setKind('');
+    setUrl('');
+    setPreview(undefined);
+    setProblem('');
+    setSaved('');
     setBadMedia(false);
   }
 
@@ -327,8 +396,8 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
         <label className="hero-bg-field">
           <span>مۆدی باگراوند</span>
           <select value={mode} disabled={busy} onChange={event => pickMode(Number(event.target.value))}>
-            {HERO_BACKGROUND_PRESETS.map(item => (
-              <option key={item.id} value={item.id}>{item.id}. {item.label}{item.id === initial.mode ? ' • باگراوندی سایت' : ''}</option>
+            {cards.map(card => (
+              <option key={card.id} value={card.id}>{card.id}. {card.label}{card.id === initial.mode ? ' • باگراوندی سایت' : ''}</option>
             ))}
           </select>
         </label>
@@ -426,13 +495,13 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
       <div className="hero-bg-preview">
         <Backdrop mode={mode} media={preview} onMediaFailure={() => setBadMedia(true)} />
       </div>
-      <BackgroundLibrary initial={{ ...initial, slots: slotMedia }} activeMode={mode} save={!!save} onSelect={pickMode} />
+      <BackgroundLibrary cards={cards} activeMode={mode} save={!!save} onSelect={pickMode} onAdd={addEmptySlot} />
       <div className="hero-bg-personal">
         {save && <button type="button" className="hero-bg-action hero-bg-action--primary"
-          disabled={busy || mode === initial.mode}
+          disabled={busy || mode === initial.mode || (mode !== DEFAULT_HERO_BACKGROUND.mode && !slotMedia[mode])}
           onClick={() => void persist({ mode }, 'ئەم مۆدە دانرا بۆ هەموو بینەران.')}>دانان بۆ هەمووان</button>}
         {save && <button type="button" className="hero-bg-action" onClick={() => { select(mode); close(); }}
-          disabled={busy}>بۆ خۆم هەڵیبژێرە</button>}
+          disabled={busy || (mode !== DEFAULT_HERO_BACKGROUND.mode && !slotMedia[mode])}>بۆ خۆم هەڵیبژێرە</button>}
         <button type="button" className="hero-bg-action" onClick={() => { select(null); close(); }}
           disabled={busy}>باگراوندی سایت</button>
       </div>

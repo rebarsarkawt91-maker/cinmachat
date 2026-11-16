@@ -141,8 +141,15 @@ export function parseHeroBackground(value: unknown): HeroBackgroundSettings | nu
     if (media) slots[mode] = media;
   }
 
+  // Preset modes other than the classic cinema mode are no longer part of
+  // the library. If an older config still points at one of them without a
+  // saved media slot, fall back safely to mode 2 instead of rendering a
+  // retired preset.
+  const effectiveMode = mode !== CLASSIC_HERO_BACKGROUND_MODE && !slots[mode]
+    ? CLASSIC_HERO_BACKGROUND_MODE
+    : mode;
   return {
-    mode,
+    mode: effectiveMode,
     ...(Object.keys(slots).length ? { slots } : {}),
     ...(typeof revision === 'string' && /^[a-z0-9-]{1,80}$/i.test(revision) ? { revision } : {}),
   };
