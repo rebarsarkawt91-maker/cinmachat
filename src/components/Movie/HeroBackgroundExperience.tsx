@@ -207,6 +207,7 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
   const [kind, setKind] = useState<FormMedia>(initial.slots?.[activeMode]?.kind ?? '');
   const [url, setUrl] = useState(initial.slots?.[activeMode]?.url ?? '');
   const [preview, setPreview] = useState<Media | undefined>(initial.slots?.[activeMode]);
+  const [slotMedia, setSlotMedia] = useState<NonNullable<HeroBackgroundSettings['slots']>>(() => ({ ...(initial.slots ?? {}) }));
   const [saving, setSaving] = useState(false);
   const [reading, setReading] = useState(false);
   const [problem, setProblem] = useState('');
@@ -222,7 +223,7 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
   function pickMode(value: number) {
     if (busy) return;
     if (!save) { select(value); close(); return; }
-    const media = initial.slots?.[value];
+    const media = slotMedia[value];
     setMode(value);
     setKind(media?.kind ?? '');
     setUrl(media?.url ?? '');
@@ -246,6 +247,12 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
     setKind(media?.kind ?? '');
     setUrl(media?.url ?? '');
     setPreview(media ?? undefined);
+    setSlotMedia(previous => {
+      const next = { ...previous };
+      if (media) next[mode] = media;
+      else delete next[mode];
+      return next;
+    });
     setBadMedia(false);
   }
 
@@ -325,7 +332,7 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
           <button type="submit" className="hero-bg-action hero-bg-action--primary" disabled={busy}>
             {saving ? 'پاشەکەوتکردن لە سێرڤەر…' : 'پاشەکەوتی مۆد'}
           </button>
-          {(kind || initial.slots?.[mode]) && <button type="button" className="hero-bg-action hero-bg-action--danger"
+          {(kind || slotMedia[mode]) && <button type="button" className="hero-bg-action hero-bg-action--danger"
             disabled={busy} onClick={() => void removeSlotMedia()}>
             <Trash2 size={14} aria-hidden="true" /> سڕینەوەی میدیا
           </button>}
@@ -388,7 +395,7 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
       <div className="hero-bg-preview">
         <Backdrop mode={mode} media={preview} onMediaFailure={() => setBadMedia(true)} />
       </div>
-      <BackgroundLibrary initial={initial} activeMode={mode} save={!!save} onSelect={pickMode} />
+      <BackgroundLibrary initial={{ ...initial, slots: slotMedia }} activeMode={mode} save={!!save} onSelect={pickMode} />
       <div className="hero-bg-personal">
         {save && <button type="button" className="hero-bg-action hero-bg-action--primary"
           disabled={busy || mode === initial.mode}
