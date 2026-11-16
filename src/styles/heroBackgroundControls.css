@@ -28,25 +28,18 @@
   will-change: transform;
 }
 
-.hero-bg-quick, .hero-bg-buttons {
+.hero-bg-buttons {
   position: absolute;
   top: .45rem;
   z-index: 145;
 }
 
-.hero-bg-quick, .hero-bg-trigger {
+.hero-bg-trigger {
   align-items: center;
   border: 1px solid rgb(255 255 255 / 18%);
   border-radius: 999px;
   background: rgb(11 10 15 / 86%);
   color: white;
-}
-
-.hero-bg-quick {
-  display: none;
-  left: 50%;
-  translate: -50% 0;
-  padding-inline: .35rem;
 }
 
 .hero-bg-buttons {
@@ -65,34 +58,7 @@
   cursor: pointer;
 }
 
-@media (min-width: 980px) {
-  .hero-bg-quick { display: flex; }
-}
-
-.hero-bg-swatch {
-  display: grid;
-  width: 26px;
-  height: 32px;
-  place-items: center;
-  border-radius: .4rem;
-  cursor: pointer;
-}
-
-.hero-bg-swatch span {
-  display: block;
-  width: 12px;
-  height: 12px;
-  border: 1px solid rgb(255 255 255 / 48%);
-  border-radius: 50%;
-  background: var(--hero-swatch);
-}
-
-.hero-bg-swatch[aria-pressed="true"] span {
-  outline: 2px solid #fff2ca;
-  outline-offset: 2px;
-}
-
-.hero-bg-swatch:focus-visible, .hero-bg-trigger:focus-visible, .hero-bg-action:focus-visible,
+.hero-bg-trigger:focus-visible, .hero-bg-action:focus-visible,
 .hero-bg-field input:focus-visible, .hero-bg-field select:focus-visible {
   outline: 2px solid #ffda80;
   outline-offset: 2px;
@@ -118,6 +84,73 @@
 
 .hero-bg-dialog--admin { width: min(46rem, calc(100vw - 1.25rem)); }
 
+.hero-bg-library {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+  gap: .55rem;
+  margin-block: .75rem;
+  padding: .15rem;
+}
+
+.hero-bg-card {
+  display: grid;
+  min-width: 0;
+  gap: .3rem;
+  padding: .35rem;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: .75rem;
+  background: rgb(255 255 255 / 4%);
+  color: #fff;
+  text-align: right;
+  cursor: pointer;
+  transition: border-color .18s ease, transform .18s ease, background .18s ease;
+}
+
+.hero-bg-card:hover { transform: translateY(-2px); border-color: rgb(255 214 112 / 65%); }
+.hero-bg-card--active { border-color: #ffd25a; background: rgb(255 210 90 / 12%); box-shadow: 0 0 0 1px rgb(255 210 90 / 25%); }
+.hero-bg-card--locked { border-color: rgb(190 47 61 / 55%); }
+
+.hero-bg-card__preview {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: .55rem;
+  background-position: center;
+  background-size: cover;
+}
+
+.hero-bg-card__preview::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent 45%, rgb(0 0 0 / 48%));
+  pointer-events: none;
+}
+
+.hero-bg-card__type, .hero-bg-card__lock, .hero-bg-card__check {
+  position: absolute;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.7rem;
+  min-height: 1.25rem;
+  padding: 0 .25rem;
+  border-radius: .35rem;
+  background: rgb(0 0 0 / 70%);
+  color: #fff;
+  font-size: .6rem;
+  font-weight: 900;
+}
+
+.hero-bg-card__type { left: .35rem; bottom: .35rem; color: #9ff7d5; }
+.hero-bg-card__lock { right: .35rem; top: .35rem; color: #ffcf58; }
+.hero-bg-card__check { left: .35rem; top: .35rem; color: #101014; background: #ffd25a; }
+.hero-bg-card__name { overflow: hidden; font-size: .7rem; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+.hero-bg-card__name b { color: #ffd25a; }
+.hero-bg-card__meta { overflow: hidden; color: #bdb3bd; font-size: .62rem; text-overflow: ellipsis; white-space: nowrap; }
+
 .hero-bg-dialog__heading {
   display: flex;
   align-items: center;
@@ -139,22 +172,6 @@
   isolation: isolate;
 }
 
-.hero-bg-dialog__swatches {
-  display: grid;
-  grid-template-columns: repeat(10, minmax(0, 1fr));
-  gap: .25rem;
-  margin-block: .6rem;
-}
-
-.hero-bg-dialog .hero-bg-swatch {
-  width: 100%;
-  height: 32px;
-  border: 1px solid rgb(255 255 255 / 14%);
-  background: rgb(255 255 255 / 3%);
-}
-
-.hero-bg-dialog .hero-bg-swatch span { width: 15px; height: 15px; }
-
 .hero-bg-action {
   display: inline-flex;
   min-height: 36px;
@@ -173,6 +190,8 @@
   border-color: #e63850;
   background: #a81631;
 }
+
+.hero-bg-action--danger { border-color: rgb(255 86 104 / 50%); color: #ffb2bc; }
 
 .hero-bg-action:disabled { opacity: .55; cursor: wait; }
 
@@ -223,6 +242,3 @@
 
 .hero-bg-media-details b { color: #ffcf4a; font-weight: 700; }
 
-@media (max-width: 420px) {
-  .hero-bg-dialog__swatches { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-}

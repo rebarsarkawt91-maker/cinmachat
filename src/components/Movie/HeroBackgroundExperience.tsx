@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { Image as ImageIcon, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Check, FolderOpen, LockKeyhole, Trash2, Upload, X } from 'lucide-react';
 import { resolveApiUrl } from '../../services/backendConfig';
 import {
   DEFAULT_HERO_BACKGROUND, HERO_BACKGROUND_IMAGE_MAX_BYTES, HERO_BACKGROUND_IMAGE_PATH,
@@ -118,18 +118,58 @@ function Backdrop({ mode, media, onMediaFailure, pageBackground = false }: {
   </>;
 }
 
-function Swatches({ mode, onSelect }: { mode?: number; onSelect: (mode: number) => void }) {
-  return HERO_BACKGROUND_PRESETS.map(item => (
-    <button key={item.id} type="button" className="hero-bg-swatch"
-      data-mode={item.id} aria-label={`${item.id}. ${item.label}`} aria-pressed={mode === item.id}
-      title={item.label} onClick={() => onSelect(item.id)}
-      style={{ '--hero-swatch': item.swatch } as CSSProperties}>
-      <span aria-hidden="true" />
-    </button>
-  ));
+type FormMedia = Media['kind'] | '';
+
+function mediaPreview(media: Media | undefined): string | undefined {
+  if (!media) return undefined;
+  if (media.kind === 'image') return resolveMediaUrl(media.url);
+  if (media.kind === 'youtube') {
+    const id = getHeroBackgroundYouTubeId(media.url);
+    return id ? `https://img.youtube.com/vi/${id}/mqdefault.jpg` : undefined;
+  }
+  return undefined;
 }
 
-type FormMedia = Media['kind'] | '';
+function mediaLabel(media: Media | undefined): string {
+  if (!media) return 'دیزاینی ناوخۆ';
+  if (media.kind === 'html') return 'HTML / جوڵاو';
+  if (media.kind === 'video') return 'MP4 / WebM';
+  if (media.kind === 'youtube') return 'YouTube';
+  return 'وێنە';
+}
+
+function BackgroundLibrary({
+  initial,
+  activeMode,
+  save,
+  onSelect,
+}: {
+  initial: HeroBackgroundSettings;
+  activeMode: number;
+  save?: boolean;
+  onSelect: (mode: number) => void;
+}) {
+  return <div className="hero-bg-library" role="list" aria-label="هەموو باگراوندەکان">
+    {HERO_BACKGROUND_PRESETS.map(item => {
+      const media = initial.slots?.[item.id];
+      const preview = mediaPreview(media);
+      const active = activeMode === item.id;
+      const locked = item.id === DEFAULT_HERO_BACKGROUND.mode;
+      return <button key={item.id} type="button" role="listitem"
+        className={`hero-bg-card${active ? ' hero-bg-card--active' : ''}${locked ? ' hero-bg-card--locked' : ''}`}
+        aria-pressed={active} aria-label={`${item.id}. ${item.label}`} onClick={() => onSelect(item.id)}>
+        <span className="hero-bg-card__preview" style={{ backgroundImage: preview ? `url(${preview})` : item.swatch }}>
+          {!preview && media?.kind === 'video' && <span className="hero-bg-card__type">MP4</span>}
+          {!preview && media?.kind === 'html' && <span className="hero-bg-card__type">HTML</span>}
+          {locked && <span className="hero-bg-card__lock"><LockKeyhole size={13} aria-hidden="true" /></span>}
+          {active && <span className="hero-bg-card__check"><Check size={14} aria-hidden="true" /></span>}
+        </span>
+        <span className="hero-bg-card__name"><b>{item.id}.</b> {item.label}</span>
+        <span className="hero-bg-card__meta">{mediaLabel(media)}{save && media ? ' • جێگیرکراوە' : ''}</span>
+      </button>;
+    })}
+  </div>;
+}
 
 function describeMedia(kind: FormMedia, value: string): { name: string; type: string } | null {
   const trimmed = value.trim();
@@ -224,6 +264,11 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
     } finally { setSaving(false); }
   }
 
+  async function removeSlotMedia() {
+    if (!save || busy || locked) return;
+    if (await persist({ slot: { mode, media: null } }, 'میدیای ئەم کارتە سڕایەوە.')) applyDraftMedia(null);
+  }
+
   return (
     <dialog ref={dialog} className={`hero-bg-dialog kurdish-text${save ? ' hero-bg-dialog--admin' : ''}`} dir="rtl" lang="ckb"
       aria-labelledby="hero-bg-title" onClose={onDismiss} onCancel={event => {
@@ -280,8 +325,12 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
           <button type="submit" className="hero-bg-action hero-bg-action--primary" disabled={busy}>
             {saving ? 'پاشەکەوتکردن لە سێرڤەر…' : 'پاشەکەوتی مۆد'}
           </button>
+          {(kind || initial.slots?.[mode]) && <button type="button" className="hero-bg-action hero-bg-action--danger"
+            disabled={busy} onClick={() => void removeSlotMedia()}>
+            <Trash2 size={14} aria-hidden="true" /> سڕینەوەی میدیا
+          </button>}
           {kind === 'image' && <label className="hero-bg-field hero-bg-slot-editor__upload">
-            <span>یان وێنە بار بکە (PNG، JPG، WebP تا ٥٠٠ KB)</span>
+            <span><Upload size={13} aria-hidden="true" /> وێنە بار بکە (PNG، JPG، WebP تا ٥٠٠ KB)</span>
             <input type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={event => {
               const file = event.target.files?.[0];
               event.target.value = '';
@@ -300,7 +349,7 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
             }} />
           </label>}
           {kind === 'html' && <label className="hero-bg-field hero-bg-slot-editor__upload">
-            <span>فایلی HTML هەڵبژێرە (تا ٢٥٦ KB)</span>
+            <span><Upload size={13} aria-hidden="true" /> فایلی HTML هەڵبژێرە (تا ٢٥٦ KB)</span>
             <input type="file" accept=".html,.htm,text/html" disabled={busy} onChange={event => {
               const file = event.target.files?.[0];
               event.target.value = '';
@@ -339,9 +388,7 @@ function BackgroundDialog({ initial, activeMode, save, select, onDismiss }: {
       <div className="hero-bg-preview">
         <Backdrop mode={mode} media={preview} onMediaFailure={() => setBadMedia(true)} />
       </div>
-      <div className="hero-bg-dialog__swatches" dir="ltr" role="group" aria-label="٢٠ مۆدی باگراوند">
-        <Swatches mode={mode} onSelect={pickMode} />
-      </div>
+      <BackgroundLibrary initial={initial} activeMode={mode} save={!!save} onSelect={pickMode} />
       <div className="hero-bg-personal">
         {save && <button type="button" className="hero-bg-action hero-bg-action--primary"
           disabled={busy || mode === initial.mode}
@@ -393,17 +440,12 @@ export function HeroBackgroundExperience({ siteSetting, saveGlobalSetting, child
       // still loading; otherwise the previous preset flashes before the saved
       // HTML/image/video slot arrives from the server.
       backdrop: open || !parsedGlobal ? null : <Backdrop mode={mode} media={media} pageBackground={mode >= 3} />,
-      controls: <>
-        <div className="hero-bg-quick" dir="ltr" role="group" aria-label="مۆدەکانی باگراوند">
-          <Swatches mode={mode} onSelect={select} />
-        </div>
-        <div className="hero-bg-buttons" dir="rtl">
-          <button type="button" className="hero-bg-trigger kurdish-text" onClick={() => setOpen(true)}
-            aria-label="گۆڕینی باگراوند" aria-haspopup="dialog" title="گۆڕینی باگراوند">
-            <ImageIcon size={15} aria-hidden="true" /><span>باگراوند</span>
-          </button>
-        </div>
-      </>,
+      controls: <div className="hero-bg-buttons" dir="rtl">
+        <button type="button" className="hero-bg-trigger kurdish-text" onClick={() => setOpen(true)}
+          aria-label="کردنەوەی لیستی باگراوندەکان" aria-haspopup="dialog" title="باگراوندەکان">
+          <FolderOpen size={15} aria-hidden="true" /><span>باگراوندەکان</span>
+        </button>
+      </div>,
     })}
     {open && <BackgroundDialog initial={global} activeMode={mode}
       save={saveGlobalSetting ? async value => {
