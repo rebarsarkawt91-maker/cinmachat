@@ -80,6 +80,7 @@
   border-radius: .45rem;
   background: rgb(53 26 31 / 72%);
   color: #d7aeb0;
+  text-decoration: none;
 }
 
 .hero-kurdish-ticker__poster img {
@@ -89,6 +90,17 @@
 }
 
 .hero-kurdish-ticker__copy { min-width: 0; }
+
+.hero-kurdish-ticker__link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.hero-kurdish-ticker__link:hover,
+.hero-kurdish-ticker__link:focus-visible {
+  color: #ffd87b;
+  text-decoration: underline;
+}
 
 .hero-kurdish-ticker__copy h3,
 .hero-kurdish-ticker__copy p {

@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { createDescriptionSearch } from './server/descriptionSearchService';
 import { createExternalTitleSearch } from './server/externalTitleSearch';
 import { createBoxOfficeService } from './server/boxOfficeService';
+import { createBoxOfficeTopTenService, createEntertainmentNewsService } from './server/heroFeeds';
 import { discoverTitleMatches, namedSearchTitle } from './src/utils/externalTitle';
 import { descriptionText } from './src/utils/descriptionSearch';
 import express from 'express';
@@ -13431,10 +13432,22 @@ async function startServer() {
   // Description mode shares relevance rules with the browser/offline fallback.
   const lookupExternalTitle = createExternalTitleSearch();
   const getBoxOffice = createBoxOfficeService();
+  const getBoxOfficeTopTen = createBoxOfficeTopTenService();
+  const getEntertainmentNews = createEntertainmentNewsService();
   app.get('/api/box-office', async (_req, res) => {
     const chart = await getBoxOffice();
     res.set('Cache-Control', 'public, max-age=900, stale-while-revalidate=3600');
     res.json(chart);
+  });
+  app.get('/api/box-office-top10', async (_req, res) => {
+    const chart = await getBoxOfficeTopTen();
+    res.set('Cache-Control', 'public, max-age=900, stale-while-revalidate=3600');
+    res.json(chart);
+  });
+  app.get('/api/entertainment-news', async (_req, res) => {
+    const items = await getEntertainmentNews();
+    res.set('Cache-Control', 'public, max-age=900, stale-while-revalidate=3600');
+    res.json({ items, source: 'Official entertainment RSS feeds', fetchedAt: new Date().toISOString() });
   });
   app.get('/api/search/external-title', async (req, res) => {
     const title = typeof req.query.q === 'string' ? req.query.q.trim() : '';
