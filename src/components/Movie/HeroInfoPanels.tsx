@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CalendarDays, ExternalLink, Film, Newspaper, Pause, Play, Tv, X } from 'lucide-react';
+import { lookupBoxOfficeSynopsis } from '../../data/boxOfficeSynopses';
 import type { Movie } from '../../types';
 import { resolveApiUrl } from '../../services/backendConfig';
 import '../../styles/heroInfoPanels.css';
@@ -15,6 +16,7 @@ type PanelItem = {
   image?: string;
   year?: string | number;
   rank?: number;
+  weekendGross?: string;
   source?: string;
   link?: string;
   publishedAt?: string;
@@ -163,15 +165,23 @@ function remoteBoxOfficeItems(payload: unknown, catalog: Movie[]): PanelItem[] {
   return rows.slice(0, 10).flatMap((row, index) => {
     const item = row as Record<string, unknown>;
     const title = cleanText(item.title);
-    const description = cleanText(item.synopsisKu || item.descriptionKu || item.description || `وەسفی کوردیی «${title}» لە بۆکس ئۆفیس.`);
     if (!title) return [];
     const imdbId = cleanText(item.imdbId);
     const local = catalog.find(movie => (imdbId && (movie as Movie & { imdbId?: string }).imdbId === imdbId)
       || cleanText(movie.title).toLowerCase().includes(title.toLowerCase()));
+    const remoteDescription = cleanText(item.synopsisKu || item.descriptionKu || item.description);
+    const localDescription = cleanText(local?.description);
+    const description = cleanText(
+      lookupBoxOfficeSynopsis(imdbId)
+      || (hasKurdish(remoteDescription) && !remoteDescription.startsWith('وەسفی کوردیی') ? remoteDescription : '')
+      || (hasKurdish(localDescription) ? localDescription : '')
+      || `وەسفی کوردیی «${title}» لە Top 10ی بۆکس ئۆفیس بەردەستە.`,
+    );
     return [{
       id: `box-office-${String(item.rank || index + 1)}-${title}`, title, description,
       image: safeRemoteUrl(item.poster), rank: Number(item.rank) || index + 1,
-      year: item.year as string | number | undefined, source: 'Box Office Mojo', kind: 'boxoffice' as const,
+      year: item.year as string | number | undefined, weekendGross: cleanText(item.weekendGross),
+      source: 'Box Office Mojo', kind: 'boxoffice' as const,
       movie: local,
     }];
   });
@@ -215,6 +225,7 @@ function PanelDetail({ item, onClose, onOpenMovie }: { item: PanelItem; onClose:
           <div className="hero-info-modal__meta">
             {item.year && <span><CalendarDays size={13} /> <bdi dir="ltr">{item.year}</bdi></span>}
             {item.publishedAt && <span><CalendarDays size={13} /> {formatDate(item.publishedAt)}</span>}
+            {item.kind === 'boxoffice' && item.weekendGross && <span><bdi dir="ltr">{item.weekendGross}</bdi> · بڕی بۆکس ئۆفیس</span>}
           </div>
           <p>{item.description}</p>
           {movieMeta.length > 0 && <div className="hero-info-modal__movie-meta">{movieMeta.map(value => <span key={value}>{value}</span>)}</div>}
