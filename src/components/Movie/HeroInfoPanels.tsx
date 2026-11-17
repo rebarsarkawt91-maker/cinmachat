@@ -10,6 +10,8 @@ type PanelItem = {
   id: string;
   title: string;
   description: string;
+  englishTitle?: string;
+  englishDescription?: string;
   image?: string;
   year?: string | number;
   rank?: number;
@@ -96,12 +98,24 @@ function remoteNewsItems(payload: unknown): PanelItem[] {
   const rows = Array.isArray((payload as FeedPayload)?.items) ? (payload as FeedPayload).items! : [];
   return rows.slice(0, 10).flatMap((row, index) => {
     const item = row as Record<string, unknown>;
-    const title = cleanText(item.titleKu || item.title);
-    const description = cleanText(item.descriptionKu || item.description || title);
+    const englishTitle = cleanText(item.title);
+    const englishDescription = cleanText(item.description);
+    const rawTitleKu = cleanText(item.titleKu || '');
+    const rawDescriptionKu = cleanText(item.descriptionKu || '');
+    const staleTitle = !rawTitleKu || rawTitleKu === englishTitle || rawTitleKu.startsWith('هەواڵی نوێ:');
+    const staleDescription = !hasKurdish(rawDescriptionKu)
+      || rawDescriptionKu.startsWith('هەواڵی فەرمیی فیلم و ئەکتەر:')
+      || (englishDescription && rawDescriptionKu.includes(englishDescription.slice(0, 80)));
+    const title = staleTitle ? 'هەواڵی نوێی فیلم و دراما' : rawTitleKu;
+    const description = staleDescription
+      ? 'نوێترین هەواڵ و زانیاریی فیلم و دراما لە سەرچاوە فەرمییەکانەوە. بۆ وردەکاری زیاتر کرتە لەسەر «زیاتر ببینە» بکە.'
+      : rawDescriptionKu;
     const link = safeRemoteUrl(item.link);
     if (!title || !description || !link) return [];
     return [{
       id: String(item.id || `news-${index}`), title, description,
+      englishTitle: englishTitle || undefined,
+      englishDescription: englishDescription || undefined,
       image: safeRemoteUrl(item.image), link, source: cleanText(item.source) || 'سەرچاوەی فەرمی',
       publishedAt: cleanText(item.publishedAt), kind: 'news' as const,
     }];
@@ -132,6 +146,8 @@ function remoteSeriesItems(payload: unknown): PanelItem[] {
       id: String(item.id || `series-news-${index}`),
       title,
       description,
+      englishTitle: originalTitle || undefined,
+      englishDescription: cleanText(item.description) || undefined,
       image: safeRemoteUrl(item.image),
       rank: Number(item.rank) || index + 1,
       source: [region, cleanText(item.source)].filter(Boolean).join(' · ') || 'سەرچاوەی فەرمی دەرەکی',
@@ -175,6 +191,7 @@ function PanelIcon({ kind }: { kind: PanelKind }) {
 }
 
 function PanelDetail({ item, onClose, onOpenMovie }: { item: PanelItem; onClose: () => void; onOpenMovie?: (movie: Movie) => void }) {
+  const [showEnglish, setShowEnglish] = useState(false);
   const movie = item.movie;
   const movieMeta = movie ? [
     movie.quality,
@@ -202,6 +219,15 @@ function PanelDetail({ item, onClose, onOpenMovie }: { item: PanelItem; onClose:
           <p>{item.description}</p>
           {movieMeta.length > 0 && <div className="hero-info-modal__movie-meta">{movieMeta.map(value => <span key={value}>{value}</span>)}</div>}
           {movie?.tags?.length ? <div className="hero-info-modal__tags">{movie.tags.slice(0, 8).map(tag => <span key={tag}>{cleanText(tag)}</span>)}</div> : null}
+          {(item.englishTitle || item.englishDescription) && <>
+            <button type="button" className="hero-info-modal__language-toggle" onClick={() => setShowEnglish(value => !value)}>
+              {showEnglish ? 'پیشاندانی دەقی کوردی' : 'بینینی دەقی ئینگلیزی'}
+            </button>
+            {showEnglish && <div className="hero-info-modal__english" dir="ltr" lang="en">
+              {item.englishTitle && <h3>{item.englishTitle}</h3>}
+              {item.englishDescription && <p>{item.englishDescription}</p>}
+            </div>}
+          </>}
           <div className="hero-info-modal__actions">
             {item.movie && onOpenMovie && <button type="button" onClick={() => { onClose(); onOpenMovie(item.movie!); }}>
               <Play size={14} fill="currentColor" /> {item.kind === 'series' ? 'سەیرکردنی زنجیرە' : 'سەیرکردنی فیلم'}

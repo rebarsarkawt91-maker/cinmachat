@@ -110,6 +110,11 @@
 .hero-info-modal__movie-meta, .hero-info-modal__tags { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .65rem; }
 .hero-info-modal__movie-meta span, .hero-info-modal__tags span { padding: .2rem .42rem; border: 1px solid rgb(255 255 255 / 13%); border-radius: .35rem; color: rgb(255 255 255 / 73%); background: rgb(255 255 255 / 6%); font-size: .6rem; }
 .hero-info-modal__tags span { color: #fed7aa; border-color: rgb(251 146 60 / 28%); }
+.hero-info-modal__language-toggle { margin-top: .7rem; padding: .34rem .55rem; border: 1px solid rgb(147 197 253 / 35%); border-radius: .45rem; color: #bfdbfe; background: rgb(59 130 246 / 12%); font-size: .64rem; font-weight: 900; cursor: pointer; }
+.hero-info-modal__language-toggle:hover { background: rgb(59 130 246 / 22%); }
+.hero-info-modal__english { margin-top: .65rem; padding: .62rem .7rem; border: 1px solid rgb(255 255 255 / 12%); border-radius: .55rem; background: rgb(0 0 0 / 24%); text-align: left; }
+.hero-info-modal__english h3 { margin: 0; color: rgb(255 255 255 / 90%); font-size: .72rem; line-height: 1.45; }
+.hero-info-modal__english p { margin: .4rem 0 0; color: rgb(255 255 255 / 70%); font-size: .68rem; line-height: 1.6; }
 .hero-info-modal__actions { display: flex; flex-wrap: wrap; gap: .45rem; margin-top: 1rem; }
 .hero-info-modal__actions button, .hero-info-modal__actions a { display: inline-flex; align-items: center; gap: .35rem; padding: .48rem .75rem; border: 1px solid rgb(255 255 255 / 16%); border-radius: .55rem; color: #fff; background: rgb(255 255 255 / 8%); font-size: .7rem; font-weight: 900; text-decoration: none; cursor: pointer; }
 .hero-info-modal__actions button { border-color: rgb(74 222 128 / 45%); background: rgb(34 197 94 / 18%); color: #bbf7d0; }

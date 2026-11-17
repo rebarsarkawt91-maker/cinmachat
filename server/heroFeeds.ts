@@ -160,6 +160,7 @@ export function parseOfficialEntertainmentFeed(xml: string, source: FeedSource):
 }
 
 const seriesWords = /(?:series|tv|television|drama|season|episode|cast|actor|actress|k-?drama|c-?drama|korean drama|chinese drama|زنجیرە|دراما|ئەڵقە)/iu;
+const hasKurdishText = (value: string) => /[ەێڕڵۆۆڤگ]/u.test(value);
 
 /** Parse an external series/TV feed without consulting the local catalog. */
 export function parseOfficialSeriesFeed(xml: string, source: SeriesFeedSource): HeroNewsItem[] {
@@ -263,13 +264,23 @@ async function fetchOfficialNews(request: Request): Promise<HeroNewsItem[]> {
     enriched.push(...batch.map((item, offset) => ({ ...item, image: images[offset] || item.image })));
   }
   const localized = await translateNewsToKurdish(enriched, request);
-  // Keep the strip Kurdish even when the optional translator is unavailable;
-  // the source title/summary remains visible as a short, honest excerpt.
-  return localized.map(item => ({
-    ...item,
-    titleKu: item.titleKu || `هەواڵی نوێ: ${item.title}`,
-    descriptionKu: item.descriptionKu || `هەواڵی فەرمیی فیلم و ئەکتەر: ${item.description}`,
-  }));
+  // Keep the strip Kurdish even when the optional translator is unavailable.
+  // The original English title/summary remains in the API fields and is
+  // revealed by the detail dialog's English toggle, not in the small card.
+  return localized.map(item => {
+    const rawTitleKu = item.titleKu?.trim() || '';
+    const rawDescriptionKu = item.descriptionKu?.trim() || '';
+    const translatedTitle = rawTitleKu && rawTitleKu !== item.title && !rawTitleKu.startsWith('هەواڵی نوێ:')
+      ? rawTitleKu
+      : 'هەواڵی نوێی فیلم و دراما';
+    const isEnglishFallback = !hasKurdishText(rawDescriptionKu)
+      || rawDescriptionKu.startsWith('هەواڵی فەرمیی فیلم و ئەکتەر:')
+      || rawDescriptionKu.includes(item.description.slice(0, 80));
+    const descriptionKu = !isEnglishFallback
+      ? rawDescriptionKu
+      : 'نوێترین هەواڵ و زانیاریی فیلم و دراما لە سەرچاوە فەرمییەکانەوە. بۆ وردەکاری زیاتر کرتە لەسەر «زیاتر ببینە» بکە.';
+    return { ...item, titleKu: translatedTitle, descriptionKu };
+  });
 }
 
 /** Translate only short metadata in one optional, server-side batch request.
@@ -346,7 +357,7 @@ async function fetchOfficialSeriesNews(request: Request): Promise<HeroNewsItem[]
       ? item.titleKu
       : item.title;
     const rawDescription = item.descriptionKu?.trim() || '';
-    const hasKurdish = /[ەێڕڵۆۆڤگ]/u.test(rawDescription);
+    const hasKurdish = hasKurdishText(rawDescription);
     const isEnglishFallback = rawDescription.startsWith('زانیاریی دەرەکیی زنجیرە و دراماکان:')
       || rawDescription.includes(item.description.slice(0, 80));
     const descriptionKu = hasKurdish && !isEnglishFallback
