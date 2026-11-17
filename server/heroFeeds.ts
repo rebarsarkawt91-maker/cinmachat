@@ -214,7 +214,9 @@ async function fetchArticleImage(item: HeroNewsItem, source: FeedSource, request
   if (item.image) return item.image;
   try {
     const response = await request(item.link, {
-      redirect: 'error',
+      // Official article pages commonly redirect from a canonical URL before
+      // exposing their social preview image (Soompi is one example).
+      redirect: 'follow',
       headers: { Accept: 'text/html' },
       signal: AbortSignal.timeout(7000),
     });
@@ -222,7 +224,10 @@ async function fetchArticleImage(item: HeroNewsItem, source: FeedSource, request
     const html = await readLimited(response, MAX_ARTICLE_BYTES);
     const image = attrValue(html, /<meta\b[^>]*(?:property|name)=["'](?:og:image|twitter:image)["'][^>]*\bcontent=["']([^"']+)["']/i)
       || attrValue(html, /<meta\b[^>]*\bcontent=["']([^"']+)["'][^>]*(?:property|name)=["'](?:og:image|twitter:image)["']/i);
-    return safeHttpsUrl(image, [source.host]);
+    // The preview image is often hosted on a first-party CDN rather than the
+    // article hostname. The article URL itself was allow-listed from a feed;
+    // accept only HTTPS for its derived image URL.
+    return safeHttpsUrl(image);
   } catch {
     return undefined;
   }
@@ -335,11 +340,20 @@ async function fetchOfficialSeriesNews(request: Request): Promise<HeroNewsItem[]
     enriched.push(...batch.map((item, offset) => ({ ...item, image: images[offset] || item.image })));
   }
   const localized = await translateNewsToKurdish(enriched, request);
-  return localized.map(item => ({
-    ...item,
-    titleKu: item.titleKu || `زنجیرەی نوێ: ${item.title}`,
-    descriptionKu: item.descriptionKu || `زانیاریی دەرەکیی زنجیرە و دراماکان: ${item.description}`,
-  }));
+  return localized.map(item => {
+    const region = item.region || 'دەرەکی';
+    const translatedTitle = item.titleKu && item.titleKu !== item.title && !item.titleKu.startsWith('زنجیرەی نوێ:')
+      ? item.titleKu
+      : item.title;
+    const rawDescription = item.descriptionKu?.trim() || '';
+    const hasKurdish = /[ەێڕڵۆۆڤگ]/u.test(rawDescription);
+    const isEnglishFallback = rawDescription.startsWith('زانیاریی دەرەکیی زنجیرە و دراماکان:')
+      || rawDescription.includes(item.description.slice(0, 80));
+    const descriptionKu = hasKurdish && !isEnglishFallback
+      ? rawDescription
+      : `زانیارییەکی نوێی زنجیرە و درامای ${region}ە. ئەم بابەتە لە سەرچاوەی دەرەکییەوە وەرگیراوە؛ بۆ وردەکاری زیاتر کرتە لەسەر «زیاتر ببینە» بکە.`;
+    return { ...item, titleKu: translatedTitle, descriptionKu };
+  });
 }
 
 function isoWeekKey(date: Date): string {
