@@ -36,6 +36,9 @@
 .hero-info-panel--blue { top: 39%; right: clamp(.75rem, 1.35vw, 1.5rem); border-color: rgb(96 165 250 / 65%); }
 .hero-info-panel--green { top: 9%; left: clamp(.75rem, 1.35vw, 1.5rem); border-color: rgb(74 222 128 / 62%); }
 .hero-info-panel--orange { top: 39%; left: clamp(.75rem, 1.35vw, 1.5rem); border-color: rgb(251 146 60 / 65%); }
+/* The two right-side cards have longer poster art; a small anchored scale
+   keeps their stacked bounds from touching while preserving every detail. */
+.hero-info-panel--yellow, .hero-info-panel--blue { transform: scale(.92); transform-origin: top right; }
 
 .hero-info-panel__heading,
 .hero-info-panel__footer {
@@ -128,6 +131,7 @@
   .hero-info-panel { width: min(16rem, 24vw); }
   .hero-info-panel--yellow, .hero-info-panel--green { top: 8%; }
   .hero-info-panel--blue, .hero-info-panel--orange { top: 40%; }
+  .hero-info-panel--yellow, .hero-info-panel--blue { transform: scale(.95); }
 }
 
 @media (max-width: 767px) {
