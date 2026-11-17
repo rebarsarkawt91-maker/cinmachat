@@ -112,8 +112,20 @@ function remoteSeriesItems(payload: unknown): PanelItem[] {
   const rows = Array.isArray((payload as FeedPayload)?.items) ? (payload as FeedPayload).items! : [];
   return rows.slice(0, 10).flatMap((row, index) => {
     const item = row as Record<string, unknown>;
-    const title = cleanText(item.titleKu || item.title);
-    const description = cleanText(item.descriptionKu || item.description || title);
+    const region = cleanText(item.region) || 'دەرەکی';
+    const originalTitle = cleanText(item.title);
+    const rawTitle = cleanText(item.titleKu || originalTitle);
+    // Older cached responses used a Kurdish prefix while leaving the rest of
+    // the title in English. Keep the source title for discoverability, but
+    // add a Kurdish region label so the card never looks untranslated.
+    const title = rawTitle.startsWith('زنجیرەی نوێ:')
+      ? `${region} · ${originalTitle}`
+      : rawTitle || `${region} · زنجیرەی نوێ`;
+    const rawDescription = cleanText(item.descriptionKu || item.description || '');
+    const staleEnglishFallback = rawDescription.startsWith('زانیاریی دەرەکیی زنجیرە و دراماکان:');
+    const description = hasKurdish(rawDescription) && !staleEnglishFallback
+      ? rawDescription
+      : `زانیارییەکی نوێی زنجیرە و درامای ${region}ە. ئەم بابەتە لە سەرچاوەی دەرەکییەوە وەرگیراوە؛ بۆ وردەکاری زیاتر کرتە لەسەر «زیاتر ببینە» بکە.`;
     const link = safeRemoteUrl(item.link);
     if (!title || !description || !link) return [];
     return [{
@@ -122,7 +134,7 @@ function remoteSeriesItems(payload: unknown): PanelItem[] {
       description,
       image: safeRemoteUrl(item.image),
       rank: Number(item.rank) || index + 1,
-      source: [cleanText(item.region), cleanText(item.source)].filter(Boolean).join(' · ') || 'سەرچاوەی فەرمی دەرەکی',
+      source: [region, cleanText(item.source)].filter(Boolean).join(' · ') || 'سەرچاوەی فەرمی دەرەکی',
       link,
       publishedAt: cleanText(item.publishedAt),
       kind: 'series' as const,
