@@ -216,7 +216,14 @@ async function fetchOfficialNews(request: Request): Promise<HeroNewsItem[]> {
     }));
     enriched.push(...batch.map((item, offset) => ({ ...item, image: images[offset] || item.image })));
   }
-  return translateNewsToKurdish(enriched, request);
+  const localized = await translateNewsToKurdish(enriched, request);
+  // Keep the strip Kurdish even when the optional translator is unavailable;
+  // the source title/summary remains visible as a short, honest excerpt.
+  return localized.map(item => ({
+    ...item,
+    titleKu: item.titleKu || `هەواڵی نوێ: ${item.title}`,
+    descriptionKu: item.descriptionKu || `هەواڵی فەرمیی فیلم و ئەکتەر: ${item.description}`,
+  }));
 }
 
 /** Translate only short metadata in one optional, server-side batch request.
