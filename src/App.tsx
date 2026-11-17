@@ -457,7 +457,7 @@ import { catalogHasNamedTitle, namedSearchTitle, rankNamedMovies } from './utils
 import { MovieTitleInput } from './components/MovieTitleInput';
 import { MissingMovieCards } from './components/MissingMovieCards';
 import { BoxOfficeBanner } from './components/Movie/BoxOfficeBanner';
-import { HeroKurdishTickerRail } from './components/Movie/HeroKurdishTickerRail';
+import { HeroInfoPanels } from './components/Movie/HeroInfoPanels';
 import { HeroBackgroundExperience } from './components/Movie/HeroBackgroundExperience';
 import { DEFAULT_HERO_BACKGROUND, isHeroBackgroundAdminRole, parseHeroBackground, type HeroBackgroundUpdate } from './utils/heroBackground';
 import { PlayerAdOverlay, publishPlayerAdsConfig } from './components/Player/PlayerAdOverlay';
@@ -15216,7 +15216,7 @@ const handleWebkitEndFullscreen = () => {
                           (showPlayer || (!!isMovieDetailsOpen && !!trailerPreviewId)))
                       }
                     />
-                    <HeroKurdishTickerRail catalog={publicMovies} dramaRooms={dramaRoomsFiltered} />
+                    <HeroInfoPanels catalog={publicMovies} dramaRooms={dramaRoomsFiltered} onOpenMovie={openMovieDetails} />
                   </div>}
                 </HeroBackgroundExperience>
               </React.Suspense>
