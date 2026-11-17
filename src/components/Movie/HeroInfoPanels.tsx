@@ -82,12 +82,21 @@ function chooseSeriesItems(catalog: Movie[], rooms: DramaRoom[]): PanelItem[] {
   const roomMovies = [...new Set(roomIds)].map(id => byId.get(id)).filter((movie): movie is Movie => Boolean(movie));
   const source = [...roomMovies, ...catalog.filter(movie => isSeries(movie) && !roomIds.includes(movie.id))];
   const unique = new Map(source.map(movie => [movie.id, movie]));
-  return [...unique.values()]
-    .sort((a, b) => {
-      const score = (movie: Movie) => (movie.isTrending ? 100000 : 0) + (Number(movie.trendingScore) || 0) * 10 + (Number(movie.views) || 0);
-      return score(b) - score(a);
-    })
-    .slice(0, 10)
+  const sorted = [...unique.values()].sort((a, b) => {
+    const score = (movie: Movie) => {
+      const year = Number.parseInt(String(movie.year || ''), 10) || 0;
+      const published = Date.parse(movie.date || '');
+      const recency = Number.isFinite(published) ? Math.max(0, Math.floor(published / 86_400_000)) : 0;
+      return (movie.isTrending ? 100000 : 0) + year * 100 + recency + (Number(movie.trendingScore) || 0) * 10 + (Number(movie.views) || 0);
+    };
+    return score(b) - score(a);
+  });
+  // Keep the carousel useful for the requested regions whenever the catalog
+  // contains them; fill the remaining slots by the overall newest/trending
+  // order so a sparse catalog still renders a complete Top 10.
+  const regional = ['کۆری', 'چینی', 'بیانی'].flatMap(region => sorted.filter(movie => regionFor(movie) === region).slice(0, 3));
+  const selected = [...new Map([...regional, ...sorted].map(movie => [movie.id, movie])).values()].slice(0, 10);
+  return selected
     .map((movie, index) => ({
       id: `series-${movie.id}`,
       title: cleanText(movie.title).split('|')[0] || 'زنجیرەی نوێ',
@@ -96,6 +105,7 @@ function chooseSeriesItems(catalog: Movie[], rooms: DramaRoom[]): PanelItem[] {
       year: movie.year,
       rank: index + 1,
       source: regionFor(movie),
+      link: safeRemoteUrl(movie.externalMovieLink || movie.external_link || movie.trailerLink),
       kind: 'series' as const,
       movie,
     }));
@@ -167,6 +177,14 @@ function PanelIcon({ kind }: { kind: PanelKind }) {
 }
 
 function PanelDetail({ item, onClose, onOpenMovie }: { item: PanelItem; onClose: () => void; onOpenMovie?: (movie: Movie) => void }) {
+  const movie = item.movie;
+  const movieMeta = movie ? [
+    movie.quality,
+    movie.duration,
+    movie.rating || movie.imdbRating ? `IMDb ${movie.rating || movie.imdbRating}` : '',
+    movie.category,
+    movie.language,
+  ].map(cleanText).filter(Boolean) : [];
   return <div className="hero-info-modal__backdrop" role="presentation" onMouseDown={event => {
     if (event.target === event.currentTarget) onClose();
   }}>
@@ -184,12 +202,14 @@ function PanelDetail({ item, onClose, onOpenMovie }: { item: PanelItem; onClose:
             {item.publishedAt && <span><CalendarDays size={13} /> {formatDate(item.publishedAt)}</span>}
           </div>
           <p>{item.description}</p>
+          {movieMeta.length > 0 && <div className="hero-info-modal__movie-meta">{movieMeta.map(value => <span key={value}>{value}</span>)}</div>}
+          {movie?.tags?.length ? <div className="hero-info-modal__tags">{movie.tags.slice(0, 8).map(tag => <span key={tag}>{cleanText(tag)}</span>)}</div> : null}
           <div className="hero-info-modal__actions">
             {item.movie && onOpenMovie && <button type="button" onClick={() => { onClose(); onOpenMovie(item.movie!); }}>
-              <Play size={14} fill="currentColor" /> سەیرکردنی فیلم
+              <Play size={14} fill="currentColor" /> {item.kind === 'series' ? 'سەیرکردنی زنجیرە' : 'سەیرکردنی فیلم'}
             </button>}
             {item.link && <a href={item.link} target="_blank" rel="noopener noreferrer">
-              <ExternalLink size={14} /> سەرچاوەی فەرمی
+              <ExternalLink size={14} /> سەرچاوەی بەستراو
             </a>}
           </div>
         </div>
@@ -256,6 +276,7 @@ export function HeroInfoPanels({ catalog, dramaRooms, onOpenMovie }: {
   const fallbackNews = useMemo(() => chooseNewsFallback(catalog), [catalog]);
   const [newsItems, setNewsItems] = useState<PanelItem[] | null>(null);
   const [boxOfficeItems, setBoxOfficeItems] = useState<PanelItem[] | null>(null);
+  const [seriesNewsItems, setSeriesNewsItems] = useState<PanelItem[] | null>(null);
   const [selected, setSelected] = useState<PanelItem | null>(null);
 
   useEffect(() => {
@@ -274,6 +295,9 @@ export function HeroInfoPanels({ catalog, dramaRooms, onOpenMovie }: {
         const remoteBoxOffice = boxResponse.ok ? remoteBoxOfficeItems(boxPayload, catalog) : [];
         if (remoteNews.length) setNewsItems(remoteNews);
         if (remoteBoxOffice.length) setBoxOfficeItems(remoteBoxOffice);
+        const officialSeriesNews = remoteNews.filter(item => /(?:series|tv|season|drama|زنجیرە|دراما|ئەڵقە)/iu.test(`${item.title} ${item.description}`))
+          .map(item => ({ ...item, kind: 'series' as const, rank: undefined }));
+        if (officialSeriesNews.length) setSeriesNewsItems(officialSeriesNews);
       } catch { /* Local catalog data remains visible during provider outages. */ }
       finally { window.clearTimeout(timer); }
     };
@@ -287,7 +311,7 @@ export function HeroInfoPanels({ catalog, dramaRooms, onOpenMovie }: {
       <RotatingPanel panel="yellow" title="وەسفی فیلمەکان" subtitle="FILMS" items={movieItems} onSelect={setSelected} />
       <RotatingPanel panel="blue" title="بۆکس ئۆفیس · TOP 10" subtitle="BOX OFFICE" items={boxOfficeItems || movieItems} onSelect={setSelected} />
       <RotatingPanel panel="green" title="هەواڵی فیلم و ئەکتەر" subtitle="هەواڵی ڕۆژ" items={newsItems || fallbackNews} onSelect={setSelected} />
-      <RotatingPanel panel="orange" title="تۆپ ١٠ی زنجیرە نوێکان" subtitle="TOP SERIES" items={seriesItems} onSelect={setSelected} />
+      <RotatingPanel panel="orange" title="تۆپ ١٠ی زنجیرە نوێکان" subtitle="TOP SERIES" items={[...(seriesNewsItems || []), ...seriesItems].slice(0, 10)} onSelect={setSelected} />
     </div>
     {selected && <PanelDetail item={selected} onClose={() => setSelected(null)} onOpenMovie={onOpenMovie} />}
   </>;

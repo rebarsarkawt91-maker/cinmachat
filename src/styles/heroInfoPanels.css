@@ -107,6 +107,9 @@
 .hero-info-modal__meta { display: flex; flex-wrap: wrap; gap: .6rem; color: rgb(255 255 255 / 72%); font-size: .67rem; }
 .hero-info-modal__meta span { display: inline-flex; align-items: center; gap: .2rem; }
 .hero-info-modal__copy p { margin: .85rem 0 0; color: rgb(255 237 232 / 88%); font-size: .78rem; line-height: 1.8; }
+.hero-info-modal__movie-meta, .hero-info-modal__tags { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .65rem; }
+.hero-info-modal__movie-meta span, .hero-info-modal__tags span { padding: .2rem .42rem; border: 1px solid rgb(255 255 255 / 13%); border-radius: .35rem; color: rgb(255 255 255 / 73%); background: rgb(255 255 255 / 6%); font-size: .6rem; }
+.hero-info-modal__tags span { color: #fed7aa; border-color: rgb(251 146 60 / 28%); }
 .hero-info-modal__actions { display: flex; flex-wrap: wrap; gap: .45rem; margin-top: 1rem; }
 .hero-info-modal__actions button, .hero-info-modal__actions a { display: inline-flex; align-items: center; gap: .35rem; padding: .48rem .75rem; border: 1px solid rgb(255 255 255 / 16%); border-radius: .55rem; color: #fff; background: rgb(255 255 255 / 8%); font-size: .7rem; font-weight: 900; text-decoration: none; cursor: pointer; }
 .hero-info-modal__actions button { border-color: rgb(74 222 128 / 45%); background: rgb(34 197 94 / 18%); color: #bbf7d0; }
