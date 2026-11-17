@@ -337,6 +337,50 @@ iframe#streaming-player[data-provider-interactive="true"] {
   white-space: nowrap;
 }
 .drama-hero-carousel__series-label b { color: #86efac; padding: 0 .08rem; }
+
+/* The desktop hero utility controls live in the compact green header slot
+   rather than consuming the full-height left edge of the theatre. The
+   horizontal rail keeps every existing action and remains scrollable when a
+   viewport is too narrow for all controls at once. */
+.hero-control-rail {
+  position: fixed !important;
+  top: .35rem !important;
+  bottom: auto !important;
+  left: 37% !important;
+  width: min(19.5rem, 20vw) !important;
+  height: 2.2rem !important;
+  max-height: 2.2rem !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: .2rem !important;
+  padding: .14rem .2rem !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  border: 1px solid rgb(255 255 255 / 10%);
+  border-radius: .72rem;
+  background: rgb(0 0 0 / 20%);
+  -webkit-backdrop-filter: blur(7px);
+  backdrop-filter: blur(7px);
+  scrollbar-width: none;
+}
+.hero-control-rail::-webkit-scrollbar { display: none; }
+.hero-control-rail > * { flex: 0 0 auto; }
+.hero-control-rail > button,
+.hero-control-rail > a,
+.hero-control-rail > div > button {
+  width: 1.8rem !important;
+  height: 1.8rem !important;
+  padding: .32rem !important;
+  border-radius: .58rem !important;
+}
+.hero-control-rail > div[title="بینەری ئۆنلاین لە ماڵپەڕ"] { display: none !important; }
+.hero-control-rail .hero-volume-popup {
+  top: 2.45rem !important;
+  right: auto !important;
+  bottom: auto !important;
+  left: 1rem !important;
+}
+
 .site-visitor-badge {
   display: flex;
   flex-direction: column;
@@ -358,25 +402,34 @@ iframe#streaming-player[data-provider-interactive="true"] {
   opacity: .86;
 }
 .site-visitor-badge-wrap {
-  position: absolute;
-  top: clamp(3.9rem, 9%, 6.5rem);
-  left: clamp(4rem, 6.5vw, 6.5rem);
+  position: fixed;
+  top: .35rem;
+  left: 57.5%;
   z-index: 35;
   pointer-events: none;
 }
 .site-visitor-badge-motion { display: flex; }
+.site-visitor-badge {
+  flex-direction: row;
+  align-items: stretch;
+  justify-content: space-between;
+  min-width: 12.5rem;
+  padding: .18rem .42rem;
+  gap: .45rem;
+}
 .site-visitor-badge__row {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: space-between;
-  gap: .65rem;
-  min-width: 6.2rem;
+  justify-content: center;
+  gap: .08rem;
+  min-width: 3.35rem;
 }
-.site-visitor-badge__label { color: rgba(255,255,255,.72); }
+.site-visitor-badge__label { color: rgba(255,255,255,.72); font-size: .45rem; line-height: 1; }
 .site-visitor-badge__row strong {
   color: #86efac;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: .56rem;
+  font-size: .58rem;
   font-weight: 900;
   line-height: 1;
 }
@@ -414,9 +467,19 @@ iframe#streaming-player[data-provider-interactive="true"] {
   .drama-hero-carousel__caption strong { font-size: .67rem; }
   .drama-hero-carousel__caption small { font-size: .55rem; }
   .drama-hero-carousel__series-label { padding: .16rem .32rem; font-size: .5rem; }
-  .site-visitor-badge-wrap { top: 3.2rem; left: .55rem; }
-  .site-visitor-badge { min-width: 6.4rem; padding: .3rem .44rem; font-size: .46rem; }
-  .site-visitor-badge__row { min-width: 5.4rem; gap: .45rem; }
+  .hero-control-rail {
+    top: 3.1rem !important;
+    left: .55rem !important;
+    width: min(17rem, calc(100vw - 1.1rem)) !important;
+    height: 2rem !important;
+    max-height: 2rem !important;
+  }
+  .hero-control-rail > div[title="بینەری ئۆنلاین لە ماڵپەڕ"] { display: flex !important; }
+  .site-visitor-badge-wrap { top: 3.1rem; left: auto; right: .55rem; }
+  .site-visitor-badge { min-width: 7.7rem; padding: .26rem .34rem; font-size: .46rem; gap: .2rem; }
+  .site-visitor-badge__row { min-width: 2.25rem; gap: .06rem; }
+  .site-visitor-badge__label { font-size: .38rem; }
+  .site-visitor-badge__row strong { font-size: .5rem; }
   .drama-hero-carousel__arrow { width: 1.7rem; height: 1.7rem; font-size: 1.25rem; }
 }
 @media (prefers-reduced-motion: reduce) {

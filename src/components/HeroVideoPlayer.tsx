@@ -1270,7 +1270,7 @@ const HeroVideoPlayer: React.FC<{
         {/* One continuous 13-control rail: these nine hero controls sit
             directly above the four existing global controls (bell, install,
             friends and WhatsApp). Actions and IDs stay unchanged. */}
-        <div className="fixed bottom-[14.2rem] left-6 z-[48] flex max-h-[calc(100dvh-15.2rem)] w-11 flex-col-reverse items-center gap-2 overflow-y-auto no-scrollbar pointer-events-none">
+        <div className="hero-control-rail fixed bottom-[14.2rem] left-6 z-[48] flex max-h-[calc(100dvh-15.2rem)] w-11 flex-col-reverse items-center gap-2 overflow-y-auto no-scrollbar pointer-events-none">
           <div
             className="pointer-events-none flex items-center gap-1.5 py-2 px-2.5 md:py-3 md:px-3 min-w-fit overflow-visible whitespace-nowrap bg-black/50 border border-white/10 rounded-xl md:rounded-2xl backdrop-blur-md shadow-lg"
             title="بینەری ئۆنلاین لە ماڵپەڕ"
@@ -1335,7 +1335,7 @@ const HeroVideoPlayer: React.FC<{
             {/* Vertical slider popup (opens DOWNWARD from the icon) */}
             {volumePopupOpen && (
               <div
-                className="fixed bottom-[14.2rem] left-[4.75rem] z-[80] flex flex-col items-center gap-2 p-3 rounded-2xl bg-black/90 backdrop-blur-md border border-white/10 shadow-2xl select-none"
+                className="hero-volume-popup fixed bottom-[14.2rem] left-[4.75rem] z-[80] flex flex-col items-center gap-2 p-3 rounded-2xl bg-black/90 backdrop-blur-md border border-white/10 shadow-2xl select-none"
                 onMouseEnter={() => {
                   if (volumeCloseTimerRef.current) {
                     clearTimeout(volumeCloseTimerRef.current);

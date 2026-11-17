@@ -12,6 +12,7 @@ type HeroTickerItem = {
   rank?: number;
   link?: string;
   source?: string;
+  kind?: 'news' | 'series' | 'boxoffice';
 };
 
 type DramaRoom = {
@@ -51,7 +52,7 @@ function remoteNewsItems(payload: unknown): HeroTickerItem[] {
     const link = safeRemoteUrl(item.link);
     if (!title || !description || !link) return [];
     return [{ id: String(item.id || `remote-news-${index}`), title, description,
-      image: safeRemoteUrl(item.image), link, source: cleanText(item.source) }];
+      image: safeRemoteUrl(item.image), link, source: cleanText(item.source), kind: 'news' }];
   });
 }
 
@@ -64,7 +65,7 @@ function remoteBoxOfficeItems(payload: unknown): HeroTickerItem[] {
     if (!title || !description) return [];
     return [{ id: `remote-box-office-${String(item.rank || index + 1)}-${title}`,
       title, description, image: safeRemoteUrl(item.poster), rank: Number(item.rank) || index + 1,
-      source: 'Box Office Mojo' }];
+      source: 'Box Office Mojo', kind: 'boxoffice' }];
   });
 }
 
@@ -88,6 +89,7 @@ function chooseNews(catalog: Movie[]): HeroTickerItem[] {
         title,
         description: hasKurdish(description) ? description : fallbackDescription(title, 'news'),
         image: movie.image,
+        kind: 'news',
       };
     });
 }
@@ -110,15 +112,17 @@ function chooseDramas(catalog: Movie[], rooms: DramaRoom[]): HeroTickerItem[] {
         description: hasKurdish(description) ? description : fallbackDescription(title, 'drama'),
         image: movie.image,
         rank: index + 1,
+        kind: 'series',
       };
     });
 }
 
-function RotatingPanel({ title, items, kind }: { title: string; items: HeroTickerItem[]; kind: 'news' | 'drama' }) {
+function RotatingPanel({ title, items }: { title: string; items: HeroTickerItem[] }) {
   const safeItems = items.length ? items : [{
-    id: `${kind}-empty`,
-    title: kind === 'drama' ? 'تۆپ ١٠ی دراماکان' : 'هەواڵی فیلم و ئەکتەر',
+    id: 'unified-empty',
+    title: 'زنجیرە و بۆکس ئۆفیس',
     description: 'زانیارییەکان بە زوویی نوێ دەکرێنەوە.',
+    kind: 'series' as const,
   }];
   const [index, setIndex] = useState(0);
   const [paused, setPaused] = useState(false);
@@ -138,13 +142,13 @@ function RotatingPanel({ title, items, kind }: { title: string; items: HeroTicke
     }}>
     <div className="hero-kurdish-ticker__heading">
       <strong>{title}</strong>
-      <span>{kind === 'drama' ? `TOP 10${item.source ? ` · ${item.source}` : ''}` : (item.source || 'نوێ')}</span>
+      <span>TOP 10 · {item.kind === 'boxoffice' ? 'BOX OFFICE' : item.kind === 'series' ? 'SERIES' : (item.source || 'NEWS')}</span>
     </div>
     <div className="hero-kurdish-ticker__body" key={item.id}>
       {item.link ? <a className="hero-kurdish-ticker__poster" href={item.link} target="_blank" rel="noopener noreferrer" aria-label={item.title}>
-        {item.image ? <img src={item.image} alt="" loading="lazy" referrerPolicy="no-referrer" /> : kind === 'drama' ? <Tv size={18} /> : <Film size={18} />}
+        {item.image ? <img src={item.image} alt="" loading="lazy" referrerPolicy="no-referrer" /> : item.kind === 'series' ? <Tv size={18} /> : <Film size={18} />}
       </a> : <div className="hero-kurdish-ticker__poster">
-        {item.image ? <img src={item.image} alt="" loading="lazy" referrerPolicy="no-referrer" /> : kind === 'drama' ? <Tv size={18} /> : <Film size={18} />}
+        {item.image ? <img src={item.image} alt="" loading="lazy" referrerPolicy="no-referrer" /> : item.kind === 'series' ? <Tv size={18} /> : <Film size={18} />}
       </div>}
       <div className="hero-kurdish-ticker__copy">
         <h3 title={item.title}>{item.link ? <a className="hero-kurdish-ticker__link" href={item.link} target="_blank" rel="noopener noreferrer">{item.rank ? `#${item.rank} · ` : ''}{item.title}</a> : <>{item.rank ? `#${item.rank} · ` : ''}{item.title}</>}</h3>
@@ -193,8 +197,15 @@ export function HeroKurdishTickerRail({ catalog, dramaRooms }: { catalog: Movie[
     return () => { active = false; window.clearInterval(refresh); };
   }, []);
 
-  return <aside className="hero-kurdish-ticker-rail" aria-label="هەواڵ و تۆپی دراماکان">
-    <RotatingPanel title="هەواڵی ئەکتەر و فیلمەکان" items={news || fallbackNews} kind="news" />
-    <RotatingPanel title="وەسفی کوردی بۆکس ئۆفیس · TOP 10" items={boxOffice || fallbackDramas} kind="drama" />
+  const topTenItems = useMemo(() => {
+    const currentBoxOffice = (boxOffice || []).slice(0, 5);
+    const currentSeries = fallbackDramas.slice(0, currentBoxOffice.length ? 5 : 10);
+    const remaining = Math.max(0, 10 - currentSeries.length - currentBoxOffice.length);
+    const currentNews = (news || fallbackNews).slice(0, remaining);
+    return [...currentSeries, ...currentBoxOffice, ...currentNews].slice(0, 10);
+  }, [boxOffice, fallbackDramas, fallbackNews, news]);
+
+  return <aside className="hero-kurdish-ticker-rail" aria-label="زنجیرە و بۆکس ئۆفیس TOP 10">
+    <RotatingPanel title="زنجیرە و بۆکس ئۆفیس · TOP 10" items={topTenItems} />
   </aside>;
 }
