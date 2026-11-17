@@ -360,7 +360,7 @@ iframe#streaming-player[data-provider-interactive="true"] {
 .site-visitor-badge-wrap {
   position: absolute;
   top: clamp(3.9rem, 9%, 6.5rem);
-  right: clamp(.7rem, 2.5vw, 2.5rem);
+  left: clamp(4rem, 6.5vw, 6.5rem);
   z-index: 35;
   pointer-events: none;
 }
@@ -414,7 +414,7 @@ iframe#streaming-player[data-provider-interactive="true"] {
   .drama-hero-carousel__caption strong { font-size: .67rem; }
   .drama-hero-carousel__caption small { font-size: .55rem; }
   .drama-hero-carousel__series-label { padding: .16rem .32rem; font-size: .5rem; }
-  .site-visitor-badge-wrap { top: 3.2rem; right: .55rem; }
+  .site-visitor-badge-wrap { top: 3.2rem; left: .55rem; }
   .site-visitor-badge { min-width: 6.4rem; padding: .3rem .44rem; font-size: .46rem; }
   .site-visitor-badge__row { min-width: 5.4rem; gap: .45rem; }
   .drama-hero-carousel__arrow { width: 1.7rem; height: 1.7rem; font-size: 1.25rem; }

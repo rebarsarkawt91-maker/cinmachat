@@ -1,0 +1,220 @@
+.hero-series-spotlight {
+  position: absolute;
+  top: 9%;
+  right: clamp(.75rem, 1.35vw, 1.5rem);
+  z-index: 31;
+  width: min(18rem, 19vw);
+  min-width: 0;
+  overflow: hidden;
+  padding: .48rem .58rem .35rem;
+  border: 1px solid rgb(255 209 91 / 44%);
+  border-radius: .8rem;
+  background: linear-gradient(155deg, rgb(50 30 12 / 58%), rgb(10 7 11 / 72%));
+  color: #fff7f5;
+  box-shadow: 0 .45rem 1.2rem rgb(0 0 0 / 24%), 0 0 .8rem rgb(255 190 50 / 12%);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  pointer-events: auto;
+}
+
+.hero-series-spotlight::after {
+  position: absolute;
+  right: 10%;
+  bottom: 0;
+  left: 10%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgb(255 213 112 / 62%), transparent);
+  content: '';
+  pointer-events: none;
+}
+
+.hero-series-spotlight__heading,
+.hero-series-spotlight__footer,
+.hero-series-spotlight__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .35rem;
+}
+
+.hero-series-spotlight__heading {
+  color: #ffdf8a;
+  font-size: .59rem;
+  font-weight: 900;
+  line-height: 1.25;
+}
+
+.hero-series-spotlight__heading strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hero-series-spotlight__heading span {
+  flex: none;
+  color: rgb(255 255 255 / 66%);
+  font-size: .48rem;
+  letter-spacing: .04em;
+}
+
+.hero-series-spotlight__body {
+  display: grid;
+  grid-template-columns: 3.5rem minmax(0, 1fr);
+  gap: .55rem;
+  min-height: 5.25rem;
+  margin-top: .36rem;
+  animation: hero-series-spotlight-in .28s ease-out;
+}
+
+.hero-series-spotlight__poster {
+  position: relative;
+  display: grid;
+  width: 3.5rem;
+  height: 5rem;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid rgb(255 213 112 / 32%);
+  border-radius: .5rem;
+  background: rgb(53 26 31 / 72%);
+  color: #ffd87b;
+}
+
+.hero-series-spotlight__poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.hero-series-spotlight__region {
+  position: absolute;
+  right: .22rem;
+  bottom: .22rem;
+  left: .22rem;
+  overflow: hidden;
+  border-radius: .25rem;
+  background: rgb(0 0 0 / 68%);
+  color: #ffe6a8;
+  font-size: .47rem;
+  font-weight: 900;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hero-series-spotlight__copy { min-width: 0; }
+
+.hero-series-spotlight__meta {
+  color: #ffdf8a;
+  font-size: .5rem;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.hero-series-spotlight__meta bdi { color: rgb(255 255 255 / 70%); }
+
+.hero-series-spotlight__copy h2,
+.hero-series-spotlight__copy p {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.hero-series-spotlight__copy h2 {
+  margin: .25rem 0 .14rem;
+  color: #fff;
+  font-size: .73rem;
+  font-weight: 900;
+  line-height: 1.22;
+  -webkit-line-clamp: 2;
+}
+
+.hero-series-spotlight__copy p {
+  margin: 0;
+  color: rgb(255 237 232 / 84%);
+  font-size: .58rem;
+  line-height: 1.42;
+  -webkit-line-clamp: 2;
+}
+
+.hero-series-spotlight__copy small {
+  display: block;
+  margin-top: .2rem;
+  overflow: hidden;
+  color: #ffd87b;
+  font-size: .5rem;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hero-series-spotlight__footer { margin-top: .18rem; }
+
+.hero-series-spotlight__dots { display: flex; align-items: center; gap: .22rem; }
+
+.hero-series-spotlight__dots button {
+  display: block;
+  width: .28rem;
+  height: .28rem;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 38%);
+  cursor: pointer;
+}
+
+.hero-series-spotlight__dots button[aria-current="true"] {
+  width: .4rem;
+  height: .4rem;
+  background: #ffd24f;
+}
+
+.hero-series-spotlight__pause {
+  display: grid;
+  width: 1.2rem;
+  height: 1.2rem;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  color: rgb(255 255 255 / 78%);
+  background: rgb(0 0 0 / 30%);
+  cursor: pointer;
+}
+
+.hero-series-spotlight__dots button:focus-visible,
+.hero-series-spotlight__pause:focus-visible {
+  outline: 2px solid #ffd87b;
+  outline-offset: 2px;
+}
+
+@keyframes hero-series-spotlight-in {
+  from { opacity: .35; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 1279px) {
+  .hero-series-spotlight {
+    top: 8%;
+    right: .7rem;
+    width: min(16rem, 29vw);
+  }
+}
+
+@media (max-width: 767px) {
+  .hero-series-spotlight {
+    top: 8%;
+    right: .45rem;
+    width: min(13.5rem, 42vw);
+    padding: .35rem .42rem .25rem;
+  }
+  .hero-series-spotlight__body { grid-template-columns: 2.5rem minmax(0, 1fr); min-height: 3.85rem; gap: .35rem; }
+  .hero-series-spotlight__poster { width: 2.5rem; height: 3.55rem; }
+  .hero-series-spotlight__heading { font-size: .5rem; }
+  .hero-series-spotlight__copy h2 { font-size: .58rem; }
+  .hero-series-spotlight__copy p { font-size: .5rem; -webkit-line-clamp: 2; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-series-spotlight__body { animation: none; }
+}
