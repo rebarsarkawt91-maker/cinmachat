@@ -4,7 +4,6 @@ import type { Movie } from '../../types';
 import { resolveApiUrl } from '../../services/backendConfig';
 import '../../styles/heroInfoPanels.css';
 
-type DramaRoom = { dramas?: string[]; title?: string; description?: string };
 type PanelKind = 'movie' | 'boxoffice' | 'news' | 'series';
 
 type PanelItem = {
@@ -76,41 +75,6 @@ function chooseMovieItems(catalog: Movie[]): PanelItem[] {
     }));
 }
 
-function chooseSeriesItems(catalog: Movie[], rooms: DramaRoom[]): PanelItem[] {
-  const byId = new Map(catalog.filter(movie => movie?.id).map(movie => [movie.id, movie]));
-  const roomIds = rooms.flatMap(room => Array.isArray(room?.dramas) ? room.dramas : []);
-  const roomMovies = [...new Set(roomIds)].map(id => byId.get(id)).filter((movie): movie is Movie => Boolean(movie));
-  const source = [...roomMovies, ...catalog.filter(movie => isSeries(movie) && !roomIds.includes(movie.id))];
-  const unique = new Map(source.map(movie => [movie.id, movie]));
-  const sorted = [...unique.values()].sort((a, b) => {
-    const score = (movie: Movie) => {
-      const year = Number.parseInt(String(movie.year || ''), 10) || 0;
-      const published = Date.parse(movie.date || '');
-      const recency = Number.isFinite(published) ? Math.max(0, Math.floor(published / 86_400_000)) : 0;
-      return (movie.isTrending ? 100000 : 0) + year * 100 + recency + (Number(movie.trendingScore) || 0) * 10 + (Number(movie.views) || 0);
-    };
-    return score(b) - score(a);
-  });
-  // Keep the carousel useful for the requested regions whenever the catalog
-  // contains them; fill the remaining slots by the overall newest/trending
-  // order so a sparse catalog still renders a complete Top 10.
-  const regional = ['کۆری', 'چینی', 'بیانی'].flatMap(region => sorted.filter(movie => regionFor(movie) === region).slice(0, 3));
-  const selected = [...new Map([...regional, ...sorted].map(movie => [movie.id, movie])).values()].slice(0, 10);
-  return selected
-    .map((movie, index) => ({
-      id: `series-${movie.id}`,
-      title: cleanText(movie.title).split('|')[0] || 'زنجیرەی نوێ',
-      description: movieDescription(movie, `زنجیرەیەکی ${regionFor(movie)}ی نوێ و بەناوبانگە.`),
-      image: movie.image,
-      year: movie.year,
-      rank: index + 1,
-      source: regionFor(movie),
-      link: safeRemoteUrl(movie.externalMovieLink || movie.external_link || movie.trailerLink),
-      kind: 'series' as const,
-      movie,
-    }));
-}
-
 function chooseNewsFallback(catalog: Movie[]): PanelItem[] {
   return [...catalog]
     .filter(movie => movie?.id && movie?.title)
@@ -140,6 +104,28 @@ function remoteNewsItems(payload: unknown): PanelItem[] {
       id: String(item.id || `news-${index}`), title, description,
       image: safeRemoteUrl(item.image), link, source: cleanText(item.source) || 'سەرچاوەی فەرمی',
       publishedAt: cleanText(item.publishedAt), kind: 'news' as const,
+    }];
+  });
+}
+
+function remoteSeriesItems(payload: unknown): PanelItem[] {
+  const rows = Array.isArray((payload as FeedPayload)?.items) ? (payload as FeedPayload).items! : [];
+  return rows.slice(0, 10).flatMap((row, index) => {
+    const item = row as Record<string, unknown>;
+    const title = cleanText(item.titleKu || item.title);
+    const description = cleanText(item.descriptionKu || item.description || title);
+    const link = safeRemoteUrl(item.link);
+    if (!title || !description || !link) return [];
+    return [{
+      id: String(item.id || `series-news-${index}`),
+      title,
+      description,
+      image: safeRemoteUrl(item.image),
+      rank: Number(item.rank) || index + 1,
+      source: [cleanText(item.region), cleanText(item.source)].filter(Boolean).join(' · ') || 'سەرچاوەی فەرمی دەرەکی',
+      link,
+      publishedAt: cleanText(item.publishedAt),
+      kind: 'series' as const,
     }];
   });
 }
@@ -218,14 +204,15 @@ function PanelDetail({ item, onClose, onOpenMovie }: { item: PanelItem; onClose:
   </div>;
 }
 
-function RotatingPanel({ title, subtitle, items, panel, onSelect }: {
+function RotatingPanel({ title, subtitle, items, panel, onSelect, emptyDescription }: {
   title: string;
   subtitle: string;
   items: PanelItem[];
   panel: 'yellow' | 'blue' | 'green' | 'orange';
   onSelect: (item: PanelItem) => void;
+  emptyDescription?: string;
 }) {
-  const safeItems = items.length ? items : [{ id: `${panel}-empty`, title, description: 'زانیارییەکان بە زوویی نوێ دەکرێنەوە.', kind: panel === 'orange' ? 'series' : panel === 'green' ? 'news' : panel === 'blue' ? 'boxoffice' : 'movie' } as PanelItem];
+  const safeItems = items.length ? items : [{ id: `${panel}-empty`, title, description: emptyDescription || 'زانیارییەکان بە زوویی نوێ دەکرێنەوە.', kind: panel === 'orange' ? 'series' : panel === 'green' ? 'news' : panel === 'blue' ? 'boxoffice' : 'movie' } as PanelItem];
   const [index, setIndex] = useState(0);
   const [paused, setPaused] = useState(false);
   const item = safeItems[index % safeItems.length];
@@ -266,13 +253,11 @@ function RotatingPanel({ title, subtitle, items, panel, onSelect }: {
   </section>;
 }
 
-export function HeroInfoPanels({ catalog, dramaRooms, onOpenMovie }: {
+export function HeroInfoPanels({ catalog, onOpenMovie }: {
   catalog: Movie[];
-  dramaRooms: DramaRoom[];
   onOpenMovie?: (movie: Movie) => void;
 }) {
   const movieItems = useMemo(() => chooseMovieItems(catalog), [catalog]);
-  const seriesItems = useMemo(() => chooseSeriesItems(catalog, dramaRooms), [catalog, dramaRooms]);
   const fallbackNews = useMemo(() => chooseNewsFallback(catalog), [catalog]);
   const [newsItems, setNewsItems] = useState<PanelItem[] | null>(null);
   const [boxOfficeItems, setBoxOfficeItems] = useState<PanelItem[] | null>(null);
@@ -285,20 +270,23 @@ export function HeroInfoPanels({ catalog, dramaRooms, onOpenMovie }: {
       const controller = new AbortController();
       const timer = window.setTimeout(() => controller.abort(), 18000);
       try {
-        const [newsResponse, boxResponse] = await Promise.all([
+        const [newsResponse, boxResponse, seriesResponse] = await Promise.all([
           fetch(resolveApiUrl('/api/entertainment-news'), { headers: { Accept: 'application/json' }, signal: controller.signal }),
           fetch(resolveApiUrl('/api/box-office-top10'), { headers: { Accept: 'application/json' }, signal: controller.signal }),
+          fetch(resolveApiUrl('/api/series-top10'), { headers: { Accept: 'application/json' }, signal: controller.signal }),
         ]);
         if (!active) return;
-        const [newsPayload, boxPayload] = await Promise.all([newsResponse.json(), boxResponse.json()]);
+        const [newsPayload, boxPayload, seriesPayload] = await Promise.all([newsResponse.json(), boxResponse.json(), seriesResponse.json()]);
         const remoteNews = newsResponse.ok ? remoteNewsItems(newsPayload) : [];
         const remoteBoxOffice = boxResponse.ok ? remoteBoxOfficeItems(boxPayload, catalog) : [];
+        const remoteSeries = seriesResponse.ok ? remoteSeriesItems(seriesPayload) : [];
         if (remoteNews.length) setNewsItems(remoteNews);
         if (remoteBoxOffice.length) setBoxOfficeItems(remoteBoxOffice);
-        const officialSeriesNews = remoteNews.filter(item => /(?:series|tv|season|drama|زنجیرە|دراما|ئەڵقە)/iu.test(`${item.title} ${item.description}`))
-          .map(item => ({ ...item, kind: 'series' as const, rank: undefined }));
-        if (officialSeriesNews.length) setSeriesNewsItems(officialSeriesNews);
-      } catch { /* Local catalog data remains visible during provider outages. */ }
+        // Never fall back to the local catalog for this panel.  An empty
+        // response stays empty so viewers can tell the external feed is
+        // temporarily unavailable instead of seeing site-owned cards.
+        if (seriesResponse.ok) setSeriesNewsItems(remoteSeries);
+      } catch { /* External panels retain their last successful response. */ }
       finally { window.clearTimeout(timer); }
     };
     void load();
@@ -311,7 +299,9 @@ export function HeroInfoPanels({ catalog, dramaRooms, onOpenMovie }: {
       <RotatingPanel panel="yellow" title="وەسفی فیلمەکان" subtitle="FILMS" items={movieItems} onSelect={setSelected} />
       <RotatingPanel panel="blue" title="بۆکس ئۆفیس · TOP 10" subtitle="BOX OFFICE" items={boxOfficeItems || movieItems} onSelect={setSelected} />
       <RotatingPanel panel="green" title="هەواڵی فیلم و ئەکتەر" subtitle="هەواڵی ڕۆژ" items={newsItems || fallbackNews} onSelect={setSelected} />
-      <RotatingPanel panel="orange" title="تۆپ ١٠ی زنجیرە نوێکان" subtitle="TOP SERIES" items={[...(seriesNewsItems || []), ...seriesItems].slice(0, 10)} onSelect={setSelected} />
+      <RotatingPanel panel="orange" title="تۆپ ١٠ی زنجیرە نوێکان" subtitle="TOP SERIES · دەرەکی" items={seriesNewsItems || []}
+        emptyDescription="تەنها زنجیرە و درامای دەرەکیی ترێند لە سەرچاوە فەرمییەکان پیشان دەدرێت؛ کاتالۆگی ناوخۆی سایت لێرەدا نییە."
+        onSelect={setSelected} />
     </div>
     {selected && <PanelDetail item={selected} onClose={() => setSelected(null)} onOpenMovie={onOpenMovie} />}
   </>;

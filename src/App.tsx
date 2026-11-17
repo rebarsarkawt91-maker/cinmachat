@@ -15216,7 +15216,7 @@ const handleWebkitEndFullscreen = () => {
                           (showPlayer || (!!isMovieDetailsOpen && !!trailerPreviewId)))
                       }
                     />
-                    <HeroInfoPanels catalog={publicMovies} dramaRooms={dramaRoomsFiltered} onOpenMovie={openMovieDetails} />
+                    <HeroInfoPanels catalog={publicMovies} onOpenMovie={openMovieDetails} />
                   </div>}
                 </HeroBackgroundExperience>
               </React.Suspense>

@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import {
   BOX_OFFICE_WEEKEND_URL,
   OFFICIAL_ENTERTAINMENT_FEEDS,
+  OFFICIAL_SERIES_FEEDS,
   parseBoxOfficeWeekendPage,
   parseOfficialEntertainmentFeed,
+  parseOfficialSeriesFeed,
 } from './heroFeeds';
 
 const source = OFFICIAL_ENTERTAINMENT_FEEDS[1];
@@ -34,7 +36,29 @@ test('box-office weekend parser accepts only ranked top ten rows', () => {
   assert.equal(result.items[2].title, 'Film 3');
 });
 
+test('series RSS parser keeps only external series stories and region metadata', () => {
+  const source = OFFICIAL_SERIES_FEEDS[2];
+  const xml = `<rss><channel><item>
+    <title><![CDATA[New K-Drama Series Announces Its Cast]]></title>
+    <link>https://www.soompi.com/article/123456wpp/new-k-drama-series</link>
+    <pubDate>Tue, 17 Nov 2026 07:20:28 +0000</pubDate>
+    <category><![CDATA[K-Drama]]></category>
+    <description><![CDATA[The upcoming drama series has begun production.]]></description>
+  </item><item>
+    <title><![CDATA[Music chart update]]></title>
+    <link>https://www.soompi.com/article/999999wpp/music-chart</link>
+    <pubDate>Tue, 17 Nov 2026 07:19:28 +0000</pubDate>
+    <category><![CDATA[K-Pop]]></category>
+    <description><![CDATA[A chart update.]]></description>
+  </item></channel></rss>`;
+  const result = parseOfficialSeriesFeed(xml, source);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].region, 'کۆری');
+  assert.equal(result[0].source, 'Soompi');
+});
+
 test('official endpoints are fixed HTTPS origins', () => {
   assert.match(BOX_OFFICE_WEEKEND_URL, /^https:\/\/www\.boxofficemojo\.com\//);
   assert.ok(OFFICIAL_ENTERTAINMENT_FEEDS.every(feed => /^https:\/\//.test(feed.url)));
+  assert.ok(OFFICIAL_SERIES_FEEDS.every(feed => /^https:\/\//.test(feed.url)));
 });

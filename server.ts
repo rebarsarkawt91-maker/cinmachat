@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { createDescriptionSearch } from './server/descriptionSearchService';
 import { createExternalTitleSearch } from './server/externalTitleSearch';
 import { createBoxOfficeService } from './server/boxOfficeService';
-import { createBoxOfficeTopTenService, createEntertainmentNewsService } from './server/heroFeeds';
+import { createBoxOfficeTopTenService, createEntertainmentNewsService, createSeriesTopTenService } from './server/heroFeeds';
 import { discoverTitleMatches, namedSearchTitle } from './src/utils/externalTitle';
 import { descriptionText } from './src/utils/descriptionSearch';
 import express from 'express';
@@ -13434,6 +13434,7 @@ async function startServer() {
   const getBoxOffice = createBoxOfficeService();
   const getBoxOfficeTopTen = createBoxOfficeTopTenService();
   const getEntertainmentNews = createEntertainmentNewsService();
+  const getSeriesTopTen = createSeriesTopTenService();
   app.get('/api/box-office', async (_req, res) => {
     const chart = await getBoxOffice();
     res.set('Cache-Control', 'public, max-age=900, stale-while-revalidate=3600');
@@ -13448,6 +13449,11 @@ async function startServer() {
     const items = await getEntertainmentNews();
     res.set('Cache-Control', 'public, max-age=900, stale-while-revalidate=3600');
     res.json({ items, source: 'Official entertainment RSS feeds', fetchedAt: new Date().toISOString() });
+  });
+  app.get('/api/series-top10', async (_req, res) => {
+    const items = await getSeriesTopTen();
+    res.set('Cache-Control', 'public, max-age=900, stale-while-revalidate=3600');
+    res.json({ items, source: 'Official external series RSS feeds', fetchedAt: new Date().toISOString() });
   });
   app.get('/api/search/external-title', async (req, res) => {
     const title = typeof req.query.q === 'string' ? req.query.q.trim() : '';

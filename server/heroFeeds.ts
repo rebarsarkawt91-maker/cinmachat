@@ -8,6 +8,18 @@ export const OFFICIAL_ENTERTAINMENT_FEEDS = [
   { source: 'Deadline', url: 'https://deadline.com/feed/', host: 'deadline.com' },
 ] as const;
 
+// The series panel is intentionally backed by feeds that are external to the
+// CinemaChat catalog.  Keeping these sources separate from the general news
+// strip prevents local movie/series cards from ever becoming a fallback for
+// the public Top Series panel.
+export const OFFICIAL_SERIES_FEEDS = [
+  { source: 'The Hollywood Reporter TV', url: 'https://www.hollywoodreporter.com/c/tv/tv-news/feed/', host: 'www.hollywoodreporter.com', region: 'بیانی' },
+  { source: 'Variety TV', url: 'https://variety.com/v/tv/news/feed/', host: 'variety.com', region: 'بیانی' },
+  { source: 'Soompi', url: 'https://www.soompi.com/feed', host: 'www.soompi.com', region: 'کۆری' },
+  { source: 'JayneStars', url: 'https://www.jaynestars.com/feed/', host: 'www.jaynestars.com', region: 'چینی' },
+  { source: 'DramaPanda', url: 'https://dramapanda.com/feed/', host: 'dramapanda.com', region: 'چینی' },
+] as const;
+
 export const BOX_OFFICE_WEEKEND_URL = 'https://www.boxofficemojo.com/weekend/';
 export const HERO_FEED_TTL = 60 * 60 * 1000;
 const HERO_FEED_RETRY = 10 * 60 * 1000;
@@ -25,6 +37,7 @@ export interface HeroNewsItem {
   link: string;
   source: string;
   publishedAt: string;
+  region?: string;
 }
 
 export interface BoxOfficeTopTenItem {
@@ -47,7 +60,8 @@ export interface BoxOfficeTopTenChart {
   stale: boolean;
 }
 
-type FeedSource = (typeof OFFICIAL_ENTERTAINMENT_FEEDS)[number];
+type FeedSource = (typeof OFFICIAL_ENTERTAINMENT_FEEDS | typeof OFFICIAL_SERIES_FEEDS)[number];
+type SeriesFeedSource = (typeof OFFICIAL_SERIES_FEEDS)[number];
 type Request = typeof fetch;
 
 const xmlEntities: Record<string, string> = {
@@ -145,6 +159,33 @@ export function parseOfficialEntertainmentFeed(xml: string, source: FeedSource):
   });
 }
 
+const seriesWords = /(?:series|tv|television|drama|season|episode|cast|actor|actress|k-?drama|c-?drama|korean drama|chinese drama|زنجیرە|دراما|ئەڵقە)/iu;
+
+/** Parse an external series/TV feed without consulting the local catalog. */
+export function parseOfficialSeriesFeed(xml: string, source: SeriesFeedSource): HeroNewsItem[] {
+  if (xml.length > MAX_RSS_BYTES) throw new Error('Series feed too large');
+  const blocks = [...xml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)].map(match => match[1]).slice(0, 40);
+  return blocks.flatMap((block, index) => {
+    const title = tagValue(block, 'title').slice(0, 240);
+    const link = safeHttpsUrl(tagValue(block, 'link'), [source.host]);
+    const description = stripMarkup(tagValue(block, 'description')).slice(0, 900);
+    const publishedAt = isoDate(tagValue(block, 'pubDate') || tagValue(block, 'dc:date'));
+    const categories = [...block.matchAll(/<category(?:\s[^>]*)?>([\s\S]*?)<\/category>/gi)].map(match => stripMarkup(match[1]));
+    const searchable = `${title} ${description} ${categories.join(' ')}`;
+    if (!title || !link || !publishedAt || !seriesWords.test(searchable)) return [];
+    return [{
+      id: `${source.source.toLowerCase().replace(/\W+/g, '-')}-${index}-${Buffer.from(link).toString('base64url').slice(0, 20)}`,
+      title,
+      description: description || title,
+      image: imageFromRss(block, source),
+      link,
+      source: source.source,
+      publishedAt,
+      region: source.region,
+    }];
+  });
+}
+
 function readLimited(response: Response, maxBytes: number): Promise<string> {
   if (!response.body) return Promise.reject(new Error('Response has no body'));
   return (async () => {
@@ -211,7 +252,7 @@ async function fetchOfficialNews(request: Request): Promise<HeroNewsItem[]> {
   for (let index = 0; index < selected.length; index += 3) {
     const batch = selected.slice(index, index + 3);
     const images = await Promise.all(batch.map(item => {
-      const source = bySource.get(item.source as FeedSource['source']);
+      const source = bySource.get(item.source as (typeof OFFICIAL_ENTERTAINMENT_FEEDS)[number]['source']);
       return source ? fetchArticleImage(item, source, request) : Promise.resolve(undefined);
     }));
     enriched.push(...batch.map((item, offset) => ({ ...item, image: images[offset] || item.image })));
@@ -263,6 +304,44 @@ INPUT=${JSON.stringify(input)}`;
   }
 }
 
+async function fetchOfficialSeriesNews(request: Request): Promise<HeroNewsItem[]> {
+  const responses = await Promise.allSettled(OFFICIAL_SERIES_FEEDS.map(async source => {
+    const response = await request(source.url, { redirect: 'error', headers: { Accept: 'application/rss+xml, application/xml, text/xml' }, signal: AbortSignal.timeout(9000) });
+    if (!response.ok || !/xml|rss/i.test(response.headers.get('content-type') || '')) throw new Error(`${source.source} feed unavailable`);
+    return parseOfficialSeriesFeed(await readLimited(response, MAX_RSS_BYTES), source);
+  }));
+  const entries = responses.flatMap(result => result.status === 'fulfilled' ? result.value : []);
+  const seen = new Set<string>();
+  const deduped = entries
+    .sort((a, b) => b.publishedAt.localeCompare(a.publishedAt))
+    .filter(item => {
+      const key = item.link || descriptionText(item.title);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  // Prefer a visible mix of Korean, Chinese and international stories while
+  // still filling every available slot from the newest external entries.
+  const regional = ['کۆری', 'چینی', 'بیانی'].flatMap(region => deduped.filter(item => item.region === region).slice(0, 4));
+  const selected = [...new Map([...regional, ...deduped].map(item => [item.link, item])).values()].slice(0, 10);
+  const bySource = new Map(OFFICIAL_SERIES_FEEDS.map(source => [source.source, source]));
+  const enriched: HeroNewsItem[] = [];
+  for (let index = 0; index < selected.length; index += 3) {
+    const batch = selected.slice(index, index + 3);
+    const images = await Promise.all(batch.map(item => {
+      const source = bySource.get(item.source as SeriesFeedSource['source']);
+      return source ? fetchArticleImage(item, source, request) : Promise.resolve(undefined);
+    }));
+    enriched.push(...batch.map((item, offset) => ({ ...item, image: images[offset] || item.image })));
+  }
+  const localized = await translateNewsToKurdish(enriched, request);
+  return localized.map(item => ({
+    ...item,
+    titleKu: item.titleKu || `زنجیرەی نوێ: ${item.title}`,
+    descriptionKu: item.descriptionKu || `زانیاریی دەرەکیی زنجیرە و دراماکان: ${item.description}`,
+  }));
+}
+
 function isoWeekKey(date: Date): string {
   const utc = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
   const day = utc.getUTCDay() || 7;
@@ -310,6 +389,29 @@ export function createEntertainmentNewsService(options: { request?: Request; now
     pending = (async () => {
       try {
         const fresh = await fetchOfficialNews(request);
+        if (fresh.length) last = fresh;
+        nextRefresh = now() + (fresh.length ? HERO_FEED_TTL : HERO_FEED_RETRY);
+      } catch {
+        nextRefresh = now() + HERO_FEED_RETRY;
+      }
+      return last;
+    })().finally(() => { pending = undefined; });
+    return pending;
+  };
+}
+
+export function createSeriesTopTenService(options: { request?: Request; now?: () => number } = {}) {
+  const request = options.request || fetch;
+  const now = options.now || Date.now;
+  let last: HeroNewsItem[] = [];
+  let nextRefresh = 0;
+  let pending: Promise<HeroNewsItem[]> | undefined;
+  return (): Promise<HeroNewsItem[]> => {
+    if (pending) return pending;
+    if (now() < nextRefresh) return Promise.resolve(last);
+    pending = (async () => {
+      try {
+        const fresh = await fetchOfficialSeriesNews(request);
         if (fresh.length) last = fresh;
         nextRefresh = now() + (fresh.length ? HERO_FEED_TTL : HERO_FEED_RETRY);
       } catch {
