@@ -58,6 +58,31 @@
   cursor: pointer;
 }
 
+/* Keep the background picker beside the moved hero controls in the green
+   header slot. It is icon-only at this compact size, while the accessible
+   label remains available through title/aria-label. */
+.hero-bg-buttons {
+  position: fixed;
+  top: .35rem;
+  left: clamp(12rem, 32.3vw, 34rem);
+  right: auto;
+}
+.hero-bg-trigger {
+  width: 2rem;
+  height: 2rem;
+  min-height: 2rem;
+  justify-content: center;
+  padding: 0;
+}
+.hero-bg-trigger span { display: none; }
+
+@media (max-width: 767px) {
+  .hero-bg-buttons {
+    top: 3.1rem;
+    left: .55rem;
+  }
+}
+
 .hero-bg-trigger:focus-visible, .hero-bg-action:focus-visible,
 .hero-bg-field input:focus-visible, .hero-bg-field select:focus-visible {
   outline: 2px solid #ffda80;
