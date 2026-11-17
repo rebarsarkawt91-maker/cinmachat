@@ -1,0 +1,133 @@
+import { useEffect, useMemo, useState } from 'react';
+import { Film, Pause, Play, Tv } from 'lucide-react';
+import type { Movie } from '../../types';
+import '../../styles/heroKurdishTicker.css';
+
+type HeroTickerItem = {
+  id: string;
+  title: string;
+  description: string;
+  image?: string;
+  rank?: number;
+};
+
+type DramaRoom = {
+  dramas?: string[];
+};
+
+const hasKurdish = (value: string) => /[ەێڕڵۆۆڤگ]/u.test(value);
+
+function cleanText(value: unknown): string {
+  return String(value || '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function fallbackDescription(title: string, kind: 'news' | 'drama'): string {
+  return kind === 'drama'
+    ? `وەسفی کوردی و زانیاریی درامای «${title}» لە سینەماچات بەردەستە.`
+    : `نوێترین زانیاریی فیلم و ئەکتەرەکانی «${title}» لە سینەماچات ببینە.`;
+}
+
+function isDrama(movie: Movie): boolean {
+  const labels = [movie.category, ...(Array.isArray(movie.tags) ? movie.tags : [])]
+    .map(value => String(value || '').trim().toLowerCase());
+  return labels.some(value => value === 'دراما' || value === 'drama' || value === 'series')
+    || /(?:دراما|ئەڵقە|episode|\bep\.?\s*\d+)/iu.test(movie.title || '');
+}
+
+function chooseNews(catalog: Movie[]): HeroTickerItem[] {
+  return [...catalog]
+    .filter(movie => movie?.id && movie?.title)
+    .sort((a, b) => (Number(b.trendingScore) || Number(b.views) || 0) - (Number(a.trendingScore) || Number(a.views) || 0))
+    .slice(0, 10)
+    .map(movie => {
+      const title = cleanText(movie.title);
+      const description = cleanText(movie.description);
+      return {
+        id: `news-${movie.id}`,
+        title,
+        description: hasKurdish(description) ? description : fallbackDescription(title, 'news'),
+        image: movie.image,
+      };
+    });
+}
+
+function chooseDramas(catalog: Movie[], rooms: DramaRoom[]): HeroTickerItem[] {
+  const byId = new Map(catalog.filter(movie => movie?.id).map(movie => [movie.id, movie]));
+  const roomIds = rooms.flatMap(room => Array.isArray(room?.dramas) ? room.dramas : []);
+  const ids = [...new Set(roomIds)].filter(id => byId.has(id));
+  const source = (ids.length ? ids.map(id => byId.get(id)!) : catalog.filter(isDrama));
+  return source
+    .filter(movie => movie?.id && movie?.title)
+    .sort((a, b) => (Number(b.trendingScore) || Number(b.views) || 0) - (Number(a.trendingScore) || Number(a.views) || 0))
+    .slice(0, 10)
+    .map((movie, index) => {
+      const title = cleanText(movie.title);
+      const description = cleanText(movie.description);
+      return {
+        id: `drama-${movie.id}`,
+        title,
+        description: hasKurdish(description) ? description : fallbackDescription(title, 'drama'),
+        image: movie.image,
+        rank: index + 1,
+      };
+    });
+}
+
+function RotatingPanel({ title, items, kind }: { title: string; items: HeroTickerItem[]; kind: 'news' | 'drama' }) {
+  const safeItems = items.length ? items : [{
+    id: `${kind}-empty`,
+    title: kind === 'drama' ? 'تۆپ ١٠ی دراماکان' : 'هەواڵی فیلم و ئەکتەر',
+    description: 'زانیارییەکان بە زوویی نوێ دەکرێنەوە.',
+  }];
+  const [index, setIndex] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const item = safeItems[index % safeItems.length];
+
+  useEffect(() => setIndex(value => Math.min(value, Math.max(0, safeItems.length - 1))), [safeItems.length]);
+  useEffect(() => {
+    if (paused || safeItems.length < 2) return;
+    const timer = window.setInterval(() => setIndex(value => (value + 1) % safeItems.length), 6500);
+    return () => window.clearInterval(timer);
+  }, [paused, safeItems.length]);
+
+  return <section className="hero-kurdish-ticker" dir="rtl" lang="ckb"
+    aria-label={title} onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)}
+    onFocus={() => setPaused(true)} onBlur={event => {
+      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setPaused(false);
+    }}>
+    <div className="hero-kurdish-ticker__heading">
+      <strong>{title}</strong>
+      <span>{kind === 'drama' ? 'TOP 10' : 'نوێ'}</span>
+    </div>
+    <div className="hero-kurdish-ticker__body" key={item.id}>
+      <div className="hero-kurdish-ticker__poster">
+        {item.image ? <img src={item.image} alt="" loading="lazy" referrerPolicy="no-referrer" /> : kind === 'drama' ? <Tv size={18} /> : <Film size={18} />}
+      </div>
+      <div className="hero-kurdish-ticker__copy">
+        <h3 title={item.title}>{item.rank ? `#${item.rank} · ` : ''}{item.title}</h3>
+        <p title={item.description}>{item.description}</p>
+      </div>
+    </div>
+    <div className="hero-kurdish-ticker__footer" dir="ltr">
+      <div className="hero-kurdish-ticker__dots">
+        {safeItems.slice(0, 10).map((entry, position) => <button key={entry.id} type="button"
+          aria-label={`${title} ${position + 1}`} aria-current={position === index ? 'true' : undefined}
+          onClick={() => setIndex(position)} />)}
+      </div>
+      <button type="button" className="hero-kurdish-ticker__pause" aria-label={paused ? 'دەستپێکردنەوە' : 'وەستاندن'}
+        onClick={() => setPaused(value => !value)}>{paused ? <Play size={10} /> : <Pause size={10} />}</button>
+    </div>
+  </section>;
+}
+
+export function HeroKurdishTickerRail({ catalog, dramaRooms }: { catalog: Movie[]; dramaRooms: DramaRoom[] }) {
+  const news = useMemo(() => chooseNews(catalog), [catalog]);
+  const dramas = useMemo(() => chooseDramas(catalog, dramaRooms), [catalog, dramaRooms]);
+  return <aside className="hero-kurdish-ticker-rail" aria-label="هەواڵ و تۆپی دراماکان">
+    <RotatingPanel title="هەواڵی ئەکتەر و فیلمەکان" items={news} kind="news" />
+    <RotatingPanel title="وەسفی کوردی دراماکان" items={dramas} kind="drama" />
+  </aside>;
+}
