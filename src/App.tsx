@@ -414,6 +414,12 @@ const GrowthModule = lazyWithRetry(() =>
   })),
   "GrowthModule",
 );
+const SocialAutomationModule = lazyWithRetry(() =>
+  import("./components/Admin/SocialAutomationModule").then((m) => ({
+    default: m.SocialAutomationModule,
+  })),
+  "SocialAutomationModule",
+);
 const MultiLevelAdminModule = lazyWithRetry(() =>
   import("./components/Admin/MultiLevelAdminModule").then((m) => ({
     default: m.MultiLevelAdminModule,
@@ -13009,6 +13015,13 @@ const handleWebkitEndFullscreen = () => {
   const isPrimaryOwner =
     currentUser?.isOwner === true ||
     currentUser?.role?.toLowerCase() === "owner";
+  const canAccessSocialAutomation = Boolean(
+    currentUser?.username &&
+      (currentUser?.isOwner === true ||
+        ["owner", "admin", "super_admin", "deputy_manager"].includes(
+          String(currentUser?.role || "").toLowerCase(),
+        )),
+  );
   const canEditMovies = Boolean(
     currentUser?.username &&
       ["owner", "admin", "super_admin", "deputy_manager", "staff"].includes(
@@ -13216,6 +13229,10 @@ const handleWebkitEndFullscreen = () => {
       socialProfile?.userRole === "staff" ||
       currentUser?.role === "staff";
 
+    if (adminTab === "social-automation" && !canAccessSocialAutomation) {
+      setAdminTab("overview");
+    }
+
     const allowedStaffTabs = [
       "overview",
       "stats",
@@ -13248,7 +13265,7 @@ const handleWebkitEndFullscreen = () => {
       setAdminTab("overview");
       window.history.replaceState({}, "", "/?admin=true");
     }
-  }, [adminTab, currentUser, socialProfile]);
+  }, [adminTab, currentUser, socialProfile, canAccessSocialAutomation]);
 
   // Point 38: Stats Fetch
   useEffect(() => {
@@ -18218,6 +18235,14 @@ const handleWebkitEndFullscreen = () => {
                         />
                         <SidebarItem icon={Tv} active={adminTab === "player-ads"}
                           label="٢٢. ڕیکلامەکانی ناو پلەیەر" onClick={() => setAdminTab("player-ads")} />
+                        {canAccessSocialAutomation && (
+                          <SidebarItem
+                            icon={Radio}
+                            active={adminTab === "social-automation"}
+                            label="٢٣. Social Publishing & Automation"
+                            onClick={() => setAdminTab("social-automation")}
+                          />
+                        )}
                         <SidebarItem
                           icon={Settings}
                           label="ڕێکخستنەکان (گشتی)"
@@ -19035,6 +19060,27 @@ const trailerId = movie.trailerUrl
                           if (method === 'PUT') publishPlayerAdsConfig(result);
                           return result;
                         }} />
+                      )}
+
+                      {adminTab === "social-automation" && canAccessSocialAutomation && currentUser && (
+                        <SafeRender fallbackName="SocialAutomationModule">
+                          <SocialAutomationModule
+                            catalogMovies={movies}
+                            request={async (path, options = {}) => {
+                              const headers = new Headers(options.headers || {});
+                              headers.set("X-Admin-Username", currentUser.username);
+                              if (options.body && !headers.has("Content-Type")) {
+                                headers.set("Content-Type", "application/json");
+                              }
+                              return fetchApi(path, {
+                                ...options,
+                                credentials: "include",
+                                headers,
+                                signal: options.signal || AbortSignal.timeout(20_000),
+                              }, 0);
+                            }}
+                          />
+                        </SafeRender>
                       )}
 
                       {adminTab === "user-analytics" && (

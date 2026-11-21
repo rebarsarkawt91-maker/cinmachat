@@ -60,6 +60,13 @@ import { execFile } from 'node:child_process';
 import os from 'node:os';
 import { privateSessionSweepable } from './src/lib/privateChatSweep';
 import { registerRoomSubtitleRoutes } from './features/room-subtitles/routes';
+import { createSocialAdapters } from './features/social-publishing/adapters';
+import { registerSocialPublishingRoutes } from './features/social-publishing/routes';
+import { FirestoreSocialAutomationSettingsStore, isWithinSocialScheduleWindow, registerSocialAutomationSettingsRoutes } from './features/social-publishing/settings';
+import { baghdadDayKey, DailySocialAutomationEngine, FirestoreDailyAutomationRunStore, VERIFIED_OFFICIAL_NEWS_HOSTS } from './features/social-publishing/dailyAutomation';
+import { WeeklySocialAutomationEngine } from './features/social-publishing/weeklyAutomation';
+import { SocialPublishingService } from './features/social-publishing/service';
+import { FirestoreSocialPublicationStore } from './features/social-publishing/store';
 import { PushService } from './features/push/service';
 import { registerPushRoutes } from './features/push/routes';
 import { FirestorePushStore } from './features/push/store';
@@ -14398,6 +14405,93 @@ async function startServer() {
       return account ? String(account.password || '') : OWNER_USERNAMES.includes(username) ? process.env.ADMIN_SECRET_KEY || null : null;
     });
   };
+  const socialPublishingService = new SocialPublishingService({
+    store: new FirestoreSocialPublicationStore(initializeFirebaseAdmin),
+    adapters: createSocialAdapters(process.env),
+  });
+  const socialAutomationSettingsStore = new FirestoreSocialAutomationSettingsStore(initializeFirebaseAdmin);
+  const socialAutomationRunStore = new FirestoreDailyAutomationRunStore(initializeFirebaseAdmin);
+  const dailySocialAutomationEngine = new DailySocialAutomationEngine({
+    runs: socialAutomationRunStore,
+    publishing: socialPublishingService,
+    officialNewsHosts: [...VERIFIED_OFFICIAL_NEWS_HOSTS],
+    providers: {
+      // Verified news summaries require a configured source plus Kurdish summarizer; none is wired in yet.
+      news: async () => [],
+      // Trailer jobs require a separately approved, unexpired license record and media source.
+      trailers: async () => [],
+      catalog: async () => (db.movies || []).map((movie: any) => ({
+        id: String(movie.id || ''),
+        title: String(movie.title || ''),
+        ...(movie.year ? { year: String(movie.year) } : {}),
+        ...(typeof movie.description === 'string' ? { description: movie.description } : {}),
+        playbackAvailable: Boolean(movie.videoUrl || movie.streamingUrl || movie.embedUrl || movie.externalMovieLink || movie.external_link || movie.youtubeMovieUrl),
+        broken: movie.isBroken === true,
+        ...(movie.kurdishSubtitleStatus ? { kurdishSubtitleStatus: String(movie.kurdishSubtitleStatus) } : {}),
+        ...(movie.kurdishSubtitleUrl ? { kurdishSubtitleUrl: String(movie.kurdishSubtitleUrl) } : {}),
+        ...(movie.subtitleText ? { subtitleText: String(movie.subtitleText) } : {}),
+      })),
+    },
+  });
+  const weeklySocialAutomationEngine = new WeeklySocialAutomationEngine({
+    publishing: socialPublishingService,
+    // Current app has no verified editorial, trailer-license, review, meme or nostalgia providers.
+    // Return no draft until a provider can prove provenance and media rights; never fabricate posts.
+    provider: async () => null,
+  });
+  const socialSchedulerEnabled = process.env.SOCIAL_PUBLISHING_SCHEDULER_ENABLED === 'true';
+  const resolveSocialAdmin = (req: express.Request) => {
+    const username = studioLoginIdentity(req);
+    if (!username || username !== String(req.headers['x-admin-username'] || '').trim().toLowerCase()) {
+      return null;
+    }
+    const record = db.admins.find(
+      (item: any) => String(item.username || '').trim().toLowerCase() === username,
+    );
+    return OWNER_USERNAMES.includes(username) ||
+      ['owner', 'admin', 'super_admin', 'deputy_manager'].includes(String(record?.role || '').toLowerCase())
+      ? username
+      : null;
+  };
+  registerSocialPublishingRoutes(app, {
+    service: socialPublishingService,
+    resolveAdmin: resolveSocialAdmin,
+    schedulerEnabled: socialSchedulerEnabled,
+  });
+  registerSocialAutomationSettingsRoutes(app, {
+    store: socialAutomationSettingsStore,
+    resolveAdmin: resolveSocialAdmin,
+    onSaved: settings => weeklySocialAutomationEngine.reconcile(settings),
+  });
+  app.get('/api/admin/social-automation/daily-run', async (req, res) => {
+    if (!resolveSocialAdmin(req)) return res.status(401).json({ success: false, error: 'Admin authentication required' });
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({
+        success: true,
+        run: await socialAutomationRunStore.get(baghdadDayKey(new Date())),
+        providers: { officialNews: false, licensedTrailers: false, cinemaChatCatalog: true },
+      });
+    } catch {
+      res.status(503).json({ success: false, error: 'Daily automation status unavailable' });
+    }
+  });
+  if (socialSchedulerEnabled && process.env.NODE_ENV !== 'test') {
+    const socialSchedulerTimer = setInterval(async () => {
+      try {
+        const settings = await socialAutomationSettingsStore.get();
+        if (!isWithinSocialScheduleWindow(settings.schedule, new Date())) return;
+        // The server does not pass the service's code-level allowLive opt-in;
+        // the scheduled worker can therefore only record DRY_RUN results.
+        await dailySocialAutomationEngine.runToday(settings);
+        await weeklySocialAutomationEngine.reconcile(settings);
+        await socialPublishingService.runOnce();
+      } catch (error) {
+        console.error('[social-publishing] scheduler tick failed', error instanceof Error ? error.name : 'unknown');
+      }
+    }, 15_000);
+    socialSchedulerTimer.unref?.();
+  }
   const playerAdsAdmin = playerAdsAdminHandler(playerAdsStore, req => {
     const username = studioLoginIdentity(req);
     if (!username || username !== String(req.headers['x-admin-username'] || '').trim().toLowerCase()) return null;
