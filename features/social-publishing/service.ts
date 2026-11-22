@@ -24,6 +24,7 @@ const DEFAULT_MODE = "DRY_RUN";
 export interface SocialPublishingServiceOptions {
   store: SocialPublicationStore;
   adapters: SocialAdapters;
+  loadConnectedAdapters?: () => Promise<SocialAdapters>;
   env?: Record<string, string | undefined>;
   now?: () => number;
   allowLive?: boolean;
@@ -181,6 +182,7 @@ export class SocialPublishingService {
   private readonly store: SocialPublicationStore;
   private readonly adapters: SocialAdapters;
   private readonly env: Record<string, string | undefined>;
+  private readonly loadConnectedAdapters?: () => Promise<SocialAdapters>;
   private readonly now: () => number;
   private readonly allowLive: boolean;
   private worker: ReturnType<typeof setInterval> | null = null;
@@ -189,25 +191,28 @@ export class SocialPublishingService {
   constructor(options: SocialPublishingServiceOptions) {
     this.store = options.store;
     this.adapters = options.adapters;
+    this.loadConnectedAdapters = options.loadConnectedAdapters;
     this.env = options.env || process.env;
     this.now = options.now || Date.now;
     this.allowLive = options.allowLive === true;
   }
 
-  readiness(): SocialPublishingReadiness {
-    const platforms = {} as Record<SocialPlatform, SocialPlatformReadiness>;
-    for (const platform of SOCIAL_PLATFORMS) {
-      platforms[platform] = { configured: this.adapters[platform].isConfigured() };
-    }
-    const accountsConfigured = SOCIAL_PLATFORMS.every((platform) =>
-      this.adapters[platform].isConfigured(),
-    );
-    const livePublishingEnabled =
-      this.allowLive &&
+  private liveRequested(): boolean {
+    return this.allowLive &&
       this.env.SOCIAL_PUBLISHING_MODE === "LIVE" &&
       this.env.SOCIAL_PUBLISHING_LIVE_ENABLED === "true" &&
-      this.env.SOCIAL_PUBLISHING_ALLOW_LIVE === "true" &&
-      accountsConfigured;
+      this.env.SOCIAL_PUBLISHING_ALLOW_LIVE === "true";
+  }
+
+  readiness(adapters = this.adapters): SocialPublishingReadiness {
+    const platforms = {} as Record<SocialPlatform, SocialPlatformReadiness>;
+    for (const platform of SOCIAL_PLATFORMS) {
+      platforms[platform] = { configured: adapters[platform].isConfigured() };
+    }
+    const accountsConfigured = SOCIAL_PLATFORMS.every((platform) =>
+      platforms[platform].configured,
+    );
+    const livePublishingEnabled = this.liveRequested() && accountsConfigured;
     return {
       mode: livePublishingEnabled ? "LIVE" : DEFAULT_MODE,
       livePublishingEnabled,
@@ -312,9 +317,12 @@ export class SocialPublishingService {
 
   async runOnce(): Promise<boolean> {
     const now = this.now();
+    const adapters = this.liveRequested() && this.loadConnectedAdapters
+      ? await this.loadConnectedAdapters()
+      : this.adapters;
     const job = await this.store.claimDue(now);
     if (!job) return false;
-    const readiness = this.readiness();
+    const readiness = this.readiness(adapters);
     const deliveries = { ...job.platformStatus };
     const retryTimes: number[] = [];
 
@@ -345,7 +353,7 @@ export class SocialPublishingService {
       }
 
       try {
-        const result = await this.adapters[platform].publish(job);
+        const result = await adapters[platform].publish(job);
         deliveries[platform] = {
           status: "succeeded",
           attempts: (prior?.attempts || 0) + 1,

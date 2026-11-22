@@ -232,3 +232,18 @@ test("live mode remains disabled without explicit code-level opt-in and every en
   });
   assert.equal(missingEnvironmentGate.readiness().livePublishingEnabled, false);
 });
+
+test("DRY_RUN processes approved jobs without loading any saved account credentials", async () => {
+  const service = new SocialPublishingService({
+    store: new MemoryStore(),
+    adapters: adapters({ telegram: async () => { throw new Error("No provider should be called"); } }),
+    loadConnectedAdapters: async () => { throw new Error("No saved credentials should be loaded"); },
+    env: { SOCIAL_PUBLISHING_MODE: "LIVE", SOCIAL_PUBLISHING_LIVE_ENABLED: "true", SOCIAL_PUBLISHING_ALLOW_LIVE: "true" },
+    now: () => 1_000,
+  });
+  const { job } = await service.enqueue(publication, "synthetic-owner");
+  await service.approveQueued(job.id, "synthetic-owner");
+  assert.equal(await service.runOnce(), true);
+  assert.equal((await service.list())[0].status, "simulated");
+  assert.equal((await service.list())[0].platformStatus.telegram?.attempts, 0);
+});

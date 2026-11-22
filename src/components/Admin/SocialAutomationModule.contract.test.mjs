@@ -7,6 +7,7 @@ import test from "node:test";
 const here = dirname(fileURLToPath(import.meta.url));
 const moduleSource = await readFile(join(here, "SocialAutomationModule.tsx"), "utf8");
 const appSource = await readFile(join(here, "../../App.tsx"), "utf8");
+const connectionsSource = await readFile(join(here, "SocialConnectionsPanel.tsx"), "utf8");
 
 test("Section 23 is integrated as a guarded entry while sections 1–22 remain", () => {
   assert.match(appSource, /label="٢٢\. ڕیکلامەکانی ناو پلەیەر"/);
@@ -40,4 +41,17 @@ test("dashboard uses authenticated backend routes and never stores credentials i
   assert.match(moduleSource, /catalogMovies\.find/);
   assert.doesNotMatch(moduleSource, /\blocalStorage\b|\bsessionStorage\b|from ["'][^"']*firebase/i);
   assert.doesNotMatch(moduleSource, /\bfetch\s*\(|window\.open\s*\(/);
+});
+
+test("Section 23 uses the owner connection API without storing tokens in the browser", () => {
+  assert.match(moduleSource, /<SocialConnectionsPanel\s+request=\{request\}/);
+  for (const platform of ["instagram", "facebook", "youtube", "telegram"]) {
+    assert.ok(connectionsSource.includes(`id: "${platform}"`));
+  }
+  assert.match(connectionsSource, /overview\?\.canManage === true/);
+  assert.match(connectionsSource, /window\.location\.origin === overview\.origin/);
+  assert.match(connectionsSource, /target="_blank" rel="noopener noreferrer"/);
+  assert.match(connectionsSource, /name="botToken" type="password"/);
+  assert.match(connectionsSource, /tokenInput\.value = ""/);
+  assert.doesNotMatch(connectionsSource, /\blocalStorage\b|\bsessionStorage\b|\bfetch\s*\(|from ["'][^"']*firebase/i);
 });

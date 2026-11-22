@@ -1,4 +1,5 @@
 import { readFile, realpath, stat } from "node:fs/promises";
+import { createHmac } from "node:crypto";
 import path from "node:path";
 import type {
   SocialAdapters,
@@ -73,6 +74,11 @@ async function readJson(response: Response, platform: SocialPlatform): Promise<a
 
 function required(value: string | undefined): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function metaProof(env: AdapterEnvironment, token: string): Record<string, string> {
+  const secret = required(env.META_APP_SECRET);
+  return secret ? { appsecret_proof: createHmac("sha256", secret).update(token).digest("hex") } : {};
 }
 
 function validatePublicMediaUrl(media: SocialMedia | undefined): string {
@@ -158,6 +164,7 @@ function makeInstagramAdapter(env: AdapterEnvironment, fetcher: Fetcher): Social
       const mediaUrl = validatePublicMediaUrl(publication.media);
       const params = new URLSearchParams({
         access_token: accessToken,
+        ...metaProof(env, accessToken),
         caption: publication.caption,
         ...(publication.media.type === "video"
           ? { media_type: "REELS", video_url: mediaUrl }
@@ -179,6 +186,7 @@ function makeInstagramAdapter(env: AdapterEnvironment, fetcher: Fetcher): Social
         );
         statusUrl.searchParams.set("fields", "status_code");
         statusUrl.searchParams.set("access_token", accessToken);
+        for (const [field, value] of Object.entries(metaProof(env, accessToken))) statusUrl.searchParams.set(field, value);
         let mediaReady = false;
         for (let attempt = 0; attempt < INSTAGRAM_VIDEO_PROCESSING_ATTEMPTS; attempt += 1) {
           const statusResponse = await fetchWithTimeout(fetcher, statusUrl, { method: "GET" });
@@ -204,6 +212,7 @@ function makeInstagramAdapter(env: AdapterEnvironment, fetcher: Fetcher): Social
         body: new URLSearchParams({
           creation_id: container.id,
           access_token: accessToken,
+          ...metaProof(env, accessToken),
         }),
       });
       const published = await readJson(publishResponse, "instagram");
@@ -232,7 +241,7 @@ function makeFacebookAdapter(env: AdapterEnvironment, fetcher: Fetcher): SocialP
         : media?.type === "video"
           ? "videos"
           : "feed";
-      const fields: Record<string, string> = { access_token: accessToken };
+      const fields: Record<string, string> = { access_token: accessToken, ...metaProof(env, accessToken) };
       if (endpoint === "photos") {
         fields.url = validatePublicMediaUrl(media);
         fields.caption = publication.caption;
@@ -340,7 +349,10 @@ function makeTelegramAdapter(env: AdapterEnvironment, fetcher: Fetcher): SocialP
       if (!token || !chatId) throw new SocialProviderError("PLATFORM_NOT_CONFIGURED", false);
       const mediaType = publication.media?.type;
       const method = mediaType === "image" ? "sendPhoto" : mediaType === "video" ? "sendVideo" : "sendMessage";
-      const params: Record<string, string> = { chat_id: chatId };
+      const numericId = /^-?\d+$/.test(chatId) ? Number(chatId) : null;
+      const params: Record<string, string | number> = {
+        chat_id: numericId !== null && Number.isSafeInteger(numericId) ? numericId : chatId,
+      };
       if (method === "sendPhoto") {
         if (publication.caption.length > 1024) {
           throw new SocialProviderError("TELEGRAM_CAPTION_TOO_LONG", false);
@@ -396,4 +408,22 @@ export function createSocialAdapters(
     youtube: makeYouTubeAdapter(env, fetcher, mediaRoot),
     telegram: makeTelegramAdapter(env, fetcher),
   };
+}
+
+export function createConnectedSocialAdapters(
+  env: AdapterEnvironment,
+  accounts: Partial<Record<SocialPlatform, { id: string; token: string }>>,
+): SocialAdapters {
+  // Explicitly unset legacy tokens for unlinked accounts. Disconnecting from
+  // the dashboard must never quietly restore a credential from the environment.
+  return createSocialAdapters({
+    ...env,
+    FACEBOOK_PAGE_ID: accounts.facebook?.id,
+    FACEBOOK_PAGE_ACCESS_TOKEN: accounts.facebook?.token,
+    INSTAGRAM_BUSINESS_ACCOUNT_ID: accounts.instagram?.id,
+    INSTAGRAM_ACCESS_TOKEN: accounts.instagram?.token,
+    YOUTUBE_REFRESH_TOKEN: accounts.youtube?.token,
+    TELEGRAM_CHANNEL_ID: accounts.telegram?.id,
+    TELEGRAM_BOT_TOKEN: accounts.telegram?.token,
+  });
 }

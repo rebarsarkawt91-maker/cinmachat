@@ -1,10 +1,10 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle, CalendarClock, Check, CirclePause, CirclePlay, Clock3,
-  Facebook, Film, Instagram, ListVideo, Loader2, Pencil, Plus, RefreshCw,
-  Send, ShieldCheck, Trash2, Youtube,
+  Film, ListVideo, Loader2, Pencil, Plus, RefreshCw, ShieldCheck, Trash2,
 } from "lucide-react";
 import type { Movie } from "../../types";
+import { SOCIAL_CONNECTION_CHANNELS as CHANNELS, SocialConnectionsPanel } from "./SocialConnectionsPanel";
 import "./SocialAutomationModule.css";
 
 type PostKind = "news" | "trailer" | "promotion";
@@ -64,12 +64,6 @@ const WEEKDAYS = [
 ] as const;
 const FORMAT_LABEL: Record<"reels" | "feed" | "stories" | "carousel", string> = { reels: "Reels", feed: "پۆستی Feed", stories: "Stories", carousel: "Carousel" };
 const KIND_LABEL: Record<PostKind, string> = { news: "هەواڵی فیلم و زنجیرە", trailer: "ترەیلەری ڕێگەپێدراو", promotion: "ناسـاندنی فیلمی CinemaChat" };
-const CHANNELS: Array<{ id: Platform; name: string; Icon: typeof Instagram }> = [
-  { id: "instagram", name: "Instagram", Icon: Instagram },
-  { id: "facebook", name: "Facebook Page", Icon: Facebook },
-  { id: "youtube", name: "YouTube", Icon: Youtube },
-  { id: "telegram", name: "Telegram", Icon: Send },
-];
 const API_ROOT = "/api/admin/social-publishing";
 const SETTINGS_URL = "/api/admin/social-automation/settings";
 const localBaghdadTime = (iso: string) => {
@@ -222,17 +216,11 @@ export function SocialAutomationModule({ request, catalogMovies }: Props) {
       {error && <p className="social23__error" role="alert"><AlertTriangle size={16} />{error}</p>}
       {notice && <p className="social23__notice" role="status">{notice}</p>}
 
-      <section className="social23__grid social23__channels" aria-label="دۆخی پلاتفۆرمەکان">
-        {CHANNELS.map(({ id, name, Icon }) => {
-          const configured = readiness?.platforms?.[id]?.configured === true;
-          return <article className="social23__panel social23__channel" key={id}>
-            <div className="social23__channel-icon"><Icon size={21} /></div>
-            <div className="social23__channel-copy"><h2>{name}</h2><p><span className={`social23__status-dot ${configured ? "is-configured" : ""}`} />{configured ? "تۆکنی سێرڤەر هەیە؛ پەیوەندی تاقی نەکراوە" : "پێوەست نەکراوە"}</p></div>
-            <label className="social23__check social23__platform-switch"><input type="checkbox" checked={settings.platforms[id]} onChange={event => setSettings(value => ({ ...value, platforms: { ...value.platforms, [id]: event.target.checked } }))} /><span>چالاک بۆ ڕیز</span></label>
-            <span className="social23__unavailable">{configured ? "OAuth / ناردن لە ژینگەی ئێستادا پشتڕاست نەکراوەتەوە" : "پێویستی بە ڕێکخستنی پارێزراوی سێرڤەرە"}</span>
-          </article>;
-        })}
-      </section>
+      <SocialConnectionsPanel
+        request={request}
+        platforms={settings.platforms}
+        onQueueChange={(platform, enabled) => setSettings(value => ({ ...value, platforms: { ...value.platforms, [platform]: enabled } }))}
+      />
 
       <section className="social23__panel social23__daily-status" aria-live="polite">
         <div className="social23__section-heading"><div><span className="social23__section-icon"><CalendarClock size={18} /></span><div><h2>ئەنجامی ئۆتۆماتیکی ئەم ڕۆژە</h2><p>{dailyRun?.dayKey || "هێشتا هیچ خشتەیەک نەکراوە"} · Asia/Baghdad · {readiness?.mode || "DRY_RUN"}</p></div></div><span className={`social23__preview-tag social23__run-status--${dailyRun?.status || "idle"}`}>{dailyRun?.status || "چاوەڕوان"}</span></div>

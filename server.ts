@@ -60,7 +60,11 @@ import { execFile } from 'node:child_process';
 import os from 'node:os';
 import { privateSessionSweepable } from './src/lib/privateChatSweep';
 import { registerRoomSubtitleRoutes } from './features/room-subtitles/routes';
-import { createSocialAdapters } from './features/social-publishing/adapters';
+import { createConnectedSocialAdapters } from './features/social-publishing/adapters';
+import { createSocialAccountProviders, readSocialConnectionOrigin } from './features/social-publishing/connectionProviders';
+import { preserveSocialConnectionInput, registerSocialConnectionRoutes, registerSocialOAuthCallback } from './features/social-publishing/connectionRoutes';
+import { FirestoreSocialConnectionStore } from './features/social-publishing/connectionStore';
+import { SocialConnections } from './features/social-publishing/connections';
 import { registerSocialPublishingRoutes } from './features/social-publishing/routes';
 import { FirestoreSocialAutomationSettingsStore, isWithinSocialScheduleWindow, registerSocialAutomationSettingsRoutes } from './features/social-publishing/settings';
 import { baghdadDayKey, DailySocialAutomationEngine, FirestoreDailyAutomationRunStore, VERIFIED_OFFICIAL_NEWS_HOSTS } from './features/social-publishing/dailyAutomation';
@@ -4303,6 +4307,17 @@ async function startServer() {
   console.log('==================================================');
 
   const app = express();
+  const productionSocialConnections = process.env.NODE_ENV === 'production' &&
+    process.env.CINEMACHAT_TEST !== '1' && process.env.CINEMACHAT_STAGING !== '1' &&
+    !process.env.FIRESTORE_EMULATOR_HOST && !FIREBASE_AUTH_EMULATOR_EXPLICIT &&
+    !FIREBASE_ADMIN_PROJECT_ID.startsWith('demo-');
+  const socialConnectionOrigin = readSocialConnectionOrigin(process.env.SOCIAL_CONNECTIONS_ORIGIN, productionSocialConnections);
+  const socialConnections = new SocialConnections({
+    origin: socialConnectionOrigin,
+    encryptionKey: process.env.SOCIAL_CONNECTIONS_ENCRYPTION_KEY,
+    store: new FirestoreSocialConnectionStore(initializeFirebaseAdmin),
+    providers: createSocialAccountProviders({ env: process.env, origin: socialConnectionOrigin, outboundAllowed: productionSocialConnections }),
+  });
 
   const getAvailablePort = async (preferredPort: number): Promise<number> => {
     const canUsePort = (port: number) => new Promise<boolean>((resolve) => {
@@ -5628,12 +5643,14 @@ async function startServer() {
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
   // Security Middlewares
+  registerSocialOAuthCallback(app, socialConnections, rateLimiter);
   app.use((req, res, next) => {
     if (req.method === 'OPTIONS') {
       return next();
     }
     return rateLimiter(req as any, res as any, next as any);
   });
+  app.use(preserveSocialConnectionInput);
   app.use(sanitizationMiddleware);
 
   // Request logger. High-frequency GET polling probes (stats, rooms, live
@@ -14407,7 +14424,8 @@ async function startServer() {
   };
   const socialPublishingService = new SocialPublishingService({
     store: new FirestoreSocialPublicationStore(initializeFirebaseAdmin),
-    adapters: createSocialAdapters(process.env),
+    adapters: createConnectedSocialAdapters(process.env, {}),
+    loadConnectedAdapters: async () => createConnectedSocialAdapters(process.env, await socialConnections.activeAccounts()),
   });
   const socialAutomationSettingsStore = new FirestoreSocialAutomationSettingsStore(initializeFirebaseAdmin);
   const socialAutomationRunStore = new FirestoreDailyAutomationRunStore(initializeFirebaseAdmin);
@@ -14453,6 +14471,13 @@ async function startServer() {
       ? username
       : null;
   };
+  registerSocialConnectionRoutes(app, {
+    service: socialConnections,
+    resolveAdmin: resolveSocialAdmin,
+    isOwner: username => OWNER_USERNAMES.includes(username) || db.admins.some((record: any) =>
+      String(record.username || '').trim().toLowerCase() === username &&
+      (record.isOwner === true || String(record.role || '').toLowerCase() === 'owner')),
+  });
   registerSocialPublishingRoutes(app, {
     service: socialPublishingService,
     resolveAdmin: resolveSocialAdmin,
