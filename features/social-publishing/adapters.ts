@@ -1,3 +1,4 @@
+import { INSTAGRAM_UNIFIED_GRAPH_VERSION, readInstagramUnifiedAppSecret, type VerifiedSocialAccount } from "./connectionProviders";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { createHmac } from "node:crypto";
 import path from "node:path";
@@ -144,7 +145,7 @@ async function youtubeAccessToken(
   return payload.access_token;
 }
 
-function makeInstagramAdapter(env: AdapterEnvironment, fetcher: Fetcher): SocialPlatformAdapter {
+function makeInstagramAdapter(env: AdapterEnvironment, fetcher: Fetcher, unified = false): SocialPlatformAdapter {
   const accountId = required(env.INSTAGRAM_BUSINESS_ACCOUNT_ID);
   const accessToken = required(env.INSTAGRAM_ACCESS_TOKEN);
   const version = required(env.META_GRAPH_API_VERSION) || "v23.0";
@@ -162,9 +163,13 @@ function makeInstagramAdapter(env: AdapterEnvironment, fetcher: Fetcher): Social
         throw new SocialProviderError("INSTAGRAM_CAPTION_TOO_LONG", false);
       }
       const mediaUrl = validatePublicMediaUrl(publication.media);
-      const params = new URLSearchParams({
-        access_token: accessToken,
+      const tokenFields = {
+        ...(unified ? {} : { access_token: accessToken }),
         ...metaProof(env, accessToken),
+      };
+      const headers: Record<string, string> = unified ? { Authorization: `Bearer ${accessToken}` } : {};
+      const params = new URLSearchParams({
+        ...tokenFields,
         caption: publication.caption,
         ...(publication.media.type === "video"
           ? { media_type: "REELS", video_url: mediaUrl }
@@ -173,7 +178,7 @@ function makeInstagramAdapter(env: AdapterEnvironment, fetcher: Fetcher): Social
       const base = `https://graph.facebook.com/${version}/${encodeURIComponent(accountId)}`;
       const containerResponse = await fetchWithTimeout(fetcher, `${base}/media`, {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded" },
         body: params,
       });
       const container = await readJson(containerResponse, "instagram");
@@ -185,11 +190,10 @@ function makeInstagramAdapter(env: AdapterEnvironment, fetcher: Fetcher): Social
           `https://graph.facebook.com/${version}/${encodeURIComponent(container.id)}`,
         );
         statusUrl.searchParams.set("fields", "status_code");
-        statusUrl.searchParams.set("access_token", accessToken);
-        for (const [field, value] of Object.entries(metaProof(env, accessToken))) statusUrl.searchParams.set(field, value);
+        for (const [field, value] of Object.entries(tokenFields)) statusUrl.searchParams.set(field, value);
         let mediaReady = false;
         for (let attempt = 0; attempt < INSTAGRAM_VIDEO_PROCESSING_ATTEMPTS; attempt += 1) {
-          const statusResponse = await fetchWithTimeout(fetcher, statusUrl, { method: "GET" });
+          const statusResponse = await fetchWithTimeout(fetcher, statusUrl, { method: "GET", headers });
           const statusPayload = await readJson(statusResponse, "instagram");
           if (statusPayload?.status_code === "FINISHED") {
             mediaReady = true;
@@ -208,12 +212,8 @@ function makeInstagramAdapter(env: AdapterEnvironment, fetcher: Fetcher): Social
       }
       const publishResponse = await fetchWithTimeout(fetcher, `${base}/media_publish`, {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          creation_id: container.id,
-          access_token: accessToken,
-          ...metaProof(env, accessToken),
-        }),
+        headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ creation_id: container.id, ...tokenFields }),
       });
       const published = await readJson(publishResponse, "instagram");
       if (typeof published?.id !== "string" || !published.id) {
@@ -412,11 +412,11 @@ export function createSocialAdapters(
 
 export function createConnectedSocialAdapters(
   env: AdapterEnvironment,
-  accounts: Partial<Record<SocialPlatform, { id: string; token: string }>>,
+  accounts: Partial<Record<SocialPlatform, Pick<VerifiedSocialAccount, "id" | "token" | "instagramUnified">>>,
+  options: { fetch?: Fetcher; mediaRoot?: string } = {},
 ): SocialAdapters {
-  // Explicitly unset legacy tokens for unlinked accounts. Disconnecting from
-  // the dashboard must never quietly restore a credential from the environment.
-  return createSocialAdapters({
+  // Disconnecting must never restore an environment credential.
+  const connectedEnv: AdapterEnvironment = {
     ...env,
     FACEBOOK_PAGE_ID: accounts.facebook?.id,
     FACEBOOK_PAGE_ACCESS_TOKEN: accounts.facebook?.token,
@@ -425,5 +425,19 @@ export function createConnectedSocialAdapters(
     YOUTUBE_REFRESH_TOKEN: accounts.youtube?.token,
     TELEGRAM_CHANNEL_ID: accounts.telegram?.id,
     TELEGRAM_BOT_TOKEN: accounts.telegram?.token,
-  });
+  };
+  const adapters = createSocialAdapters(connectedEnv, options);
+  const unified = accounts.instagram?.instagramUnified;
+  if (unified) {
+    const secret = readInstagramUnifiedAppSecret(env);
+    const matches = Boolean(secret) && unified.appId === required(env.META_INSTAGRAM_UNIFIED_APP_ID) &&
+      unified.configurationId === required(env.META_INSTAGRAM_UNIFIED_CONFIG_ID);
+    adapters.instagram = makeInstagramAdapter({
+      ...connectedEnv,
+      META_GRAPH_API_VERSION: INSTAGRAM_UNIFIED_GRAPH_VERSION,
+      META_APP_SECRET: secret,
+      INSTAGRAM_ACCESS_TOKEN: matches ? accounts.instagram?.token : undefined,
+    }, options.fetch || fetch, true);
+  }
+  return adapters;
 }

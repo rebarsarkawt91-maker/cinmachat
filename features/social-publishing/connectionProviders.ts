@@ -3,6 +3,7 @@ import type { OAuthPlatform, SocialAccountChoice, SocialConnectionErrorCode } fr
 import type { SocialPlatform } from "./types";
 
 export const SOCIAL_OAUTH_CALLBACK_ROOT = "/api/social-connections/oauth";
+export const INSTAGRAM_UNIFIED_GRAPH_VERSION = "v27.0";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const YOUTUBE_CHANNEL_URL = "https://www.googleapis.com/youtube/v3/channels?part=id,snippet&mine=true&maxResults=2";
 const YOUTUBE_SCOPES = ["youtube.readonly", "youtube.upload"].map(scope => `https://www.googleapis.com/auth/${scope}`);
@@ -15,8 +16,9 @@ type Environment = Record<string, string | undefined>;
 type JsonRecord = Record<string, unknown>;
 
 export interface VerifiedSocialAccount extends SocialAccountChoice {
-  // A Meta Page token, a YouTube refresh token, or a Telegram bot token.
+  // Stored only inside the encrypted connection record.
   token: string;
+  instagramUnified?: { appId: string; configurationId: string; businessId: string };
 }
 
 export class SocialConnectionError extends Error {
@@ -94,6 +96,16 @@ export function readSocialConnectionOrigin(value: string | undefined, production
   }
 }
 
+export function readInstagramUnifiedAppSecret(env: Environment): string {
+  const dedicatedSecret = string(env.META_INSTAGRAM_UNIFIED_APP_SECRET);
+  if (dedicatedSecret) return credential(dedicatedSecret);
+
+  const appId = string(env.META_INSTAGRAM_UNIFIED_APP_ID);
+  if (!/^\d{3,24}$/.test(appId) || appId !== string(env.META_APP_ID)) return "";
+
+  return credential(env.META_APP_SECRET);
+}
+
 export function createSocialAccountProviders(options: {
   env: Environment;
   origin: string;
@@ -104,13 +116,27 @@ export function createSocialAccountProviders(options: {
   const metaId = string(env.META_APP_ID);
   const metaSecret = credential(env.META_APP_SECRET);
   const metaVersion = string(env.META_GRAPH_API_VERSION) || "v23.0";
+  const legacyMetaApp = { id: metaId, secret: metaSecret, version: metaVersion };
+  const unifiedInstagramApp = {
+    id: string(env.META_INSTAGRAM_UNIFIED_APP_ID),
+    secret: readInstagramUnifiedAppSecret(env),
+    version: INSTAGRAM_UNIFIED_GRAPH_VERSION,
+  };
+  const unifiedInstagramConfiguration = string(env.META_INSTAGRAM_UNIFIED_CONFIG_ID);
+  const expectedInstagramUsername = string(env.META_INSTAGRAM_UNIFIED_USERNAME).replace(/^@/, "").toLowerCase();
+  const useUnifiedInstagram = Boolean(unifiedInstagramApp.id || unifiedInstagramApp.secret || unifiedInstagramConfiguration || expectedInstagramUsername);
+  const unifiedInstagramConfigured = /^\d{3,24}$/.test(unifiedInstagramApp.id) &&
+    Boolean(unifiedInstagramApp.secret) && /^\d{3,24}$/.test(unifiedInstagramConfiguration) &&
+    /^[a-z0-9_.]{1,30}$/.test(expectedInstagramUsername);
   const googleId = string(env.YOUTUBE_CLIENT_ID);
   const googleSecret = credential(env.YOUTUBE_CLIENT_SECRET);
   const metaConfigured = /^\d{3,24}$/.test(metaId) && Boolean(metaSecret) && /^v\d{1,3}\.\d{1,2}$/.test(metaVersion);
   const graph = `https://graph.facebook.com/${metaVersion}`;
   const redirectUri = (platform: OAuthPlatform) => `${origin}${SOCIAL_OAUTH_CALLBACK_ROOT}/${platform}`;
   const available = (platform: SocialPlatform) => Boolean(origin && outboundAllowed && (
-    platform === "telegram" || (platform === "youtube" ? googleId && googleSecret : metaConfigured)
+    platform === "telegram" ||
+    (platform === "youtube" ? googleId && googleSecret :
+      platform === "instagram" && useUnifiedInstagram ? unifiedInstagramConfigured : metaConfigured)
   ));
 
   function requireProvider(platform: SocialPlatform): void {
@@ -136,20 +162,20 @@ export function createSocialAccountProviders(options: {
     return { id, name: accountName(object(channel.snippet).title, id), token: refreshToken };
   }
 
-  async function metaToken(params: Record<string, string>): Promise<string> {
-    const url = new URL(`${graph}/oauth/access_token`);
-    url.search = new URLSearchParams({ client_id: metaId, client_secret: metaSecret, ...params }).toString();
+  async function metaToken(params: Record<string, string>, app = legacyMetaApp): Promise<string> {
+    const url = new URL(`https://graph.facebook.com/${app.version}/oauth/access_token`);
+    url.search = new URLSearchParams({ client_id: app.id, client_secret: app.secret, ...params }).toString();
     const response = await providerJson(fetcher, url);
     const token = credential(response.access_token);
     if (!token) throw new SocialConnectionError("grant_unavailable", 422);
     return token;
   }
 
-  function metaRead(path: string, token: string, params: Record<string, string> = {}) {
-    const url = new URL(`${graph}/${path}`);
+  function metaRead(path: string, token: string, params: Record<string, string> = {}, app = legacyMetaApp) {
+    const url = new URL(`https://graph.facebook.com/${app.version}/${path}`);
     url.search = new URLSearchParams({
       ...params,
-      appsecret_proof: createHmac("sha256", metaSecret).update(token).digest("hex"),
+      appsecret_proof: createHmac("sha256", app.secret).update(token).digest("hex"),
     }).toString();
     return providerJson(fetcher, url, bearer(token));
   }
@@ -190,6 +216,46 @@ export function createSocialAccountProviders(options: {
     return [...candidates.values()];
   }
 
+  async function readUnifiedInstagramAccount(token: string): Promise<VerifiedSocialAccount> {
+    // /me identifies the business integration. Read its Instagram assets
+    // using the assigned-accounts edge instead of using Page tokens.
+    const app = unifiedInstagramApp;
+    const business = await metaRead("me", token, { fields: "client_business_id" }, app);
+    const businessId = string(business.client_business_id);
+    if (!/^\d{3,32}$/.test(businessId)) throw new SocialConnectionError("no_eligible_account", 422);
+
+    let cursor = "";
+    for (let pageNumber = 0; pageNumber < 4; pageNumber++) {
+      const result = await metaRead("me/assigned_instagram_accounts", token, {
+        fields: "id,username",
+        limit: "50",
+        ...(cursor ? { after: cursor } : {}),
+      }, app);
+      const account = list(result.data).map(object).find(item =>
+        /^\d{3,32}$/.test(string(item.id)) && string(item.username).toLowerCase() === expectedInstagramUsername,
+      );
+      if (account) {
+        const id = string(account.id);
+        const quota = await metaRead(`${id}/content_publishing_limit`, token, { fields: "quota_usage" }, app);
+        const usage = object(list(quota.data)[0]).quota_usage;
+        if (typeof usage !== "number" || !Number.isSafeInteger(usage) || usage < 0) {
+          throw new SocialConnectionError("missing_permissions", 422);
+        }
+        const handle = `@${string(account.username)}`;
+        return {
+          id, name: handle, handle, token,
+          instagramUnified: { appId: app.id, configurationId: unifiedInstagramConfiguration, businessId },
+        };
+      }
+      const paging = object(result.paging);
+      const next = string(object(paging.cursors).after);
+      // Reconstruct pagination on the fixed host without following a returned URL.
+      if (!paging.next || !next || next === cursor || next.length > 1024) break;
+      cursor = next;
+    }
+    throw new SocialConnectionError("no_eligible_account", 422);
+  }
+
   async function verifyTelegram(botToken: unknown, channel: unknown): Promise<VerifiedSocialAccount> {
     requireProvider("telegram");
     const token = string(botToken);
@@ -227,6 +293,18 @@ export function createSocialAccountProviders(options: {
     authorizeUrl(platform, state, verifier) {
       requireProvider(platform);
       const youtube = platform === "youtube";
+      if (platform === "instagram" && useUnifiedInstagram) {
+        const url = new URL("https://www.facebook.com/dialog/oauth");
+        url.search = new URLSearchParams({
+          client_id: unifiedInstagramApp.id,
+          config_id: unifiedInstagramConfiguration,
+          redirect_uri: redirectUri(platform),
+          response_type: "code",
+          override_default_response_type: "true",
+          state,
+        }).toString();
+        return url;
+      }
       const url = new URL(youtube ? "https://accounts.google.com/o/oauth2/v2/auth" : `https://www.facebook.com/${metaVersion}/dialog/oauth`);
       url.search = new URLSearchParams({
         client_id: youtube ? googleId : metaId,
@@ -263,6 +341,10 @@ export function createSocialAccountProviders(options: {
         if (!YOUTUBE_SCOPES.every(scope => scopes.includes(scope))) throw new SocialConnectionError("missing_permissions", 422);
         return [await youtubeChannel(accessToken, refreshToken)];
       }
+      if (platform === "instagram" && useUnifiedInstagram) {
+        const token = await metaToken({ code, redirect_uri: redirectUri(platform) }, unifiedInstagramApp);
+        return [await readUnifiedInstagramAccount(token)];
+      }
       const shortToken = await metaToken({ code, redirect_uri: redirectUri(platform) });
       const longToken = await metaToken({ grant_type: "fb_exchange_token", fb_exchange_token: shortToken });
       const permissions = await metaRead("me/permissions", longToken, { limit: "100" });
@@ -287,6 +369,19 @@ export function createSocialAccountProviders(options: {
         }
         return youtubeChannel(accessToken, account.token);
       }
+      if (platform === "instagram" && account.instagramUnified) {
+        const grant = account.instagramUnified;
+        if (!unifiedInstagramConfigured || grant.appId !== unifiedInstagramApp.id ||
+          grant.configurationId !== unifiedInstagramConfiguration) {
+          throw new SocialConnectionError("grant_unavailable", 422);
+        }
+        const verified = await readUnifiedInstagramAccount(account.token);
+        if (verified.id !== account.id || verified.instagramUnified?.businessId !== grant.businessId) {
+          throw new SocialConnectionError("grant_unavailable", 422);
+        }
+        return verified;
+      }
+      if (!metaConfigured) throw new SocialConnectionError("connection_unavailable", 503);
       const debugUrl = new URL(`${graph}/debug_token`);
       debugUrl.searchParams.set("input_token", account.token);
       const tokenInfo = object((await providerJson(fetcher, debugUrl, bearer(`${metaId}|${metaSecret}`))).data);

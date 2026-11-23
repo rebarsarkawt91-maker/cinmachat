@@ -14,6 +14,12 @@
 
 پاشەکەوتکردن پێویستی بە Firebase Admin ـی کارا هەیە. گۆڕینی کلیلی کۆدکردن بەبێ گواستنەوەی داتا دەستگەیشتن بە پەیوەندییە پاشەکەوتکراوەکانی پێشوو لەکار دەخات.
 
+## Instagram API with Unified Login
+
+لە ئەپی تایبەتی CinamaChat، **Use cases → Instagram API → API setup with Unified login** بکەرەوە. ئەپەکە بە `Business portfolio` ـێک ببەستە کە هەژماری پیشەیی `@cinamachat` ـی تێدایە. لە Facebook Login for Business ڕێکخستنی **System-user access token** و مۆڵەتەکانی `instagram_basic` و `instagram_content_publish` بۆ هەژماری Instagram پێویستن. ناونیشانی گەڕانەوە `https://www.cinamachat.com/api/social-connections/oauth/instagram` ـە. [Instagram API with Unified Login](https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-unified-login/get-started)
+
+لە سێرڤەری `cinmachat` ـی Render، `META_INSTAGRAM_UNIFIED_APP_ID`، `META_INSTAGRAM_UNIFIED_CONFIG_ID` و `META_INSTAGRAM_UNIFIED_USERNAME=cinamachat` دابنێ. ئەگەر ناسنامەی ئەپەکە هەمان `META_APP_ID` ـە، دەتوانیت `META_INSTAGRAM_UNIFIED_APP_SECRET` بەتاڵ بهێڵیتەوە تا سێرڤەر `META_APP_SECRET` بەکاربهێنێت. بۆ ئەپێکی جیاواز، کلیلە تایبەتەکەی لە `META_INSTAGRAM_UNIFIED_APP_SECRET` دابنێ. بەشی ٢٣ حسابی ڕێگەپێدراو و دەسەڵاتی خوێندنەوەی بڕی پۆستەکان دەپشکنێت. بۆ تاقیکردنەوە `DRY_RUN` بەکاربهێنە.
+
 ## ناونیشانی گەڕانەوەی OAuth
 
 - Facebook: `https://www.cinamachat.com/api/social-connections/oauth/facebook`
