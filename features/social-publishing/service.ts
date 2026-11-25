@@ -265,6 +265,15 @@ export class SocialPublishingService {
     return { dayKey, jobs: jobs.slice(0, limit), truncated: jobs.length > limit };
   }
 
+  async listUpcoming() {
+    const checkedAt = new Date(this.now());
+    const endsAt = new Date(checkedAt.getTime() + 7 * 24 * 60 * 60_000).toISOString();
+    const limit = 100;
+    const jobs = await this.store.list(limit + 1, { start: checkedAt.toISOString(), end: endsAt });
+    const pending = jobs.slice(0, limit).filter(job => ["queued", "retrying", "processing"].includes(job.status));
+    return { checkedAt: checkedAt.toISOString(), endsAt, jobs: pending, truncated: jobs.length > limit };
+  }
+
   async getForPreview(id: string): Promise<SocialPublicationJob | null> {
     return /^[a-f0-9]{64}$/.test(id) ? this.store.get(id) : null;
   }

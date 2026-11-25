@@ -81,7 +81,7 @@ function previewMediaUrl(job: SocialPublicationJob): string | null {
   }
 }
 
-function responseTodayJob(job: SocialPublicationJob) {
+function responsePreviewJob(job: SocialPublicationJob) {
   const { id, contentKind, title, caption, description, platforms, scheduledAt, status, createdAt, approvalStatus, automation, provenance, media } = job;
   const platformStatus = Object.fromEntries(platforms.flatMap(platform => {
     const delivery = job.platformStatus?.[platform];
@@ -138,7 +138,18 @@ export function registerSocialPublishingRoutes(
     if (!requireAdmin(request, response, resolveAdmin)) return;
     try {
       const { dayKey, jobs, truncated } = await service.listToday();
-      response.json({ success: true, dayKey, truncated, jobs: jobs.map(responseTodayJob) });
+      response.json({ success: true, dayKey, truncated, jobs: jobs.map(responsePreviewJob) });
+    } catch (error) {
+      sendFailure(response, error);
+    }
+  });
+
+  app.get("/api/admin/social-publishing/upcoming", async (request: Request, response: Response) => {
+    response.setHeader("Cache-Control", "no-store");
+    if (!requireAdmin(request, response, resolveAdmin)) return;
+    try {
+      const { checkedAt, endsAt, jobs, truncated } = await service.listUpcoming();
+      response.json({ success: true, checkedAt, endsAt, truncated, jobs: jobs.map(responsePreviewJob) });
     } catch (error) {
       sendFailure(response, error);
     }

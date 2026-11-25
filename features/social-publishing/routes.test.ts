@@ -153,6 +153,7 @@ test("today and media preview are admin-only, use Baghdad midnight and withhold 
   const preview = (id: string) => `${root}/queue/${id}/preview`;
   try {
     assert.equal((await fetch(`${root}/today`)).status, 401);
+    assert.equal((await fetch(`${root}/upcoming`)).status, 401);
     assert.equal((await fetch(preview(first.job.id))).status, 401);
     const today = await fetch(`${root}/today`, admin);
     assert.equal(today.status, 200);
@@ -169,6 +170,20 @@ test("today and media preview are admin-only, use Baghdad midnight and withhold 
     assert.deepEqual(await (await fetch(preview(first.job.id), admin)).json(), { success: true, mediaUrl: video });
     assert.deepEqual(await (await fetch(preview(late.job.id), admin)).json(), { success: true, mediaUrl: null });
     assert.equal((await fetch(preview("invalid-id"), admin)).status, 404);
+    const inside = await enqueue("2027-01-07T21:59:59.999Z");
+    const atBoundary = await enqueue("2027-01-07T22:00:00.000Z");
+    const cancelledMedia = await enqueue("2027-01-02T19:00:00.000Z");
+    assert.equal(await service.cancelQueued(cancelledMedia.job.id), true);
+    const upcoming = await fetch(`${root}/upcoming`, admin);
+    assert.equal(upcoming.status, 200);
+    assert.equal(upcoming.headers.get("cache-control"), "no-store");
+    const upcomingBody = await upcoming.text();
+    const forecast = JSON.parse(upcomingBody);
+    assert.equal(forecast.checkedAt, "2026-12-31T22:00:00.000Z");
+    assert.equal(forecast.endsAt, "2027-01-07T22:00:00.000Z");
+    assert.deepEqual(forecast.jobs.map((item: SocialPublicationJob) => item.scheduledAt), [late.job.scheduledAt, after, inside.job.scheduledAt]);
+    assert.equal(forecast.jobs.some((item: SocialPublicationJob) => item.id === atBoundary.job.id), false);
+    assert.doesNotMatch(upcomingBody, /secret-media-url|private\/media|synthetic-admin/);
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   }

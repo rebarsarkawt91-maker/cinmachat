@@ -110,6 +110,24 @@ test("Firestore Emulator simulates seven weekly days, reconciles edits, cancella
     const afterPublishedReconcile = await engine.reconcile(settings, weekStart);
     assert.equal(afterPublishedReconcile.created, 0);
     assert.equal((await queue.list(100)).filter(job => job.createdBy === createdBy).length, 9);
+
+    const nextWeek = "2026-11-23";
+    const oneSlot = structuredClone(settings);
+    for (const [weekday, day] of Object.entries(oneSlot.weeklyCalendar.days)) day.enabled = weekday === "monday";
+    oneSlot.weeklyCalendar.days.monday.slots[0].count = 1;
+    oneSlot.weeklyCalendar.days.monday.slots[0].times = ["14:00"];
+    const manual = await service.enqueue({
+      platforms: ["instagram"],
+      title: "Manually prepared reel",
+      caption: "ڕیڵی ئامادەکراوی تاقیکردنەوە",
+      scheduledAt: "2026-11-23T11:00:00.000Z",
+      media: { type: "video", url: "https://media.example.test/manual-reel.mp4", rightsConfirmed: true },
+      automation: { scheduleId: nextWeek, weekday: "monday", slotId: `${monday.id}-1`, format: "reels", category: monday.category, adminOverride: true },
+    }, createdBy);
+    const afterManualDraft = await engine.reconcile(oneSlot, nextWeek);
+    assert.equal(afterManualDraft.created, 0);
+    assert.deepEqual(afterManualDraft.jobIds, [manual.job.id]);
+    assert.equal((await queue.get(manual.job.id))?.approvalStatus, "pending");
   } finally {
     const generated = await db.collection("socialPublications").where("createdBy", "==", createdBy).get();
     await Promise.all(generated.docs.map(document => document.ref.delete()));

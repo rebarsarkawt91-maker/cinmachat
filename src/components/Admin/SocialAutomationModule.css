@@ -114,8 +114,33 @@
 .social23__post-tags > li { background: #262017; border-radius: 6px; color: #f2d18c; font-size: 10px; max-width: 100%; padding: 4px 7px; }
 .social23__week-slot-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; }
 .social23__week-slot-actions .social23__button { min-height: 32px; }
+.social23__weekly-times { border: 0; margin: 0; min-width: 0; padding: 0; }
+.social23__weekly-times legend { color: #c6d7eb; font-size: 11px; margin-bottom: 6px; padding: 0; }
+.social23__weekly-clock { display: grid; gap: 6px; grid-template-columns: repeat(2, minmax(0, .9fr)) minmax(0, 1.25fr); }
+.social23__clock-cell { align-content: start; background: #111923; border: 1px solid #344961; border-radius: 8px; display: grid; gap: 5px; min-width: 0; padding: 6px; }
+.social23__clock-cell strong, .social23__clock-cell small { font-size: 10px; overflow-wrap: anywhere; }
+.social23__clock-cell small { color: #acb9ca; }
+.social23__clock-cell ul { display: grid; gap: 4px; list-style: none; margin: 0; padding: 0; text-align: start; }
+.social23__clock-cell li { color: #d0e6fa; font-size: 11px; font-variant-numeric: tabular-nums; }
+.social23__clock-edit input { font-variant-numeric: tabular-nums; text-align: center; width: 100%; }
+.social23__clock-edit input[aria-invalid="true"] { border-color: #e47d85; }
+.social23__weekly-times p { color: #ffc1c0; font-size: 10px; margin: 6px 0 0; }
+.social23__upcoming .social23__today-list time { font-size: 11px; }
+.social23__slot-upcoming { background: #101d17; border: 1px solid #365a45; border-radius: 9px; display: grid; gap: 6px; min-width: 0; padding: 8px; }
+.social23__slot-upcoming > strong { color: #b7ebcc; font-size: 11px; }
+.social23__slot-upcoming small { color: #b7c9bf; display: block; font-size: 10px; overflow-wrap: anywhere; }
+.social23__slot-upcoming time { color: #d5eddf; display: block; font-size: 10px; font-variant-numeric: tabular-nums; text-align: start; }
+.social23__slot-plan, .social23__slot-job { background: #0c1611; border: 1px solid #2b4437; border-radius: 8px; min-width: 0; padding: 7px; }
+.social23__slot-plan { display: grid; gap: 5px; }
+.social23__slot-plan .social23__button { justify-self: start; min-height: 28px; padding: 5px 8px; }
+.social23__slot-job { align-items: start; color: #e7f9ed; cursor: pointer; display: flex; font: inherit; gap: 8px; text-align: start; width: 100%; }
+.social23__slot-job:hover, .social23__slot-job[aria-expanded="true"] { border-color: #82c999; }
+.social23__slot-job svg { color: #9cdaaf; flex: none; }
+.social23__slot-job b { display: block; font-size: 11px; overflow-wrap: anywhere; }
+.social23__slot-upcoming .social23__post-preview-content:has(.social23__post-media) { grid-template-columns: minmax(0, 1fr); }
 @media (max-width: 640px) {
   .social23__today { padding: 14px; }
   .social23__today > .social23__section-heading { align-items: flex-start; flex-wrap: wrap; }
   .social23__post-preview-content:has(.social23__post-media) { grid-template-columns: minmax(0, 1fr); }
+  .social23__upcoming .social23__today-list time { font-size: 10px; }
 }

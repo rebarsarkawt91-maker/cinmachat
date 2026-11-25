@@ -2,23 +2,16 @@ import {
   baghdadDayKey,
   baghdadWallTimeToDate,
 } from "./dailyAutomation";
-import type { SocialAutomationSettings, SocialFormat, SocialWeekday, WeeklyContentSlot } from "./settings";
+import type { SocialAutomationSettings, SocialWeekday, WeeklyContentSlot } from "./settings";
 import { SOCIAL_WEEKDAYS } from "./settings";
 import type { SocialPlatform, SocialPublicationInput, SocialPublicationJob } from "./types";
 import { SocialPublishingService } from "./service";
+import { supportsWeeklyFormat } from "./weeklyCalendarPreview";
+
+export { supportsWeeklyFormat } from "./weeklyCalendarPreview";
 
 const WEEKDAY_INDEX = new Map<SocialWeekday, number>(SOCIAL_WEEKDAYS.map((weekday, index) => [weekday, index]));
 const OFFICIAL_NEWS_HOSTS = ["variety.com", "deadline.com", "hollywoodreporter.com", "soompi.com", "koreaherald.com"];
-
-/** Conservative: allow only format mappings that this repository's platform adapters can actually publish. */
-export function supportsWeeklyFormat(platform: SocialPlatform, format: SocialFormat, interactive: boolean): boolean {
-  if (interactive) return false; // No configured adapter publishes interactive Story stickers/polls.
-  if (platform === "instagram") return format === "reels" || format === "feed";
-  if (platform === "facebook") return format === "feed";
-  if (platform === "telegram") return format === "feed";
-  // The current YouTube adapter uploads videos, but has no explicit Reel/Story/Feed/Carousel API.
-  return false;
-}
 
 export interface WeeklyDraftContext {
   scheduleId: string;
@@ -134,6 +127,11 @@ export class WeeklySocialAutomationEngine {
     }
 
     const current = (await this.options.publishing.list(100)).filter(job => job.automation?.scheduleId === weekStart);
+    const manualOverrides = new Map(current.flatMap(job => {
+      const identity = planIdentity(job);
+      return identity && job.automation?.adminOverride && ["queued", "retrying", "processing"].includes(job.status)
+        ? [[identity, job] as const] : [];
+    }));
     const pendingIdentities = new Set(current.filter(job => ["queued", "retrying", "processing"].includes(job.status)).map(planIdentity).filter((value): value is string => Boolean(value)));
     const terminalIdentities = new Set(current.filter(job => !["queued", "retrying", "processing"].includes(job.status) && !pendingIdentities.has(planIdentity(job) || "")).map(planIdentity).filter((value): value is string => Boolean(value)));
     let cancelled = 0;
@@ -151,6 +149,12 @@ export class WeeklySocialAutomationEngine {
     let retained = 0;
     const jobIds: string[] = [];
     for (const [identity, input] of expected) {
+      const manual = manualOverrides.get(identity);
+      if (manual) {
+        retained += 1;
+        jobIds.push(manual.id);
+        continue;
+      }
       if (terminalIdentities.has(identity)) {
         const terminal = current.find(job => planIdentity(job) === identity && job.status !== "cancelled") || current.find(job => planIdentity(job) === identity);
         if (terminal) jobIds.push(terminal.id);
