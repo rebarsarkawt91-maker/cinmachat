@@ -10,6 +10,7 @@ import type {
 } from "./types";
 import { SOCIAL_PLATFORMS } from "./types";
 import { SocialProviderError } from "./adapters";
+import { baghdadDayKey, baghdadWallTimeToDate } from "./dailyAutomation";
 import {
   TERMINAL_DUE_AT,
   type SocialPublicationStore,
@@ -250,6 +251,22 @@ export class SocialPublishingService {
 
   async list(limit = 50): Promise<SocialPublicationJob[]> {
     return this.store.list(Math.max(1, Math.min(100, Math.floor(limit))));
+  }
+
+  async listToday() {
+    const dayKey = baghdadDayKey(new Date(this.now()));
+    const nextDay = new Date(`${dayKey}T00:00:00Z`);
+    nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+    const limit = 100;
+    const jobs = await this.store.list(limit + 1, {
+      start: baghdadWallTimeToDate(dayKey, "00:00").toISOString(),
+      end: baghdadWallTimeToDate(nextDay.toISOString().slice(0, 10), "00:00").toISOString(),
+    });
+    return { dayKey, jobs: jobs.slice(0, limit), truncated: jobs.length > limit };
+  }
+
+  async getForPreview(id: string): Promise<SocialPublicationJob | null> {
+    return /^[a-f0-9]{64}$/.test(id) ? this.store.get(id) : null;
   }
 
   async updateQueued(id: string, patch: Pick<SocialPublicationInput, "title" | "caption" | "description" | "scheduledAt">): Promise<SocialPublicationJob> {

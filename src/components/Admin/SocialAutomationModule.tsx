@@ -1,9 +1,10 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle, CalendarClock, Check, CirclePause, CirclePlay, Clock3,
-  Film, ListVideo, Loader2, Pencil, Plus, RefreshCw, ShieldCheck, Trash2,
+  ExternalLink, Eye, Film, ListVideo, Loader2, Pencil, Plus, RefreshCw, ShieldCheck, Trash2,
 } from "lucide-react";
 import type { Movie } from "../../types";
+import type { SocialPublicationJob } from "../../../features/social-publishing/types";
 import { SOCIAL_CONNECTION_CHANNELS as CHANNELS, SocialConnectionsPanel } from "./SocialConnectionsPanel";
 import "./SocialAutomationModule.css";
 
@@ -29,8 +30,11 @@ type SocialJob = {
   platforms: Platform[]; scheduledAt: string; status: string; createdAt: string;
   approvalStatus?: "pending" | "approved";
   platformStatus?: Partial<Record<Platform, { status: string; errorCode?: string }>>;
-  media?: { type: "text" | "image" | "video"; mimeType?: string };
+  automation?: SocialPublicationJob["automation"];
+  provenance?: Pick<NonNullable<SocialPublicationJob["provenance"]>, "source" | "kurdishSubtitleStatus">;
+  media?: { type: "text" | "image" | "video"; mimeType?: string; rightsConfirmed?: boolean };
 };
+type TodayPosts = { dayKey: string; jobs: SocialJob[]; truncated: boolean };
 type Readiness = { mode: "DRY_RUN" | "LIVE"; livePublishingEnabled: boolean; schedulerEnabled?: boolean; platforms: Record<Platform, { configured: boolean }> };
 type DailyRun = { dayKey: string; status: "running" | "partial" | "complete" | "failed"; created: Record<PostKind, number>; skipped: Record<PostKind, number>; errors: string[]; jobIds: string[] };
 type Props = { request: (path: string, options?: RequestInit) => Promise<Response>; catalogMovies: Movie[] };
@@ -66,11 +70,21 @@ const FORMAT_LABEL: Record<"reels" | "feed" | "stories" | "carousel", string> = 
 const KIND_LABEL: Record<PostKind, string> = { news: "هەواڵی فیلم و زنجیرە", trailer: "ترەیلەری ڕێگەپێدراو", promotion: "ناسـاندنی فیلمی CinemaChat" };
 const API_ROOT = "/api/admin/social-publishing";
 const SETTINGS_URL = "/api/admin/social-automation/settings";
+const SITE_HOME = "https://www.cinamachat.com/";
+const JOB_LABEL: Record<string, string> = {
+  queued: "لە ڕیزدایە", retrying: "دووبارە هەوڵ دەدرێت", processing: "لە پرۆسەدایە",
+  simulated: "تاقیکراوەتەوە (DRY_RUN)", succeeded: "بڵاو کراوەتەوە", partial: "بەشێکی سەرکەوتووە",
+  failed: "هەڵەی هەبووە", cancelled: "هەڵوەشاوەتەوە",
+};
+const SOURCE_LABEL: Record<NonNullable<SocialJob["provenance"]>["source"], string> = {
+  "cinemachat-catalog": "کاڵۆگی CinemaChat", "official-news": "سەرچاوەی فەرمیی هەواڵ",
+  "licensed-trailer": "ترەیلەری مۆڵەتپێدراو", "verified-editorial": "ناوەڕۆکی پشتڕاستکراو",
+};
+// The editor accepts Baghdad wall time. Do not apply the browser's timezone.
 const localBaghdadTime = (iso: string) => {
   const date = new Date(iso);
   if (!Number.isFinite(date.getTime())) return "";
-  const baghdad = new Date(date.getTime() + 3 * 60 * 60_000);
-  return new Date(baghdad.getTime() - baghdad.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+  return new Date(date.getTime() + 3 * 60 * 60_000).toISOString().slice(0, 16);
 };
 const baghdadIso = (local: string) => new Date(`${local}:00+03:00`).toISOString();
 const messageFrom = async (response: Response, fallback: string) => {
@@ -78,6 +92,64 @@ const messageFrom = async (response: Response, fallback: string) => {
   if (!response.ok) throw new Error(payload?.error || fallback);
   return payload;
 };
+
+function PreparedPostPreview({ job, request, onClose }: { job: SocialJob; request: Props["request"]; onClose: () => void }) {
+  const requestRef = useRef(request);
+  requestRef.current = request;
+  const [media, setMedia] = useState<string | null | undefined>(undefined);
+  const [duration, setDuration] = useState<number | null>(null);
+  const mediaType = job.media?.type;
+  const hasMedia = mediaType === "image" || mediaType === "video";
+  useEffect(() => {
+    if (!hasMedia) return;
+    const controller = new AbortController();
+    void requestRef.current(`${API_ROOT}/queue/${encodeURIComponent(job.id)}/preview`, { signal: controller.signal })
+      .then(async response => response.ok ? response.json() : null)
+      .then(result => { if (!controller.signal.aborted) setMedia(result?.mediaUrl || null); })
+      .catch(() => { if (!controller.signal.aborted) setMedia(null); });
+    return () => controller.abort();
+  }, [job.id, hasMedia]);
+
+  const hashtags = [...new Set(Array.from(job.caption.matchAll(/(?:^|[\s(\[«“"'])#[\p{L}\p{M}\p{N}_\u200c\u200d]+/gu), match => match[0].slice(match[0].indexOf("#"))))];
+  const time = localBaghdadTime(job.scheduledAt).slice(11);
+  const title = job.title || (job.contentKind ? KIND_LABEL[job.contentKind] : "پۆستی ئامادەکراو");
+
+  return <article className="social23__post-preview" aria-label="پێشبینینی پۆست">
+    <div className="social23__post-preview-heading">
+      <div><h3>{title}</h3><p><time dateTime={job.scheduledAt} dir="ltr">{time}</time> · کاتی بەغدا · {JOB_LABEL[job.status] || job.status}</p></div>
+      <button type="button" className="social23__close" onClick={onClose} aria-label="داخستنی پێشبینین">×</button>
+    </div>
+    <div className="social23__post-preview-content">
+      {hasMedia && <div className="social23__post-media">
+        {media ? mediaType === "image"
+          ? <img src={media} referrerPolicy="no-referrer" alt={`وێنەی ${title}`} onError={() => setMedia(null)} />
+          : <video src={media} controls playsInline preload="metadata" aria-label={`ڤیدیۆی ${title}`} onError={() => setMedia(null)} onLoadedMetadata={event => {
+            const seconds = event.currentTarget.duration;
+            if (Number.isFinite(seconds) && seconds > 0) setDuration(Math.round(seconds));
+          }} />
+          : <p>{media === undefined ? "میدیا بار دەکرێت…" : "میدیای گشتی بۆ پێشبینین بەردەست نییە."}</p>}
+        <small>{job.media?.rightsConfirmed ? "مافی بڵاوکردنەوە تۆمار کراوە" : "مافی بڵاوکردنەوە هێشتا پشتڕاست نەکراوەتەوە"}</small>
+        {mediaType === "video" && duration !== null && <small>ماوە <bdi>{Math.floor(duration / 60)}:{String(duration % 60).padStart(2, "0")}</bdi></small>}
+        <small>قەبارەی فایل لە ڕیزدا تۆمار نەکراوە.</small>
+      </div>}
+      <div className="social23__post-copy">
+        {job.description && <p dir="auto">{job.description}</p>}
+        <h4>کاپشن</h4><p className="social23__post-caption" dir="auto">{job.caption}</p>
+        <h4>هاشتاگەکان</h4>
+        {hashtags.length ? <ul className="social23__post-tags">{hashtags.map(tag => <li key={tag}><bdi>{tag}</bdi></li>)}</ul> : <p>ئەم کاپشنە هاشتاگی تێدا نییە.</p>}
+        <h4>پلاتفۆرمەکان</h4>
+        <ul className="social23__post-tags">{job.platforms.map(platform => {
+          const delivery = job.platformStatus?.[platform];
+          return <li key={platform}>{CHANNELS.find(channel => channel.id === platform)?.name || platform}{delivery && <> · {JOB_LABEL[delivery.status] || delivery.status}</>}</li>;
+        })}</ul>
+        <p>{job.approvalStatus === "approved" ? "پەسەند کراوە" : "چاوەڕوانی پەسەندکردنی دەستییە"}{job.automation && <> · {FORMAT_LABEL[job.automation.format]}</>}{job.provenance && <> · {SOURCE_LABEL[job.provenance.source]}</>}</p>
+        {job.provenance?.kurdishSubtitleStatus === "available" && <p>ژێرنووسی کوردی بەردەستە.</p>}
+        {job.provenance?.kurdishSubtitleStatus === "unavailable" && <p>ژێرنووسی کوردی بەردەست نییە.</p>}
+        <a className="social23__button social23__button--gold" href={SITE_HOME} target="_blank" rel="noopener noreferrer"><ExternalLink size={15} /> سەردانی CinemaChat بکە</a>
+      </div>
+    </div>
+  </article>;
+}
 
 export function SocialAutomationModule({ request, catalogMovies }: Props) {
   const requestRef = useRef(request);
@@ -87,6 +159,10 @@ export function SocialAutomationModule({ request, catalogMovies }: Props) {
   const [dailyRun, setDailyRun] = useState<DailyRun | null>(null);
   const [providersReady, setProvidersReady] = useState({ officialNews: false, licensedTrailers: false, cinemaChatCatalog: false });
   const [jobs, setJobs] = useState<SocialJob[]>([]);
+  const [today, setToday] = useState<TodayPosts | null>(null);
+  const [todayLoading, setTodayLoading] = useState(true);
+  const [previewId, setPreviewId] = useState<string | null>(null);
+  const todayRequestId = useRef(0);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState("");
@@ -106,9 +182,23 @@ export function SocialAutomationModule({ request, catalogMovies }: Props) {
     setSettings(value => ({ ...value, weeklyCalendar: { ...value.weeklyCalendar, days: { ...value.weeklyCalendar.days, [weekday]: { ...value.weeklyCalendar.days[weekday], slots: [...value.weeklyCalendar.days[weekday].slots, { id, category: "ناوەڕۆکی نوێ", format: "feed", interactive: false, count: 1, platforms: [], times: ["18:00"] }] } } } }));
   };
 
+  const refreshToday = useCallback(async () => {
+    const id = ++todayRequestId.current;
+    setTodayLoading(true);
+    try {
+      const result = await messageFrom(await requestRef.current(`${API_ROOT}/today`), "پۆستەکانی ئەمڕۆ بەردەست نین.");
+      if (todayRequestId.current === id) setToday(Array.isArray(result.jobs) && typeof result.dayKey === "string" ? result : null);
+    } catch {
+      if (todayRequestId.current === id) setToday(null);
+    } finally {
+      if (todayRequestId.current === id) setTodayLoading(false);
+    }
+  }, []);
+
   const refresh = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     setError("");
+    const todayRequest = refreshToday();
     try {
       const [settingResponse, statusResponse, queueResponse, historyResponse, dailyRunResponse] = await Promise.all([
         requestRef.current(SETTINGS_URL), requestRef.current(`${API_ROOT}/status`), requestRef.current(`${API_ROOT}/queue?limit=100`), requestRef.current(`${API_ROOT}/history?limit=100`), requestRef.current("/api/admin/social-automation/daily-run"),
@@ -126,9 +216,19 @@ export function SocialAutomationModule({ request, catalogMovies }: Props) {
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "پەیوەندی بە خزمەتگوزاریی ئۆتۆماتیکەوە نەکرا.");
     } finally { setLoading(false); }
-  }, []);
+    await todayRequest;
+  }, [refreshToday]);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  const showTodayPreview = (id: string) => {
+    setPreviewId(id);
+    document.getElementById(`social23-preview-${id}`)?.focus();
+  };
+  const closeTodayPreview = (id: string) => {
+    setPreviewId(null);
+    document.getElementById(`social23-preview-${id}`)?.focus();
+  };
 
   const queued = useMemo(() => jobs.filter(job => ["queued", "retrying", "processing"].includes(job.status)).sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt)), [jobs]);
   const history = useMemo(() => jobs.filter(job => !["queued", "retrying", "processing"].includes(job.status)).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 12), [jobs]);
@@ -229,6 +329,26 @@ export function SocialAutomationModule({ request, catalogMovies }: Props) {
         {dailyRun?.errors.length ? <p className="social23__error">هەڵەی worker: {dailyRun.errors.join("، ")}</p> : null}
       </section>
 
+      <section className="social23__panel social23__today" aria-labelledby="social23-today-title" aria-busy={todayLoading}>
+        <div className="social23__section-heading">
+          <div><span className="social23__section-icon"><Eye size={18} /></span><div><h2 id="social23-today-title">پۆستە ئامادەکانی ئەمڕۆ</h2><p>{today && <><bdi>{today.dayKey}</bdi> · </>}کاتی بەغدا · <bdi>{readiness?.mode || "DRY_RUN"}</bdi></p></div></div>
+          <button type="button" className="social23__button social23__button--outline" onClick={() => void refreshToday()} disabled={todayLoading}><RefreshCw size={14} /> نوێکردنەوە</button>
+        </div>
+        {today?.jobs.length ? <>
+          <ul className="social23__today-list">
+            {today.jobs.map(job => <li key={job.id}>
+              <button id={`social23-preview-${job.id}`} type="button" aria-expanded={job.id === previewId} onClick={() => setPreviewId(job.id === previewId ? null : job.id)}>
+                <time dateTime={job.scheduledAt} dir="ltr">{localBaghdadTime(job.scheduledAt).slice(11)}</time>
+                <span><strong dir="auto">{job.title || (job.contentKind ? KIND_LABEL[job.contentKind] : "پۆستی ئامادەکراو")}</strong><small>{JOB_LABEL[job.status] || job.status}</small></span>
+                <Eye size={16} aria-hidden="true" />
+              </button>
+              {job.id === previewId && <PreparedPostPreview job={job} request={request} onClose={() => closeTodayPreview(job.id)} />}
+            </li>)}
+          </ul>
+          {today.truncated && <p className="social23__today-note">یەکەم ١٠٠ پۆستی ئەمڕۆ پیشان دەدرێن.</p>}
+        </> : <p className="social23__today-note" role="status">{todayLoading ? "پۆستەکانی ئەمڕۆ بار دەکرێن…" : today ? "هێشتا هیچ پۆستێکی ئامادەکراو بۆ ئەمڕۆ لە ڕیزدا نییە." : "پۆستەکانی ئەمڕۆ نەخوێندرانەوە. دووبارە نوێی بکەرەوە."}</p>}
+      </section>
+
       <section className="social23__panel social23__weekly" aria-label="تەقویمی هەفتانە">
         <div className="social23__section-heading"><div><span className="social23__section-icon"><CalendarClock size={18} /></span><div><h2>تەقویمی ناوەڕۆکی هەفتانە</h2><p>ڕۆژ، بابەت، ژمارە، پلاتفۆرم و کات بە Asia/Baghdad پاشەکەوت دەکرێن.</p></div></div><span className="social23__preview-tag">تەنها DRY_RUN</span></div>
         <div className="social23__weekly-targets">
@@ -240,14 +360,19 @@ export function SocialAutomationModule({ request, catalogMovies }: Props) {
             const config = settings.weeklyCalendar.days[weekday];
             return <article className="social23__week-day" key={weekday}>
               <header><strong>{label}</strong><label className="social23__check"><input type="checkbox" checked={config.enabled} onChange={event => setSettings(value => ({ ...value, weeklyCalendar: { ...value.weeklyCalendar, days: { ...value.weeklyCalendar.days, [weekday]: { ...value.weeklyCalendar.days[weekday], enabled: event.target.checked } } } }))} /><span>چالاک</span></label></header>
-              {config.slots.map(slot => <div className="social23__week-slot" key={slot.id}>
+              {config.slots.map(slot => {
+                const preparedPosts = today?.jobs.filter(job => job.automation?.weekday === weekday && job.automation.slotId === slot.id) ?? [];
+                return <div className="social23__week-slot" key={slot.id}>
                 <label>بابەت<input maxLength={100} value={slot.category} onChange={event => updateWeeklySlot(weekday, slot.id, item => ({ ...item, category: event.target.value }))} /></label>
                 <div className="social23__week-row"><label>فۆرمات<select value={slot.format} onChange={event => updateWeeklySlot(weekday, slot.id, item => ({ ...item, format: event.target.value as typeof item.format }))}>{Object.entries(FORMAT_LABEL).map(([id, name]) => <option value={id} key={id}>{name}</option>)}</select></label><label>ژمارە<input type="number" min={0} max={8} value={slot.count} onChange={event => { const count = Math.max(0, Math.min(8, Number(event.target.value) || 0)); updateWeeklySlot(weekday, slot.id, item => ({ ...item, count, times: Array.from({ length: count }, (_, index) => item.times[index] || "18:00") })); }} /></label></div>
                 <label>کاتەکان بە کۆما جیا بکەرەوە<input dir="ltr" placeholder="13:00, 19:00" value={slot.times.join(", ")} onChange={event => { const times = event.target.value.split(",").map(value => value.trim()).filter(Boolean).slice(0, 8); updateWeeklySlot(weekday, slot.id, item => ({ ...item, count: times.length, times })); }} /></label>
                 <label>پلاتفۆرمەکان</label><div className="social23__week-platforms">{CHANNELS.map(({ id, name }) => <label className="social23__check" key={id}><input type="checkbox" checked={slot.platforms.includes(id)} onChange={event => updateWeeklySlot(weekday, slot.id, item => ({ ...item, platforms: event.target.checked ? [...new Set([...item.platforms, id])] : item.platforms.filter(platform => platform !== id) }))} /><span>{name}</span></label>)}</div>
                 {slot.format === "stories" && <label className="social23__check"><input type="checkbox" checked={slot.interactive} onChange={event => updateWeeklySlot(weekday, slot.id, item => ({ ...item, interactive: event.target.checked }))} /><span>ناوەڕۆکی کارلێک‌هەڵگر (وەک Poll)</span></label>}
-                <button type="button" className="social23__week-remove" onClick={() => setSettings(value => ({ ...value, weeklyCalendar: { ...value.weeklyCalendar, days: { ...value.weeklyCalendar.days, [weekday]: { ...value.weeklyCalendar.days[weekday], slots: value.weeklyCalendar.days[weekday].slots.filter(item => item.id !== slot.id) } } } }))}>لابردنی ئەم پلانه</button>
-              </div>)}
+                <div className="social23__week-slot-actions">
+                  {preparedPosts.length > 0 && <button type="button" className="social23__button social23__button--outline" onClick={() => showTodayPreview(preparedPosts[0].id)}><Eye size={14} /> پێشبینینی ئەمڕۆ ({preparedPosts.length.toLocaleString("ar-IQ")})</button>}
+                  <button type="button" className="social23__week-remove" onClick={() => setSettings(value => ({ ...value, weeklyCalendar: { ...value.weeklyCalendar, days: { ...value.weeklyCalendar.days, [weekday]: { ...value.weeklyCalendar.days[weekday], slots: value.weeklyCalendar.days[weekday].slots.filter(item => item.id !== slot.id) } } } }))}>لابردنی ئەم پلانه</button>
+                </div>
+              </div>})}
               <button type="button" className="social23__button social23__button--outline" onClick={() => addWeeklySlot(weekday)} disabled={config.slots.length >= 8}><Plus size={14} /> زیادکردنی پلانی ئەم ڕۆژە</button>
             </article>;
           })}

@@ -6,13 +6,15 @@ export const SOCIAL_PUBLICATIONS_COLLECTION = "socialPublications";
 const TERMINAL_DUE_AT = 8_640_000_000_000_000;
 const CLAIM_LEASE_MS = 30 * 60 * 1000;
 
+export type SocialScheduledWindow = { start: string; end: string };
+
 export interface SocialPublicationStore {
   enqueue(job: SocialPublicationJob): Promise<{ job: SocialPublicationJob; duplicate: boolean }>;
   claimDue(now: number): Promise<SocialPublicationJob | null>;
   get(id: string): Promise<SocialPublicationJob | null>;
   delete(id: string): Promise<boolean>;
   save(job: SocialPublicationJob): Promise<void>;
-  list(limit: number): Promise<SocialPublicationJob[]>;
+  list(limit: number, scheduledWindow?: SocialScheduledWindow): Promise<SocialPublicationJob[]>;
 }
 
 export class SocialPublicationStoreError extends Error {
@@ -135,13 +137,13 @@ export class FirestoreSocialPublicationStore implements SocialPublicationStore {
     }
   }
 
-  async list(limit: number): Promise<SocialPublicationJob[]> {
+  async list(limit: number, scheduledWindow?: SocialScheduledWindow): Promise<SocialPublicationJob[]> {
     try {
-      const snapshot = await this.db()
-        .collection(SOCIAL_PUBLICATIONS_COLLECTION)
-        .orderBy("createdAt", "desc")
-        .limit(limit)
-        .get();
+      const collection = this.db().collection(SOCIAL_PUBLICATIONS_COLLECTION);
+      const query = scheduledWindow
+        ? collection.where("scheduledAt", ">=", scheduledWindow.start).where("scheduledAt", "<", scheduledWindow.end).orderBy("scheduledAt")
+        : collection.orderBy("createdAt", "desc");
+      const snapshot = await query.limit(limit).get();
       return snapshot.docs.map((doc) => doc.data() as SocialPublicationJob);
     } catch (error) {
       if (error instanceof SocialPublicationStoreError) throw error;

@@ -155,6 +155,8 @@ test("Firestore social queue persists and cancels synthetic jobs in the demo emu
     assert.equal((await store.enqueue(job)).duplicate, false);
     assert.equal((await store.get(id))?.contentKind, "promotion");
     assert.ok((await store.list(10)).some(item => item.id === id));
+    assert.deepEqual((await store.list(10, { start: job.scheduledAt, end: now })).map(item => item.id), [id]);
+    assert.deepEqual(await store.list(10, { start: new Date(Date.parse(job.scheduledAt) - 60_000).toISOString(), end: job.scheduledAt }), []);
     const service = new SocialPublishingService({ store, adapters: createSocialAdapters({}), env: {} });
     assert.equal(await service.runOnce(), false, "Firestore must not claim an unapproved publication");
     await service.approveQueued(id, "synthetic-admin");

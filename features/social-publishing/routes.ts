@@ -2,6 +2,7 @@ import type { Express, Request, Response } from "express";
 import { SocialPublishingInputError, SocialPublishingService } from "./service";
 import { SocialPublicationStoreError } from "./store";
 import type { SocialMediaType, SocialPublicationJob } from "./types";
+import { catalogCardImage } from "./catalogCardMedia";
 
 export interface SocialPublishingRoutesOptions {
   service: SocialPublishingService;
@@ -63,6 +64,36 @@ function responseJob(job: SocialPublicationJob): Omit<SocialPublicationJob, "med
   };
 }
 
+function previewMediaUrl(job: SocialPublicationJob): string | null {
+  const media = job.media;
+  if (!media?.url || media.type === "text") return null;
+  const catalogImage = job.contentKind === "promotion" && job.provenance?.source === "cinemachat-catalog" && media.type === "image"
+    ? catalogCardImage({ posterUrl: media.url }) : undefined;
+  try {
+    const url = new URL(catalogImage ?? media.url);
+    if (url.protocol !== "https:" || url.username || url.password || url.port || url.search || url.hash) return null;
+    // Direct previews use public assets and never proxy a job's stored media.
+    const siteAsset = ["www.cinamachat.com", "cinamachat.com"].includes(url.hostname) && /^\/(?:assets|uploads)\//.test(url.pathname);
+    const tmdbPoster = media.type === "image" && url.hostname === "image.tmdb.org" && url.pathname.startsWith("/t/p/");
+    return catalogImage || siteAsset || tmdbPoster ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function responseTodayJob(job: SocialPublicationJob) {
+  const { id, contentKind, title, caption, description, platforms, scheduledAt, status, createdAt, approvalStatus, automation, provenance, media } = job;
+  const platformStatus = Object.fromEntries(platforms.flatMap(platform => {
+    const delivery = job.platformStatus?.[platform];
+    return delivery ? [[platform, { status: delivery.status }]] : [];
+  }));
+  return {
+    id, contentKind, title, caption, description, platforms, platformStatus, scheduledAt, status, createdAt, approvalStatus, automation,
+    provenance: provenance && { source: provenance.source, kurdishSubtitleStatus: provenance.kurdishSubtitleStatus },
+    media: media && { type: media.type, rightsConfirmed: media.rightsConfirmed === true },
+  };
+}
+
 export function registerSocialPublishingRoutes(
   app: Express,
   options: SocialPublishingRoutesOptions,
@@ -97,6 +128,32 @@ export function registerSocialPublishingRoutes(
       const jobs = await service.list(limit);
       response.setHeader("Cache-Control", "no-store");
       response.json({ success: true, jobs: jobs.map(responseJob) });
+    } catch (error) {
+      sendFailure(response, error);
+    }
+  });
+
+  app.get("/api/admin/social-publishing/today", async (request: Request, response: Response) => {
+    response.setHeader("Cache-Control", "no-store");
+    if (!requireAdmin(request, response, resolveAdmin)) return;
+    try {
+      const { dayKey, jobs, truncated } = await service.listToday();
+      response.json({ success: true, dayKey, truncated, jobs: jobs.map(responseTodayJob) });
+    } catch (error) {
+      sendFailure(response, error);
+    }
+  });
+
+  app.get("/api/admin/social-publishing/queue/:id/preview", async (request: Request, response: Response) => {
+    response.setHeader("Cache-Control", "no-store");
+    if (!requireAdmin(request, response, resolveAdmin)) return;
+    try {
+      const job = await service.getForPreview(String(request.params.id || ""));
+      if (!job) {
+        response.status(404).json({ success: false, error: "Publication not found" });
+        return;
+      }
+      response.json({ success: true, mediaUrl: previewMediaUrl(job) });
     } catch (error) {
       sendFailure(response, error);
     }

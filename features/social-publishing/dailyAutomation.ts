@@ -1,5 +1,5 @@
 import type { SocialAutomationSettings } from "./settings";
-import { SocialPublishingService } from "./service";
+import type { SocialPublishingService } from "./service";
 import type { SocialMedia, SocialPlatform, SocialPublicationInput } from "./types";
 import { randomUUID } from "node:crypto";
 

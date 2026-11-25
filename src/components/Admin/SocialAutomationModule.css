@@ -70,3 +70,52 @@
 .social23__connection-editor input, .social23__connection-editor select { background: #0a0a0c; border: 1px solid #443e45; border-radius: 9px; color: #fff; font: inherit; min-height: 40px; min-width: 0; padding: 8px 10px; width: 100%; }
 .social23__connection-editor .social23__button { text-decoration: none; }
 .social23__connection-editor .social23__button:focus-visible, .social23__connection-card .social23__button:focus-visible { outline: 2px solid #ffce77; outline-offset: 2px; }
+
+.social23__today { padding: 20px; }
+.social23__today-list, .social23__post-tags { list-style: none; padding: 0; }
+.social23__today-list { display: grid; gap: 8px; margin: 16px 0 0; }
+.social23__today-list > li > button {
+  align-items: center;
+  background: #101013;
+  border: 1px solid #393139;
+  border-radius: 11px;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  gap: 12px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding: 9px 12px;
+  text-align: start;
+  width: 100%;
+}
+.social23__today-list > li > button:hover,
+.social23__today-list > li > button[aria-expanded="true"] { background: #1c1712; border-color: #80612e; }
+.social23__today-list time, .social23__today-list > li > button > svg { color: #f1c568; }
+.social23__today-list strong, .social23__today-list small { display: block; overflow-wrap: anywhere; }
+.social23__today-list strong { font-size: 12px; }
+.social23__today-list small, .social23__today-note { color: #c0b9bd; font-size: 11px; }
+.social23__today-note { margin: 14px 0 0; }
+.social23__post-preview { background: #141216; border: 1px solid #5d4828; border-radius: 13px; margin-top: 8px; padding: 15px; }
+.social23__post-preview-heading { align-items: flex-start; display: flex; gap: 12px; justify-content: space-between; }
+.social23__post-preview-heading .social23__close { flex: none; }
+.social23__post-preview h3, .social23__post-preview h4 { color: #ffdda0; font-size: 13px; margin: 0; }
+.social23__post-preview h4 { margin-top: 10px; }
+.social23__post-preview p { color: #ddd6d9; margin: 5px 0; }
+.social23__post-preview-content { display: grid; gap: 14px; margin-top: 10px; }
+.social23__post-preview-content:has(.social23__post-media) { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
+.social23__post-copy { min-width: 0; overflow-wrap: anywhere; }
+.social23__post-copy .social23__button { margin-top: 7px; text-decoration: none; }
+.social23__post-caption { background: #0d0c0f; border-radius: 8px; line-height: 1.7; padding: 10px; white-space: pre-wrap; }
+.social23__post-media { align-self: start; background: #0d0c0f; border-radius: 10px; padding: 8px; text-align: center; }
+.social23__post-media img, .social23__post-media video { border-radius: 7px; display: block; max-height: 340px; object-fit: contain; width: 100%; }
+.social23__post-media > small { padding-top: 6px; }
+.social23__post-tags { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0; }
+.social23__post-tags > li { background: #262017; border-radius: 6px; color: #f2d18c; font-size: 10px; max-width: 100%; padding: 4px 7px; }
+.social23__week-slot-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; }
+.social23__week-slot-actions .social23__button { min-height: 32px; }
+@media (max-width: 640px) {
+  .social23__today { padding: 14px; }
+  .social23__today > .social23__section-heading { align-items: flex-start; flex-wrap: wrap; }
+  .social23__post-preview-content:has(.social23__post-media) { grid-template-columns: minmax(0, 1fr); }
+}

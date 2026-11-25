@@ -6,7 +6,7 @@ import { createSocialAdapters } from "./adapters";
 import { registerSocialPublishingRoutes } from "./routes";
 import { SocialPublishingService } from "./service";
 import type { SocialPublicationJob } from "./types";
-import type { SocialPublicationStore } from "./store";
+import type { SocialPublicationStore, SocialScheduledWindow } from "./store";
 
 class MemoryStore implements SocialPublicationStore {
   private readonly jobs = new Map<string, SocialPublicationJob>();
@@ -32,8 +32,11 @@ class MemoryStore implements SocialPublicationStore {
 
   async save(): Promise<void> {}
 
-  async list(limit: number): Promise<SocialPublicationJob[]> {
-    return [...this.jobs.values()].slice(0, limit);
+  async list(limit: number, window?: SocialScheduledWindow): Promise<SocialPublicationJob[]> {
+    const jobs = [...this.jobs.values()];
+    if (!window) return jobs.slice(0, limit);
+    return jobs.filter(job => job.scheduledAt >= window.start && job.scheduledAt < window.end)
+      .sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt)).slice(0, limit);
   }
 }
 
@@ -121,5 +124,52 @@ test("publishing status is admin-only and never returns server credentials", asy
     await new Promise<void>((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve());
     });
+  }
+});
+
+test("today and media preview are admin-only, use Baghdad midnight and withhold private media", async () => {
+  const app = express();
+  const service = new SocialPublishingService({
+    store: new MemoryStore(), adapters: createSocialAdapters({}), env: {},
+    now: () => Date.parse("2026-12-31T22:00:00Z"),
+  });
+  registerSocialPublishingRoutes(app, { service, resolveAdmin: request => request.headers["x-test-admin"] === "verified" ? "admin" : null });
+  const before = "2026-12-31T20:59:59.999Z";
+  const midnight = "2026-12-31T21:00:00.000Z";
+  const lastMinute = "2027-01-01T20:59:59.999Z";
+  const after = "2027-01-01T21:00:00.000Z";
+  const video = "https://www.cinamachat.com/uploads/social/test-clip.mp4";
+  const base = { platforms: ["telegram"] as const, caption: "فیلمی ئەمڕۆ\n#سینەماچات #فیلم" };
+  const enqueue = (scheduledAt: string, media?: SocialPublicationJob["media"]) =>
+    service.enqueue({ ...base, platforms: [...base.platforms], scheduledAt, media }, "synthetic-admin");
+  const late = await enqueue(lastMinute, { type: "image", url: "https://www.cinamachat.com/assets/posters/post.jpg?token=secret-media-url", storagePath: "private/media.jpg", rightsConfirmed: true });
+  const first = await enqueue(midnight, { type: "video", url: video, rightsConfirmed: true });
+  await enqueue(before);
+  await enqueue(after);
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolve, reject) => { server.once("listening", resolve); server.once("error", reject); });
+  const root = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/admin/social-publishing`;
+  const admin = { headers: { "X-Test-Admin": "verified" } };
+  const preview = (id: string) => `${root}/queue/${id}/preview`;
+  try {
+    assert.equal((await fetch(`${root}/today`)).status, 401);
+    assert.equal((await fetch(preview(first.job.id))).status, 401);
+    const today = await fetch(`${root}/today`, admin);
+    assert.equal(today.status, 200);
+    assert.equal(today.headers.get("cache-control"), "no-store");
+    const body = await today.text();
+    const payload = JSON.parse(body);
+    assert.equal(payload.dayKey, "2027-01-01");
+    assert.equal(payload.truncated, false);
+    assert.deepEqual(payload.jobs.map((job: SocialPublicationJob) => job.id), [first.job.id, late.job.id]);
+    assert.equal(payload.jobs[0].caption, base.caption);
+    assert.equal(payload.jobs[0].approvalStatus, "pending");
+    assert.deepEqual(payload.jobs[0].platformStatus, { telegram: { status: "queued" } });
+    assert.doesNotMatch(body, /secret-media-url|private\/media|synthetic-admin|test-clip/);
+    assert.deepEqual(await (await fetch(preview(first.job.id), admin)).json(), { success: true, mediaUrl: video });
+    assert.deepEqual(await (await fetch(preview(late.job.id), admin)).json(), { success: true, mediaUrl: null });
+    assert.equal((await fetch(preview("invalid-id"), admin)).status, 404);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   }
 });
