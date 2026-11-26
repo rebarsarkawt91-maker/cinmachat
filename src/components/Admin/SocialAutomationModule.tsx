@@ -92,6 +92,17 @@ function postMediaLabel(job: SocialJob) {
 }
 const DEFAULT_SLOT_TIMES = ["18:00", "13:00", "20:00", "10:00", "16:00", "21:00", "08:00", "22:00"];
 const WESTERN_DIGITS = "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹";
+function timePeriodLabel(time: string) {
+  const match = /^(?:[01]\d|2[0-3]):[0-5]\d$/.exec(time);
+  if (!match) return "AM/PM";
+  const hour = Number(time.slice(0, 2));
+  if (hour === 0) return "شەو · 12 AM";
+  if (hour < 6) return `بەرەبەیانی · ${hour} AM`;
+  if (hour < 12) return `بەیانی · ${hour} AM`;
+  if (hour === 12) return "نیوەڕۆ · 12 PM";
+  if (hour < 18) return `دوای نیوەڕۆ · ${hour - 12} PM`;
+  return `ئێوارە/شەو · ${hour - 12} PM`;
+}
 const messageFrom = async (response: Response, fallback: string) => {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload?.error || fallback);
@@ -106,7 +117,7 @@ function WeeklyTimeFields({ times, onChange }: { times: string[]; onChange: (tim
     <div className="social23__weekly-clock">
       {([["ڕۆژ", day], ["شەو", night]] as const).map(([label, group]) => <div className="social23__clock-cell" key={label}>
         <strong>{label}</strong>
-        <ul dir="ltr">{group.map((time, index) => <li key={index}>{time}</li>)}</ul>
+        <ul dir="ltr">{group.map((time, index) => <li key={index}><bdi>{time}</bdi><small dir="rtl">{timePeriodLabel(time)}</small></li>)}</ul>
         {group.length === 0 && <small>کات نییە</small>}
       </div>)}
       <div className="social23__clock-cell social23__clock-edit">
@@ -118,6 +129,7 @@ function WeeklyTimeFields({ times, onChange }: { times: string[]; onChange: (tim
           maxLength={5}
           placeholder="18:00"
           aria-label={`کاتی پۆستی ${index + 1} بە ٢٤ کاتژمێر`}
+           title={timePeriodLabel(time)}
           aria-invalid={!validWeeklyTimes([time]) || (times.indexOf(time) !== times.lastIndexOf(time))}
           value={time}
           onChange={event => {

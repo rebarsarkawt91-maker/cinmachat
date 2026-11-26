@@ -116,6 +116,8 @@
 .social23__week-slot-actions .social23__button { min-height: 32px; }
 .social23__weekly-times { border: 0; margin: 0; min-width: 0; padding: 0; }
 .social23__weekly-times legend { color: #c6d7eb; font-size: 11px; margin-bottom: 6px; padding: 0; }
+.social23__clock-cell li { align-items: baseline; display: flex; gap: 7px; }
+.social23__clock-cell li small { color: #918b83; direction: rtl; font-size: 9px; }
 .social23__weekly-clock { display: grid; gap: 6px; grid-template-columns: repeat(2, minmax(0, .9fr)) minmax(0, 1.25fr); }
 .social23__clock-cell { align-content: start; background: #111923; border: 1px solid #344961; border-radius: 8px; display: grid; gap: 5px; min-width: 0; padding: 6px; }
 .social23__clock-cell strong, .social23__clock-cell small { font-size: 10px; overflow-wrap: anywhere; }
