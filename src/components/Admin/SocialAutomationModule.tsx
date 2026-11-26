@@ -90,7 +90,9 @@ function upcomingJobNotice(job: SocialJob | undefined) {
   if (!job) return null;
   const date = new Date(job.scheduledAt);
   if (!Number.isFinite(date.getTime())) return null;
-  const weekday = new Intl.DateTimeFormat("ckb-IQ", { timeZone: "Asia/Baghdad", weekday: "long" }).format(date);
+  const weekdayKey = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Baghdad", weekday: "long" }).format(date).toLowerCase();
+  const weekday = WEEKDAYS.find(([key]) => key === weekdayKey)?.[1];
+  if (!weekday) return null;
   const time = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Baghdad", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(date);
   const approval = job.approvalStatus === "approved" ? "پەسەندکراوە و بۆ کاتی دیاریکراو ئامادەیە" : "ئامادەیە بۆ پەسەندکردنی دەستی";
   return `پۆستی داهاتوو ${time} ـی ${weekday}: ${approval}`;
@@ -313,6 +315,7 @@ export function SocialAutomationModule({ request, catalogMovies }: Props) {
   };
 
   const queued = useMemo(() => jobs.filter(job => ["queued", "retrying", "processing"].includes(job.status)).sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt)), [jobs]);
+  const nextJobNotice = upcomingJobNotice(upcoming?.jobs.find(job => job.status === "queued"));
   const history = useMemo(() => jobs.filter(job => !["queued", "retrying", "processing"].includes(job.status)).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 12), [jobs]);
   const dailyTotal = useMemo(() => Object.values(settings.dailyCounts).reduce((sum, value) => sum + value, 0), [settings.dailyCounts]);
   const weeklyTimesValid = Object.values(settings.weeklyCalendar.days).every(day => day.slots.every(slot => validWeeklyTimes(slot.times)));
@@ -555,7 +558,35 @@ export function SocialAutomationModule({ request, catalogMovies }: Props) {
 
       <section className="social23__panel social23__queue">
         <div className="social23__section-heading social23__queue-heading"><div><span className="social23__section-icon"><ListVideo size={18} /></span><div><h2>ڕیزی پۆستەکان</h2><p>پۆست تەنها خراوەتە ڕیز؛ هیچ publish/worker ـێک لێرەوە دەست پێناکات.</p></div></div><div className="social23__queue-actions"><button className="social23__button social23__button--outline" type="button" onClick={() => openNew("news")}><Plus size={16} />هەواڵ</button><button className="social23__button social23__button--outline" type="button" onClick={() => openNew("trailer")}><Plus size={16} />ترەیلەر</button><button className="social23__button social23__button--gold" type="button" onClick={() => openNew("promotion")}><Plus size={16} />ناسـاندنی کاڵۆگ</button></div></div>
-          {loading ? <div className="social23__empty"><Loader2 className="social23__spin" size={20} />بارکردنی ڕیز…</div> : queued.length ? <div className="social23__queue-list">{queued.map(job => <article className="social23__queue-item" key={job.id}><time>{localBaghdadTime(job.scheduledAt).slice(11) || "--:--"}</time><div className="social23__queue-main"><span className={`social23__kind social23__kind--${job.contentKind || "news"}`}>{KIND_LABEL[job.contentKind || "news"]}</span><h3>{job.title || "بێ ناونیشان"}</h3><p>{job.caption}</p><small>{job.platforms.join(" · ")} · {job.status} · {job.approvalStatus === "approved" ? "پەسەندکراو" : "چاوەڕوانی پەسەندکردنی دەستی"} · Asia/Baghdad</small></div><span className="social23__preview-tag">{readiness?.mode || "DRY_RUN"}</span><div className="social23__item-actions">{job.approvalStatus !== "approved" && <button className="social23__approve-button" type="button" aria-label={`پەسەندکردنی ${job.title || "پۆست"}`} onClick={() => void approveJob(job)} disabled={busyId === job.id}><Check size={14} />پەسەندکردن</button>}<button type="button" aria-label={`دەستکاری ${job.title || "پۆست"}`} onClick={() => openEdit(job)}><Pencil size={16} /></button><button type="button" aria-label={`هەڵوەشاندنەوەی ${job.title || "پۆست"}`} onClick={() => void cancelJob(job)} disabled={busyId === job.id}><Trash2 size={16} /></button></div></article>)}</div> : upcomingJobNotice(upcoming?.jobs[0]) ? <div className="social23__queue-next" role="status"><strong>{upcomingJobNotice(upcoming?.jobs[0])}</strong><small>کاتی بەغدا · {readiness?.mode || "DRY_RUN"} · پەخشکردنی ڕاستەقینە ناچالاکە.</small></div> : <div className="social23__empty">هیچ پۆستێک لە ڕیزدا نییە.</div>}
+        {loading && <div className="social23__empty"><Loader2 className="social23__spin" size={20} />بارکردنی ڕیز…</div>}
+        {!loading && queued.length > 0 && (
+          <div className="social23__queue-list">
+            {queued.map(job => (
+              <article className="social23__queue-item" key={job.id}>
+                <time>{localBaghdadTime(job.scheduledAt).slice(11) || "--:--"}</time>
+                <div className="social23__queue-main">
+                  <span className={`social23__kind social23__kind--${job.contentKind || "news"}`}>{KIND_LABEL[job.contentKind || "news"]}</span>
+                  <h3>{job.title || "بێ ناونیشان"}</h3>
+                  <p>{job.caption}</p>
+                  <small>{job.platforms.join(" · ")} · {job.status} · {job.approvalStatus === "approved" ? "پەسەندکراو" : "چاوەڕوانی پەسەندکردنی دەستی"} · Asia/Baghdad</small>
+                </div>
+                <span className="social23__preview-tag">{readiness?.mode || "DRY_RUN"}</span>
+                <div className="social23__item-actions">
+                  {job.approvalStatus !== "approved" && <button className="social23__approve-button" type="button" aria-label={`پەسەندکردنی ${job.title || "پۆست"}`} onClick={() => void approveJob(job)} disabled={busyId === job.id}><Check size={14} />پەسەندکردن</button>}
+                  <button type="button" aria-label={`دەستکاری ${job.title || "پۆست"}`} onClick={() => openEdit(job)}><Pencil size={16} /></button>
+                  <button type="button" aria-label={`هەڵوەشاندنەوەی ${job.title || "پۆست"}`} onClick={() => void cancelJob(job)} disabled={busyId === job.id}><Trash2 size={16} /></button>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+        {!loading && nextJobNotice && (
+          <div className="social23__queue-next" role="status">
+            <strong>{nextJobNotice}</strong>
+            <small>کاتی بەغدا · {readiness?.mode || "DRY_RUN"} · پەخشکردنی ڕاستەقینە ناچالاکە.</small>
+          </div>
+        )}
+        {!loading && !queued.length && !nextJobNotice && <div className="social23__empty">هیچ پۆستێک لە ڕیزدا نییە.</div>}
       </section>
 
       <section className="social23__grid social23__bottom-row"><article className="social23__panel social23__history"><div className="social23__section-heading"><div><span className="social23__section-icon"><Clock3 size={18} /></span><div><h2>مێژوو و دۆخی گەیاندن</h2><p>تەنها ئەو دۆخانەی backend تۆماری کردوونی.</p></div></div></div>{history.length ? <div className="social23__history-list">{history.map(job => <div key={job.id}><strong>{job.title || job.id.slice(0, 10)}</strong><span>{job.status} · {new Date(job.createdAt).toLocaleString("ckb-IQ")}</span>{Object.entries(job.platformStatus || {}).map(([platform, value]) => <small key={platform}>{platform}: {value?.status || "-"}{value?.errorCode ? ` · ${value.errorCode}` : ""}</small>)}</div>)}</div> : <div className="social23__empty social23__empty--small">مێژووی گەیاندن هێشتا بەتاڵە.</div>}</article><article className="social23__panel social23__history"><div className="social23__section-heading"><div><span className="social23__section-icon"><AlertTriangle size={18} /></span><div><h2>سەرچاوە و مافەکان</h2><p>پێویستە پێش ناردنی ناوەڕۆک دڵنیابکرێتەوە.</p></div></div></div><div className="social23__empty social23__empty--small">هەواڵی خۆکار ناچالاکە تا provider ـێکی پشتڕاستکراو دابنرێت. ڤیدیۆ و وێنە دەبێت بە مافی بڵاوکردنەوە بن.</div></article></section>
