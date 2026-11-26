@@ -115,6 +115,9 @@
 .social23__week-slot-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; }
 .social23__week-slot-actions .social23__button { min-height: 32px; }
 .social23__weekly-times { border: 0; margin: 0; min-width: 0; padding: 0; }
+.social23__queue-next { background: linear-gradient(110deg, rgba(237,28,46,.13), rgba(217,164,65,.11)); border: 1px solid rgba(217,164,65,.35); border-radius: 12px; color: #f4d58a; display: grid; gap: 6px; margin-top: 14px; padding: 13px 15px; }
+.social23__queue-next strong { font-size: 12px; }
+.social23__queue-next small { color: #b8a98d; font-size: 10px; }
 .social23__weekly-times legend { color: #c6d7eb; font-size: 11px; margin-bottom: 6px; padding: 0; }
 .social23__clock-cell li { align-items: baseline; display: flex; gap: 7px; }
 .social23__clock-cell li small { color: #918b83; direction: rtl; font-size: 9px; }
