@@ -45,7 +45,7 @@ test("database export serves only a current signed Owner session", async t => {
     await t.test("signed Owner receives the exact attachment with no-store headers", async () => {
       const response = await get(owner);
       assert.equal(response.status, 200);
-      assert.match(response.headers.get("content-disposition") ?? "", /attachment;.*cinemachat-db-backup\.json/);
+      assert.match(response.headers.get("content-disposition") ?? "", /attachment;.*cinamachat-db-backup\.json/);
       assert.match(response.headers.get("content-type") ?? "", /^application\/json/);
       assert.equal(response.headers.get("cache-control"), "private, no-store");
       assert.equal(response.headers.get("cross-origin-resource-policy"), "same-origin");

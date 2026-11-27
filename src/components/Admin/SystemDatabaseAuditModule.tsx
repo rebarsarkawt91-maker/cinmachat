@@ -135,7 +135,7 @@ export const SystemDatabaseAuditModule: React.FC<SystemDatabaseAuditModuleProps>
       const downloadUrl = URL.createObjectURL(await response.blob());
       const link = document.createElement("a");
       link.href = downloadUrl;
-      link.download = "cinemachat-db-backup.json";
+      link.download = "cinamachat-db-backup.json";
       document.body.appendChild(link);
       try {
         link.click();
@@ -164,7 +164,7 @@ export const SystemDatabaseAuditModule: React.FC<SystemDatabaseAuditModuleProps>
         const backupObj = JSON.parse(rawText);
 
         if (!backupObj.admins || !Array.isArray(backupObj.admins)) {
-          setRestoreMessage({ type: "error", text: "ئەم فایلە فۆرماتی فەرمی باکئەپی CinemaChat نییە (کەمبوونی خشتەی سەرەکی)." });
+          setRestoreMessage({ type: "error", text: "ئەم فایلە فۆرماتی فەرمی باکئەپی CinamaChat نییە (کەمبوونی خشتەی سەرەکی)." });
           return;
         }
 
@@ -540,7 +540,7 @@ export const SystemDatabaseAuditModule: React.FC<SystemDatabaseAuditModuleProps>
                   <p className="text-xs text-gray-400 kurdish-text max-w-sm leading-relaxed mb-4">
                     فایلی پشتیوانی (JSON) پێشتر داگیراو بۆ لێرە ڕابکێشە یان کلیک لێرە بکە بۆ هەڵبژاردن لە نێو کۆمپیوتەرەکەتدا بۆ گەڕاندنەوەی گشتی.
                   </p>
-                  <span className="text-[10px] text-gray-500 font-mono">SUPPORTS: cinemachat-db-backup.json</span>
+                  <span className="text-[10px] text-gray-500 font-mono">SUPPORTS: CinamaChat JSON backups</span>
                 </div>
               </div>
 

@@ -41,7 +41,7 @@ export function createDatabaseBackupHandler(access: BackupAccess): RequestHandle
       return;
     }
 
-    response.attachment("cinemachat-db-backup.json");
+    response.attachment("cinamachat-db-backup.json");
     response.type("application/json");
     response.end(payload);
   };

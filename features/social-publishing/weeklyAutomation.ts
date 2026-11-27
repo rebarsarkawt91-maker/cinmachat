@@ -6,7 +6,7 @@ import type { SocialAutomationSettings, SocialWeekday, WeeklyContentSlot } from 
 import { SOCIAL_WEEKDAYS } from "./settings";
 import type { SocialPlatform, SocialPublicationInput, SocialPublicationJob } from "./types";
 import { SocialPublishingService } from "./service";
-import { supportsWeeklyFormat } from "./weeklyCalendarPreview";
+import { hasCinamaChatName, supportsWeeklyFormat } from "./weeklyCalendarPreview";
 
 export { supportsWeeklyFormat } from "./weeklyCalendarPreview";
 
@@ -81,7 +81,7 @@ function verifiedForCategory(slot: WeeklyContentSlot, draft: SocialPublicationIn
       return article.protocol === "https:" && OFFICIAL_NEWS_HOSTS.some(host => article.hostname === host || article.hostname.endsWith(`.${host}`));
     } catch { return false; }
   }
-  if (/cinemachat/i.test(slot.category)) return draft.provenance.source === "cinemachat-catalog" && Boolean(draft.provenance.catalogTitleId);
+  if (hasCinamaChatName(slot.category)) return draft.provenance.source === "cinemachat-catalog" && Boolean(draft.provenance.catalogTitleId);
   return draft.provenance.source === "verified-editorial";
 }
 

@@ -178,12 +178,12 @@ export function SocialConnectionsPanel({ request, platforms, onQueueChange }: So
               await load();
             }, "پەیوەندییەکە پشتڕاست کرایەوە.")}><RefreshCw size={15} />پشکنینەوە</button>}
             {account && <button type="button" className="social23__button social23__button--outline social23__disconnect" disabled={busy} onClick={() => {
-              if (!window.confirm(`پەیوەندیی ${name} لە CinemaChat لاببرێت؟`)) return;
+              if (!window.confirm(`پەیوەندیی ${name} لە CinamaChat لاببرێت؟`)) return;
               void perform(async () => {
                 await readResponse(await requestRef.current(`${CONNECTIONS_URL}/${id}`, { method: "DELETE" }));
                 if (active === id) openPanel(null);
                 await load();
-              }, "پەیوەندییەکە لە CinemaChat لابرا.");
+              }, "پەیوەندییەکە لە CinamaChat لابرا.");
             }}><Unlink2 size={15} />لابردنی پەیوەندی</button>}
           </div>}
         </article>;

@@ -3742,7 +3742,7 @@ const ManagedUsersModule = ({ currentUser }: { currentUser: any }) => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.setAttribute("href", url);
-    link.setAttribute("download", `CinemaChat_Users_Export.csv`);
+    link.setAttribute("download", `CinamaChat_Users_Export.csv`);
     link.style.visibility = "hidden";
     document.body.appendChild(link);
     link.click();
@@ -6426,7 +6426,7 @@ const DramaRoomCard = ({ room, onOpen, onEdit, onDelete, showActions, compact, l
             {Number(rating) > 0 ? (
               <span
                 className="flex items-center gap-0.5 px-1.5 py-0.5 bg-emerald-500/15 border border-emerald-500/30 rounded-full text-emerald-400 font-black text-[9px]"
-                title={`CinemaChat rating (${Number(ratingCount) || 0} ratings)`}
+                title={`CinamaChat rating (${Number(ratingCount) || 0} ratings)`}
               >
                 <Star className="w-2.5 h-2.5 fill-current" aria-hidden="true" />
                 {Number(rating).toFixed(1)}
@@ -6506,7 +6506,7 @@ const CinemaChatCard = ({ onOpen }: any) => (
       <div className="p-4">
         <h3 className="text-sm font-black text-white kurdish-text leading-snug flex items-center gap-2">
           <Film className="w-3.5 h-3.5 text-brand-primary" />
-          CinemaChat
+          CinamaChat
         </h3>
         <p className="mt-1.5 text-[11px] text-gray-400 kurdish-text leading-relaxed line-clamp-2">
           ژووری سینەمای فەرمی — پەخشی هاوبەشی دوو کەس بە ڤیدیۆ چات و کۆنترۆڵی یەکگرتوو
@@ -6813,7 +6813,7 @@ const SimpleCinemaChatCard = ({ onOpen }: any) => (
       <div className="mt-5 flex-1">
         <h3 className="text-lg font-black text-white kurdish-text leading-snug flex items-center gap-2">
           <Film className="w-4 h-4 text-brand-primary" />
-          CinemaChat
+          CinamaChat
         </h3>
         <p className="mt-2 text-[12px] text-gray-400 kurdish-text leading-relaxed">
           ژووری فەرمی بۆ بینینی فیلم پێکەوە، چاتی تایبەت، و پەخشکردنی هاوکات.
@@ -10565,8 +10565,8 @@ const handleWebkitEndFullscreen = () => {
     const metadata = movie ? buildCatalogSeo(movie, parentRoom ? {
       room: { id: parentRoom.id, title: parentRoom.title }, episodeNumber: parentRoom.dramas.indexOf(movie.id) + 1,
     } : {}) : room ? buildDramaRoomSeo(room, (room.dramas || []).map((id: string) => movies.find(entry => entry.id === id)).filter(Boolean)) : null;
-    const title = metadata?.title || "سینەما چات | فیلم و دراما بە کوردی — CinemaChat";
-    const description = metadata?.description || "فیلم و دراماکان لە سینەما چات؛ ناونیشان، وەسف و ئەڵقەکان بدۆزەرەوە و بەردەستبوونی ژێرنووسی کوردی ببینە. CinemaChat movies and drama series with Kurdish subtitles where available.";
+    const title = metadata?.title || "سینەما چات | فیلم و دراما بە کوردی — CinamaChat";
+    const description = metadata?.description || "فیلم و دراماکان لە سینەما چات؛ ناونیشان، وەسف و ئەڵقەکان بدۆزەرەوە و بەردەستبوونی ژێرنووسی کوردی ببینە. CinamaChat movies and drama series with Kurdish subtitles where available.";
     const image = metadata?.image || `${SITE_ORIGIN}/pwa/icon-512.png`;
     const movieUrl = metadata?.canonical || `${SITE_ORIGIN}/`;
 
@@ -14498,7 +14498,7 @@ const handleWebkitEndFullscreen = () => {
           {/* Reason explanation */}
           <p className="text-gray-400 kurdish-text text-sm leading-relaxed">
             ئەم ئامێرە/ئایپیە بەهۆی چەندین هەوڵی هەڵەی ناوی بەکارهێنەر و وشەی
-            تێپەڕ ڕێگری لێکراوە لە CinemaChat. ئەم ڕێوشوێنە ئەمنییەتە جێبەجێ
+            تێپەڕ ڕێگری لێکراوە لە CinamaChat. ئەم ڕێوشوێنە ئەمنییەتە جێبەجێ
             کراوە بۆ پاراستن لە هێرشی هاکەران و بۆتە ئۆتۆماتیکییەکان.
           </p>
           {/* Unblock request form: name + mobile, submitted to the server */}
@@ -14609,7 +14609,7 @@ const handleWebkitEndFullscreen = () => {
           </div>
         </div>
         <h1 className="text-2xl md:text-4xl font-black text-white tracking-tight mt-8">
-          Welcome to CinemaChat
+          Welcome to CinamaChat
         </h1>
         <p className="text-lg md:text-2xl font-bold text-brand-primary kurdish-text mt-2">
           بەخێربێن بۆ سینەما چات
@@ -15194,7 +15194,7 @@ const handleWebkitEndFullscreen = () => {
                   </div>
                   {/* Welcome text */}
                   <h1 className="text-2xl md:text-4xl font-black text-white tracking-tight mt-8">
-                    Welcome to CinemaChat
+                    Welcome to CinamaChat
                   </h1>
                   <p className="text-lg md:text-2xl font-bold text-brand-primary kurdish-text mt-2">
                     بەخێربێن بۆ سینەما چات
@@ -16117,7 +16117,7 @@ const handleWebkitEndFullscreen = () => {
                               onVideoElementChange={setPlayerVideoElement}
                               hideNativeControls={isIOSWebKitDevice()}
                               disableExternalPresentation={sceneBlurProtectionEnabled}
-                              title={`${selectedMovie?.title || "CinemaChat"} — YouTube Player`}
+                              title={`${selectedMovie?.title || "CinamaChat"} — YouTube Player`}
                               onModeChange={(mode) => {
                                 setYoutubePlayerMode(mode);
                                 if (mode !== "error") {
@@ -16172,7 +16172,7 @@ const handleWebkitEndFullscreen = () => {
                             <ImmersiveShieldedPlayer
                               url={activeServerUrl}
                               iframeId="streaming-player"
-                              title={`${selectedMovie?.title || "CinemaChat"} — Cinematic Player`}
+                              title={`${selectedMovie?.title || "CinamaChat"} — Cinematic Player`}
                               scale={immersiveScale}
                               onPlaybackReady={handleProviderPlaybackReady}
                               disableExternalPresentation={sceneBlurProtectionEnabled}
@@ -16405,7 +16405,7 @@ const handleWebkitEndFullscreen = () => {
                         <div className="flex items-center gap-2 min-w-0 pointer-events-auto">
                           <div className="flex flex-col min-w-0">
                             <span className="cinema-player-header-kicker text-[8px] md:text-sm font-black text-brand-primary kurdish-text tracking-wider drop-shadow-md truncate">
-                              سینەما چات • CinemaChat
+                              سینەما چات • CinamaChat
                             </span>
                             <h2 className="cinema-player-header-title text-[10px] md:text-lg font-bold text-white kurdish-text drop-shadow-lg leading-snug truncate max-w-[42vw] sm:max-w-[45vw] lg:max-w-xl">
                               {selectedMovie.title}
@@ -16416,7 +16416,7 @@ const handleWebkitEndFullscreen = () => {
                         <div
                           data-testid="player-animated-branding"
                           className="cinema-player-brand shrink-0"
-                          aria-label="CinemaChat branding"
+                          aria-label="CinamaChat branding"
                         >
                           <img
                             src="/branding/cinamachat-logo.jpg"
@@ -16458,7 +16458,7 @@ const handleWebkitEndFullscreen = () => {
                       {/* Bottom-left CinemaChat branding (floating, non-blocking) */}
                       <div data-testid="player-branding" className={`absolute bottom-0 left-0 h-16 z-50 flex items-center gap-2 px-6 md:px-10 pointer-events-none select-none font-sans transition-all duration-300 ease-out ${playerControlsVisible ? "translate-y-0 opacity-100" : "translate-y-6 opacity-0"}`}>
                         <span className="text-xs font-black text-brand-primary uppercase tracking-[0.3em] font-mono drop-shadow-sm">
-                          CINEMACHAT
+                          CINAMACHAT
                         </span>
                         <span className="text-[10px] text-zinc-500 font-bold kurdish-text drop-shadow">
                           یاریپێکەری فەرمی
@@ -16803,7 +16803,7 @@ const handleWebkitEndFullscreen = () => {
                                   </div>
 
                                   <div className="flex items-center justify-between">
-                                    <span className="text-[10px] font-bold text-zinc-300">ژێرنووسی CinemaChat</span>
+                                    <span className="text-[10px] font-bold text-zinc-300">ژێرنووسی CinamaChat</span>
                                     <button
                                       type="button"
                                       data-testid="cinemachat-subtitle-toggle"
@@ -19277,7 +19277,7 @@ const trailerId = movie.trailerUrl
             <p className="text-[11px] text-gray-600 leading-relaxed max-w-xs">
               All movies and content shown on this website are streamed from
               external sources (Telegram, Google Drive) and remain the property
-              of their respective owners. CinemaChat does not host, store, or
+              of their respective owners. CinamaChat does not host, store, or
               distribute any video files on its own servers. If you are a
               copyright holder and believe that any video or content posted here
               infringes on your rights — or was uploaded by mistake — please

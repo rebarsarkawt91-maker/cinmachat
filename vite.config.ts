@@ -20,8 +20,8 @@ export default defineConfig(({mode}) => {
         injectRegister: null,
         manifest: {
           id: '/',
-          name: 'CinemaChat — سینەما چات',
-          short_name: 'CinemaChat',
+          name: 'CinamaChat — سینەما چات',
+          short_name: 'CinamaChat',
           description: 'پلاتفۆرمی کوردی بۆ فیلم، چات و سەیرکردنی هاوبەش',
           lang: 'ckb',
           dir: 'rtl',

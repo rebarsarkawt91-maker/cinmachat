@@ -4,6 +4,11 @@ import type { SocialPlatform, SocialPublicationInput } from "./types";
 const WEEKDAYS: SocialWeekday[] = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 const CLOCK_TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 
+// Saved weekly categories can still use the previous spelling.
+export function hasCinamaChatName(category: string): boolean {
+  return /cin[ae]machat/i.test(category);
+}
+
 export function localBaghdadTime(iso: string): string {
   const date = new Date(iso);
   if (!Number.isFinite(date.getTime())) return "";

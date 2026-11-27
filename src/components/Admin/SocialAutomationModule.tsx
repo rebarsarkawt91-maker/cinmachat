@@ -7,7 +7,7 @@ import type { Movie } from "../../types";
 import type { SocialPublicationJob } from "../../../features/social-publishing/types";
 import {
   baghdadIso, isWeeklySlotJob, localBaghdadTime, plannedSlotTimes, splitDayAndNight,
-  supportsWeeklyFormat, validWeeklyTimes, type PlannedSlot,
+  hasCinamaChatName, supportsWeeklyFormat, validWeeklyTimes, type PlannedSlot,
 } from "../../../features/social-publishing/weeklyCalendarPreview";
 import { SOCIAL_CONNECTION_CHANNELS as CHANNELS, SocialConnectionsPanel } from "./SocialConnectionsPanel";
 import "./SocialAutomationModule.css";
@@ -72,7 +72,7 @@ const WEEKDAYS = [
   ["friday", "هەینی"], ["saturday", "شەممە"], ["sunday", "یەکشەممە"],
 ] as const;
 const FORMAT_LABEL: Record<"reels" | "feed" | "stories" | "carousel", string> = { reels: "Reels", feed: "پۆستی Feed", stories: "Stories", carousel: "Carousel" };
-const KIND_LABEL: Record<PostKind, string> = { news: "هەواڵی فیلم و زنجیرە", trailer: "ترەیلەری ڕێگەپێدراو", promotion: "ناسـاندنی فیلمی CinemaChat" };
+const KIND_LABEL: Record<PostKind, string> = { news: "هەواڵی فیلم و زنجیرە", trailer: "ترەیلەری ڕێگەپێدراو", promotion: "ناسـاندنی فیلمی CinamaChat" };
 const API_ROOT = "/api/admin/social-publishing";
 const SETTINGS_URL = "/api/admin/social-automation/settings";
 const SITE_HOME = "https://www.cinamachat.com/";
@@ -82,7 +82,7 @@ const JOB_LABEL: Record<string, string> = {
   failed: "هەڵەی هەبووە", cancelled: "هەڵوەشاوەتەوە",
 };
 const SOURCE_LABEL: Record<NonNullable<SocialJob["provenance"]>["source"], string> = {
-  "cinemachat-catalog": "کاڵۆگی CinemaChat", "official-news": "سەرچاوەی فەرمیی هەواڵ",
+  "cinemachat-catalog": "کاڵۆگی CinamaChat", "official-news": "سەرچاوەی فەرمیی هەواڵ",
   "licensed-trailer": "ترەیلەری مۆڵەتپێدراو", "verified-editorial": "ناوەڕۆکی پشتڕاستکراو",
 };
 const scheduledLabel = (iso: string) => localBaghdadTime(iso).replace("T", " · ");
@@ -207,7 +207,7 @@ function PreparedPostPreview({ job, request, onClose }: { job: SocialJob; reques
         <p>{job.approvalStatus === "approved" ? "پەسەند کراوە" : "چاوەڕوانی پەسەندکردنی دەستییە"}{job.automation && <> · {FORMAT_LABEL[job.automation.format]}</>}{job.provenance && <> · {SOURCE_LABEL[job.provenance.source]}</>}</p>
         {job.provenance?.kurdishSubtitleStatus === "available" && <p>ژێرنووسی کوردی بەردەستە.</p>}
         {job.provenance?.kurdishSubtitleStatus === "unavailable" && <p>ژێرنووسی کوردی بەردەست نییە.</p>}
-        <a className="social23__button social23__button--gold" href={SITE_HOME} target="_blank" rel="noopener noreferrer"><ExternalLink size={15} /> سەردانی CinemaChat بکە</a>
+        <a className="social23__button social23__button--gold" href={SITE_HOME} target="_blank" rel="noopener noreferrer"><ExternalLink size={15} /> سەردانی CinamaChat بکە</a>
       </div>
     </div>
   </article>;
@@ -366,7 +366,7 @@ export function SocialAutomationModule({ request, catalogMovies }: Props) {
       const selectedPlatforms = editor.platforms.filter(platform => settings.platforms[platform] && (!editor.planned || supportsWeeklyFormat(platform, editor.planned.format, false)));
       if (!selectedPlatforms.length) throw new Error("لانیکەم یەک پلاتفۆرمی چالاک دیاری بکە.");
       const selectedMovie = editor.kind === "promotion" ? catalogMovies.find(movie => movie.id === editor.movieId) : undefined;
-      if (editor.kind === "promotion" && !selectedMovie) throw new Error("فیلمێک لە کاڵۆگی ڕاستەقینەی CinemaChat هەڵبژێرە.");
+      if (editor.kind === "promotion" && !selectedMovie) throw new Error("فیلمێک لە کاڵۆگی ڕاستەقینەی CinamaChat هەڵبژێرە.");
       if (editor.mediaType !== "text" && (!editor.mediaUrl.trim() || !editor.rightsConfirmed)) throw new Error("بەستەری HTTPS و پشتڕاستکردنەوەی مافی بڵاوکردنەوە پێویستە.");
       const scheduledAt = baghdadIso(editor.localTime);
       if (editor.planned && Date.parse(scheduledAt) <= Date.now()) throw new Error("کاتی ئامادەکردن دەبێت لە داهاتوودا بێت.");
@@ -412,7 +412,7 @@ export function SocialAutomationModule({ request, catalogMovies }: Props) {
   return (
     <main className="social23" dir="rtl" aria-labelledby="social23-title">
       <header className="social23__header">
-        <div><p className="social23__eyebrow">CINEMACHAT · ADMIN 23</p><h1 id="social23-title">Social Publishing &amp; Automation</h1><p className="social23__intro">سۆشیال ئۆتۆماتیک — ڕێکخستن و بەڕێوەبردنی ڕیزی ناوەڕۆک؛ پەخشکردنی ڕاستەقینە ناچالاکە.</p></div>
+        <div><p className="social23__eyebrow">CINAMACHAT · ADMIN 23</p><h1 id="social23-title">Social Publishing &amp; Automation</h1><p className="social23__intro">سۆشیال ئۆتۆماتیک — ڕێکخستن و بەڕێوەبردنی ڕیزی ناوەڕۆک؛ پەخشکردنی ڕاستەقینە ناچالاکە.</p></div>
         <div className="social23__mode" role="status"><ShieldCheck size={18} /><span><strong>{readiness?.mode || "DRY_RUN"}</strong><small>پەخشکردنی ڕاستەقینە ناچالاکە</small></span></div>
       </header>
 
@@ -428,7 +428,7 @@ export function SocialAutomationModule({ request, catalogMovies }: Props) {
       <section className="social23__panel social23__daily-status" aria-live="polite">
         <div className="social23__section-heading"><div><span className="social23__section-icon"><CalendarClock size={18} /></span><div><h2>ئەنجامی ئۆتۆماتیکی ئەم ڕۆژە</h2><p>{dailyRun?.dayKey || "هێشتا هیچ خشتەیەک نەکراوە"} · Asia/Baghdad · {readiness?.mode || "DRY_RUN"}</p></div></div><span className={`social23__preview-tag social23__run-status--${dailyRun?.status || "idle"}`}>{dailyRun?.status || "چاوەڕوان"}</span></div>
         <div className="social23__daily-counts">{(Object.keys(KIND_LABEL) as PostKind[]).map(kind => <span key={kind}>{KIND_LABEL[kind]}: {dailyRun?.created[kind] || 0}/{settings.dailyCounts[kind]} · نەکرا: {dailyRun?.skipped[kind] || 0}</span>)}</div>
-        <div className="social23__provider-note"><span>هەواڵی فەرمی: {providersReady.officialNews ? "بەردەست" : "provider نییە"}</span><span>تریلەری مۆڵەتپێدراو: {providersReady.licensedTrailers ? "بەردەست" : "پێڕستی مۆڵەتپێدراو نییە"}</span><span>کاڵۆگی CinemaChat: {providersReady.cinemaChatCatalog ? "بەردەست" : "بەردەست نییە"}</span></div>
+        <div className="social23__provider-note"><span>هەواڵی فەرمی: {providersReady.officialNews ? "بەردەست" : "provider نییە"}</span><span>تریلەری مۆڵەتپێدراو: {providersReady.licensedTrailers ? "بەردەست" : "پێڕستی مۆڵەتپێدراو نییە"}</span><span>کاڵۆگی CinamaChat: {providersReady.cinemaChatCatalog ? "بەردەست" : "بەردەست نییە"}</span></div>
         {dailyRun?.errors.length ? <p className="social23__error">هەڵەی worker: {dailyRun.errors.join("، ")}</p> : null}
       </section>
 
@@ -475,7 +475,7 @@ export function SocialAutomationModule({ request, catalogMovies }: Props) {
         <div className="social23__section-heading"><div><span className="social23__section-icon"><CalendarClock size={18} /></span><div><h2>تەقویمی ناوەڕۆکی هەفتانە</h2><p>ڕۆژ، بابەت، ژمارە، پلاتفۆرم و کات بە Asia/Baghdad پاشەکەوت دەکرێن.</p></div></div><span className="social23__preview-tag">تەنها DRY_RUN</span></div>
         <div className="social23__weekly-targets">
           {(["reels", "feed", "stories"] as const).map(format => <div className="social23__weekly-target" key={format}><strong>{FORMAT_LABEL[format]} ـی ڕۆژانە</strong><label>کەمترین<input type="number" min={0} max={20} value={settings.weeklyCalendar.dailyTargets[format].min} onChange={event => setSettings(value => ({ ...value, weeklyCalendar: { ...value.weeklyCalendar, dailyTargets: { ...value.weeklyCalendar.dailyTargets, [format]: { ...value.weeklyCalendar.dailyTargets[format], min: Math.min(Number(event.target.value) || 0, value.weeklyCalendar.dailyTargets[format].max) } } } }))} /></label><label>زۆرترین<input type="number" min={0} max={20} value={settings.weeklyCalendar.dailyTargets[format].max} onChange={event => setSettings(value => ({ ...value, weeklyCalendar: { ...value.weeklyCalendar, dailyTargets: { ...value.weeklyCalendar.dailyTargets, [format]: { ...value.weeklyCalendar.dailyTargets[format], max: Math.max(Number(event.target.value) || 0, value.weeklyCalendar.dailyTargets[format].min) } } } }))} /></label></div>)}
-          <div className="social23__weekly-target"><strong>کارتی CinemaChat لە ژمارەی Feed ـدایە</strong><label>ژمارەی ڕۆژانە<input type="number" min={0} max={20} value={settings.weeklyCalendar.dailyTargets.cinemaChatCards} onChange={event => setSettings(value => ({ ...value, weeklyCalendar: { ...value.weeklyCalendar, dailyTargets: { ...value.weeklyCalendar.dailyTargets, cinemaChatCards: Math.max(0, Math.min(20, Number(event.target.value) || 0)) } } }))} /></label></div>
+          <div className="social23__weekly-target"><strong>کارتی CinamaChat لە ژمارەی Feed ـدایە</strong><label>ژمارەی ڕۆژانە<input type="number" min={0} max={20} value={settings.weeklyCalendar.dailyTargets.cinemaChatCards} onChange={event => setSettings(value => ({ ...value, weeklyCalendar: { ...value.weeklyCalendar, dailyTargets: { ...value.weeklyCalendar.dailyTargets, cinemaChatCards: Math.max(0, Math.min(20, Number(event.target.value) || 0)) } } }))} /></label></div>
         </div>
         <div className="social23__week-grid">
           {WEEKDAYS.map(([weekday, label]) => {
@@ -489,7 +489,7 @@ export function SocialAutomationModule({ request, catalogMovies }: Props) {
                 const timeline = [...preparedPosts, ...forecast].sort((left, right) => left.scheduledAt.localeCompare(right.scheduledAt));
                 const targets = slot.platforms.filter(platform => settings.platforms[platform] && supportsWeeklyFormat(platform, slot.format, slot.interactive));
                 const canPrepare = Boolean(upcoming && !upcoming.truncated && !upcomingLoading && targets.length && slot.category.trim());
-                const kind: PostKind = slot.format === "reels" ? "trailer" : /cinemachat|کاڵۆگ/i.test(slot.category) ? "promotion" : "news";
+                const kind: PostKind = slot.format === "reels" ? "trailer" : (hasCinamaChatName(slot.category) || slot.category.includes("کاڵۆگ")) ? "promotion" : "news";
                 return <div className="social23__week-slot" key={slot.id}>
                 <label>بابەت<input maxLength={100} value={slot.category} onChange={event => updateWeeklySlot(weekday, slot.id, item => ({ ...item, category: event.target.value }))} /></label>
                 <div className="social23__week-row"><label>فۆرمات<select value={slot.format} onChange={event => updateWeeklySlot(weekday, slot.id, item => ({ ...item, format: event.target.value as typeof item.format }))}>{Object.entries(FORMAT_LABEL).map(([id, name]) => <option value={id} key={id}>{name}</option>)}</select></label><label>ژمارە<input type="number" min={0} max={8} value={slot.count} onChange={event => {
@@ -541,8 +541,8 @@ export function SocialAutomationModule({ request, catalogMovies }: Props) {
           <div className="social23__count-list">{(Object.keys(KIND_LABEL) as PostKind[]).map(kind => <label className="social23__count-row" key={kind}><span>{KIND_LABEL[kind]}</span><input type="number" min={0} max={20} value={settings.dailyCounts[kind]} aria-label={`ژمارەی ڕۆژانە: ${KIND_LABEL[kind]}`} onChange={event => setSettings(value => ({ ...value, dailyCounts: { ...value.dailyCounts, [kind]: Math.max(0, Math.min(20, Number(event.target.value) || 0)) } }))} /></label>)}</div>
           <fieldset className="social23__topics"><legend>جۆری بازاڕ</legend>{([ ["foreign", "بیانی"], ["korean", "کۆری"], ["chinese", "چینی"] ] as const).map(([key, label]) => <label key={key} className="social23__check"><input type="checkbox" checked={settings.topics.regions.includes(key)} onChange={event => setSettings(value => ({ ...value, topics: { ...value.topics, regions: event.target.checked ? [...value.topics.regions, key] : value.topics.regions.filter(item => item !== key) } }))} /><span>{label}</span></label>)}</fieldset>
           <div className="social23__caption-settings"><h3>قاڵبی دەقی کوردی</h3>{(Object.keys(KIND_LABEL) as PostKind[]).map(kind => <label key={kind}>{KIND_LABEL[kind]}<textarea rows={2} maxLength={500} value={settings.captions[kind]} onChange={event => setSettings(value => ({ ...value, captions: { ...value.captions, [kind]: event.target.value } }))} placeholder="قاڵبی دەقی پۆست…" /></label>)}</div>
-          <label className="social23__timezone">شێوازی وێنە/هەویت<select value={settings.design.template} onChange={event => setSettings(value => ({ ...value, design: { ...value.design, template: event.target.value as Settings["design"]["template"] } }))}><option value="cinemachat-cinematic">CinemaChat · سینەماتیکی</option><option value="cinemachat-minimal">CinemaChat · سادە</option></select></label>
-          <label className="social23__check social23__brand-check"><input type="checkbox" checked={settings.design.includeBranding} onChange={event => setSettings(value => ({ ...value, design: { ...value.design, includeBranding: event.target.checked } }))} /><span>نیشانی CinemaChat لە دیزاینەکەدا هەبێت</span></label>
+          <label className="social23__timezone">شێوازی وێنە/هەویت<select value={settings.design.template} onChange={event => setSettings(value => ({ ...value, design: { ...value.design, template: event.target.value as Settings["design"]["template"] } }))}><option value="cinemachat-cinematic">CinamaChat · سینەماتیکی</option><option value="cinemachat-minimal">CinamaChat · سادە</option></select></label>
+          <label className="social23__check social23__brand-check"><input type="checkbox" checked={settings.design.includeBranding} onChange={event => setSettings(value => ({ ...value, design: { ...value.design, includeBranding: event.target.checked } }))} /><span>نیشانی CinamaChat لە دیزاینەکەدا هەبێت</span></label>
           <button className="social23__button social23__button--gold" type="button" disabled={saving || loading} onClick={() => void saveSettings()}>{saving ? <Loader2 className="social23__spin" size={16} /> : <Check size={16} />}پاشەکەوتی ڕێکخستنەکان</button>
         </section>
 

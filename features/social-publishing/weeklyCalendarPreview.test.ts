@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { WeeklyContentSlot } from "./settings";
-import { isWeeklySlotJob, plannedSlotTimes, splitDayAndNight, validWeeklyTimes } from "./weeklyCalendarPreview";
+import { hasCinamaChatName, isWeeklySlotJob, plannedSlotTimes, splitDayAndNight, validWeeklyTimes } from "./weeklyCalendarPreview";
+
+test("CinamaChat categories recognize the official name and existing saved labels", () => {
+  assert.equal(hasCinamaChatName("CinamaChat movie card"), true);
+  assert.equal(hasCinamaChatName("CinemaChat movie card"), true);
+  assert.equal(hasCinamaChatName("Foreign cinema news"), false);
+});
 
 test("24-hour controls reject invalid or duplicate times and split day from night at Baghdad clock boundaries", () => {
   assert.deepEqual(splitDayAndNight(["23:59", "06:00", "05:59", "18:00", "17:59", "12:00"]), {

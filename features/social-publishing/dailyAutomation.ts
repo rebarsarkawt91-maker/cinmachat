@@ -329,7 +329,7 @@ export class DailySocialAutomationEngine {
         const subtitleKnown = Boolean(title.kurdishSubtitleStatus || title.kurdishSubtitleUrl || title.subtitleText);
         const facts = [title.year, subtitleKnown ? (subtitleAvailable ? "ژێرنووسی کوردی بەردەستە" : "ژێرنووسی کوردی بەردەست نییە") : ""].filter(Boolean).join(" · ");
         const caption = interpolate(settings.captions.promotion, { title: title.title, summary: summary || facts, year: title.year || "" });
-        tasks.push({ kind: "promotion", key: `promotion:${title.id}`, title: title.title.slice(0, 200), caption: settings.captions.promotion ? caption : `لە CinemaChat ببینە: ${caption}`, description: summary || facts, scheduledAt: "", platforms: Object.entries(settings.platforms).filter(([, enabled]) => enabled).map(([platform]) => platform as SocialPlatform), provenance: { source: "cinemachat-catalog", catalogTitleId: title.id.slice(0, 160), verifiedAt: new Date(now).toISOString(), kurdishSubtitleStatus: !subtitleKnown ? "unknown" : subtitleAvailable ? "available" : "unavailable" } });
+        tasks.push({ kind: "promotion", key: `promotion:${title.id}`, title: title.title.slice(0, 200), caption: settings.captions.promotion ? caption : `لە CinamaChat ببینە: ${caption}`, description: summary || facts, scheduledAt: "", platforms: Object.entries(settings.platforms).filter(([, enabled]) => enabled).map(([platform]) => platform as SocialPlatform), provenance: { source: "cinemachat-catalog", catalogTitleId: title.id.slice(0, 160), verifiedAt: new Date(now).toISOString(), kurdishSubtitleStatus: !subtitleKnown ? "unknown" : subtitleAvailable ? "available" : "unavailable" } });
       }
       created.promotion += tasks.filter(task => task.kind === "promotion").length;
 
