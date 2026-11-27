@@ -46,6 +46,8 @@ export const SystemDatabaseAuditModule: React.FC<SystemDatabaseAuditModuleProps>
   const [bannedCount, setBannedCount] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [isDragging, setIsDragging] = useState(false);
+  const [isExportingBackup, setIsExportingBackup] = useState(false);
+  const [backupExportError, setBackupExportError] = useState("");
   const [restoreMessage, setRestoreMessage] = useState<{ type: "success" | "error", text: string } | null>(null);
 
   // Snapshot States
@@ -112,9 +114,40 @@ export const SystemDatabaseAuditModule: React.FC<SystemDatabaseAuditModuleProps>
   }, []);
 
   // 1. BACKUP EXPORT
-  const handleExportBackup = () => {
-    // We can directly open the export backup endpoint or download
-    window.open("/api/admin/db-backup", "_blank");
+  const handleExportBackup = async () => {
+    setIsExportingBackup(true);
+    setBackupExportError("");
+    try {
+      const response = await fetch("/api/admin/db-backup", {
+        credentials: "same-origin",
+        cache: "no-store",
+        redirect: "error",
+      });
+      if (response.status === 401 || response.status === 403) {
+        setBackupExportError("بۆ داگرتنی کۆپیی یەدەگ، بە هەژماری خاوەن دووبارە بچۆ ژوورەوە.");
+        return;
+      }
+      if (!response.ok || !response.headers.get("content-type")?.startsWith("application/json") ||
+        !response.headers.get("content-disposition")?.startsWith("attachment;")) {
+        setBackupExportError("داگرتنی کۆپیی یەدەگ سەرکەوتوو نەبوو.");
+        return;
+      }
+      const downloadUrl = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = "cinemachat-db-backup.json";
+      document.body.appendChild(link);
+      try {
+        link.click();
+      } finally {
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 30_000);
+      }
+    } catch {
+      setBackupExportError("داگرتنی کۆپیی یەدەگ سەرکەوتوو نەبوو.");
+    } finally {
+      setIsExportingBackup(false);
+    }
   };
 
   // 1. RESTORE IMPORT
@@ -471,13 +504,16 @@ export const SystemDatabaseAuditModule: React.FC<SystemDatabaseAuditModuleProps>
                       دەتوانیت لە ڕێگەی ئەم کردارەوە تەواوی داتای ئێستای ماڵپەڕ لە نێویدا ئەندامان، فیلمە پۆستکراوەکان، لیستی ڕەش، قەدەغەکراوەکان و ڕێکخستنی سەرەکی بە شێوەی فایلی یەکگرتووی پشتیوانی هەناردە بکەیت بۆ پاراستنی نەتەوەیی یان فریاگوزاری خێرا.
                     </p>
                   </div>
-                  <button 
+                  <button
+                    type="button"
                     onClick={handleExportBackup}
+                    disabled={isExportingBackup}
                     className="w-full sm:w-auto py-3.5 px-6 rounded-xl bg-[#00e1ff] hover:bg-[#00bfd6] text-black font-black text-xs kurdish-text flex items-center justify-center gap-2 transition duration-250 self-start shadow-md shadow-[#00e1ff]/5"
                   >
                     <Download className="w-4 h-4" />
-                    دروستکردن و داگرتنی بەڵگەنامە (.JSON)
+                    {isExportingBackup ? "کۆپیی یەدەگ ئامادە دەکرێت…" : "دروستکردن و داگرتنی بەڵگەنامە (.JSON)"}
                   </button>
+                  {backupExportError && <p role="alert" className="text-xs text-red-300">{backupExportError}</p>}
                 </div>
 
                 {/* 2. Drag & Drop Restore Sidecard */}

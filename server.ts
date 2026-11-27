@@ -33,6 +33,7 @@ import { createHeroBackgroundStore, heroBackgroundAdminHandler } from './server/
 import { isHeroBackgroundAdminRole } from './src/utils/heroBackground';
 import { createPlayerAdsStore, playerAdsAdminHandler } from './server/playerAds';
 import { createSceneBlurHandlers, signedSceneBlurAdminUsername } from './server/sceneBlur';
+import { createDatabaseBackupHandler } from './server/dbBackup';
 import { buildCatalogSeo, buildDramaRoomSeo, catalogMovieUrl, catalogDramaRoomUrl } from './src/lib/catalogSeo';
 import { renderCatalogHtml } from './server/catalogSeoHtml';
 import { stripSubtitleHtmlTags } from './src/lib/subtitleText.js';
@@ -5844,6 +5845,14 @@ async function startServer() {
     next();
   });
 
+  // Backup data requires the signed Owner session, independent of the legacy
+  // administrative username parameter used by the general admin guard.
+  app.get('/api/admin/db-backup', createDatabaseBackupHandler({
+    resolveSignedIdentity: request => studioLoginIdentity(request),
+    isOwner: username => isStudioOwner(username),
+    readSnapshot: () => db,
+  }));
+
   // Strict Server-Side Admin Guard Enforcement
   app.use(createAdminGuard(db));
 
@@ -6191,14 +6200,6 @@ async function startServer() {
   });
 
   // --- MODULE 12: DATABASE & SYSTEM AUDIT ENDPOINTS ---
-
-  // Export full DB backup
-  app.get('/api/admin/db-backup', (req, res) => {
-    res.setHeader('Content-disposition', 'attachment; filename=cinemachat-db-backup.json');
-    res.setHeader('Content-type', 'application/json');
-    res.write(JSON.stringify(db, null, 2));
-    res.end();
-  });
 
   // Restore DB backup
   app.post('/api/admin/db-restore', async (req, res) => {
@@ -14422,6 +14423,9 @@ async function startServer() {
       return account ? String(account.password || '') : OWNER_USERNAMES.includes(username) ? process.env.ADMIN_SECRET_KEY || null : null;
     });
   };
+  const isStudioOwner = (username: string) => OWNER_USERNAMES.includes(username) || db.admins.some((record: any) =>
+    String(record.username || '').trim().toLowerCase() === username &&
+    (record.isOwner === true || String(record.role || '').toLowerCase() === 'owner'));
   const socialPublishingService = new SocialPublishingService({
     store: new FirestoreSocialPublicationStore(initializeFirebaseAdmin),
     adapters: createConnectedSocialAdapters(process.env, {}),
@@ -14474,9 +14478,7 @@ async function startServer() {
   registerSocialConnectionRoutes(app, {
     service: socialConnections,
     resolveAdmin: resolveSocialAdmin,
-    isOwner: username => OWNER_USERNAMES.includes(username) || db.admins.some((record: any) =>
-      String(record.username || '').trim().toLowerCase() === username &&
-      (record.isOwner === true || String(record.role || '').toLowerCase() === 'owner')),
+    isOwner: isStudioOwner,
   });
   registerSocialPublishingRoutes(app, {
     service: socialPublishingService,
