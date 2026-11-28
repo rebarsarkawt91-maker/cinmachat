@@ -34,6 +34,7 @@ import { isHeroBackgroundAdminRole } from './src/utils/heroBackground';
 import { createPlayerAdsStore, playerAdsAdminHandler } from './server/playerAds';
 import { createSceneBlurHandlers, signedSceneBlurAdminUsername } from './server/sceneBlur';
 import { createDatabaseBackupHandler } from './server/dbBackup';
+import { MountedDatabase } from './server/durableDatabase';
 import { buildCatalogSeo, buildDramaRoomSeo, catalogMovieUrl, catalogDramaRoomUrl } from './src/lib/catalogSeo';
 import { renderCatalogHtml } from './server/catalogSeoHtml';
 import { stripSubtitleHtmlTags } from './src/lib/subtitleText.js';
@@ -2301,6 +2302,8 @@ process.on('unhandledRejection', (reason: any) => {
 });
 
 const DB_PATH = path.join(process.cwd(), 'db.json');
+const mountedDatabase = process.env.CINAMACHAT_DATA_DIR === undefined ? undefined :
+  new MountedDatabase(process.env.CINAMACHAT_DATA_DIR, process.cwd());
 
 // Firestore is the durable cross-deploy store for movie view counts. Render's
 // filesystem is ephemeral — db.json (and its viewsCounts) resets on every
@@ -2469,10 +2472,11 @@ const INITIAL_GLOBAL_ROOM = {
   updatedAt: new Date().toISOString()
 };
 
-async function loadDB() {
+async function loadDB(starting = false) {
   try {
-    const data = await fs.readFile(DB_PATH, 'utf-8');
-    const db = JSON.parse(data);
+    const db = mountedDatabase
+      ? await (starting ? mountedDatabase.openForStartup() : mountedDatabase.read())
+      : JSON.parse(await fs.readFile(DB_PATH, 'utf-8'));
 
     let shouldPersist = false;
 
@@ -2500,6 +2504,7 @@ async function loadDB() {
 
     return db;
   } catch (e: any) {
+    if (mountedDatabase) throw e;
     // Preserve the corrupt file as a backup before replacing it, so no history
     // is silently lost, then write a clean database to recover from the parse error.
     console.error('[DB] Failed to parse db.json, restoring a clean database:', e?.message || e);
@@ -2525,6 +2530,7 @@ async function loadDB() {
 let dbWriteChain: Promise<void> = Promise.resolve();
 async function saveDB(db: any) {
   const snapshot = JSON.stringify(db, null, 2);
+  if (mountedDatabase) return mountedDatabase.save(snapshot);
   dbWriteChain = dbWriteChain.then(() => fs.writeFile(DB_PATH, snapshot));
   await dbWriteChain;
 }
@@ -4364,10 +4370,11 @@ async function startServer() {
   // Database initialization
   let db: any = {};
   try {
-    db = await loadDB();
+    db = await loadDB(true);
     console.log('[DB] Database loaded successfully');
   } catch (err) {
     console.error('[DB] Critical failed to load/init database:', err);
+    if (mountedDatabase) throw new Error('Startup stopped to protect the mounted database.');
     db = { ...INITIAL_DB }; // Fallback to memory
   }
   // The watch-call user mirror reads the LIVE db.json users (registrations
@@ -4710,6 +4717,7 @@ async function startServer() {
 
   // Firestore is authoritative. A failed read must never be mistaken for an
   // absent document: writing the temporary seed in that case erased accounts.
+  const persistStartupState = () => mountedDatabase ? saveDB(db) : fs.writeFile(DB_PATH, JSON.stringify(db, null, 2));
   let adminStoreReady = false;
   let lastAdminRestoreAttempt = Date.now();
   const restoreAdminAccounts = async (): Promise<void> => {
@@ -4744,7 +4752,7 @@ async function startServer() {
     }
     if (changed && !(await persistAdminsToFirestore(adminApp, db.admins))) return;
     adminStoreReady = true;
-    await fs.writeFile(DB_PATH, JSON.stringify(db, null, 2)).catch(console.error);
+    await persistStartupState().catch(console.error);
   };
   let adminAccountsReady = restoreAdminAccounts();
   const ensureAdminStoreReady = async (): Promise<boolean> => {
@@ -4758,7 +4766,7 @@ async function startServer() {
     return adminStoreReady;
   };
 
-  fs.writeFile(DB_PATH, JSON.stringify(db, null, 2)).catch(console.error);
+  void persistStartupState().catch(console.error);
   if (!db.ownerNotifications) db.ownerNotifications = [];
 
   // State
@@ -17174,4 +17182,5 @@ let videoDownloaded = false;
 
 startServer().catch(err => {
   console.error('FATAL SERVER ERROR:', err);
+  if (mountedDatabase) process.exit(1);
 });
